@@ -1,0 +1,11 @@
+{
+  "fixture": "baseline-start-reply-restart",
+  "version": 1,
+  "events": [
+    {"type": "mission.start", "mission_id": "replay-001", "attempt": 1},
+    {"type": "telegram.reply", "chat_id": "fixture-chat", "text": "fixture"},
+    {"type": "process.restart", "mission_id": "replay-001"},
+    {"type": "mission.resume", "mission_id": "replay-001", "attempt": 2}
+  ],
+  "comparison": ["terminal_state", "reply_count", "retry_count", "evidence_hash"]
+}

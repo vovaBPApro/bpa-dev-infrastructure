@@ -28,6 +28,8 @@ trap 'rm -rf "$verify_fixture"' EXIT
 install -d -m 700 \
   "$verify_fixture/root/.git" \
   "$verify_fixture/root/core" \
+  "$verify_fixture/root/daemon" \
+  "$verify_fixture/root/orchestrator" \
   "$verify_fixture/root/workspace" \
   "$verify_fixture/root/gate" \
   "$verify_fixture/root/runtime" \
@@ -35,18 +37,29 @@ install -d -m 700 \
   "$verify_fixture/bin"
 install -m 600 /dev/null "$verify_fixture/root/.env"
 printf '%s\n' 'TELEGRAM_BOT_TOKEN=fixture-token' > "$verify_fixture/root/.env"
-for unit in bpa-telegram-daemon.service bpa-orchestrator-watchdog.service bpa-orchestrator-watchdog.timer bpa-full-suite.service bpa-full-suite.timer; do
-  install -m 600 /dev/null "$verify_fixture/config/systemd/user/$unit"
-done
+printf '%s\n' \
+  '[Service]' \
+  "ExecStart=$verify_fixture/bin/bun run server.ts" > "$verify_fixture/config/systemd/user/bpa-telegram-daemon.service"
+printf '%s\n' \
+  '[Service]' \
+  "ExecStart=$verify_fixture/root/orchestrator/watchdog.sh" > "$verify_fixture/config/systemd/user/bpa-orchestrator-watchdog.service"
+printf '%s\n' '[Timer]' > "$verify_fixture/config/systemd/user/bpa-orchestrator-watchdog.timer"
+printf '%s\n' \
+  '[Service]' \
+  "ExecStart=$verify_fixture/root/orchestrator/full-suite.sh" > "$verify_fixture/config/systemd/user/bpa-full-suite.service"
+printf '%s\n' '[Timer]' > "$verify_fixture/config/systemd/user/bpa-full-suite.timer"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/bin/bun"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$verify_fixture/bin/systemctl"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/root/workspace/workspace.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/root/orchestrator/watchdog.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/root/orchestrator/full-suite.sh"
 printf '%s\n' 'disabled by --no-cron' > "$verify_fixture/root/runtime/hygiene-cron.skip"
 for command_name in git curl tmux; do
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/bin/$command_name"
 done
 chmod 700 "$verify_fixture/bin"/*
 chmod 700 "$verify_fixture/root/workspace/workspace.sh"
+chmod 700 "$verify_fixture/root/orchestrator/watchdog.sh" "$verify_fixture/root/orchestrator/full-suite.sh"
 verify_output="$(PATH="$verify_fixture/bin:$PATH" \
   INSTALL_ROOT="$verify_fixture/root" \
   ENV_FILE="$verify_fixture/root/.env" \
@@ -59,10 +72,34 @@ for expected in \
   'PASS state-db' \
   'PASS workspace' \
   'SKIP hygiene-cron' \
-  'PASS gate'; do
+  'PASS gate' \
+  'PASS unit Exec paths'; do
   grep -Fq "$expected" <<<"$verify_output"
 done
 grep -Eq '^(PASS|SKIP) stand' <<<"$verify_output"
+
+old_watchdog_exec="$(git -C "$SCRIPT_DIR/.." show 148b9ad0:bootstrap/units/bpa-orchestrator-watchdog.service.in | sed -n 's/^ExecStart=//p')"
+expected_old_watchdog_exec="\$INSTALL_ROOT/daemon/orchestrator-watchdog.sh"
+[[ "$old_watchdog_exec" == "$expected_old_watchdog_exec" ]]
+old_watchdog_exec="${old_watchdog_exec/\$INSTALL_ROOT/$verify_fixture/root}"
+printf '%s\n' \
+  '[Service]' \
+  "ExecStart=$old_watchdog_exec" > "$verify_fixture/config/systemd/user/bpa-orchestrator-watchdog.service"
+if broken_output="$(PATH="$verify_fixture/bin:$PATH" \
+  INSTALL_ROOT="$verify_fixture/root" \
+  ENV_FILE="$verify_fixture/root/.env" \
+  XDG_CONFIG_HOME="$verify_fixture/config" \
+  BUN_BIN="$verify_fixture/bin/bun" \
+  "$INSTALLER" --verify 2>&1)"; then
+  echo 'ERROR: verify accepted a unit with a missing ExecStart target' >&2
+  exit 1
+fi
+grep -Fq 'FAIL unit Exec paths' <<<"$broken_output"
+printf 'FAIL-BEFORE 148b9ad0 ExecStart=%s\n' "$old_watchdog_exec"
+grep '^FAIL unit Exec paths' <<<"$broken_output"
+printf '%s\n' \
+  '[Service]' \
+  "ExecStart=$verify_fixture/root/orchestrator/watchdog.sh" > "$verify_fixture/config/systemd/user/bpa-orchestrator-watchdog.service"
 
 printf '%s\n' 'TELEGRAM_BOT_TOKEN=__OPERATOR_PASTE_TELEGRAM_BOT_TOKEN_HERE__' > "$verify_fixture/root/.env"
 placeholder_output="$(PATH="$verify_fixture/bin:$PATH" \

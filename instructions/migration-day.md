@@ -104,22 +104,16 @@ bootstrap environment is deliberately overridden.
    orchestrator/install-morning-timer.sh install
    ```
 
-   Current source limitation: the rendered
-   `bpa-orchestrator-watchdog.service` runs
-   `/home/bpa-dev-infrastructure/daemon/orchestrator-watchdog.sh`, but that
-   file is not present; the real watchdog is
-   `/home/bpa-dev-infrastructure/orchestrator/watchdog.sh`. Enabling the timer
-   is an accurate bootstrap command, but its service will fail until that unit
-   wiring is fixed in a normal mission. Use the direct watchdog tick below only
-   as a diagnostic; do not mask the failed service.
-
 7. Verify the install. The heading is `STATUS CHECK`; a healthy configured VM
    has `PASS` lines for `git`, `curl`, `tmux`, `bun`, `repository`,
    `environment file`, `environment permissions`, `state-db`, `workspace`,
-   `gate`, all five rendered unit files, and the enabled daemon/watchdog/full
-   suite. `stand` is also `PASS` when Docker is available. Treat any `FAIL` as
-   a stop condition; `SKIP token configured` means the token is still a
-   placeholder.
+   `gate`, all five rendered unit files, `unit Exec paths`, and the enabled
+   daemon/watchdog/full suite. `unit Exec paths` confirms each rendered
+   `Exec*` program exists and is executable (installed BPA programs must remain
+   beneath the install root; the configured `BUN_BIN` is the sole external
+   executable). `stand` is also `PASS` when Docker is available. Treat any
+   `FAIL` as a stop condition; `SKIP token configured` means the token is still
+   a placeholder.
 
    ```bash
    cd /home/bpa-dev-infrastructure

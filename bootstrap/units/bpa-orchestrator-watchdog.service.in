@@ -4,8 +4,8 @@ After=bpa-telegram-daemon.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=$INSTALL_ROOT/daemon
+WorkingDirectory=$INSTALL_ROOT/orchestrator
 EnvironmentFile=$ENV_FILE
-ExecStart=$INSTALL_ROOT/daemon/orchestrator-watchdog.sh
+ExecStart=$INSTALL_ROOT/orchestrator/watchdog.sh
 NoNewPrivileges=true
 PrivateTmp=true

@@ -84,5 +84,11 @@ FAKE_CRONTAB_FILE="$cron_file" CRONTAB_CMD="$fake_crontab" "$script_dir/install-
 ! grep -Fq '# BEGIN bpa-dev-infrastructure hygiene' "$cron_file" || fail 'cron uninstall left managed block'
 assert_contains "$cron_file" 'MAILTO=hygiene@example.test'
 
-shellcheck "$script_dir/reap.sh" "$script_dir/install-cron.sh" "$script_dir/reap.test.sh"
-echo 'PASS: help is side-effect-free; dry-run preserved fixture; apply removed only merged/orphaned/known junk; cron is deterministic; shellcheck clean'
+if command -v shellcheck >/dev/null 2>&1; then
+  shellcheck "$script_dir/reap.sh" "$script_dir/install-cron.sh" "$script_dir/reap.test.sh"
+  shellcheck_result='shellcheck clean'
+else
+  shellcheck_result='shellcheck skipped: command unavailable (optional local lint dependency)'
+  printf 'SKIP: %s\n' "$shellcheck_result"
+fi
+echo "PASS: help is side-effect-free; dry-run preserved fixture; apply removed only merged/orphaned/known junk; cron is deterministic; $shellcheck_result"

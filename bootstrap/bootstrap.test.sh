@@ -6,6 +6,7 @@ INSTALLER="$SCRIPT_DIR/install.sh"
 
 # shellcheck disable=SC2016 # inspect the literal default assignment
 grep -Fxq 'INSTALL_ROOT="${INSTALL_ROOT:-/home/bpa-dev-infrastructure}"' "$INSTALLER"
+grep -Fxq 'TimeoutSec=3600' "$SCRIPT_DIR/units/bpa-full-suite.service.in"
 
 dry_run="$($INSTALLER --dry-run)"
 for expected in \
@@ -34,7 +35,7 @@ install -d -m 700 \
   "$verify_fixture/bin"
 install -m 600 /dev/null "$verify_fixture/root/.env"
 printf '%s\n' 'TELEGRAM_BOT_TOKEN=fixture-token' > "$verify_fixture/root/.env"
-for unit in bpa-telegram-daemon.service bpa-orchestrator-watchdog.service bpa-orchestrator-watchdog.timer; do
+for unit in bpa-telegram-daemon.service bpa-orchestrator-watchdog.service bpa-orchestrator-watchdog.timer bpa-full-suite.service bpa-full-suite.timer; do
   install -m 600 /dev/null "$verify_fixture/config/systemd/user/$unit"
 done
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/bin/bun"

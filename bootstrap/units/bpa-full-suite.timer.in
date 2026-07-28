@@ -1,0 +1,10 @@
+[Unit]
+Description=Run BPA nightly full test suite
+
+[Timer]
+OnCalendar=$FULL_SUITE_ON_CALENDAR
+Unit=bpa-full-suite.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

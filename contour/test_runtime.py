@@ -8,6 +8,8 @@ class RuntimeWiringTest(unittest.TestCase):
         def capture_source(self): self.called=True; return "0"*40
         def current_commit(self): return self.head
         def current_image_digest(self): return "sha:x"
+    class SameLife(Life):
+        def capture_source(self): self.called=True; return self.head
     def test_manual_rejects_generic_but_accepts_green(self):
         r = RuntimeManager(manual=True)
         self.assertIsNone(r.submit("generic", "w"))
@@ -35,6 +37,7 @@ class RuntimeWiringTest(unittest.TestCase):
             with self.assertRaises(ValueError): RuntimeManager().verify_rollback(root, head, image_digest=None, evidence_store=path, lifecycle=self.Life(head))
             with self.assertRaises(ValueError): RuntimeManager().verify_rollback(root, head, image_digest="sha:y", evidence_store=path, lifecycle=self.Life(head))
             with self.assertRaises(ValueError): RuntimeManager().verify_rollback(root, "bad", image_digest="sha:x", actual_image_digest="sha:x")
+            with self.assertRaises(ValueError): RuntimeManager().verify_rollback(root, head, image_digest="sha:x", evidence_store=path, lifecycle=self.SameLife(head))
             with self.assertRaises(ValueError): RuntimeManager().verify_rollback(root, head, image_digest="sha:x", actual_image_digest="sha:y")
 
 

@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if command -v shellcheck >/dev/null 2>&1; then
+  shellcheck "$SCRIPT_DIR"/*.sh
+elif command -v npx >/dev/null 2>&1; then
+  npx --yes shellcheck "$SCRIPT_DIR"/*.sh
+else
+  printf 'FAIL: shellcheck (or npx fallback) is required for runtime tests\n' >&2
+  exit 127
+fi
+SCRATCH="$(mktemp -d)"
+trap 'rm -rf "$SCRATCH"' EXIT
+SHIM="$SCRATCH/bin"
+STATE="$SCRATCH/state"
+mkdir -p "$SHIM" "$STATE"
+
+cat > "$SHIM/tmux" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+state="${MOCK_STATE:?}"
+case "$1" in
+  has-session) [[ -f "$state/session" ]] ;;
+  new-session)
+    touch "$state/session"
+    printf '%s\n' "${MOCK_PANE_PID:-$$}" > "$state/pid"
+    printf 'tmux new-session %s\n' "$*" >> "$state/calls"
+    ;;
+  kill-session) rm -f "$state/session"; printf 'tmux kill-session %s\n' "$*" >> "$state/calls" ;;
+  list-panes) cat "$state/pid" ;;
+  *) printf 'unexpected tmux: %s\n' "$*" >&2; exit 2 ;;
+esac
+EOF
+cat > "$SHIM/systemd-run" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'systemd-run %s\n' "$*" >> "${MOCK_STATE:?}/calls"
+while [[ "$1" == -* ]]; do shift; done
+exec "$@"
+EOF
+cat > "$SHIM/codex" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$SHIM/tmux" "$SHIM/systemd-run" "$SHIM/codex"
+
+export PATH="$SHIM:$PATH" MOCK_STATE="$STATE" MOCK_PANE_PID="$$"
+export ORCH_RUNTIME_DIR="$STATE/runtime" ORCH_SESSION="test-orch" ORCH_PROVIDER=codex
+export ORCH_AUTH_PREFLIGHT="$SCRIPT_DIR/preflight-cli-auth.sh"
+
+fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+assert() { "$@" || fail "$*"; }
+assert_not() { if "$@"; then fail "unexpected success: $*"; fi; }
+calls() { grep -c "^$1" "$STATE/calls" 2>/dev/null || true; }
+
+assert "$SCRIPT_DIR/launch.sh" --help
+assert_not "$SCRIPT_DIR/launch.sh" status
+[[ ! -e "$STATE/calls" ]] || fail 'help/status had side effects'
+
+assert "$SCRIPT_DIR/launch.sh" start
+assert_not "$SCRIPT_DIR/launch.sh" start
+[[ "$(calls 'tmux new-session')" == 1 ]] || fail 'double launch created another session'
+
+rm -f "$STATE/session"
+assert "$SCRIPT_DIR/watchdog.sh"
+[[ "$(calls 'tmux new-session')" == 2 ]] || fail 'dead session did not relaunch'
+
+heartbeat="$STATE/heartbeat"
+touch "$heartbeat"
+export ORCH_HEARTBEAT_FILE="$heartbeat" ORCH_HEARTBEAT_MAX_AGE=10 ORCH_WATCHDOG_NOW=1000
+touch -d '@1' "$heartbeat"
+assert "$SCRIPT_DIR/watchdog.sh"
+[[ "$(calls 'tmux kill-session')" == 1 ]] || fail 'stale heartbeat did not kill zombie'
+[[ "$(calls 'tmux new-session')" == 3 ]] || fail 'stale heartbeat did not relaunch zombie'
+
+touch -d '@995' "$heartbeat"
+assert "$SCRIPT_DIR/watchdog.sh"
+[[ "$(calls 'tmux kill-session')" == 1 ]] || fail 'healthy session was killed'
+[[ "$(calls 'tmux new-session')" == 3 ]] || fail 'healthy session was relaunched'
+
+printf 'runtime tests: PASS\n'

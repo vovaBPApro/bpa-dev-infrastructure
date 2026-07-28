@@ -33,3 +33,8 @@ class RuntimeManager:
             evidence.update({"kind":"rollback", "mission_id":"runtime", "dispatch_id":"runtime", "from_commit":prior_commit, "restored_commit":expected_commit, "recovery_event_id":"runtime-rollback"})
             ProvenanceStore(evidence_store).append_raw(evidence)
         return evidence
+
+    def capture_rollback_source(self, root):
+        """Capture pre-transition HEAD for a subsequent verified rollback."""
+        import subprocess
+        return subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()

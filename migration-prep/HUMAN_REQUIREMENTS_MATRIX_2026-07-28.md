@@ -22,6 +22,14 @@ an owner, commit, automated evidence, and Docker/runtime result.
 
 > не погано. Але я наговорив вже і багато дрібних деталей на які ти теж маєш звернути увагу! і не забув про все це під час реалізації
 
+> ок, і шо по ітогу - пройшла вже майже доба, і наш реальний прогресс - ми підняли докер контур іто не правильно... дуууже мало прогресу і не в ту сторону!
+
+> Ти савма потужна модель, я піднімав консиліуми щоб все для тебе підготувати і запланувати.... але нічого не допомагає!
+
+> я знов чую складні пояснення з незрозумілими референсами та жаргоном! А як же ти вирішиш цю єбєйшу проблему?
+
+> і чи ти реально розумієш що саме я від тебе очікую?
+
 ## Checkable acceptance matrix
 
 | ID | Requirement | Evidence required |
@@ -40,6 +48,10 @@ an owner, commit, automated evidence, and Docker/runtime result.
 | HR-12 | All Human details remain verbatim-linked to implementation tasks. | This matrix linked from operating docs; status/owner/commit per row. |
 | HR-13 | No premature progress claims or topic switching: one mission chain until landed or explicit NO-GO. | Machine-readable completion guard. |
 | HR-14 | Morning test stand and concise “what changed / what to test” report are delivered. | Timestamped stand health result and evidence. |
+| HR-15 | Migration explicitly audits `telegram-dev-daemon` before implementation and preserves its stable behavior; the new contour is not a Python rewrite by default. | Recorded source URL/commit inventory, runtime decision, and parity tests. |
+| HR-16 | Progress reports use plain Ukrainian, concrete landed SHAs/tests/evidence and blockers; no jargon, invented percentages, or questions whose answer can be derived by the system. | Report schema test and sample report linked to a landed commit. |
+| HR-17 | Work is delegated to parallel agents where safe, while the orchestrator remains on one mission chain and does not abandon unfinished artifacts. | Lane ledger, owner, terminal state, and rollup for every dispatch. |
+| HR-18 | Final deployment target is a fresh Ubuntu VM: clone the new repo, run one documented bootstrap command, and recover after restart without legacy `/home/bpa-shell` state. | Clean-VM rehearsal with captured commands, logs, and restart evidence. |
 
 ## Operating rule
 

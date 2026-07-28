@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly STAND_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly REPO_DIR="$(cd "${STAND_DIR}/.." && pwd)"
+STAND_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly STAND_DIR
+REPO_DIR="$(cd "${STAND_DIR}/.." && pwd)"
+readonly REPO_DIR
 readonly COMPOSE_FILE="${STAND_DIR}/compose.yaml"
 readonly ENV_FILE="${STAND_DIR}/env.example"
 readonly SERVICE="daemon"

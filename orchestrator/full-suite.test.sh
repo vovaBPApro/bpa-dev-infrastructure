@@ -20,6 +20,13 @@ make_suite_tree() {
   chmod +x "$root/gate/pass.test.sh" "$root/orchestrator/fail.test.sh"
 }
 
+add_frozen_reference_suite() {
+  local root="$1"
+  mkdir -p "$root/migration-prep/reference-daemon/test"
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 23' > "$root/migration-prep/reference-daemon/test/frozen.test.sh"
+  chmod +x "$root/migration-prep/reference-daemon/test/frozen.test.sh"
+}
+
 run_tick() {
   local root="$1" runtime="$2" outbox="$3"
   ORCH_CONFIG_FILE="$SCRATCH/no-runtime.env" ORCH_INSTALL_ROOT="$root" ORCH_RUNTIME_DIR="$runtime" \
@@ -36,7 +43,7 @@ contains 'FULL-SUITE SUITE ts=' "$FAIL_RUNTIME/full-suite.log"
 contains 'suite=gate/pass.test.sh rc=0' "$FAIL_RUNTIME/full-suite.log"
 contains 'suite=orchestrator/fail.test.sh rc=7' "$FAIL_RUNTIME/full-suite.log"
 contains 'FULL-SUITE ts=' "$FAIL_RUNTIME/full-suite.log"
-contains 'pass=1 fail=1 failed=orchestrator/fail.test.sh' "$FAIL_RUNTIME/full-suite.log"
+contains 'pass=1 fail=1 skipped=0 failed=orchestrator/fail.test.sh skipped_list=none' "$FAIL_RUNTIME/full-suite.log"
 contains 'NUDGE full-suite pass=1 fail=1 failed=orchestrator/fail.test.sh' "$FAIL_OUTBOX"
 first_nudges="$(wc -l < "$FAIL_OUTBOX")"
 assert run_tick "$FAIL_ROOT" "$FAIL_RUNTIME" "$FAIL_OUTBOX"
@@ -47,8 +54,20 @@ PASS_RUNTIME="$SCRATCH/passing-runtime"
 PASS_OUTBOX="$SCRATCH/passing.outbox"
 make_suite_tree "$PASS_ROOT" false
 assert run_tick "$PASS_ROOT" "$PASS_RUNTIME" "$PASS_OUTBOX"
-contains 'pass=2 fail=0 failed=none' "$PASS_RUNTIME/full-suite.log"
+contains 'pass=2 fail=0 skipped=0 failed=none skipped_list=none' "$PASS_RUNTIME/full-suite.log"
 not_exists "$PASS_OUTBOX"
+
+# Frozen reference suites are visibly skipped by the default exclusion and do
+# not turn an otherwise green target-runtime sweep red.
+EXCLUDED_ROOT="$SCRATCH/excluded-repo"
+EXCLUDED_RUNTIME="$SCRATCH/excluded-runtime"
+EXCLUDED_OUTBOX="$SCRATCH/excluded.outbox"
+make_suite_tree "$EXCLUDED_ROOT" false
+add_frozen_reference_suite "$EXCLUDED_ROOT"
+assert run_tick "$EXCLUDED_ROOT" "$EXCLUDED_RUNTIME" "$EXCLUDED_OUTBOX"
+contains 'suite=migration-prep/reference-daemon/test/frozen.test.sh rc=SKIP reason=excluded' "$EXCLUDED_RUNTIME/full-suite.log"
+contains 'pass=2 fail=0 skipped=1 failed=none skipped_list=migration-prep/reference-daemon/test/frozen.test.sh' "$EXCLUDED_RUNTIME/full-suite.log"
+not_exists "$EXCLUDED_OUTBOX"
 
 # A bogus numeric rate interval must be logged and replaced with the safe
 # default, without preventing the tick from reporting its red suite.
@@ -57,6 +76,15 @@ assert env ORCH_CONFIG_FILE="$SCRATCH/no-runtime.env" ORCH_INSTALL_ROOT="$FAIL_R
   FULL_SUITE_LOG="$KNOB_RUNTIME/full-suite.log" NUDGE_OUTBOX_FILE="$KNOB_RUNTIME/nudges.outbox" \
   FULL_SUITE_NUDGE_REPEAT_MS=garbage "$SCRIPT_DIR/full-suite.sh"
 contains 'FULL-SUITE invalid-knob name=FULL_SUITE_NUDGE_REPEAT_MS value=garbage using-default=21600000' "$KNOB_RUNTIME/full-suite.log"
+
+# Invalid exclusion selectors fall back to the documented frozen-reference
+# default instead of silently running or skipping an arbitrary path.
+EXCLUDE_KNOB_RUNTIME="$SCRATCH/exclude-knob-runtime"
+assert env ORCH_CONFIG_FILE="$SCRATCH/no-runtime.env" ORCH_INSTALL_ROOT="$EXCLUDED_ROOT" ORCH_RUNTIME_DIR="$EXCLUDE_KNOB_RUNTIME" \
+  FULL_SUITE_LOG="$EXCLUDE_KNOB_RUNTIME/full-suite.log" NUDGE_OUTBOX_FILE="$EXCLUDE_KNOB_RUNTIME/nudges.outbox" \
+  FULL_SUITE_EXCLUDE=garbage "$SCRIPT_DIR/full-suite.sh"
+contains 'FULL-SUITE invalid-knob name=FULL_SUITE_EXCLUDE value=garbage using-default=migration-prep/' "$EXCLUDE_KNOB_RUNTIME/full-suite.log"
+contains 'pass=2 fail=0 skipped=1 failed=none skipped_list=migration-prep/reference-daemon/test/frozen.test.sh' "$EXCLUDE_KNOB_RUNTIME/full-suite.log"
 
 MISSING_RUNTIME="$SCRATCH/missing-runtime"
 assert_not env ORCH_CONFIG_FILE="$SCRATCH/no-runtime.env" ORCH_INSTALL_ROOT="$SCRATCH/absent-repo" ORCH_RUNTIME_DIR="$MISSING_RUNTIME" \

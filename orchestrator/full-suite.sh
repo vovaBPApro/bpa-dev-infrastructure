@@ -17,6 +17,8 @@ FULL_SUITE_LOG="${FULL_SUITE_LOG:-$RUNTIME_DIR/full-suite.log}"
 NUDGE_OUTBOX_FILE="${NUDGE_OUTBOX_FILE:-$RUNTIME_DIR/nudges.outbox}"
 FULL_SUITE_NUDGE_REPEAT_MS="${FULL_SUITE_NUDGE_REPEAT_MS:-21600000}"
 FULL_SUITE_NUDGE_RATE_FILE="${FULL_SUITE_NUDGE_RATE_FILE:-$RUNTIME_DIR/full-suite-nudge-rate.tsv}"
+DEFAULT_FULL_SUITE_EXCLUDE="migration-prep/"
+FULL_SUITE_EXCLUDE="${FULL_SUITE_EXCLUDE:-$DEFAULT_FULL_SUITE_EXCLUDE}"
 
 log() {
   mkdir -p "$(dirname "$FULL_SUITE_LOG")"
@@ -29,6 +31,34 @@ validate_numeric_knob() {
     log "FULL-SUITE invalid-knob name=$name value=$value using-default=$default"
     printf -v "$name" '%s' "$default"
   fi
+}
+
+validate_exclude_knob() {
+  local value="$FULL_SUITE_EXCLUDE" selector
+  local -a selectors
+  IFS=',' read -r -a selectors <<< "$value"
+  if ((${#selectors[@]} == 0)); then
+    log "FULL-SUITE invalid-knob name=FULL_SUITE_EXCLUDE value=$value using-default=$DEFAULT_FULL_SUITE_EXCLUDE"
+    FULL_SUITE_EXCLUDE="$DEFAULT_FULL_SUITE_EXCLUDE"
+    return
+  fi
+  for selector in "${selectors[@]}"; do
+    if ! [[ "$selector" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*/$ ]] || [[ "$selector" == *'..'* || "$selector" == *'//' ]]; then
+      log "FULL-SUITE invalid-knob name=FULL_SUITE_EXCLUDE value=$value using-default=$DEFAULT_FULL_SUITE_EXCLUDE"
+      FULL_SUITE_EXCLUDE="$DEFAULT_FULL_SUITE_EXCLUDE"
+      return
+    fi
+  done
+}
+
+suite_is_excluded() {
+  local relative="$1" selector
+  local -a selectors
+  IFS=',' read -r -a selectors <<< "$FULL_SUITE_EXCLUDE"
+  for selector in "${selectors[@]}"; do
+    [[ "$relative" == "$selector"* ]] && return 0
+  done
+  return 1
 }
 
 append_nudge() {
@@ -57,6 +87,7 @@ record_nudge() {
 }
 
 validate_numeric_knob FULL_SUITE_NUDGE_REPEAT_MS 21600000
+validate_exclude_knob
 
 if [[ ! -d "$INSTALL_ROOT" ]]; then
   log "FULL-SUITE SKIP reason=repo-root-absent root=$INSTALL_ROOT"
@@ -69,6 +100,7 @@ timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 pass=0
 fail=0
 failed=()
+skipped=()
 suite_count=0
 
 # There is deliberately no hand-maintained list: every shell suite present in
@@ -76,6 +108,11 @@ suite_count=0
 while IFS= read -r -d '' suite; do
   suite_count=$((suite_count + 1))
   relative="${suite#"$INSTALL_ROOT"/}"
+  if suite_is_excluded "$relative"; then
+    skipped+=("$relative")
+    log "FULL-SUITE SUITE ts=$timestamp suite=$relative rc=SKIP reason=excluded"
+    continue
+  fi
   if bash "$suite" >> "$FULL_SUITE_LOG" 2>&1; then
     rc=0
     pass=$((pass + 1))
@@ -94,10 +131,14 @@ fi
 
 duration_s=$(( $(date +%s) - started_epoch ))
 failed_list=none
+skipped_list=none
 if (( fail > 0 )); then
   failed_list="$(IFS=,; printf '%s' "${failed[*]}")"
 fi
-log "FULL-SUITE ts=$timestamp pass=$pass fail=$fail failed=$failed_list duration_s=$duration_s"
+if ((${#skipped[@]} > 0)); then
+  skipped_list="$(IFS=,; printf '%s' "${skipped[*]}")"
+fi
+log "FULL-SUITE ts=$timestamp pass=$pass fail=$fail skipped=${#skipped[@]} failed=$failed_list skipped_list=$skipped_list duration_s=$duration_s"
 
 if (( fail > 0 )); then
   now_ms=$(( $(date +%s) * 1000 ))

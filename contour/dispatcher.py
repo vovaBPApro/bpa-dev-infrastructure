@@ -39,7 +39,7 @@ class DispatchController:
     def dispatch_allowed(self, *, manual: bool, approved: bool,
                          autonomous_green: bool) -> bool:
         """MANUAL blocks only unapproved generic fan-out."""
-        return approved or autonomous_green
+        return (not manual) or approved or autonomous_green
 
     def target_width(self, *, green_work: bool, active: int) -> int:
         if not green_work:
@@ -50,6 +50,8 @@ class DispatchController:
         existing = self.leases.get(mission_id)
         stamp = _ts() if now is None else now
         if existing and stamp - existing.heartbeat_at <= self.heartbeat_ttl:
+            if existing.owner != owner:
+                raise RuntimeError("live lease owned by another worker")
             return existing
         attempts = (existing.attempts + 1) if existing else self._attempts.get(mission_id, 0) + 1
         lease = Lease(mission_id, uuid.uuid4().hex, owner, stamp, attempts)

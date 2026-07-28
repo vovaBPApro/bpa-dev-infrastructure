@@ -1,6 +1,32 @@
 #!/usr/bin/env bash
 # Shared fail-closed checks for individual and batch landing.
 
+land_resolve_bun() {
+  local candidate candidate_dir
+  if [ -n "${BUN_BIN:-}" ]; then
+    candidate="$BUN_BIN"
+  elif [ -n "${HOME:-}" ] && [ -x "$HOME/.bun/bin/bun" ]; then
+    candidate="$HOME/.bun/bin/bun"
+  else
+    candidate=$(command -v bun 2>/dev/null || true)
+  fi
+
+  if [ -z "$candidate" ] || [ ! -x "$candidate" ]; then
+    echo "LAND step=preflight status=fail detail=bun-not-found" >&2
+    return 1
+  fi
+
+  case "$candidate" in
+    /*) ;;
+    *)
+      candidate_dir=$(CDPATH='' cd -- "$(dirname -- "$candidate")" && pwd -P) || return 1
+      candidate="$candidate_dir/$(basename -- "$candidate")"
+      ;;
+  esac
+  BUN_BIN="$candidate"
+  export BUN_BIN
+}
+
 land_review_check() {
   local repo="$1" branch="$2" report="$3" policy_file="$4" skip_review="$5"
   local merge_base candidate_path policy_prefix change_status old_path new_path
@@ -74,4 +100,30 @@ land_secret_scan() {
     if [ "$line_count" -gt 0 ]; then echo "LAND secret-scan match file=$changed_file lines=$line_count" >&2; secret_hits=$((secret_hits + line_count)); fi
   done < <(git -C "$repo" -c core.quotepath=false diff --name-only -z --diff-filter=ACMRT "$merge_base..$branch")
   [ "$secret_hits" -eq 0 ]
+}
+
+land_payload_guard() {
+  local repo="$1" branch="$2" merge_base raw_entry changed_file
+  local old_mode new_mode change_status
+  merge_base=$(git -C "$repo" merge-base "$LAND_DEFAULT_BRANCH" "$branch") || return 2
+  while IFS= read -r -d '' raw_entry; do
+    IFS= read -r -d '' changed_file || return 2
+    read -r old_mode new_mode _ _ change_status <<< "${raw_entry#:}"
+    case "$change_status" in
+      A|M|T)
+        case "$new_mode" in
+          120000|160000)
+            echo "LAND step=payload-guard status=fail detail=mode-$new_mode path=$changed_file" >&2
+            return 1
+            ;;
+          100755)
+            if [ "$old_mode" != "100755" ] && [[ "$changed_file" != *.sh ]] && ! git -C "$repo" show "$branch:$changed_file" | head -c 2 | grep -Fqx '#!'; then
+              echo "LAND step=payload-guard status=fail detail=unexpected-executable path=$changed_file" >&2
+              return 1
+            fi
+            ;;
+        esac
+        ;;
+    esac
+  done < <(git -C "$repo" -c core.quotepath=false diff --raw -z --no-renames --diff-filter=AMT "$merge_base..$branch")
 }

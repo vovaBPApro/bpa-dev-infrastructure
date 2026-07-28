@@ -211,6 +211,29 @@ assert test "$(git -C "$fixture_root/good-repo" rev-list --parents -n 1 HEAD | w
 assert_not git -C "$fixture_root/good-repo" show-ref --verify --quiet refs/heads/ag-good
 assert test "$(git --git-dir="$fixture_root/good-origin.git" rev-parse main)" = "$(git -C "$fixture_root/good-repo" rev-parse HEAD)"
 
+make_fixture bun-home
+bun_home_sha=$(make_lane "$fixture_root/bun-home-repo" ag-bun-home)
+report "$fixture_root/bun-home-report.md" "$bun_home_sha"
+bun_home="$fixture_root/bun-home"
+mkdir -p "$bun_home/.bun/bin"
+ln -s "$(command -v bun)" "$bun_home/.bun/bin/bun"
+bun_home_output="$fixture_root/bun-home-output.txt"
+env -i PATH=/usr/bin:/bin HOME="$bun_home" "$land" --branch ag-bun-home --report "$fixture_root/bun-home-report.md" --repo "$fixture_root/bun-home-repo" --no-push >"$bun_home_output" 2>&1
+assert_output_has "$bun_home_output" 'LAND step=completion-guard status=pass'
+assert_output_has "$bun_home_output" 'LAND verdict=landed sha='
+assert git -C "$fixture_root/bun-home-repo" merge-base --is-ancestor "$bun_home_sha" HEAD
+
+make_fixture bun-missing
+bun_missing_sha=$(make_lane "$fixture_root/bun-missing-repo" ag-bun-missing)
+report "$fixture_root/bun-missing-report.md" "$bun_missing_sha"
+bun_missing_home="$fixture_root/bun-missing-home"
+mkdir -p "$bun_missing_home"
+bun_missing_output="$fixture_root/bun-missing-output.txt"
+if env -i PATH=/usr/bin:/bin HOME="$bun_missing_home" "$land" --branch ag-bun-missing --report "$fixture_root/bun-missing-report.md" --repo "$fixture_root/bun-missing-repo" --no-push >"$bun_missing_output" 2>&1; then exit 1; fi
+assert_output_has "$bun_missing_output" 'LAND step=preflight status=fail detail=bun-not-found'
+assert_output_lacks "$bun_missing_output" 'LAND step=completion-guard status=fail'
+assert test "$(git -C "$fixture_root/bun-missing-repo" rev-parse HEAD)" = "$(git -C "$fixture_root/bun-missing-repo" rev-parse main)"
+
 make_fixture bad-sha
 make_lane "$fixture_root/bad-sha-repo" ag-bad-sha >/dev/null
 report "$fixture_root/bad-sha-report.md" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -240,6 +263,7 @@ printf 'public\n' > "$fixture_root/typechange-secret-repo/public.txt"
 ln -s public.txt "$fixture_root/typechange-secret-repo/swap.txt"
 git -C "$fixture_root/typechange-secret-repo" add public.txt swap.txt
 git -C "$fixture_root/typechange-secret-repo" commit -m symlink-base >/dev/null
+git -C "$fixture_root/typechange-secret-repo" push origin main >/dev/null
 typechange_secret_sha=$(make_lane "$fixture_root/typechange-secret-repo" ag-typechange-secret)
 typechange_secret_prefix=$(printf '%s%s' 'gh' 'p_')
 typechange_secret_value="${typechange_secret_prefix}$(printf 't%.0s' $(seq 1 36))"
@@ -301,6 +325,7 @@ git -C "$fixture_root/merge-conflict-repo" checkout main >/dev/null
 printf 'main change\n' > "$fixture_root/merge-conflict-repo/base.txt"
 git -C "$fixture_root/merge-conflict-repo" add base.txt
 git -C "$fixture_root/merge-conflict-repo" commit -m main-conflict >/dev/null
+git -C "$fixture_root/merge-conflict-repo" push origin main >/dev/null
 report "$fixture_root/merge-conflict-report.md" "$merge_conflict_sha"
 merge_conflict_output="$fixture_root/merge-conflict-output.txt"
 if "$land" --branch ag-merge-conflict --report "$fixture_root/merge-conflict-report.md" --repo "$fixture_root/merge-conflict-repo" >"$merge_conflict_output" 2>&1; then exit 1; fi
@@ -350,5 +375,84 @@ assert_output_has "$no_push_reap_fail_output" 'LAND verdict=landed-local-reap-fa
 assert_not grep -Fq 'LAND verdict=aborted' "$no_push_reap_fail_output"
 assert git -C "$fixture_root/no-push-reap-fail-repo" merge-base --is-ancestor "$no_push_reap_fail_sha" HEAD
 assert test "$(git --git-dir="$fixture_root/no-push-reap-fail-origin.git" rev-parse main)" = "$origin_before"
+
+make_fixture stale-main
+stale_main_sha=$(make_lane "$fixture_root/stale-main-repo" ag-stale-main)
+report "$fixture_root/stale-main-report.md" "$stale_main_sha"
+git clone "$fixture_root/stale-main-origin.git" "$fixture_root/stale-main-peer" >/dev/null
+git -C "$fixture_root/stale-main-peer" config user.email peer@example.test
+git -C "$fixture_root/stale-main-peer" config user.name Peer
+printf 'remote advance\n' > "$fixture_root/stale-main-peer/remote.txt"
+git -C "$fixture_root/stale-main-peer" add remote.txt
+git -C "$fixture_root/stale-main-peer" commit -m remote-advance >/dev/null
+git -C "$fixture_root/stale-main-peer" push origin main >/dev/null
+stale_main_output="$fixture_root/stale-main-output.txt"
+if "$land" --branch ag-stale-main --report "$fixture_root/stale-main-report.md" --repo "$fixture_root/stale-main-repo" >"$stale_main_output" 2>&1; then exit 1; fi
+assert_output_has "$stale_main_output" 'LAND step=freshness status=fail'
+assert test "$(git -C "$fixture_root/stale-main-repo" rev-parse main)" != "$(git -C "$fixture_root/stale-main-repo" rev-parse origin/main)"
+
+make_fixture lock
+lock_sha=$(make_lane "$fixture_root/lock-repo" ag-lock)
+report "$fixture_root/lock-report.md" "$lock_sha"
+lock_ready="$fixture_root/lock-ready"
+flock "$fixture_root/lock-repo/.git/bpa-land.lock" sh -c "touch '$lock_ready'; sleep 2" &
+lock_pid=$!
+while [ ! -e "$lock_ready" ]; do sleep 0.1; done
+lock_output="$fixture_root/lock-output.txt"
+if "$land" --branch ag-lock --report "$fixture_root/lock-report.md" --repo "$fixture_root/lock-repo" >"$lock_output" 2>&1; then exit 1; fi
+wait "$lock_pid"
+assert_output_has "$lock_output" 'LAND step=lock status=fail'
+assert test "$(git -C "$fixture_root/lock-repo" rev-parse main)" = "$(git -C "$fixture_root/lock-repo" rev-parse origin/main)"
+assert git -C "$fixture_root/lock-repo" show-ref --verify --quiet refs/heads/ag-lock
+
+make_fixture push-rollback
+push_rollback_sha=$(make_lane "$fixture_root/push-rollback-repo" ag-push-rollback)
+report "$fixture_root/push-rollback-report.md" "$push_rollback_sha"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$fixture_root/push-rollback-origin.git/hooks/pre-receive"
+chmod +x "$fixture_root/push-rollback-origin.git/hooks/pre-receive"
+push_rollback_output="$fixture_root/push-rollback-output.txt"
+if "$land" --branch ag-push-rollback --report "$fixture_root/push-rollback-report.md" --repo "$fixture_root/push-rollback-repo" >"$push_rollback_output" 2>&1; then exit 1; fi
+assert_output_has "$push_rollback_output" 'LAND step=push status=fail'
+assert_output_has "$push_rollback_output" 'main reset to origin/main'
+assert test "$(git -C "$fixture_root/push-rollback-repo" rev-parse main)" = "$(git -C "$fixture_root/push-rollback-repo" rev-parse origin/main)"
+assert git -C "$fixture_root/push-rollback-repo" show-ref --verify --quiet refs/heads/ag-push-rollback
+
+make_fixture payload-symlink
+git -C "$fixture_root/payload-symlink-repo" checkout -b ag-payload-symlink >/dev/null
+ln -s /home/user/.env "$fixture_root/payload-symlink-repo/env.template"
+git -C "$fixture_root/payload-symlink-repo" add env.template
+git -C "$fixture_root/payload-symlink-repo" commit -m payload-symlink >/dev/null
+payload_symlink_sha=$(git -C "$fixture_root/payload-symlink-repo" rev-parse HEAD)
+git -C "$fixture_root/payload-symlink-repo" checkout main >/dev/null
+report "$fixture_root/payload-symlink-report.md" "$payload_symlink_sha"
+payload_symlink_output="$fixture_root/payload-symlink-output.txt"
+if "$land" --branch ag-payload-symlink --report "$fixture_root/payload-symlink-report.md" --repo "$fixture_root/payload-symlink-repo" >"$payload_symlink_output" 2>&1; then exit 1; fi
+assert_output_has "$payload_symlink_output" 'LAND step=payload-guard status=fail detail=mode-120000'
+assert_output_lacks "$payload_symlink_output" 'LAND step=merge status=pass'
+
+make_fixture payload-gitlink
+git -C "$fixture_root/payload-gitlink-repo" checkout -b ag-payload-gitlink >/dev/null
+gitlink_sha=$(git -C "$fixture_root/payload-gitlink-repo" rev-parse main)
+git -C "$fixture_root/payload-gitlink-repo" update-index --add --cacheinfo "160000,$gitlink_sha,modules/example"
+git -C "$fixture_root/payload-gitlink-repo" commit -m payload-gitlink >/dev/null
+payload_gitlink_sha=$(git -C "$fixture_root/payload-gitlink-repo" rev-parse HEAD)
+git -C "$fixture_root/payload-gitlink-repo" checkout main >/dev/null
+report "$fixture_root/payload-gitlink-report.md" "$payload_gitlink_sha"
+payload_gitlink_output="$fixture_root/payload-gitlink-output.txt"
+if "$land" --branch ag-payload-gitlink --report "$fixture_root/payload-gitlink-report.md" --repo "$fixture_root/payload-gitlink-repo" >"$payload_gitlink_output" 2>&1; then exit 1; fi
+assert_output_has "$payload_gitlink_output" 'LAND step=payload-guard status=fail detail=mode-160000'
+assert_output_lacks "$payload_gitlink_output" 'LAND step=merge status=pass'
+
+make_fixture executable-shell
+git -C "$fixture_root/executable-shell-repo" checkout -b ag-executable-shell >/dev/null
+printf '#!/usr/bin/env bash\necho safe\n' > "$fixture_root/executable-shell-repo/deploy.sh"
+chmod +x "$fixture_root/executable-shell-repo/deploy.sh"
+git -C "$fixture_root/executable-shell-repo" add deploy.sh
+git -C "$fixture_root/executable-shell-repo" commit -m executable-shell >/dev/null
+executable_shell_sha=$(git -C "$fixture_root/executable-shell-repo" rev-parse HEAD)
+git -C "$fixture_root/executable-shell-repo" checkout main >/dev/null
+report "$fixture_root/executable-shell-report.md" "$executable_shell_sha"
+"$land" --branch ag-executable-shell --report "$fixture_root/executable-shell-report.md" --repo "$fixture_root/executable-shell-repo" --no-push >"$fixture_root/executable-shell-output.txt" 2>&1
+assert_output_has "$fixture_root/executable-shell-output.txt" 'LAND step=payload-guard status=pass'
 
 echo "land tests: pass"

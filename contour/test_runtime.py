@@ -3,6 +3,11 @@ from runtime import RuntimeManager
 
 
 class RuntimeWiringTest(unittest.TestCase):
+    class Life:
+        def __init__(self, head): self.head=head
+        def capture_source(self): return "0"*40
+        def current_commit(self): return self.head
+        def current_image_digest(self): return "sha:x"
     def test_manual_rejects_generic_but_accepts_green(self):
         r = RuntimeManager(manual=True)
         self.assertIsNone(r.submit("generic", "w"))
@@ -21,7 +26,7 @@ class RuntimeWiringTest(unittest.TestCase):
         head = subprocess.check_output(["git", "-C", root, "rev-parse", "HEAD"], text=True).strip()
         with tempfile.TemporaryDirectory() as d:
             path = d + "/evidence.jsonl"
-            got = RuntimeManager().verify_rollback(root, head, prior_commit="0"*40, image_digest="sha:x", actual_image_digest="sha:x", evidence_store=path)
+            got = RuntimeManager().verify_rollback(root, head, prior_commit="0"*40, image_digest="sha:x", actual_image_digest="sha:x", evidence_store=path, lifecycle=self.Life(head))
             self.assertTrue(got["verified"])
             self.assertIn('"verified":true', open(path).read())
             with self.assertRaises(ValueError): RuntimeManager().verify_rollback(root, "bad", image_digest="sha:x", actual_image_digest="sha:x")

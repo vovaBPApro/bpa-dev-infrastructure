@@ -71,6 +71,7 @@ assert contains 'Що потестити' "$OUTBOX"
 assert contains 'другий коміт' "$OUTBOX"
 assert contains 'SKIP — stand smoke (docker daemon unavailable)' "$OUTBOX"
 assert contains 'SKIP — user systemd (no user-systemd session)' "$OUTBOX"
+assert contains 'PASS — disk pressure (pct=' "$OUTBOX"
 [[ "$(<"$WATERMARK")" == "$HEAD" ]] || fail 'watermark did not advance'
 
 rm -f "$OUTBOX"

@@ -1,8 +1,10 @@
 """Minimal manager entrypoint wired to dispatch/watchdog policy."""
 try:  # package import from repo root
     from .dispatcher import DispatchController
+    from .provenance import verify_checkout, ProvenanceStore
 except ImportError:  # direct script/test execution from contour/
     from dispatcher import DispatchController
+    from provenance import verify_checkout, ProvenanceStore
 
 
 class RuntimeManager:
@@ -21,3 +23,10 @@ class RuntimeManager:
 
     def watchdog(self, *, now=None):
         return self.controller.reap(now=now)
+
+    def verify_rollback(self, root, expected_commit, *, image_digest=None,
+                        actual_image_digest=None, evidence_store=None):
+        evidence = verify_checkout(root, expected_commit, image_digest, actual_image_digest)
+        if evidence_store:
+            ProvenanceStore(evidence_store).append_raw(evidence)
+        return evidence

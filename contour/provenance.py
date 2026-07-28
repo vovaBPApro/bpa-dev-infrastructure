@@ -80,6 +80,10 @@ class ProvenanceStore:
                 dfd = os.open(self.path.parent, os.O_DIRECTORY); os.fsync(dfd); os.close(dfd)
             finally:
                 fcntl.flock(lock, fcntl.LOCK_UN); lock.close()
+    def append_raw(self, evidence):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(evidence, sort_keys=True, separators=(",", ":")) + "\n"); f.flush(); os.fsync(f.fileno())
     def load(self):
         if not self.path.exists(): return []
         rows = []

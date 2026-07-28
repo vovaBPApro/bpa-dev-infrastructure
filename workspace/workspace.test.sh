@@ -81,7 +81,7 @@ if git -C "$REPO" show-ref --verify --quiet refs/heads/ag-coder-one; then
   fail 'lane branch was not deleted'
 fi
 
-LIST="$($WORKSPACE/workspace.sh ls)"
+LIST="$("$WORKSPACE/workspace.sh" ls)"
 has_repo=0
 has_lane=0
 while IFS= read -r record; do

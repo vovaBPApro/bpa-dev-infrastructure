@@ -114,7 +114,10 @@ sync() {
 
 lane() {
   local repo_name=$1 lane_name=$2 repo branch lane_path
-  valid_name "$repo_name" && valid_name "$lane_name" || { printf 'invalid repo or lane name\n' >&2; return 1; }
+  if ! valid_name "$repo_name" || ! valid_name "$lane_name"; then
+    printf 'invalid repo or lane name\n' >&2
+    return 1
+  fi
   repo="$REPOS_DIR/$repo_name"
   lane_path="$LANES_DIR/$lane_name"
   [[ -d "$repo/.git" ]] || { printf 'repository is not synced: %s\n' "$repo_name" >&2; return 1; }

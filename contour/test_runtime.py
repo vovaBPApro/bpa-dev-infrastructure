@@ -28,7 +28,10 @@ class RuntimeWiringTest(unittest.TestCase):
             path = d + "/evidence.jsonl"
             got = RuntimeManager().verify_rollback(root, head, prior_commit="0"*40, image_digest="sha:x", actual_image_digest="sha:x", evidence_store=path, lifecycle=self.Life(head))
             self.assertTrue(got["verified"])
-            self.assertIn('"verified":true', open(path).read())
+            with open(path) as fh: self.assertIn('"verified":true', fh.read())
+            with self.assertRaises(ValueError): RuntimeManager().verify_rollback(root, head, image_digest="sha:x", evidence_store=path)
+            with self.assertRaises(ValueError): RuntimeManager().verify_rollback(root, head, image_digest=None, evidence_store=path, lifecycle=self.Life(head))
+            with self.assertRaises(ValueError): RuntimeManager().verify_rollback(root, head, image_digest="sha:y", evidence_store=path, lifecycle=self.Life(head))
             with self.assertRaises(ValueError): RuntimeManager().verify_rollback(root, "bad", image_digest="sha:x", actual_image_digest="sha:x")
             with self.assertRaises(ValueError): RuntimeManager().verify_rollback(root, head, image_digest="sha:x", actual_image_digest="sha:y")
 

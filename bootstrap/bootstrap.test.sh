@@ -34,7 +34,7 @@ install -d -m 700 \
   "$verify_fixture/bin"
 install -m 600 /dev/null "$verify_fixture/root/.env"
 printf '%s\n' 'TELEGRAM_BOT_TOKEN=fixture-token' > "$verify_fixture/root/.env"
-for unit in bpa-telegram-daemon.service bpa-orchestrator-watchdog.service bpa-orchestrator-watchdog.timer; do
+for unit in bpa-telegram-daemon.service bpa-orchestrator-watchdog.service bpa-orchestrator-watchdog.timer bpa-full-suite.service bpa-full-suite.timer; do
   install -m 600 /dev/null "$verify_fixture/config/systemd/user/$unit"
 done
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/bin/bun"

@@ -1,0 +1,12 @@
+[Unit]
+Description=Run BPA nightly full test suite
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=$INSTALL_ROOT
+EnvironmentFile=$ENV_FILE
+ExecStart=$INSTALL_ROOT/orchestrator/full-suite.sh
+NoNewPrivileges=true
+PrivateTmp=true

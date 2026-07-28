@@ -60,9 +60,9 @@ heartbeat_stale() {
   (( now - modified > HEARTBEAT_MAX_AGE ))
 }
 
-# The watchdog timer is the sole writer of the nudge outbox and rate file.
-# Each update is written to a same-directory temporary file then renamed, so a
-# Telegram reader observes either the old complete file or the new complete file.
+# Watchdog nudge updates are written to a same-directory temporary file then
+# renamed, so a Telegram reader observes either the old complete file or the
+# new complete file. full-suite.sh follows the same outbox pattern.
 append_nudge() {
   local line="$1" tmp
   mkdir -p "$(dirname "$NUDGE_OUTBOX_FILE")"

@@ -76,8 +76,8 @@ assert_runtime_limits() {
 }
 
 daemon_supports_auth() {
-  rg -q 'TELEGRAM_DAEMON_AUTH_TOKEN' "${REPO_DIR}/daemon/server.ts" \
-    && rg -qi 'authorization|x[-_]auth|auth.*token|token.*auth' "${REPO_DIR}/daemon/server.ts"
+  command grep -q 'TELEGRAM_DAEMON_AUTH_TOKEN' "${REPO_DIR}/daemon/server.ts" \
+    && command grep -qi 'authorization\|x[-_]auth\|auth.*token\|token.*auth' "${REPO_DIR}/daemon/server.ts"
 }
 
 assert_authenticated_route() {
@@ -126,7 +126,7 @@ assert_rollback_relaunch() {
 main() {
   require_command docker
   require_command curl
-  require_command rg
+  require_command grep
   assert_host_port
   [[ -f "${REPO_DIR}/daemon/server.ts" ]] || fail "daemon/server.ts is absent; the daemon lane has not landed"
   [[ -f "${REPO_DIR}/daemon/package.json" ]] || fail "daemon/package.json is absent; the daemon lane has not landed"

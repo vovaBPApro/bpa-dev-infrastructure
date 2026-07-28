@@ -5,6 +5,7 @@ import { join } from 'node:path';
 const standDir = import.meta.dir;
 const compose = readFileSync(join(standDir, 'compose.yaml'), 'utf8');
 const envExample = readFileSync(join(standDir, 'env.example'), 'utf8');
+const acceptanceScript = readFileSync(join(standDir, 'run-acceptance.sh'), 'utf8');
 
 describe('Docker acceptance stand', () => {
   test('defines a disposable compose project and runtime limits', () => {
@@ -42,5 +43,11 @@ describe('Docker acceptance stand', () => {
       expect(envExample).not.toContain(marker);
     }
     expect(envExample).not.toMatch(/\d{8,10}:AA/);
+  });
+
+  test('uses grep rather than ripgrep for host-side acceptance checks', () => {
+    expect(acceptanceScript).toContain('require_command grep');
+    expect(acceptanceScript).toContain('command grep -q');
+    expect(acceptanceScript).not.toMatch(/\brg\b/);
   });
 });

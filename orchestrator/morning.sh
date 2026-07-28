@@ -10,6 +10,8 @@ if [[ -f "$CONFIG_FILE" ]]; then
   # shellcheck disable=SC1090
   source "$CONFIG_FILE"
 fi
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/lib.sh"
 
 DRY_RUN=false
 case "${1:-}" in
@@ -23,7 +25,6 @@ RUNTIME_DIR="${ORCH_RUNTIME_DIR:-$SCRIPT_DIR/runtime}"
 OUTBOX_FILE="${MORNING_OUTBOX_FILE:-$RUNTIME_DIR/morning.outbox}"
 WATERMARK_FILE="${MORNING_WATERMARK_FILE:-$RUNTIME_DIR/morning.watermark}"
 STATE_DB="${INFRA_STATE_DB:-$RUNTIME_DIR/state.db}"
-BUN_BIN="${BUN_BIN:-bun}"
 BOOTSTRAP_SCRIPT="${MORNING_BOOTSTRAP_SCRIPT:-$REPO_ROOT/bootstrap/install.sh}"
 MISSION_CLI="${MORNING_MISSION_CLI:-$REPO_ROOT/core/mission-cli.ts}"
 STAND_SCRIPT="${MORNING_STAND_SCRIPT:-$REPO_ROOT/stand/matrix.sh}"

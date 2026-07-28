@@ -9,6 +9,8 @@ if [[ -f "$CONFIG_FILE" ]]; then
   # shellcheck disable=SC1090
   source "$CONFIG_FILE"
 fi
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/lib.sh"
 
 SESSION="${ORCH_SESSION:-orchestrator}"
 WORK_DIR="${ORCH_WORK_DIR:-$PWD}"
@@ -31,7 +33,7 @@ session_exists() { tmux has-session -t "$SESSION" 2>/dev/null; }
 
 state_available() { [[ -f "$STATE_DB" ]]; }
 
-mission_cli() { INFRA_STATE_DB="$STATE_DB" bun "$MISSION_CLI" "$@"; }
+mission_cli() { INFRA_STATE_DB="$STATE_DB" "$BUN_BIN" "$MISSION_CLI" "$@"; }
 
 lease_state() {
   [[ -f "$LEASE_FILE" ]] || return 1

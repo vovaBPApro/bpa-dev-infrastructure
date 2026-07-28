@@ -8,6 +8,8 @@ if [[ -f "$CONFIG_FILE" ]]; then
   # shellcheck disable=SC1090
   source "$CONFIG_FILE"
 fi
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/lib.sh"
 SESSION="${ORCH_SESSION:-orchestrator}"
 RUNTIME_DIR="${ORCH_RUNTIME_DIR:-$SCRIPT_DIR/runtime}"
 LOG_FILE="${ORCH_WATCHDOG_LOG:-$RUNTIME_DIR/watchdog.log}"
@@ -38,7 +40,7 @@ validate_numeric_knob DISK_ALERT_PCT 80
 
 pane_pid() { tmux list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -n 1; }
 state_available() { [[ -f "$STATE_DB" ]]; }
-mission_cli() { INFRA_STATE_DB="$STATE_DB" bun "$MISSION_CLI" "$@"; }
+mission_cli() { INFRA_STATE_DB="$STATE_DB" "$BUN_BIN" "$MISSION_CLI" "$@"; }
 lease_state() {
   [[ -f "$LEASE_FILE" ]] || return 1
   LEASE_OWNER="$(sed -n 's/^owner=//p' "$LEASE_FILE")"
@@ -119,7 +121,7 @@ check_mission_pressure() {
       append_nudge "NUDGE mission=$correlation open_lanes=$open_lanes active=$active idle_ms=$(( now - updated_at ))"
       record_nudge mission "$correlation" "$now"
     fi
-  done < <(printf '%s' "$status_output" | bun -e '
+  done < <(printf '%s' "$status_output" | "$BUN_BIN" -e '
 const input = await Bun.stdin.text();
 const status = JSON.parse(input);
 for (const mission of status.missions) {

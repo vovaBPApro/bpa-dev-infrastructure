@@ -40,13 +40,17 @@ fi
 
 plan() { printf 'PLAN %-12s %s\n' "$1" "$2"; }
 
+systemd_user_available() {
+  command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1
+}
+
 print_plan() {
-  plan "apt" "check git, curl, and tmux; install missing Ubuntu packages"
+  plan "apt" "check git, curl, tmux, envsubst, unzip, and xz; install missing Ubuntu packages"
   plan "bun" "install Bun ${BUN_VERSION} if $BUN_BIN is absent"
   plan "repository" "clone or fast-forward update $INSTALL_ROOT from REPO_URL"
   plan "environment" "create $ENV_FILE from bootstrap/env.template if absent (operator edits token locally)"
   plan "units" "render daemon and watchdog systemd --user units in $SYSTEMD_USER_DIR"
-  plan "activate" "reload user systemd; enable/start units only after token placeholder is replaced"
+  plan "activate" "reload user systemd and enable units when available; otherwise print VM activation instructions"
 }
 
 if "$DRY_RUN"; then
@@ -65,6 +69,10 @@ check() {
   fi
 }
 
+skip() {
+  printf 'SKIP %-24s %s\n' "$1" "$2"
+}
+
 has_configured_token() {
   [[ -f "$ENV_FILE" ]] && ! grep -q '^TELEGRAM_BOT_TOKEN=__OPERATOR_' "$ENV_FILE"
 }
@@ -79,16 +87,24 @@ verify() {
   check "repository" test -d "$INSTALL_ROOT/.git"
   check "environment file" test -f "$ENV_FILE"
   check "environment permissions" test "$(stat -c '%a' "$ENV_FILE" 2>/dev/null || true)" = 600
-  check "token configured" has_configured_token
+  if has_configured_token; then
+    check "token configured" true
+  else
+    skip "token configured" "token placeholder remains"
+  fi
   check "daemon unit" test -f "$SYSTEMD_USER_DIR/bpa-telegram-daemon.service"
   check "watchdog service" test -f "$SYSTEMD_USER_DIR/bpa-orchestrator-watchdog.service"
   check "watchdog timer" test -f "$SYSTEMD_USER_DIR/bpa-orchestrator-watchdog.timer"
-  if command -v systemctl >/dev/null 2>&1; then
+  if ! systemd_user_available; then
+    skip "user systemd" "no user-systemd session"
+    skip "daemon enabled" "user-systemd unavailable"
+    skip "watchdog enabled" "user-systemd unavailable"
+  elif ! has_configured_token; then
+    skip "daemon enabled" "token placeholder remains"
+    skip "watchdog enabled" "token placeholder remains"
+  else
     check "daemon enabled" systemctl --user is-enabled --quiet bpa-telegram-daemon.service
     check "watchdog enabled" systemctl --user is-enabled --quiet bpa-orchestrator-watchdog.timer
-  else
-    printf 'FAIL %-24s\n' "systemctl --user"
-    result=1
   fi
   return "$result"
 }
@@ -100,12 +116,28 @@ fi
 
 ensure_prerequisites() {
   local missing=() command_name
-  for command_name in git curl tmux; do
-    command -v "$command_name" >/dev/null 2>&1 || missing+=("$command_name")
+  local -A packages=(
+    [git]=git
+    [curl]=curl
+    [tmux]=tmux
+    [envsubst]=gettext-base
+    [unzip]=unzip
+    [xz]=xz-utils
+  )
+  for command_name in "${!packages[@]}"; do
+    command -v "$command_name" >/dev/null 2>&1 || missing+=("${packages[$command_name]}")
   done
   if ((${#missing[@]})); then
-    sudo apt-get update
-    sudo apt-get install -y "${missing[@]}"
+    if ((EUID == 0)); then
+      apt-get update
+      apt-get install -y "${missing[@]}"
+    elif command -v sudo >/dev/null 2>&1; then
+      sudo apt-get update
+      sudo apt-get install -y "${missing[@]}"
+    else
+      echo "ERROR: missing prerequisites (${missing[*]}) and neither root nor sudo is available" >&2
+      exit 1
+    fi
   fi
 }
 
@@ -153,10 +185,20 @@ render_units() {
     INSTALL_ROOT="$INSTALL_ROOT" ENV_FILE="$ENV_FILE" BUN_BIN="$BUN_BIN" envsubst < "$source" > "$destination"
     chmod 600 "$destination"
   done
-  systemctl --user daemon-reload
+  if systemd_user_available; then
+    systemctl --user daemon-reload
+  else
+    echo "User systemd is unavailable; units were rendered only. On a VM with a user session, run:"
+    echo "  systemctl --user daemon-reload"
+    echo "  systemctl --user enable --now bpa-telegram-daemon.service bpa-orchestrator-watchdog.timer"
+  fi
 }
 
 activate_units() {
+  if ! systemd_user_available; then
+    echo "Activation skipped: no user-systemd session is available."
+    return
+  fi
   if has_configured_token; then
     systemctl --user enable --now bpa-telegram-daemon.service
     systemctl --user enable --now bpa-orchestrator-watchdog.timer

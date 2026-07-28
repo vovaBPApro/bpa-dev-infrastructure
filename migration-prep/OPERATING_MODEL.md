@@ -1,5 +1,8 @@
 # Universal operating model
 
+Requirement traceability is maintained in
+[`HUMAN_REQUIREMENTS_MATRIX_2026-07-28.md`](HUMAN_REQUIREMENTS_MATRIX_2026-07-28.md).
+
 This model is product-neutral. It describes the control plane, not any worker's
 domain behavior.
 

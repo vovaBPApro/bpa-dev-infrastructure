@@ -1,5 +1,8 @@
 # Infrastructure Migration Preparation (P0)
 
+See [`HUMAN_REQUIREMENTS_MATRIX_2026-07-28.md`](HUMAN_REQUIREMENTS_MATRIX_2026-07-28.md)
+for the verbatim Human requirements and acceptance traceability matrix.
+
 This package defines a sidecar-first migration of the development control plane.
 It does not migrate product code or perform a production cutover.
 

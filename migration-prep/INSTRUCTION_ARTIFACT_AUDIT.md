@@ -7,7 +7,6 @@ runtime wiring.
 
 ## Imported exact artifacts
 
-- `GEMINI.md`
 - `docs/ops/auto_approve.example.json`
 - `docs/ops/permissions_policy.md`
 - `scripts/orchestrator-turnend-relay.sh`
@@ -28,6 +27,9 @@ reliability tests, and watchdog source.
   it remains inventory-only until the project bootstrap plan requires it.
 - Product application files and unrelated UI/e2e assets are not part of this
   infrastructure import.
+- Provider-specific `GEMINI.md` is deliberately omitted: this runtime is
+  orchestrated through the repository's AGENTS/CLAUDE contract and importing a
+  second vendor prompt would create ambiguous authority.
 - No manifest is installed, regenerated, or edited; imported manifests remain
   byte-for-byte reference inputs.
 

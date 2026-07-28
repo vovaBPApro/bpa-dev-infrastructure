@@ -30,6 +30,7 @@ class RuntimeWiringTest(unittest.TestCase):
             self.assertTrue(got["verified"])
             with open(path) as fh: self.assertIn('"verified":true', fh.read())
             with self.assertRaises(ValueError): RuntimeManager().verify_rollback(root, head, image_digest="sha:x", evidence_store=path)
+            with self.assertRaises(ValueError): RuntimeManager().verify_rollback(root, head, prior_commit=head, image_digest="sha:x", evidence_store=path, lifecycle=self.Life(head))
             with self.assertRaises(ValueError): RuntimeManager().verify_rollback(root, head, image_digest=None, evidence_store=path, lifecycle=self.Life(head))
             with self.assertRaises(ValueError): RuntimeManager().verify_rollback(root, head, image_digest="sha:y", evidence_store=path, lifecycle=self.Life(head))
             with self.assertRaises(ValueError): RuntimeManager().verify_rollback(root, "bad", image_digest="sha:x", actual_image_digest="sha:x")

@@ -1,0 +1,34 @@
+{
+  "enabled": false,
+  "supervised_window": {
+    "timezone": "Europe/Warsaw",
+    "windows": ["mon-fri 09:00-18:00"]
+  },
+  "exceptions": [
+    "PLAN_*_schema_*",
+    "PLAN_*_auth_*",
+    "PLAN_*_infra_*",
+    "CONCEPT_*"
+  ],
+  "circuit_breaker_tripped_at": null,
+  "last_bad_merge_sha": null,
+  "autonomy": {
+    "enabled": false,
+    "telegram_blocking": true,
+    "max_plans_per_window": 5,
+    "max_budget_usd_per_plan": 8.00,
+    "max_budget_usd_per_window": 30.00,
+    "max_consecutive_phase_failures": 3,
+    "max_consecutive_quota_errors": 3,
+    "quota_pause_minutes": 60,
+    "vendor_quota": {
+      "anthropic": "ok",
+      "openai": "ok",
+      "gemini": "ok"
+    }
+  },
+  "overrides_on_clean_alternation": {
+    "supervised_window": true,
+    "canonical_docs": true
+  }
+}

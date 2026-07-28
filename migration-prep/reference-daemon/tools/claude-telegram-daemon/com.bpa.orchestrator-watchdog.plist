@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.bpa.orchestrator-watchdog</string>
+
+  <!-- Single-shot script; launchd provides the clockwork cadence + restarts. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/volodymyrnikulin/.claude/channels/telegram/daemon/orchestrator-watchdog.sh</string>
+  </array>
+
+  <!-- Fire every 10 minutes, and once immediately at load/boot. -->
+  <key>StartInterval</key>
+  <integer>600</integer>
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>TELEGRAM_STATE_DIR</key>
+    <string>/Users/volodymyrnikulin/.claude/channels/telegram/daemon</string>
+    <key>ORCH_GIT_REPO_PATH</key>
+    <string>/Users/volodymyrnikulin/BPAprojects/agent-bill</string>
+    <key>ORCH_GIT_REF</key>
+    <string>dev</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/volodymyrnikulin/.claude/channels/telegram/daemon/runtime/watchdog.launchd.out</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/volodymyrnikulin/.claude/channels/telegram/daemon/runtime/watchdog.launchd.err</string>
+</dict>
+</plist>

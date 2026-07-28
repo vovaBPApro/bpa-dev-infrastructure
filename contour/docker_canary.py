@@ -16,8 +16,12 @@ def run(output="docker-canary-evidence.json", compose="compose.yaml", soak_secon
     for name, cmd in commands:
         if not execute:
             checks[name] = {"ok": True, "rc": 0}; continue
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-        checks[name] = {"ok": proc.returncode == 0, "rc": proc.returncode}
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            checks[name] = {"ok": proc.returncode == 0, "rc": proc.returncode}
+        except OSError as exc:
+            checks[name] = {"ok": False, "rc": 127, "error": type(exc).__name__}
+            break
         if not checks[name]["ok"]: break
     if all(v["ok"] for v in checks.values()):
         deadline = time.time() + soak_seconds
@@ -26,8 +30,11 @@ def run(output="docker-canary-evidence.json", compose="compose.yaml", soak_secon
             checks["resource_metrics"] = {"ok": stats.returncode == 0, "rc": stats.returncode}
             if not checks["resource_metrics"]["ok"]: break
             time.sleep(min(1, max(0, deadline-time.time())))
-    down = subprocess.run(["docker", "compose", "-f", compose, "down"], capture_output=True, text=True)
-    checks["rollback"] = {"ok": down.returncode == 0, "rc": down.returncode}
+    try:
+        down = subprocess.run(["docker", "compose", "-f", compose, "down"], capture_output=True, text=True)
+        checks["rollback"] = {"ok": down.returncode == 0, "rc": down.returncode}
+    except OSError as exc:
+        checks["rollback"] = {"ok": False, "rc": 127, "error": type(exc).__name__}
     manifest = hashlib.sha256(Path(compose).read_bytes()).hexdigest()
     evidence = {"schema": 2, "checks": checks, "soak_seconds": soak_seconds,
                 "authenticated_live_route": checks.get("live_route", {}).get("ok", False),

@@ -63,17 +63,24 @@ class ProvenanceStore:
         with self._lock:
             lock_path = str(self.path) + ".lock"
             lock = open(lock_path, "a+"); fcntl.flock(lock, fcntl.LOCK_EX)
-            old = self.path.read_text() if self.path.exists() else ""
-            fd, tmp = tempfile.mkstemp(dir=self.path.parent)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(old + manifest.serialize() + "\n"); f.flush(); os.fsync(f.fileno())
-            os.replace(tmp, self.path)
-            dfd = os.open(self.path.parent, os.O_DIRECTORY); os.fsync(dfd); os.close(dfd)
-            fcntl.flock(lock, fcntl.LOCK_UN); lock.close()
+            try:
+                old = self.path.read_text() if self.path.exists() else ""
+                fd, tmp = tempfile.mkstemp(dir=self.path.parent)
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(old + manifest.serialize() + "\n"); f.flush(); os.fsync(f.fileno())
+                os.replace(tmp, self.path)
+                dfd = os.open(self.path.parent, os.O_DIRECTORY); os.fsync(dfd); os.close(dfd)
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN); lock.close()
     def load(self):
         if not self.path.exists(): return []
         rows = []
-        for line in self.path.read_text().splitlines():
+        lock = open(str(self.path) + ".lock", "a+"); fcntl.flock(lock, fcntl.LOCK_SH)
+        try:
+            lines = self.path.read_text().splitlines()
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN); lock.close()
+        for line in lines:
             if not line.strip(): continue
             try:
                 row = json.loads(line)

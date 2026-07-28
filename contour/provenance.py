@@ -4,6 +4,7 @@ import json
 import re
 from pathlib import Path
 import threading, os
+import fcntl
 from dataclasses import dataclass, asdict
 from typing import Any, Mapping
 
@@ -60,12 +61,15 @@ class ProvenanceStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         import tempfile
         with self._lock:
+            lock_path = str(self.path) + ".lock"
+            lock = open(lock_path, "a+"); fcntl.flock(lock, fcntl.LOCK_EX)
             old = self.path.read_text() if self.path.exists() else ""
             fd, tmp = tempfile.mkstemp(dir=self.path.parent)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(old + manifest.serialize() + "\n"); f.flush(); os.fsync(f.fileno())
             os.replace(tmp, self.path)
             dfd = os.open(self.path.parent, os.O_DIRECTORY); os.fsync(dfd); os.close(dfd)
+            fcntl.flock(lock, fcntl.LOCK_UN); lock.close()
     def load(self):
         if not self.path.exists(): return []
         rows = []
@@ -76,5 +80,5 @@ class ProvenanceStore:
                 if not all(k in row for k in ("mission_id", "dispatch_id", "commit")): raise ValueError
                 rows.append(row)
             except (ValueError, json.JSONDecodeError):
-                continue
+                raise ValueError("corrupt provenance record")
         return rows

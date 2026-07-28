@@ -1,8 +1,9 @@
 """Executable Docker adapter for canary evidence (no dependency mutations)."""
-import json, subprocess, sys, time, hashlib
+import json, subprocess, sys, time, hashlib, os
 from pathlib import Path
 
-def run(output="docker-canary-evidence.json", compose="compose.yaml", soak_seconds=14400, short=False, execute=True):
+def run(output="docker-canary-evidence.json", compose=None, soak_seconds=14400, short=False, execute=True):
+    compose = compose or os.environ.get("COMPOSE_FILE", "compose.yaml")
     if soak_seconds <= 0 or soak_seconds > 14400 or (soak_seconds < 14400 and not short):
         raise ValueError("four-hour soak is required unless explicit short mode is enabled")
     if not execute: raise ValueError("acceptance requires execute=True")
@@ -12,7 +13,7 @@ def run(output="docker-canary-evidence.json", compose="compose.yaml", soak_secon
                 ("build", ["docker", "compose", "-f", compose, "build"]),
                 ("start", ["docker", "compose", "-f", compose, "up", "-d"]),
                 ("health", ["docker", "compose", "-f", compose, "ps", "--status", "running"]),
-                ("live_route", ["curl", "-fsS", "http://127.0.0.1:18080/health"])]
+                ("live_route", ["curl", "--retry", "10", "--retry-delay", "1", "--retry-connrefused", "-fsS", "http://127.0.0.1:18080/health"])]
     for name, cmd in commands:
         if not execute:
             checks[name] = {"ok": True, "rc": 0}; continue
@@ -23,6 +24,10 @@ def run(output="docker-canary-evidence.json", compose="compose.yaml", soak_secon
             checks[name] = {"ok": False, "rc": 127, "error": type(exc).__name__}
             break
         if not checks[name]["ok"]: break
+        if name == "start":
+            # Give the disposable service a bounded startup window before
+            # probing its live route; readiness remains fail-closed.
+            time.sleep(1)
     if all(v["ok"] for v in checks.values()):
         deadline = time.time() + soak_seconds
         while time.time() < deadline:

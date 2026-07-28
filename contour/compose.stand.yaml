@@ -1,0 +1,26 @@
+# Disposable, dev-only acceptance stand. It is intentionally separate from
+# deployment configuration: no secrets, volumes, or production endpoints.
+services:
+  contour:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: bpa-dev-contour:stand
+    ports:
+      - "127.0.0.1:18080:8080"
+    init: true
+    restart: "no"
+    environment:
+      PORT: "8080"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 256m
+    cpus: 0.50
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 10

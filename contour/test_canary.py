@@ -12,5 +12,9 @@ class CanaryTest(unittest.TestCase):
             self.assertTrue(evidence["disk_hysteresis"])
             self.assertTrue(evidence["fail_closed"])
 
+    def test_zero_soak_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaises(SystemExit): run(str(Path(td) / "evidence.json"), 0)
+
 
 if __name__ == "__main__": unittest.main()

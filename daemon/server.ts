@@ -66,6 +66,7 @@ import {
   parseAssistantChunkAfterTelegramMessage,
   sanitizeChatRegion,
 } from './reliability';
+import { drainOutbox, resolveOrchestratorLauncher } from './control';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -92,14 +93,19 @@ const APPROVED_DIR = join(STATE_DIR, 'approved');
 const PID_FILE = join(STATE_DIR, 'daemon.pid');
 const INBOX_DIR = join(STATE_DIR, 'inbox');
 const RUNTIME_DIR = join(STATE_DIR, 'daemon', 'runtime');
+const INSTALL_ROOT = process.env.ORCH_INSTALL_ROOT ?? join(process.cwd(), '..');
 const BINDING_FILE = join(RUNTIME_DIR, 'orchestrator-binding.json');
 const TURN_DELIVERIES_FILE = join(RUNTIME_DIR, 'turn-deliveries.json');
 const MISSIONS_FILE = join(homedir(), '.claude', 'orchestrator-missions.json');
 const TURN_DELIVERIES_TTL_MS = 24 * 60 * 60 * 1000;
-// Derive from STATE_DIR (honors TELEGRAM_STATE_DIR) so each channel invokes ITS
-// OWN launcher — not the hardcoded bill one. Otherwise trader / scaffolded
-// projects would spawn the orchestrator in the agent-bill repo.
-const LAUNCHER_SCRIPT = join(STATE_DIR, 'daemon', 'launch-orchestrator.sh');
+const LAUNCHER_SCRIPT = resolveOrchestratorLauncher(INSTALL_ROOT);
+const NUDGE_OUTBOX_FILE =
+  process.env.NUDGE_OUTBOX_FILE ??
+  join(INSTALL_ROOT, 'orchestrator', 'runtime', 'nudges.outbox');
+const MORNING_OUTBOX_FILE =
+  process.env.MORNING_OUTBOX_FILE ??
+  join(INSTALL_ROOT, 'orchestrator', 'runtime', 'morning.outbox');
+const OUTBOX_POLL_MS = parseInt(process.env.OUTBOX_POLL_MS ?? '5000', 10);
 const STALL_WATCHDOG_TICK_MS = parseInt(
   process.env.ORCH_STALL_WATCHDOG_TICK_MS ?? '30000',
   10,
@@ -121,12 +127,12 @@ const GIT_STALL_REF = process.env.ORCH_GIT_REF ?? '';
 const CONFIGURED_BOUND_CHAT_ID =
   process.env.TELEGRAM_BOUND_CHAT_ID ?? process.env.TELEGRAM_CHAT_ID ?? null;
 
-// tmux session name where Claude Code runs. Set CLAUDE_TMUX_SESSION in the
-// launchd plist (or .env) to enable session control commands from Telegram.
+// tmux session name where the orchestrator runs. ORCH_SESSION is the single
+// session setting shared with orchestrator/launch.sh and watchdog.sh.
 // Leave empty to disable session control (commands will reply with an error).
-let TMUX_SESSION = process.env.CLAUDE_TMUX_SESSION ?? '';
+let TMUX_SESSION = process.env.ORCH_SESSION ?? '';
 if (!TMUX_SESSION) {
-  // Survive daemon restarts that lost CLAUDE_TMUX_SESSION from the process env
+  // Survive daemon restarts that lost ORCH_SESSION from the process env
   // (e.g. relaunched by launchd without it). The bound session name is persisted
   // in the binding; without this hydration the daemon believes tmux is dead and
   // buffers every inbound as "session not active" while the orchestrator is in
@@ -1935,7 +1941,7 @@ async function launchProvider(
   provider: Provider,
 ): Promise<{ ok: boolean; out: string }> {
   const { out, ok } = await sh(
-    `'${LAUNCHER_SCRIPT}' --provider '${provider}' --session '${TMUX_SESSION}'`,
+    `ORCH_PROVIDER='${provider}' ORCH_SESSION='${TMUX_SESSION}' '${LAUNCHER_SCRIPT}' start`,
   );
   return { ok, out };
 }
@@ -2086,7 +2092,7 @@ async function handleSessionCommand(
     if (!TMUX_SESSION) {
       await bot.api.sendMessage(
         chat_id,
-        '⚠️ CLAUDE_TMUX_SESSION не налаштовано в launchd plist.',
+        '⚠️ ORCH_SESSION не налаштовано.',
       );
       return true;
     }
@@ -2141,14 +2147,14 @@ async function handleSessionCommand(
     await bot.api
       .sendMessage(
         chat_id,
-        `⚠️ CLAUDE_TMUX_SESSION не налаштовано\\.\n\n` +
-          `Запусти Claude через \`start\\-claude\\.sh\` або встанови env var у launchd plist\\.`,
+        `⚠️ ORCH_SESSION не налаштовано\\.\n\n` +
+          `Встанови ORCH_SESSION у .env та перезапусти daemon\\.`,
         { parse_mode: 'MarkdownV2' },
       )
       .catch(() =>
         bot.api.sendMessage(
           chat_id,
-          '⚠️ CLAUDE_TMUX_SESSION не налаштовано. Запусти Claude через start-claude.sh',
+          '⚠️ ORCH_SESSION не налаштовано. Встанови його у .env та перезапусти daemon.',
         ),
       );
     return true;
@@ -3360,6 +3366,25 @@ setInterval(() => {
     );
   });
 }, STALL_WATCHDOG_TICK_MS);
+
+async function drainAlertOutboxes(): Promise<void> {
+  const chatId = notifyChatId();
+  if (!chatId) return;
+  for (const file of [NUDGE_OUTBOX_FILE, MORNING_OUTBOX_FILE]) {
+    await drainOutbox(
+      file,
+      chatId,
+      (target, text) => bot.api.sendMessage(target, text),
+      (message) => process.stderr.write(`${LOG_PREFIX} ${message}\n`),
+    );
+  }
+}
+
+setInterval(() => {
+  void drainAlertOutboxes().catch((err) => {
+    process.stderr.write(`${LOG_PREFIX} outbox drain failed: ${err}\n`);
+  });
+}, OUTBOX_POLL_MS);
 
 // ── Context-limit watchdog ───────────────────────────────────────────────────
 // Periodically scans the tmux pane for "Context limit reached" (and a few

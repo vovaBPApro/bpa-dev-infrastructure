@@ -8,6 +8,8 @@ if [[ -f "$CONFIG_FILE" ]]; then
   # shellcheck disable=SC1090
   source "$CONFIG_FILE"
 fi
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/lib.sh"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 RUNTIME_DIR="${ORCH_RUNTIME_DIR:-$SCRIPT_DIR/runtime}"
 STATE_DB="${ORCH_STATE_DB:-$REPO_DIR/runtime/state.db}"
@@ -20,9 +22,9 @@ DF_BIN="${ORCH_DF_BIN:-df}"
 
 printf 'Fleet status\n\n'
 printf 'Missions / lanes / leases\n'
-if [[ -f "$STATE_DB" ]] && status_json="$(INFRA_STATE_DB="$STATE_DB" bun "$MISSION_CLI" status 2>/dev/null)"; then
+if [[ -f "$STATE_DB" ]] && status_json="$(INFRA_STATE_DB="$STATE_DB" "$BUN_BIN" "$MISSION_CLI" status 2>/dev/null)"; then
   # shellcheck disable=SC2016 # JavaScript template expressions are intentionally literal.
-  printf '%s' "$status_json" | bun -e '
+  printf '%s' "$status_json" | "$BUN_BIN" -e '
 const input = await Bun.stdin.text(); const status = JSON.parse(input);
 console.log(`counts     missions=${status.missions.length} lanes=${status.lanes.length} leases=${status.leases.length}`);
 if (status.missions.length === 0) console.log("missions   SKIP no open missions");

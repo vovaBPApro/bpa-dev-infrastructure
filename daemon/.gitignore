@@ -1,0 +1,20 @@
+# Never commit secrets or runtime state — the predecessor repo died from this.
+.env
+.env.*
+*.env
+env.prod*
+*.bak
+*.bak-*
+*.bak.*
+*.session
+.env.session
+
+# Runtime state and logs live on the host, never in git.
+runtime/
+node_modules/
+node_modules
+*.log
+
+# Local Claude harness / worktrees.
+.claude/
+.claude-flow/

@@ -4,7 +4,7 @@ set -u
 set -o pipefail
 
 usage() {
-  echo "usage: gate/land.sh --branch <ag-name> --report <file> --repo <path> [--worktree <path>] [--no-push] [--run-verify]" >&2
+  echo "usage: gate/land.sh --branch <ag-name> --report <file> --repo <path> [--worktree <path>] [--no-push] [--run-verify] [--skip-review]" >&2
   exit 2
 }
 
@@ -14,9 +14,11 @@ repo=""
 worktree=""
 no_push=false
 run_verify=false
+skip_review=false
 merged=false
 merge_sha="none"
 pushed=false
+review_verdict="not-required"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -32,6 +34,7 @@ while [ "$#" -gt 0 ]; do
       ;;
     --no-push) no_push=true; shift ;;
     --run-verify) run_verify=true; shift ;;
+    --skip-review) skip_review=true; shift ;;
     *) usage ;;
   esac
 done
@@ -97,6 +100,71 @@ fi
 land_pass completion-guard
 
 merge_base=$(git -C "$repo" merge-base "$default_branch" "$branch") || land_fail secret-scan 2
+policy_file="$script_dir/review-policy.conf"
+review_required=false
+if [ ! -r "$policy_file" ]; then
+  echo "ERROR review-required policy-unreadable file=$policy_file" >&2
+  land_fail review 2
+fi
+is_policy_path() {
+  candidate_path="$1"
+  while IFS= read -r policy_prefix; do
+    [ -n "$policy_prefix" ] || continue
+    case "$candidate_path" in
+      "$policy_prefix"*) return 0 ;;
+    esac
+  done < <(sed -e 's/[[:space:]]*#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$policy_file")
+  return 1
+}
+
+while IFS= read -r -d '' change_status; do
+  case "$change_status" in
+    R*|C*)
+      IFS= read -r -d '' old_path || land_fail review 2
+      IFS= read -r -d '' new_path || land_fail review 2
+      if is_policy_path "$old_path" || is_policy_path "$new_path"; then
+        review_required=true
+      fi
+      ;;
+    *)
+      IFS= read -r -d '' changed_file || land_fail review 2
+      if is_policy_path "$changed_file"; then
+        review_required=true
+      fi
+      ;;
+  esac
+  [ "$review_required" = true ] && break
+done < <(git -C "$repo" -c core.quotepath=false diff --name-status -z --diff-filter=ACDMRT "$merge_base..$branch")
+
+if [ "$review_required" = true ]; then
+  review_artifact="$(dirname "$report")/$branch.review.md"
+  if [ "$skip_review" = true ]; then
+    review_verdict="skipped"
+    echo "WARN review-skipped branch=$branch artifact=$review_artifact" >&2
+  elif [ ! -r "$review_artifact" ]; then
+    echo "ERROR review-required missing-artifact file=$review_artifact" >&2
+    land_fail review 2
+  else
+    review_verdict_value=$(sed -n 's/^verdict:[[:space:]]*//p' "$review_artifact" | sed 's/[[:space:]]*$//')
+    reviewer_value=$(sed -n 's/^reviewer:[[:space:]]*//p' "$review_artifact" | sed 's/[[:space:]]*$//')
+    review_verdict_count=$(grep -c '^verdict:' "$review_artifact" || true)
+    reviewer_count=$(grep -c '^reviewer:' "$review_artifact" || true)
+    if [ "$review_verdict_value" = "REJECT" ]; then
+      echo "ERROR review-rejected file=$review_artifact" >&2
+      land_fail review 2
+    fi
+    if [ "$review_verdict_count" -ne 1 ] || \
+      [ "$review_verdict_value" != "ACCEPT" ] || \
+      [ "$reviewer_count" -ne 1 ] || \
+      [ -z "$reviewer_value" ] || [ "$reviewer_value" = "$branch" ]; then
+      echo "ERROR review-required malformed-artifact file=$review_artifact" >&2
+      land_fail review 2
+    fi
+    review_verdict="accepted"
+  fi
+fi
+land_pass review
+
 secret_pattern=$(printf '%s%s%s%s%s%s%s%s%s' '[0-9]{8,10}:AA|' 'gh' 'p_|github' '_pat|client' '_secret|PRIVATE ' 'KEY|AK' 'IA[0-9A-Z]{16}|' 'sk' '-ant-')
 secret_hits=0
 while IFS= read -r -d '' changed_file; do
@@ -172,4 +240,4 @@ if ! git -C "$repo" branch -d "$branch"; then
   land_reap_fail
 fi
 land_pass reap
-echo "LAND verdict=landed sha=$merge_sha"
+echo "LAND verdict=landed sha=$merge_sha review=$review_verdict"

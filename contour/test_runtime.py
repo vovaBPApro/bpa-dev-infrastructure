@@ -37,6 +37,11 @@ class RuntimeWiringTest(unittest.TestCase):
             row = ProvenanceStore(path).load()[0]
             self.assertEqual(row["kind"], "rollback")
             self.assertEqual(row["mission_id"], "runtime")
+            self.assertEqual(row["dispatch_id"], "runtime")
+            self.assertEqual(row["from_commit"], "0"*40)
+            self.assertEqual(row["restored_commit"], head)
+            self.assertEqual(row["recovery_event_id"], "runtime-rollback")
+            self.assertTrue(row["verified"])
             with self.assertRaises(ValueError): RuntimeManager().verify_rollback(root, head, image_digest="sha:x", evidence_store=path)
             with self.assertRaises(ValueError): RuntimeManager().verify_rollback(root, head, image_digest=None, evidence_store=path, lifecycle=self.Life(head))
             with self.assertRaises(ValueError): RuntimeManager().verify_rollback(root, head, image_digest="sha:y", evidence_store=path, lifecycle=self.Life(head))

@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "status": "blocked",
+  "observed": {
+    "compose_healthcheck": false,
+    "authenticated_route": false,
+    "resource_limits": false,
+    "rollback_target": false
+  },
+  "evidence": "docker canary short run: build/config/start/stop passed; curl /health rc=56",
+  "action": "Remain fail-closed until an approved contract supplies these fields; do not invent endpoints or limits."
+}

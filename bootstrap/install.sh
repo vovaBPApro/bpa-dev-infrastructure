@@ -61,12 +61,12 @@ print_plan() {
   plan "apt" "check git, curl, tmux, envsubst, unzip, and xz; install cron unless --no-cron is set"
   plan "bun" "install Bun ${BUN_VERSION} if $BUN_BIN is absent"
   plan "repository" "clone or fast-forward update $INSTALL_ROOT from REPO_URL"
-  plan "environment" "create $ENV_FILE from bootstrap/env.template if absent (operator edits token locally)"
+  plan "environment" "create $ENV_FILE from bootstrap/env.template if absent, reject symlinks, and enforce mode 0600"
   plan "state-db" "initialize $STATE_DB with core/mission-cli.ts status"
   plan "workspace" "make workspace/workspace.sh sync capability available"
   plan "hygiene" "install hygiene cron unless --no-cron is set"
   plan "test-gate" "run the full daemon, core, gate, stand, and workspace test sweep"
-  plan "units" "render daemon, watchdog, and full-suite systemd --user units in $SYSTEMD_USER_DIR"
+  plan "units" "render daemon, watchdog, full-suite, and morning-report systemd --user units in $SYSTEMD_USER_DIR"
   plan "activate" "reload user systemd and enable units when available; otherwise print VM activation instructions"
 }
 
@@ -106,6 +106,10 @@ hygiene_cron_status() {
   "$CRONTAB_CMD" -l 2>/dev/null | grep -Fxq '# BEGIN bpa-dev-infrastructure hygiene'
 }
 
+linger_enabled() {
+  loginctl show-user "$USER" --property=Linger 2>/dev/null | grep -Fxq 'Linger=yes'
+}
+
 gate_status() {
   "$BUN_BIN" "$INSTALL_ROOT/gate/completion-guard.ts" --help >/dev/null
 }
@@ -141,6 +145,11 @@ verify() {
   check "repository" test -d "$INSTALL_ROOT/.git"
   check "environment file" test -f "$ENV_FILE"
   check "environment permissions" test "$(stat -c '%a' "$ENV_FILE" 2>/dev/null || true)" = 600
+  if command -v loginctl >/dev/null 2>&1; then
+    check "linger" linger_enabled
+  else
+    skip "linger" "loginctl command unavailable"
+  fi
   check "state-db" state_db_status
   check "workspace" workspace_status
   if [[ -f "$HYGIENE_CRON_SKIP_FILE" ]]; then
@@ -166,12 +175,15 @@ verify() {
   check "watchdog timer" test -f "$SYSTEMD_USER_DIR/bpa-orchestrator-watchdog.timer"
   check "full-suite service" test -f "$SYSTEMD_USER_DIR/bpa-full-suite.service"
   check "full-suite timer" test -f "$SYSTEMD_USER_DIR/bpa-full-suite.timer"
+  check "morning service" test -f "$SYSTEMD_USER_DIR/orch-morning-report.service"
+  check "morning timer" test -f "$SYSTEMD_USER_DIR/orch-morning-report.timer"
   check "unit Exec paths" rendered_unit_exec_paths_status
   if ! systemd_user_available; then
     skip "user systemd" "no user-systemd session"
     skip "daemon enabled" "user-systemd unavailable"
     skip "watchdog enabled" "user-systemd unavailable"
     skip "full-suite enabled" "user-systemd unavailable"
+    skip "morning enabled" "user-systemd unavailable"
   elif ! has_configured_token; then
     skip "daemon enabled" "token placeholder remains"
     skip "watchdog enabled" "token placeholder remains"
@@ -179,6 +191,7 @@ verify() {
     check "daemon enabled" systemctl --user is-enabled --quiet bpa-telegram-daemon.service
     check "watchdog enabled" systemctl --user is-enabled --quiet bpa-orchestrator-watchdog.timer
     check "full-suite enabled" systemctl --user is-enabled --quiet bpa-full-suite.timer
+    check "morning enabled" systemctl --user is-enabled --quiet orch-morning-report.timer
   fi
   return "$result"
 }
@@ -251,10 +264,18 @@ sync_repository() {
 }
 
 render_environment() {
+  if [[ -L "$ENV_FILE" ]]; then
+    echo "ERROR: environment file must not be a symlink: $ENV_FILE" >&2
+    return 1
+  fi
   if [[ ! -e "$ENV_FILE" ]]; then
     install -d -m 700 "$(dirname "$ENV_FILE")"
     install -m 600 "$SOURCE_ROOT/bootstrap/env.template" "$ENV_FILE"
+  elif [[ ! -f "$ENV_FILE" ]]; then
+    echo "ERROR: environment file is not a regular file: $ENV_FILE" >&2
+    return 1
   fi
+  chmod 600 "$ENV_FILE"
 }
 
 initialize_state_db() {
@@ -311,7 +332,7 @@ render_units() {
   else
     echo "User systemd is unavailable; units were rendered only. On a VM with a user session, run:"
     echo "  systemctl --user daemon-reload"
-    echo "  systemctl --user enable --now bpa-telegram-daemon.service bpa-orchestrator-watchdog.timer bpa-full-suite.timer"
+    echo "  systemctl --user enable --now bpa-telegram-daemon.service bpa-orchestrator-watchdog.timer bpa-full-suite.timer orch-morning-report.timer"
   fi
 }
 
@@ -324,18 +345,29 @@ activate_units() {
     systemctl --user enable --now bpa-telegram-daemon.service
     systemctl --user enable --now bpa-orchestrator-watchdog.timer
     systemctl --user enable --now bpa-full-suite.timer
+    systemctl --user enable --now orch-morning-report.timer
   else
     echo "Token remains a placeholder; units installed but not enabled. Edit $ENV_FILE, then re-run this installer."
   fi
 }
 
-ensure_prerequisites
-install_bun
-sync_repository
-render_environment
-initialize_state_db
-install_hygiene_cron
-run_install_test_gate
-render_units
-activate_units
-echo "Bootstrap completed. Run '$SCRIPT_DIR/install.sh --verify' after configuring the local token."
+warn_if_linger_disabled() {
+  if command -v loginctl >/dev/null 2>&1 && ! linger_enabled; then
+    echo "WARNING: user lingering is disabled; user-systemd automation will stop after logout or reboot." >&2
+    echo "WARNING: enable it with: loginctl enable-linger $USER" >&2
+  fi
+}
+
+if [[ "${BOOTSTRAP_LIB_ONLY:-false}" != true ]]; then
+  ensure_prerequisites
+  install_bun
+  sync_repository
+  render_environment
+  warn_if_linger_disabled
+  initialize_state_db
+  install_hygiene_cron
+  run_install_test_gate
+  render_units
+  activate_units
+  echo "Bootstrap completed. Run '$SCRIPT_DIR/install.sh --verify' after configuring the local token."
+fi

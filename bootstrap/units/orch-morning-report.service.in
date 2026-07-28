@@ -1,0 +1,12 @@
+[Unit]
+Description=BPA morning readiness report
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=$INSTALL_ROOT/orchestrator
+EnvironmentFile=$ENV_FILE
+ExecStart=$INSTALL_ROOT/orchestrator/morning.sh
+NoNewPrivileges=true
+PrivateTmp=true

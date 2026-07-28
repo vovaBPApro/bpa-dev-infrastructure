@@ -32,6 +32,9 @@ class RuntimeManager:
             raise ValueError("image digest required for persisted rollback evidence")
         if lifecycle is not None:
             prior_commit = lifecycle.capture_source()
+            import re
+            if not re.fullmatch(r"[0-9a-fA-F]{3,64}", prior_commit or ""):
+                raise ValueError("invalid prior commit")
             if lifecycle.current_commit() != expected_commit:
                 raise ValueError("lifecycle target mismatch")
             actual_image_digest = lifecycle.current_image_digest()

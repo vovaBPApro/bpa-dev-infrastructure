@@ -6,6 +6,7 @@ from pathlib import Path
 import threading, os
 import fcntl
 import subprocess
+import re
 from dataclasses import dataclass, asdict
 from typing import Any, Mapping
 
@@ -41,7 +42,7 @@ def _redact(value):
 def rollback_evidence(provenance: Provenance, *, restored_commit: str,
                       recovery_event_id: str, commit_exists=None) -> str:
     """Return stable evidence that recovery restored the prior immutable SHA."""
-    if not restored_commit or restored_commit == provenance.commit or commit_exists is None or not commit_exists(restored_commit) or not recovery_event_id:
+    if not re.fullmatch(r"[0-9a-fA-F]{3,64}", provenance.commit) or not re.fullmatch(r"[0-9a-fA-F]{3,64}", restored_commit or "") or restored_commit == provenance.commit or commit_exists is None or not commit_exists(restored_commit) or not recovery_event_id:
         raise ValueError("rollback must restore a different known commit")
     data: Mapping[str, Any] = {
         "kind": "rollback",

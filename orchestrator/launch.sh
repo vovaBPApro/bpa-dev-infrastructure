@@ -17,12 +17,45 @@ PROVIDER="${ORCH_PROVIDER:-codex}"
 MODEL="${ORCH_MODEL:-}"
 LOCK_FILE="${ORCH_LOCK_FILE:-$RUNTIME_DIR/launch.lock}"
 AUTH_PREFLIGHT="${ORCH_AUTH_PREFLIGHT:-$SCRIPT_DIR/preflight-cli-auth.sh}"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+MISSION_CLI="${ORCH_MISSION_CLI:-$REPO_DIR/core/mission-cli.ts}"
+STATE_DB="${ORCH_STATE_DB:-$REPO_DIR/runtime/state.db}"
+LEASE_TTL_MS="${ORCH_LEASE_TTL_MS:-120000}"
+LEASE_FILE="${ORCH_LEASE_FILE:-$RUNTIME_DIR/orchestrator.lease}"
 
 usage() {
   printf '%s\n' 'Usage: launch.sh [start|stop|status|--help]'
 }
 
 session_exists() { tmux has-session -t "$SESSION" 2>/dev/null; }
+
+state_available() { [[ -f "$STATE_DB" ]]; }
+
+mission_cli() { INFRA_STATE_DB="$STATE_DB" bun "$MISSION_CLI" "$@"; }
+
+lease_state() {
+  [[ -f "$LEASE_FILE" ]] || return 1
+  LEASE_OWNER="$(sed -n 's/^owner=//p' "$LEASE_FILE")"
+  LEASE_TOKEN="$(sed -n 's/^token=//p' "$LEASE_FILE")"
+  [[ -n "$LEASE_OWNER" && "$LEASE_TOKEN" =~ ^[1-9][0-9]*$ ]]
+}
+
+write_lease_state() {
+  local owner="$1" token="$2"
+  umask 077
+  printf 'owner=%s\ntoken=%s\n' "$owner" "$token" > "$LEASE_FILE"
+}
+
+release_current_lease() {
+  if [[ -n "${owner:-}" && -n "${token:-}" ]]; then
+    mission_cli lease release "$owner" orchestrator "$token" >/dev/null 2>&1 || true
+  fi
+  rm -f "$LEASE_FILE"
+}
+
+lease_owner_from_status() {
+  sed -nE 's/.*"key":"orchestrator","owner":"([^"]+)".*/\1/p' | head -n 1
+}
 
 status() {
   if session_exists; then
@@ -36,6 +69,10 @@ status() {
 stop() {
   if session_exists; then
     tmux kill-session -t "$SESSION"
+    if state_available && lease_state; then
+      mission_cli lease release "$LEASE_OWNER" orchestrator "$LEASE_TOKEN" >/dev/null 2>&1 || true
+    fi
+    rm -f "$LEASE_FILE"
     printf 'stopped: %s\n' "$SESSION"
   else
     printf 'already stopped: %s\n' "$SESSION"
@@ -70,8 +107,33 @@ start() {
     printf 'session already exists: %s\n' "$SESSION" >&2
     return 1
   fi
+  if state_available; then
+    mission_cli reap
+    local status_output held_owner lease_output owner token
+    status_output="$(mission_cli status)"
+    held_owner="$(printf '%s\n' "$status_output" | lease_owner_from_status)"
+    if ! lease_output="$(mission_cli lease acquire "$(hostname):$$" orchestrator "$LEASE_TTL_MS" 2>&1)"; then
+      if [[ -n "$held_owner" ]]; then
+        printf 'ERROR orchestrator-lease-held owner=%s\n' "$held_owner" >&2
+        return 1
+      fi
+      printf '%s\n' "$lease_output" >&2
+      return 1
+    fi
+    owner="$(hostname):$$"
+    token="$(sed -nE 's/^LEASE key=orchestrator owner=.* token=([1-9][0-9]*)$/\1/p' <<<"$lease_output")"
+    [[ -n "$token" ]] || { printf 'ERROR orchestrator-lease-invalid\n' >&2; return 1; }
+    write_lease_state "$owner" "$token"
+    export ORCH_FENCING_TOKEN="$token" ORCH_LEASE_OWNER="$owner"
+    mission_cli status
+  else
+    printf 'SKIP state-db-absent path=%s\n' "$STATE_DB" >&2
+  fi
   if [[ -x "$AUTH_PREFLIGHT" ]]; then
-    "$AUTH_PREFLIGHT" "$PROVIDER"
+    if ! "$AUTH_PREFLIGHT" "$PROVIDER"; then
+      release_current_lease
+      return 2
+    fi
   else
     printf 'auth preflight missing or not executable: %s\n' "$AUTH_PREFLIGHT" >&2
     return 2
@@ -79,10 +141,15 @@ start() {
   local command provider_bin unit
   command="$(build_command)"
   provider_bin="${command#exec }"; provider_bin="${provider_bin%% *}"
-  command -v "$provider_bin" >/dev/null 2>&1 || { printf 'provider not found: %s\n' "$provider_bin" >&2; return 2; }
+  command -v "$provider_bin" >/dev/null 2>&1 || { printf 'provider not found: %s\n' "$provider_bin" >&2; release_current_lease; return 2; }
   unit="orch-${SESSION//[^a-zA-Z0-9_.-]/-}"
-  systemd-run --user --scope --quiet --unit="$unit" \
-    tmux new-session -d -s "$SESSION" -c "$WORK_DIR" "$command"
+  # Do not leak the launch mutex into tmux/the provider process.
+  exec 9>&-
+  if ! systemd-run --user --scope --quiet --unit="$unit" \
+    tmux new-session -d -s "$SESSION" -c "$WORK_DIR" "$command"; then
+    release_current_lease
+    return 1
+  fi
   printf 'started: %s (%s)\n' "$SESSION" "$PROVIDER"
 }
 

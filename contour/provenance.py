@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+import threading, os
 from dataclasses import dataclass, asdict
 from typing import Any, Mapping
 
@@ -54,15 +55,26 @@ def rollback_evidence(provenance: Provenance, *, restored_commit: str,
 
 
 class ProvenanceStore:
-    def __init__(self, path): self.path = Path(path)
+    def __init__(self, path): self.path = Path(path); self._lock = threading.Lock()
     def append(self, manifest: Provenance):
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        import tempfile, os
-        old = self.path.read_text() if self.path.exists() else ""
-        fd, tmp = tempfile.mkstemp(dir=self.path.parent)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(old + manifest.serialize() + "\n"); f.flush(); os.fsync(f.fileno())
-        os.replace(tmp, self.path)
+        import tempfile
+        with self._lock:
+            old = self.path.read_text() if self.path.exists() else ""
+            fd, tmp = tempfile.mkstemp(dir=self.path.parent)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(old + manifest.serialize() + "\n"); f.flush(); os.fsync(f.fileno())
+            os.replace(tmp, self.path)
+            dfd = os.open(self.path.parent, os.O_DIRECTORY); os.fsync(dfd); os.close(dfd)
     def load(self):
         if not self.path.exists(): return []
-        return [json.loads(x) for x in self.path.read_text().splitlines() if x.strip()]
+        rows = []
+        for line in self.path.read_text().splitlines():
+            if not line.strip(): continue
+            try:
+                row = json.loads(line)
+                if not all(k in row for k in ("mission_id", "dispatch_id", "commit")): raise ValueError
+                rows.append(row)
+            except (ValueError, json.JSONDecodeError):
+                continue
+        return rows

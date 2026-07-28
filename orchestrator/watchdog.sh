@@ -25,6 +25,17 @@ DISK_ALERT_PCT="${DISK_ALERT_PCT:-80}"
 NUDGE_RATE_FILE="${NUDGE_RATE_FILE:-$RUNTIME_DIR/nudge-rate.tsv}"
 
 log() { mkdir -p "$RUNTIME_DIR"; printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$LOG_FILE"; }
+validate_numeric_knob() {
+  local name="$1" default="$2" value="${!1}"
+  if ! [[ "$value" =~ ^[0-9]+$ ]]; then
+    log "WATCHDOG invalid-knob name=$name value=$value using-default=$default"
+    printf -v "$name" '%s' "$default"
+  fi
+}
+validate_numeric_knob FLEET_IDLE_NUDGE_MS 900000
+validate_numeric_knob FLEET_NUDGE_REPEAT_MS 3600000
+validate_numeric_knob DISK_ALERT_PCT 80
+
 pane_pid() { tmux list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -n 1; }
 state_available() { [[ -f "$STATE_DB" ]]; }
 mission_cli() { INFRA_STATE_DB="$STATE_DB" bun "$MISSION_CLI" "$@"; }
@@ -118,9 +129,6 @@ for (const mission of status.missions) {
 }')
 }
 
-check_disk_pressure
-check_mission_pressure
-
 if state_available; then
   if ! lease_state; then
     log "SKIP reason=lease-state-missing"
@@ -144,4 +152,7 @@ if heartbeat_stale; then
   "$SCRIPT_DIR/launch.sh" start
   exit 0
 fi
+
+check_disk_pressure || log "WATCHDOG observability-check-failed check=disk-pressure"
+check_mission_pressure || log "WATCHDOG observability-check-failed check=mission-pressure"
 exit 0

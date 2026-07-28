@@ -1,0 +1,17 @@
+[Unit]
+Description=BPA Telegram daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$INSTALL_ROOT/daemon
+EnvironmentFile=$ENV_FILE
+ExecStart=$BUN_BIN run server.ts
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

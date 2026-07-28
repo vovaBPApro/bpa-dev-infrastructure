@@ -1,5 +1,8 @@
 """Minimal manager entrypoint wired to dispatch/watchdog policy."""
-from dispatcher import DispatchController
+try:  # package import from repo root
+    from .dispatcher import DispatchController
+except ImportError:  # direct script/test execution from contour/
+    from dispatcher import DispatchController
 
 
 class RuntimeManager:

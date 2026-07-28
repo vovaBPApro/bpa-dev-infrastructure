@@ -4,6 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALLER="$SCRIPT_DIR/install.sh"
 
+# shellcheck disable=SC2016 # inspect the literal default assignment
+grep -Fxq 'INSTALL_ROOT="${INSTALL_ROOT:-/home/bpa-dev-infrastructure}"' "$INSTALLER"
+
 dry_run="$($INSTALLER --dry-run)"
 for expected in \
   'PLAN apt' \
@@ -68,6 +71,22 @@ placeholder_output="$(PATH="$verify_fixture/bin:$PATH" \
   BUN_BIN="$verify_fixture/bin/bun" \
   "$INSTALLER" --verify)"
 grep -Fq 'SKIP token configured' <<<"$placeholder_output"
+
+# Render deployable unit inputs without requiring host envsubst. Temporary test
+# fixtures are intentionally outside this sweep; bootstrap inputs may never
+# retain the retired host root.
+rendered_units="$(for template in "$SCRIPT_DIR"/units/*.in; do
+  # shellcheck disable=SC2016 # preserve template placeholders for sed
+  sed 's|\$INSTALL_ROOT|/home/bpa-dev-infrastructure|g; s|\$ENV_FILE|/home/bpa-dev-infrastructure/.env|g; s|\$BUN_BIN|/root/.bun/bin/bun|g' "$template"
+done)"
+if grep -RInF '/home/bpa-shell' "$INSTALLER" "$SCRIPT_DIR/env.template" "$SCRIPT_DIR/units" >/dev/null; then
+  echo 'ERROR: legacy /home/bpa-shell reference found in bootstrap input' >&2
+  exit 1
+fi
+if grep -Fq '/home/bpa-shell' <<<"$rendered_units"; then
+  echo 'ERROR: legacy /home/bpa-shell reference found in rendered unit' >&2
+  exit 1
+fi
 
 docker run --rm -v "$SCRIPT_DIR:/bootstrap:ro" koalaman/shellcheck:stable \
   /bootstrap/install.sh /bootstrap/bootstrap.test.sh

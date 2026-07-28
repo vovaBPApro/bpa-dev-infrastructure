@@ -21,7 +21,7 @@ class RuntimeWiringTest(unittest.TestCase):
         head = subprocess.check_output(["git", "-C", root, "rev-parse", "HEAD"], text=True).strip()
         with tempfile.TemporaryDirectory() as d:
             path = d + "/evidence.jsonl"
-            got = RuntimeManager().verify_rollback(root, head, image_digest="sha:x", actual_image_digest="sha:x", evidence_store=path)
+            got = RuntimeManager().verify_rollback(root, head, prior_commit="0"*40, image_digest="sha:x", actual_image_digest="sha:x", evidence_store=path)
             self.assertTrue(got["verified"])
             self.assertIn('"verified":true', open(path).read())
             with self.assertRaises(ValueError): RuntimeManager().verify_rollback(root, "bad", image_digest="sha:x", actual_image_digest="sha:x")

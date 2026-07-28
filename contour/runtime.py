@@ -24,10 +24,12 @@ class RuntimeManager:
     def watchdog(self, *, now=None):
         return self.controller.reap(now=now)
 
-    def verify_rollback(self, root, expected_commit, *, image_digest=None,
+    def verify_rollback(self, root, expected_commit, *, prior_commit=None, image_digest=None,
                         actual_image_digest=None, evidence_store=None):
+        if evidence_store and (not prior_commit or prior_commit == expected_commit):
+            raise ValueError("explicit distinct prior_commit required")
         evidence = verify_checkout(root, expected_commit, image_digest, actual_image_digest)
         if evidence_store:
-            evidence.update({"kind":"rollback", "mission_id":"runtime", "dispatch_id":"runtime", "from_commit":expected_commit, "restored_commit":expected_commit, "recovery_event_id":"runtime-rollback"})
+            evidence.update({"kind":"rollback", "mission_id":"runtime", "dispatch_id":"runtime", "from_commit":prior_commit, "restored_commit":expected_commit, "recovery_event_id":"runtime-rollback"})
             ProvenanceStore(evidence_store).append_raw(evidence)
         return evidence

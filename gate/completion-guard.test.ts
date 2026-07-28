@@ -35,6 +35,10 @@ function run(reportPath: string, repo: string, extra: string[] = []) {
   return spawnSync("bun", [guard, "--report", reportPath, "--repo", repo, ...extra], { encoding: "utf8" });
 }
 
+function runHelp() {
+  return spawnSync("bun", [guard, "--help"], { encoding: "utf8" });
+}
+
 function valid(sha: string, result = "clean", verify = "true"): string {
   return `commit: ${sha} fixture\nverify: ${verify}\nresult: ${result}\nsecret-scan: clean\nremaining: none\n`;
 }
@@ -44,6 +48,14 @@ afterEach(() => {
 });
 
 describe("completion guard", () => {
+  test("prints usage with --help", () => {
+    const result = runHelp();
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("Usage:");
+    expect(result.stdout).toContain("--help");
+    expect(result.stdout).toContain("0 pass");
+  });
+
   test("passes a valid report", () => {
     const item = fixture();
     const result = run(report(item.directory, valid(item.sha)), item.repo, ["--branch", "master"]);

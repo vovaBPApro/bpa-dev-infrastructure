@@ -9,8 +9,9 @@ trap 'rm -rf "$tmp"' EXIT
 reference_status=NO_GO
 contour_status=NO_GO
 if command -v bun >/dev/null 2>&1 && bun test "$root/migration-prep/reference-daemon/templates/daemon/server.test.ts" "$root/migration-prep/reference-daemon/templates/daemon/relay.test.ts" >"$tmp/reference.log" 2>&1; then reference_status=PASS; fi
-if command -v python >/dev/null 2>&1 && python -m pytest -q "$root/contour" >"$tmp/contour.log" 2>&1; then contour_status=PASS; fi
-python - "$out" "$reference_status" "$contour_status" "$tmp/reference.log" "$tmp/contour.log" <<'PY'
+py=python3; command -v "$py" >/dev/null 2>&1 || py=python
+if command -v "$py" >/dev/null 2>&1 && "$py" -m pytest -q "$root/contour" >"$tmp/contour.log" 2>&1; then contour_status=PASS; fi
+"$py" - "$out" "$reference_status" "$contour_status" "$tmp/reference.log" "$tmp/contour.log" <<'PY'
 import json, pathlib, sys
 out, ref, contour, ref_log, contour_log = sys.argv[1:]
 payload = {"fixture":"baseline-start-reply-restart", "reference_sha":"4cdf3c70c6ec9d28608d7921b4dd4dd31ce340aa", "reference_tests":ref, "contour_tests":contour, "comparison":"PASS" if ref == contour == "PASS" else "NO-GO", "logs":{"reference":pathlib.Path(ref_log).read_text(), "contour":pathlib.Path(contour_log).read_text()}}

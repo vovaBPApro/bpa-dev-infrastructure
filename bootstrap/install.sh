@@ -110,6 +110,27 @@ gate_status() {
   "$BUN_BIN" "$INSTALL_ROOT/gate/completion-guard.ts" --help >/dev/null
 }
 
+rendered_unit_exec_paths_status() {
+  local unit line command exec_path
+  local -a units=("$SYSTEMD_USER_DIR"/*.service "$SYSTEMD_USER_DIR"/*.timer)
+
+  for unit in "${units[@]}"; do
+    [[ -f "$unit" ]] || continue
+    while IFS= read -r line; do
+      [[ "$line" == Exec*=* ]] || continue
+      command="${line#*=}"
+      while [[ "$command" == [@!+:-]* ]]; do
+        command="${command:1}"
+      done
+      read -r exec_path _ <<<"$command"
+      [[ "$exec_path" == /* && -x "$exec_path" ]] || return 1
+      if [[ "$exec_path" != "$BUN_BIN" && "$exec_path" != "$INSTALL_ROOT"/* ]]; then
+        return 1
+      fi
+    done < "$unit"
+  done
+}
+
 verify() {
   printf '%-6s %-24s\n' 'STATUS' 'CHECK'
   printf '%-6s %-24s\n' '------' '------------------------'
@@ -145,6 +166,7 @@ verify() {
   check "watchdog timer" test -f "$SYSTEMD_USER_DIR/bpa-orchestrator-watchdog.timer"
   check "full-suite service" test -f "$SYSTEMD_USER_DIR/bpa-full-suite.service"
   check "full-suite timer" test -f "$SYSTEMD_USER_DIR/bpa-full-suite.timer"
+  check "unit Exec paths" rendered_unit_exec_paths_status
   if ! systemd_user_available; then
     skip "user systemd" "no user-systemd session"
     skip "daemon enabled" "user-systemd unavailable"

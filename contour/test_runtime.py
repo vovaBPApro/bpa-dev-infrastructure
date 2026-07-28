@@ -33,6 +33,10 @@ class RuntimeWiringTest(unittest.TestCase):
             self.assertTrue(getattr(life, "called", False))
             self.assertTrue(got["verified"])
             with open(path) as fh: self.assertIn('"verified":true', fh.read())
+            from provenance import ProvenanceStore
+            row = ProvenanceStore(path).load()[0]
+            self.assertEqual(row["kind"], "rollback")
+            self.assertEqual(row["mission_id"], "runtime")
             with self.assertRaises(ValueError): RuntimeManager().verify_rollback(root, head, image_digest="sha:x", evidence_store=path)
             with self.assertRaises(ValueError): RuntimeManager().verify_rollback(root, head, image_digest=None, evidence_store=path, lifecycle=self.Life(head))
             with self.assertRaises(ValueError): RuntimeManager().verify_rollback(root, head, image_digest="sha:y", evidence_store=path, lifecycle=self.Life(head))

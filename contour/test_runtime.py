@@ -5,7 +5,7 @@ from runtime import RuntimeManager
 class RuntimeWiringTest(unittest.TestCase):
     class Life:
         def __init__(self, head): self.head=head
-        def capture_source(self): return "0"*40
+        def capture_source(self): self.called=True; return "0"*40
         def current_commit(self): return self.head
         def current_image_digest(self): return "sha:x"
     def test_manual_rejects_generic_but_accepts_green(self):

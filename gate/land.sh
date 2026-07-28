@@ -92,6 +92,9 @@ if [ -n "$(git -C "$repo" status --porcelain)" ]; then
 fi
 
 script_dir=$(CDPATH='' cd "$(dirname "$0")" && pwd)
+# shellcheck source=gate/land-lib.sh
+source "$script_dir/land-lib.sh"
+export LAND_DEFAULT_BRANCH="$default_branch"
 guard_args=("$script_dir/completion-guard.ts" --report "$report" --repo "$repo" --branch "$branch")
 if [ "$run_verify" = true ]; then guard_args+=(--run-verify); fi
 if ! bun "${guard_args[@]}"; then
@@ -99,103 +102,12 @@ if ! bun "${guard_args[@]}"; then
 fi
 land_pass completion-guard
 
-merge_base=$(git -C "$repo" merge-base "$default_branch" "$branch") || land_fail secret-scan 2
 policy_file="$script_dir/review-policy.conf"
-review_required=false
-if [ ! -r "$policy_file" ]; then
-  echo "ERROR review-required policy-unreadable file=$policy_file" >&2
-  land_fail review 2
-fi
-is_policy_path() {
-  candidate_path="$1"
-  while IFS= read -r policy_prefix; do
-    [ -n "$policy_prefix" ] || continue
-    case "$candidate_path" in
-      "$policy_prefix"*) return 0 ;;
-    esac
-  done < <(sed -e 's/[[:space:]]*#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$policy_file")
-  return 1
-}
-
-while IFS= read -r -d '' change_status; do
-  case "$change_status" in
-    R*|C*)
-      IFS= read -r -d '' old_path || land_fail review 2
-      IFS= read -r -d '' new_path || land_fail review 2
-      if is_policy_path "$old_path" || is_policy_path "$new_path"; then
-        review_required=true
-      fi
-      ;;
-    *)
-      IFS= read -r -d '' changed_file || land_fail review 2
-      if is_policy_path "$changed_file"; then
-        review_required=true
-      fi
-      ;;
-  esac
-  [ "$review_required" = true ] && break
-done < <(git -C "$repo" -c core.quotepath=false diff --name-status -z --diff-filter=ACDMRT "$merge_base..$branch")
-
-if [ "$review_required" = true ]; then
-  review_artifact="$(dirname "$report")/$branch.review.md"
-  if [ "$skip_review" = true ]; then
-    review_verdict="skipped"
-    echo "WARN review-skipped branch=$branch artifact=$review_artifact" >&2
-  elif [ ! -r "$review_artifact" ]; then
-    echo "ERROR review-required missing-artifact file=$review_artifact" >&2
-    land_fail review 2
-  else
-    review_verdict_value=$(sed -n 's/^verdict:[[:space:]]*//p' "$review_artifact" | sed 's/[[:space:]]*$//')
-    reviewer_value=$(sed -n 's/^reviewer:[[:space:]]*//p' "$review_artifact" | sed 's/[[:space:]]*$//')
-    review_verdict_count=$(grep -c '^verdict:' "$review_artifact" || true)
-    reviewer_count=$(grep -c '^reviewer:' "$review_artifact" || true)
-    if [ "$review_verdict_value" = "REJECT" ]; then
-      echo "ERROR review-rejected file=$review_artifact" >&2
-      land_fail review 2
-    fi
-    if [ "$review_verdict_count" -ne 1 ] || \
-      [ "$review_verdict_value" != "ACCEPT" ] || \
-      [ "$reviewer_count" -ne 1 ] || \
-      [ -z "$reviewer_value" ] || [ "$reviewer_value" = "$branch" ]; then
-      echo "ERROR review-required malformed-artifact file=$review_artifact" >&2
-      land_fail review 2
-    fi
-    review_verdict="accepted"
-  fi
-fi
+if ! land_review_check "$repo" "$branch" "$report" "$policy_file" "$skip_review"; then land_fail review 2; fi
+review_verdict="$LAND_REVIEW_VERDICT"
 land_pass review
 
-secret_pattern=$(printf '%s%s%s%s%s%s%s%s%s' '[0-9]{8,10}:AA|' 'gh' 'p_|github' '_pat|client' '_secret|PRIVATE ' 'KEY|AK' 'IA[0-9A-Z]{16}|' 'sk' '-ant-')
-secret_hits=0
-while IFS= read -r -d '' changed_file; do
-  [ -n "$changed_file" ] || continue
-  # Scan branch blobs directly: reports may contain binary or unusual filenames.
-  # `-a` makes grep inspect binary bytes rather than treating them as a clean skip.
-  if ! git -C "$repo" cat-file -e "$branch:$changed_file"; then
-    echo "LAND secret-scan unreadable file=$changed_file" >&2
-    land_fail secret-scan 2
-  fi
-  # Preserve both pipeline statuses without allocating a file for each blob.
-  scan_result=$(
-    git -C "$repo" show "$branch:$changed_file" | LC_ALL=C grep -aE -c "$secret_pattern"
-    scan_status=("${PIPESTATUS[@]}")
-    printf '__LAND_SCAN_STATUS__ %s %s\n' "${scan_status[0]}" "${scan_status[1]}"
-  )
-  scan_status_line=${scan_result##*$'\n'}
-  line_count=${scan_result%$'\n'*}
-  read -r scan_marker scan_show_status scan_grep_status <<< "$scan_status_line"
-  if [ "$scan_marker" != '__LAND_SCAN_STATUS__' ] || [ "$scan_show_status" -ne 0 ] || { [ "$scan_grep_status" -ne 0 ] && [ "$scan_grep_status" -ne 1 ]; }; then
-    echo "LAND secret-scan unreadable file=$changed_file" >&2
-    land_fail secret-scan 2
-  fi
-  if [ "$line_count" -gt 0 ]; then
-    echo "LAND secret-scan match file=$changed_file lines=$line_count" >&2
-    secret_hits=$((secret_hits + line_count))
-  fi
-done < <(git -C "$repo" -c core.quotepath=false diff --name-only -z --diff-filter=ACMRT "$merge_base..$branch")
-if [ "$secret_hits" -ne 0 ]; then
-  land_fail secret-scan 2
-fi
+if ! land_secret_scan "$repo" "$branch"; then land_fail secret-scan 2; fi
 land_pass secret-scan
 
 if ! git -C "$repo" merge --no-ff "$branch" -m "[ORCH] land lane $branch" -m "secret-scan: clean"; then

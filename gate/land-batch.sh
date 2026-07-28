@@ -35,6 +35,11 @@ batch_fail() { echo "BATCH step=$1 status=fail" >&2; echo "BATCH verdict=aborted
 batch_pass() { echo "BATCH step=$1 status=pass"; }
 batch_skip() { echo "BATCH step=$1 status=skipped"; }
 
+script_dir=$(CDPATH='' cd "$(dirname "$0")" && pwd)
+# shellcheck source=gate/land-lib.sh
+source "$script_dir/land-lib.sh"
+if ! land_resolve_bun; then exit 2; fi
+
 if ! git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then batch_fail repo 2; fi
 git_dir=$(git -C "$repo" rev-parse --git-dir) || batch_fail repo 2
 case "$git_dir" in
@@ -55,9 +60,6 @@ if [ "$(git -C "$repo" rev-parse "$default_branch")" != "$(git -C "$repo" rev-pa
 pre_merge_sha=$(git -C "$repo" rev-parse "$default_branch")
 batch_pass freshness
 
-script_dir=$(CDPATH='' cd "$(dirname "$0")" && pwd)
-# shellcheck source=gate/land-lib.sh
-source "$script_dir/land-lib.sh"
 export LAND_DEFAULT_BRANCH="$default_branch"
 policy_file="$script_dir/review-policy.conf"
 review_summary=""
@@ -66,7 +68,7 @@ for index in "${!branches[@]}"; do
   report=${reports[$index]}
   if [ "$branch" = "$default_branch" ] || ! git -C "$repo" rev-parse --verify "${branch}^{commit}" >/dev/null 2>&1; then batch_fail branch 2; fi
   guard_args=("$script_dir/completion-guard.ts" --report "$report" --repo "$repo" --branch "$branch")
-  if ! bun "${guard_args[@]}"; then batch_fail completion-guard 2; fi
+  if ! "$BUN_BIN" "${guard_args[@]}"; then batch_fail completion-guard 2; fi
   batch_pass "completion-guard branch=$branch"
   if ! land_secret_scan "$repo" "$branch"; then batch_fail "secret-scan branch=$branch" 2; fi
   batch_pass "secret-scan branch=$branch"

@@ -62,6 +62,11 @@ land_reap_fail() {
   land_fail reap
 }
 
+script_dir=$(CDPATH='' cd "$(dirname "$0")" && pwd)
+# shellcheck source=gate/land-lib.sh
+source "$script_dir/land-lib.sh"
+if ! land_resolve_bun; then exit 2; fi
+
 if ! git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   land_fail repo 2
 fi
@@ -106,13 +111,10 @@ fi
 pre_merge_sha=$(git -C "$repo" rev-parse "$default_branch")
 land_pass freshness
 
-script_dir=$(CDPATH='' cd "$(dirname "$0")" && pwd)
-# shellcheck source=gate/land-lib.sh
-source "$script_dir/land-lib.sh"
 export LAND_DEFAULT_BRANCH="$default_branch"
 guard_args=("$script_dir/completion-guard.ts" --report "$report" --repo "$repo" --branch "$branch")
 if [ "$run_verify" = true ]; then guard_args+=(--run-verify); fi
-if ! bun "${guard_args[@]}"; then
+if ! "$BUN_BIN" "${guard_args[@]}"; then
   land_fail completion-guard 2
 fi
 land_pass completion-guard

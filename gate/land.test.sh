@@ -211,6 +211,29 @@ assert test "$(git -C "$fixture_root/good-repo" rev-list --parents -n 1 HEAD | w
 assert_not git -C "$fixture_root/good-repo" show-ref --verify --quiet refs/heads/ag-good
 assert test "$(git --git-dir="$fixture_root/good-origin.git" rev-parse main)" = "$(git -C "$fixture_root/good-repo" rev-parse HEAD)"
 
+make_fixture bun-home
+bun_home_sha=$(make_lane "$fixture_root/bun-home-repo" ag-bun-home)
+report "$fixture_root/bun-home-report.md" "$bun_home_sha"
+bun_home="$fixture_root/bun-home"
+mkdir -p "$bun_home/.bun/bin"
+ln -s "$(command -v bun)" "$bun_home/.bun/bin/bun"
+bun_home_output="$fixture_root/bun-home-output.txt"
+env -i PATH=/usr/bin:/bin HOME="$bun_home" "$land" --branch ag-bun-home --report "$fixture_root/bun-home-report.md" --repo "$fixture_root/bun-home-repo" --no-push >"$bun_home_output" 2>&1
+assert_output_has "$bun_home_output" 'LAND step=completion-guard status=pass'
+assert_output_has "$bun_home_output" 'LAND verdict=landed sha='
+assert git -C "$fixture_root/bun-home-repo" merge-base --is-ancestor "$bun_home_sha" HEAD
+
+make_fixture bun-missing
+bun_missing_sha=$(make_lane "$fixture_root/bun-missing-repo" ag-bun-missing)
+report "$fixture_root/bun-missing-report.md" "$bun_missing_sha"
+bun_missing_home="$fixture_root/bun-missing-home"
+mkdir -p "$bun_missing_home"
+bun_missing_output="$fixture_root/bun-missing-output.txt"
+if env -i PATH=/usr/bin:/bin HOME="$bun_missing_home" "$land" --branch ag-bun-missing --report "$fixture_root/bun-missing-report.md" --repo "$fixture_root/bun-missing-repo" --no-push >"$bun_missing_output" 2>&1; then exit 1; fi
+assert_output_has "$bun_missing_output" 'LAND step=preflight status=fail detail=bun-not-found'
+assert_output_lacks "$bun_missing_output" 'LAND step=completion-guard status=fail'
+assert test "$(git -C "$fixture_root/bun-missing-repo" rev-parse HEAD)" = "$(git -C "$fixture_root/bun-missing-repo" rev-parse main)"
+
 make_fixture bad-sha
 make_lane "$fixture_root/bad-sha-repo" ag-bad-sha >/dev/null
 report "$fixture_root/bad-sha-report.md" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"

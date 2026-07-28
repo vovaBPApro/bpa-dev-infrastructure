@@ -1,6 +1,32 @@
 #!/usr/bin/env bash
 # Shared fail-closed checks for individual and batch landing.
 
+land_resolve_bun() {
+  local candidate candidate_dir
+  if [ -n "${BUN_BIN:-}" ]; then
+    candidate="$BUN_BIN"
+  elif [ -n "${HOME:-}" ] && [ -x "$HOME/.bun/bin/bun" ]; then
+    candidate="$HOME/.bun/bin/bun"
+  else
+    candidate=$(command -v bun 2>/dev/null || true)
+  fi
+
+  if [ -z "$candidate" ] || [ ! -x "$candidate" ]; then
+    echo "LAND step=preflight status=fail detail=bun-not-found" >&2
+    return 1
+  fi
+
+  case "$candidate" in
+    /*) ;;
+    *)
+      candidate_dir=$(CDPATH='' cd -- "$(dirname -- "$candidate")" && pwd -P) || return 1
+      candidate="$candidate_dir/$(basename -- "$candidate")"
+      ;;
+  esac
+  BUN_BIN="$candidate"
+  export BUN_BIN
+}
+
 land_review_check() {
   local repo="$1" branch="$2" report="$3" policy_file="$4" skip_review="$5"
   local merge_base candidate_path policy_prefix change_status old_path new_path

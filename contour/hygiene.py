@@ -79,7 +79,12 @@ class WorktreeReaper:
             # Fail closed: path must be beneath root, owner and timestamp known,
             # and no active process may claim it.
             try:
-                path.resolve().relative_to(self.root.resolve())
+                resolved_root = self.root.resolve()
+                resolved_path = path.resolve()
+                # Never remove the root itself, even when metadata is stale.
+                if resolved_path == resolved_root:
+                    continue
+                resolved_path.relative_to(resolved_root)
                 stale = now - float(heartbeat) > self.ttl
             except (ValueError, TypeError, OSError):
                 continue

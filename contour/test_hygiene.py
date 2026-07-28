@@ -26,6 +26,13 @@ class HygieneTest(unittest.TestCase):
             ], {"live"})
             self.assertEqual(removed, [str(stale)]); self.assertTrue(active.exists())
 
+    def test_reaper_never_removes_root(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            reaper = WorktreeReaper(str(root), ttl=1, clock=lambda: 100)
+            self.assertEqual(reaper.reap([{"path": str(root), "owner": "dead", "heartbeat_at": 0}]), [])
+            self.assertTrue(root.exists())
+
     def test_disk_hysteresis(self):
         gate = DiskAdmission(.9, .8)
         self.assertTrue(gate.update(.89)); self.assertFalse(gate.update(.91)); self.assertFalse(gate.update(.85)); self.assertTrue(gate.update(.8))

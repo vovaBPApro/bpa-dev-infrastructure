@@ -98,6 +98,28 @@ assert_output_has "$secret_output" 'LAND step=secret-scan status=fail'
 assert_output_lacks "$secret_output" "${secret_prefix}${secret_suffix}"
 assert test "$(git -C "$fixture_root/secret-repo" rev-parse HEAD)" = "$(git -C "$fixture_root/secret-repo" rev-parse main)"
 
+make_fixture typechange-secret
+printf 'public\n' > "$fixture_root/typechange-secret-repo/public.txt"
+ln -s public.txt "$fixture_root/typechange-secret-repo/swap.txt"
+git -C "$fixture_root/typechange-secret-repo" add public.txt swap.txt
+git -C "$fixture_root/typechange-secret-repo" commit -m symlink-base >/dev/null
+typechange_secret_sha=$(make_lane "$fixture_root/typechange-secret-repo" ag-typechange-secret)
+typechange_secret_prefix=$(printf '%s%s' 'gh' 'p_')
+typechange_secret_value="${typechange_secret_prefix}$(printf 't%.0s' $(seq 1 36))"
+git -C "$fixture_root/typechange-secret-repo" checkout ag-typechange-secret >/dev/null
+rm "$fixture_root/typechange-secret-repo/swap.txt"
+printf '%s\n' "$typechange_secret_value" > "$fixture_root/typechange-secret-repo/swap.txt"
+git -C "$fixture_root/typechange-secret-repo" add swap.txt
+git -C "$fixture_root/typechange-secret-repo" commit -m typechange-secret >/dev/null
+typechange_secret_sha=$(git -C "$fixture_root/typechange-secret-repo" rev-parse HEAD)
+git -C "$fixture_root/typechange-secret-repo" checkout main >/dev/null
+report "$fixture_root/typechange-secret-report.md" "$typechange_secret_sha"
+typechange_secret_output="$fixture_root/typechange-secret-output.txt"
+if "$land" --branch ag-typechange-secret --report "$fixture_root/typechange-secret-report.md" --repo "$fixture_root/typechange-secret-repo" >"$typechange_secret_output" 2>&1; then exit 1; fi
+assert_output_has "$typechange_secret_output" 'LAND step=secret-scan status=fail'
+assert_output_lacks "$typechange_secret_output" "$typechange_secret_value"
+assert test "$(git -C "$fixture_root/typechange-secret-repo" rev-parse HEAD)" = "$(git -C "$fixture_root/typechange-secret-repo" rev-parse main)"
+
 make_fixture binary-secret
 binary_secret_sha=$(make_lane "$fixture_root/binary-secret-repo" ag-binary-secret)
 binary_secret_prefix=$(printf '%s%s' 'gh' 'p_')
@@ -179,5 +201,17 @@ no_push_output="$fixture_root/no-push-output.txt"
 assert_output_has "$no_push_output" 'LAND step=post-merge-verify status=skipped'
 assert_output_has "$no_push_output" 'LAND step=push status=skipped'
 assert test "$(git --git-dir="$fixture_root/no-push-origin.git" rev-parse main)" = "$origin_before"
+
+make_fixture no-push-reap-fail
+no_push_reap_fail_sha=$(make_lane "$fixture_root/no-push-reap-fail-repo" ag-no-push-reap-fail)
+report "$fixture_root/no-push-reap-fail-report.md" "$no_push_reap_fail_sha"
+origin_before=$(git --git-dir="$fixture_root/no-push-reap-fail-origin.git" rev-parse main)
+git -C "$fixture_root/no-push-reap-fail-repo" worktree add "$fixture_root/no-push-reap-fail-worktree" ag-no-push-reap-fail >/dev/null
+no_push_reap_fail_output="$fixture_root/no-push-reap-fail-output.txt"
+if "$land" --branch ag-no-push-reap-fail --report "$fixture_root/no-push-reap-fail-report.md" --repo "$fixture_root/no-push-reap-fail-repo" --no-push >"$no_push_reap_fail_output" 2>&1; then exit 1; fi
+assert_output_has "$no_push_reap_fail_output" 'LAND verdict=landed-local-reap-failed sha='
+assert_not grep -Fq 'LAND verdict=aborted' "$no_push_reap_fail_output"
+assert git -C "$fixture_root/no-push-reap-fail-repo" merge-base --is-ancestor "$no_push_reap_fail_sha" HEAD
+assert test "$(git --git-dir="$fixture_root/no-push-reap-fail-origin.git" rev-parse main)" = "$origin_before"
 
 echo "land tests: pass"

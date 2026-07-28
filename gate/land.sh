@@ -51,6 +51,10 @@ land_reap_fail() {
     echo "LAND verdict=landed-reap-failed sha=$merge_sha" >&2
     exit 1
   fi
+  if [ "$merged" = true ]; then
+    echo "LAND verdict=landed-local-reap-failed sha=$merge_sha" >&2
+    exit 1
+  fi
   land_fail reap
 }
 
@@ -103,12 +107,16 @@ while IFS= read -r -d '' changed_file; do
     echo "LAND secret-scan unreadable file=$changed_file" >&2
     land_fail secret-scan 2
   fi
-  scan_count_file=$(mktemp)
-  git -C "$repo" show "$branch:$changed_file" | LC_ALL=C grep -aE -c "$secret_pattern" > "$scan_count_file"
-  scan_status=("${PIPESTATUS[@]}")
-  line_count=$(<"$scan_count_file")
-  rm -f "$scan_count_file"
-  if [ "${scan_status[0]}" -ne 0 ] || { [ "${scan_status[1]}" -ne 0 ] && [ "${scan_status[1]}" -ne 1 ]; }; then
+  # Preserve both pipeline statuses without allocating a file for each blob.
+  scan_result=$(
+    git -C "$repo" show "$branch:$changed_file" | LC_ALL=C grep -aE -c "$secret_pattern"
+    scan_status=("${PIPESTATUS[@]}")
+    printf '__LAND_SCAN_STATUS__ %s %s\n' "${scan_status[0]}" "${scan_status[1]}"
+  )
+  scan_status_line=${scan_result##*$'\n'}
+  line_count=${scan_result%$'\n'*}
+  read -r scan_marker scan_show_status scan_grep_status <<< "$scan_status_line"
+  if [ "$scan_marker" != '__LAND_SCAN_STATUS__' ] || [ "$scan_show_status" -ne 0 ] || { [ "$scan_grep_status" -ne 0 ] && [ "$scan_grep_status" -ne 1 ]; }; then
     echo "LAND secret-scan unreadable file=$changed_file" >&2
     land_fail secret-scan 2
   fi
@@ -116,7 +124,7 @@ while IFS= read -r -d '' changed_file; do
     echo "LAND secret-scan match file=$changed_file lines=$line_count" >&2
     secret_hits=$((secret_hits + line_count))
   fi
-done < <(git -C "$repo" -c core.quotepath=false diff --name-only -z --diff-filter=ACMR "$merge_base..$branch")
+done < <(git -C "$repo" -c core.quotepath=false diff --name-only -z --diff-filter=ACMRT "$merge_base..$branch")
 if [ "$secret_hits" -ne 0 ]; then
   land_fail secret-scan 2
 fi

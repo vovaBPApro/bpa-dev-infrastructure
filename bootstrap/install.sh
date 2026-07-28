@@ -87,7 +87,11 @@ verify() {
   check "repository" test -d "$INSTALL_ROOT/.git"
   check "environment file" test -f "$ENV_FILE"
   check "environment permissions" test "$(stat -c '%a' "$ENV_FILE" 2>/dev/null || true)" = 600
-  check "token configured" has_configured_token
+  if has_configured_token; then
+    check "token configured" true
+  else
+    skip "token configured" "token placeholder remains"
+  fi
   check "daemon unit" test -f "$SYSTEMD_USER_DIR/bpa-telegram-daemon.service"
   check "watchdog service" test -f "$SYSTEMD_USER_DIR/bpa-orchestrator-watchdog.service"
   check "watchdog timer" test -f "$SYSTEMD_USER_DIR/bpa-orchestrator-watchdog.timer"

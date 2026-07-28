@@ -27,6 +27,8 @@ BUN_BIN="${BUN_BIN:-bun}"
 BOOTSTRAP_SCRIPT="${MORNING_BOOTSTRAP_SCRIPT:-$REPO_ROOT/bootstrap/install.sh}"
 MISSION_CLI="${MORNING_MISSION_CLI:-$REPO_ROOT/core/mission-cli.ts}"
 STAND_SCRIPT="${MORNING_STAND_SCRIPT:-$REPO_ROOT/stand/matrix.sh}"
+INSTALL_ROOT="${ORCH_INSTALL_ROOT:-${INSTALL_ROOT:-$REPO_ROOT}}"
+DISK_ALERT_PCT="${DISK_ALERT_PCT:-80}"
 TABLE_FILE="$(mktemp)"
 DETAIL_FILE="$(mktemp)"
 trap 'rm -f "$TABLE_FILE" "$DETAIL_FILE" "${OUTBOX_TMP:-}"' EXIT
@@ -86,10 +88,23 @@ run_systemd_check() {
   fi
 }
 
+run_disk_check() {
+  local pct
+  pct="$(df -P "$INSTALL_ROOT" 2>/dev/null | awk 'NR == 2 { value=$5; sub(/%$/, "", value); print value }')"
+  if [[ ! "$pct" =~ ^[0-9]+$ ]]; then
+    row SKIP 'disk pressure' "df unavailable for $INSTALL_ROOT"
+  elif (( pct >= DISK_ALERT_PCT )); then
+    row FAIL 'disk pressure' "pct=$pct threshold=$DISK_ALERT_PCT"
+  else
+    row PASS 'disk pressure' "pct=$pct threshold=$DISK_ALERT_PCT"
+  fi
+}
+
 run_bootstrap
 run_status
 run_stand
 run_systemd_check
+run_disk_check
 
 if (( RESULT != 0 )); then
   printf 'Morning readiness failed; digest was not delivered.\n' >&2

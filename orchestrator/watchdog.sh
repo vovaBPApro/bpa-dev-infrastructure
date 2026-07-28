@@ -17,6 +17,12 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MISSION_CLI="${ORCH_MISSION_CLI:-$REPO_DIR/core/mission-cli.ts}"
 STATE_DB="${ORCH_STATE_DB:-$REPO_DIR/runtime/state.db}"
 LEASE_FILE="${ORCH_LEASE_FILE:-$RUNTIME_DIR/orchestrator.lease}"
+INSTALL_ROOT="${ORCH_INSTALL_ROOT:-${INSTALL_ROOT:-$REPO_DIR}}"
+NUDGE_OUTBOX_FILE="${NUDGE_OUTBOX_FILE:-$RUNTIME_DIR/nudges.outbox}"
+FLEET_IDLE_NUDGE_MS="${FLEET_IDLE_NUDGE_MS:-900000}"
+FLEET_NUDGE_REPEAT_MS="${FLEET_NUDGE_REPEAT_MS:-3600000}"
+DISK_ALERT_PCT="${DISK_ALERT_PCT:-80}"
+NUDGE_RATE_FILE="${NUDGE_RATE_FILE:-$RUNTIME_DIR/nudge-rate.tsv}"
 
 log() { mkdir -p "$RUNTIME_DIR"; printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$LOG_FILE"; }
 pane_pid() { tmux list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -n 1; }
@@ -42,6 +48,78 @@ heartbeat_stale() {
   [[ "$modified" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]] || return 1
   (( now - modified > HEARTBEAT_MAX_AGE ))
 }
+
+# The watchdog timer is the sole writer of the nudge outbox and rate file.
+# Each update is written to a same-directory temporary file then renamed, so a
+# Telegram reader observes either the old complete file or the new complete file.
+append_nudge() {
+  local line="$1" tmp
+  mkdir -p "$(dirname "$NUDGE_OUTBOX_FILE")"
+  tmp="$(mktemp "$(dirname "$NUDGE_OUTBOX_FILE")/.nudges.outbox.XXXXXX")"
+  [[ -f "$NUDGE_OUTBOX_FILE" ]] && cat "$NUDGE_OUTBOX_FILE" > "$tmp"
+  printf '%s\n' "$line" >> "$tmp"
+  mv -f "$tmp" "$NUDGE_OUTBOX_FILE"
+}
+
+nudge_due() {
+  local kind="$1" key="$2" now="$3" last=0
+  [[ "$now" =~ ^[0-9]+$ ]] || return 1
+  if [[ -f "$NUDGE_RATE_FILE" ]]; then
+    last="$(awk -F '\t' -v kind="$kind" -v key="$key" '$1 == kind && $2 == key { value=$3 } END { print value+0 }' "$NUDGE_RATE_FILE")"
+  fi
+  (( now - last >= FLEET_NUDGE_REPEAT_MS ))
+}
+
+record_nudge() {
+  local kind="$1" key="$2" now="$3" tmp
+  mkdir -p "$(dirname "$NUDGE_RATE_FILE")"
+  tmp="$(mktemp "$(dirname "$NUDGE_RATE_FILE")/.nudge-rate.XXXXXX")"
+  [[ -f "$NUDGE_RATE_FILE" ]] && awk -F '\t' -v kind="$kind" -v key="$key" '!($1 == kind && $2 == key)' "$NUDGE_RATE_FILE" > "$tmp"
+  printf '%s\t%s\t%s\n' "$kind" "$key" "$now" >> "$tmp"
+  mv -f "$tmp" "$NUDGE_RATE_FILE"
+}
+
+check_disk_pressure() {
+  local pct now
+  pct="$(df -P "$INSTALL_ROOT" 2>/dev/null | awk 'NR == 2 { value=$5; sub(/%$/, "", value); print value }')"
+  [[ "$pct" =~ ^[0-9]+$ ]] || { log "SKIP reason=disk-stat-unavailable root=$INSTALL_ROOT"; return; }
+  if (( pct >= DISK_ALERT_PCT )); then
+    log "WATCHDOG disk-pressure pct=$pct root=$INSTALL_ROOT"
+    now="${ORCH_WATCHDOG_NOW_MS:-$(( $(date +%s) * 1000 ))}"
+    if nudge_due disk "$INSTALL_ROOT" "$now"; then
+      append_nudge "NUDGE disk-pressure pct=$pct root=$INSTALL_ROOT"
+      record_nudge disk "$INSTALL_ROOT" "$now"
+    fi
+  fi
+}
+
+check_mission_pressure() {
+  local status_output now
+  state_available || { log "SKIP reason=mission-pressure-state-db-absent path=$STATE_DB"; return; }
+  if ! status_output="$(mission_cli status 2>/dev/null)"; then
+    log "SKIP reason=mission-pressure-status-unavailable"
+    return
+  fi
+  now="${ORCH_WATCHDOG_NOW_MS:-$(( $(date +%s) * 1000 ))}"
+  while IFS=$'\t' read -r correlation open_lanes active updated_at; do
+    [[ -n "$correlation" ]] || continue
+    [[ "$open_lanes" =~ ^[0-9]+$ && "$active" =~ ^[0-9]+$ && "$updated_at" =~ ^[0-9]+$ ]] || continue
+    if (( open_lanes > 0 && active == 0 && now - updated_at >= FLEET_IDLE_NUDGE_MS )) && nudge_due mission "$correlation" "$now"; then
+      append_nudge "NUDGE mission=$correlation open_lanes=$open_lanes active=$active idle_ms=$(( now - updated_at ))"
+      record_nudge mission "$correlation" "$now"
+    fi
+  done < <(printf '%s' "$status_output" | bun -e '
+const input = await Bun.stdin.text();
+const status = JSON.parse(input);
+for (const mission of status.missions) {
+  const lanes = status.lanes.filter((lane) => lane.missionId === mission.id);
+  const active = status.leases.filter((lease) => lanes.some((lane) => lane.id === lease.key)).length;
+  console.log([mission.correlationId, lanes.length, active, mission.updatedAt].join("\t"));
+}')
+}
+
+check_disk_pressure
+check_mission_pressure
 
 if state_available; then
   if ! lease_state; then

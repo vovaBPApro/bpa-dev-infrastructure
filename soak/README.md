@@ -20,3 +20,16 @@ quality, network/provider behavior, Codex availability, or quota limits.
 
 Run the fast CI fixture with `bash soak/soak.test.sh`; run the acceptance soak
 with `bash soak/soak.sh 10`.
+
+## Failure-injection matrix
+
+`bash soak/chaos.sh` builds separate disposable repositories and state databases
+for nine deterministic failure modes. It invokes the real landing gates,
+mission CLI, watchdog tick, and hygiene reaper as black boxes. Each scenario
+prints `CHAOS scenario=<name> verdict=PASS|FAIL detail=...`; the final total is
+non-zero on any failed reaction assertion. The matrix covers missing and
+duplicate reports, killed landing, batch conflicts and secrets, orphaned
+worktrees, disk-pressure nudge rate limiting, fenced lease restart, and a
+mixed-fate ten-lane run. It never contacts an LLM or a network origin.
+
+Run the CI-cheap subset with `bash soak/chaos.test.sh` (under 30 seconds).

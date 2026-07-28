@@ -19,9 +19,8 @@ class CanaryTest(unittest.TestCase):
 
     def test_docker_adapter_short_mode_schema(self):
         with tempfile.TemporaryDirectory() as td:
-            evidence = docker_run(str(Path(td) / "docker.json"), soak_seconds=1, short=True, execute=False)
-            self.assertEqual(evidence["schema"], 2)
-            self.assertTrue(evidence["fail_closed"])
+            with self.assertRaises(ValueError):
+                docker_run(str(Path(td) / "docker.json"), soak_seconds=1, short=True, execute=False)
 
 
 if __name__ == "__main__": unittest.main()

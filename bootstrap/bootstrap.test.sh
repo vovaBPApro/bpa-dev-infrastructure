@@ -48,18 +48,24 @@ printf '%s\n' \
   '[Service]' \
   "ExecStart=$verify_fixture/root/orchestrator/full-suite.sh" > "$verify_fixture/config/systemd/user/bpa-full-suite.service"
 printf '%s\n' '[Timer]' > "$verify_fixture/config/systemd/user/bpa-full-suite.timer"
+printf '%s\n' \
+  '[Service]' \
+  "ExecStart=$verify_fixture/root/orchestrator/morning.sh" > "$verify_fixture/config/systemd/user/orch-morning-report.service"
+printf '%s\n' '[Timer]' > "$verify_fixture/config/systemd/user/orch-morning-report.timer"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/bin/bun"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$verify_fixture/bin/systemctl"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "Linger=yes"' > "$verify_fixture/bin/loginctl"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/root/workspace/workspace.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/root/orchestrator/watchdog.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/root/orchestrator/full-suite.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/root/orchestrator/morning.sh"
 printf '%s\n' 'disabled by --no-cron' > "$verify_fixture/root/runtime/hygiene-cron.skip"
 for command_name in git curl tmux; do
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/bin/$command_name"
 done
 chmod 700 "$verify_fixture/bin"/*
 chmod 700 "$verify_fixture/root/workspace/workspace.sh"
-chmod 700 "$verify_fixture/root/orchestrator/watchdog.sh" "$verify_fixture/root/orchestrator/full-suite.sh"
+chmod 700 "$verify_fixture/root/orchestrator/watchdog.sh" "$verify_fixture/root/orchestrator/full-suite.sh" "$verify_fixture/root/orchestrator/morning.sh"
 verify_output="$(PATH="$verify_fixture/bin:$PATH" \
   INSTALL_ROOT="$verify_fixture/root" \
   ENV_FILE="$verify_fixture/root/.env" \
@@ -71,8 +77,11 @@ grep -Fq 'SKIP daemon enabled' <<<"$verify_output"
 for expected in \
   'PASS state-db' \
   'PASS workspace' \
+  'PASS linger' \
   'SKIP hygiene-cron' \
   'PASS gate' \
+  'PASS morning service' \
+  'PASS morning timer' \
   'PASS unit Exec paths'; do
   grep -Fq "$expected" <<<"$verify_output"
 done
@@ -101,6 +110,43 @@ printf '%s\n' \
   '[Service]' \
   "ExecStart=$verify_fixture/root/orchestrator/watchdog.sh" > "$verify_fixture/config/systemd/user/bpa-orchestrator-watchdog.service"
 
+rm "$verify_fixture/config/systemd/user/orch-morning-report.timer"
+if missing_morning_output="$(PATH="$verify_fixture/bin:$PATH" \
+  INSTALL_ROOT="$verify_fixture/root" \
+  ENV_FILE="$verify_fixture/root/.env" \
+  XDG_CONFIG_HOME="$verify_fixture/config" \
+  BUN_BIN="$verify_fixture/bin/bun" \
+  "$INSTALLER" --verify 2>&1)"; then
+  echo 'ERROR: verify accepted a missing morning timer' >&2
+  exit 1
+fi
+grep -Fq 'FAIL morning timer' <<<"$missing_morning_output"
+printf '%s\n' 'FAIL-BEFORE missing morning timer'
+grep '^FAIL morning timer' <<<"$missing_morning_output"
+printf '%s\n' '[Timer]' > "$verify_fixture/config/systemd/user/orch-morning-report.timer"
+
+chmod 644 "$verify_fixture/root/.env"
+printf '%s\n' 'FAIL-BEFORE loose environment permissions'
+[[ "$(stat -c '%a' "$verify_fixture/root/.env")" == 644 ]]
+BOOTSTRAP_LIB_ONLY=true \
+  ENV_FILE="$verify_fixture/root/.env" \
+  INSTALL_ROOT="$verify_fixture/root" \
+  INSTALLER_PATH="$INSTALLER" \
+  bash -c 'source "$INSTALLER_PATH"; render_environment'
+[[ "$(stat -c '%a' "$verify_fixture/root/.env")" == 600 ]]
+
+printf '%s\n' 'fixture-token' > "$verify_fixture/env-target"
+ln -s "$verify_fixture/env-target" "$verify_fixture/symlinked.env"
+if BOOTSTRAP_LIB_ONLY=true \
+  ENV_FILE="$verify_fixture/symlinked.env" \
+  INSTALL_ROOT="$verify_fixture/root" \
+  INSTALLER_PATH="$INSTALLER" \
+  bash -c 'source "$INSTALLER_PATH"; render_environment'; then
+  echo 'ERROR: installer accepted a symlinked environment file' >&2
+  exit 1
+fi
+printf '%s\n' 'FAIL-BEFORE symlinked environment file'
+
 printf '%s\n' 'TELEGRAM_BOT_TOKEN=__OPERATOR_PASTE_TELEGRAM_BOT_TOKEN_HERE__' > "$verify_fixture/root/.env"
 placeholder_output="$(PATH="$verify_fixture/bin:$PATH" \
   INSTALL_ROOT="$verify_fixture/root" \
@@ -110,6 +156,16 @@ placeholder_output="$(PATH="$verify_fixture/bin:$PATH" \
   "$INSTALLER" --verify)"
 grep -Fq 'SKIP token configured' <<<"$placeholder_output"
 
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "Linger=no"' > "$verify_fixture/bin/loginctl"
+linger_warning="$(PATH="$verify_fixture/bin:$PATH" \
+  INSTALL_ROOT="$verify_fixture/root" \
+  ENV_FILE="$verify_fixture/root/.env" \
+  INSTALLER_PATH="$INSTALLER" \
+  BOOTSTRAP_LIB_ONLY=true \
+  bash -c 'source "$INSTALLER_PATH"; warn_if_linger_disabled' 2>&1)"
+grep -Fq 'WARNING: user lingering is disabled' <<<"$linger_warning"
+grep -Fq "loginctl enable-linger $USER" <<<"$linger_warning"
+
 # Render deployable unit inputs without requiring host envsubst. Temporary test
 # fixtures are intentionally outside this sweep; bootstrap inputs may never
 # retain the retired host root.
@@ -117,6 +173,9 @@ rendered_units="$(for template in "$SCRIPT_DIR"/units/*.in; do
   # shellcheck disable=SC2016 # preserve template placeholders for sed
   sed 's|\$INSTALL_ROOT|/home/bpa-dev-infrastructure|g; s|\$ENV_FILE|/home/bpa-dev-infrastructure/.env|g; s|\$BUN_BIN|/root/.bun/bin/bun|g' "$template"
 done)"
+grep -Fq 'WorkingDirectory=/home/bpa-dev-infrastructure/orchestrator' <<<"$rendered_units"
+grep -Fq 'EnvironmentFile=/home/bpa-dev-infrastructure/.env' <<<"$rendered_units"
+grep -Fq 'ExecStart=/home/bpa-dev-infrastructure/orchestrator/morning.sh' <<<"$rendered_units"
 if grep -RInF '/home/bpa-shell' "$INSTALLER" "$SCRIPT_DIR/env.template" "$SCRIPT_DIR/units" >/dev/null; then
   echo 'ERROR: legacy /home/bpa-shell reference found in bootstrap input' >&2
   exit 1
@@ -126,7 +185,7 @@ if grep -Fq '/home/bpa-shell' <<<"$rendered_units"; then
   exit 1
 fi
 
-docker run --rm -v "$SCRIPT_DIR:/bootstrap:ro" koalaman/shellcheck:stable \
+docker run --rm -v "$SCRIPT_DIR:/bootstrap:ro" koalaman/shellcheck:v0.10.0 \
   /bootstrap/install.sh /bootstrap/bootstrap.test.sh
 
 secret_pattern='('

@@ -31,7 +31,7 @@ class RuntimeManager:
         if evidence_store and image_digest is None:
             raise ValueError("image digest required for persisted rollback evidence")
         if lifecycle is not None:
-            if prior_commit is None: prior_commit = lifecycle.capture_source()
+            prior_commit = lifecycle.capture_source()
             if lifecycle.current_commit() != expected_commit:
                 raise ValueError("lifecycle target mismatch")
             actual_image_digest = lifecycle.current_image_digest()

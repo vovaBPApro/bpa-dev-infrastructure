@@ -1,0 +1,11 @@
+[Unit]
+Description=BPA orchestrator watchdog
+After=bpa-telegram-daemon.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=$INSTALL_ROOT/daemon
+EnvironmentFile=$ENV_FILE
+ExecStart=$INSTALL_ROOT/daemon/orchestrator-watchdog.sh
+NoNewPrivileges=true
+PrivateTmp=true

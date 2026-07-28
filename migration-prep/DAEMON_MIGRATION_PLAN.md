@@ -25,3 +25,6 @@ do not blindly copy it into the Python runtime.
    irreversible production set.
 
 No active data or legacy worktrees are moved by this plan.
+
+The exact pre-coding, stand, parity and cutover gates are recorded in
+[`BUN_PARALLEL_STAND_ACCEPTANCE.md`](BUN_PARALLEL_STAND_ACCEPTANCE.md).

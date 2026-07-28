@@ -60,7 +60,7 @@ lane() {
   git -C "$repo" rev-parse "$branch"
 }
 report() { printf 'commit: %s fixture\nverify: true\nresult: clean\nsecret-scan: clean\nremaining: none\n' "$2" > "$1"; }
-origin_main() { git --git-dir="$1/.git/../$(basename "$1")-origin.git" rev-parse main; }
+origin_main() { git --git-dir="$(dirname -- "$1")/$(basename -- "$1")-origin.git" rev-parse main; }
 poll_reap() {
   local db=$1 deadline=$(( $(now_ms) + 3000 )) out
   while [ "$(now_ms)" -lt "$deadline" ]; do
@@ -95,10 +95,10 @@ crash-mid-landing() {
   # The verify shell kills its parent (land.sh) after merge and before push/reap.
   # shellcheck disable=SC2016 # PPID belongs to the disposable verifier shell.
   printf 'commit: %s fixture\nverify: kill -9 "$PPID"\nresult: clean\nsecret-scan: clean\nremaining: none\n' "$sha" > "$fixture/crash.md"
-  before_origin=$(git --git-dir="$fixture/crash-mid-landing-origin.git" rev-parse main)
+  before_origin=$(origin_main "$repo")
   "$root/gate/land.sh" --branch ag-crash --report "$fixture/crash.md" --repo "$repo" --no-push --run-verify >"$fixture/logs/crash-land" 2>&1 & pid=$!
   wait "$pid" || true
-  after=$(git -C "$repo" rev-parse main); origin=$(git --git-dir="$fixture/crash-mid-landing-origin.git" rev-parse main)
+  after=$(git -C "$repo" rev-parse main); origin=$(origin_main "$repo")
   git -C "$repo" rev-parse --verify --quiet MERGE_HEAD >/dev/null && return 1
   # Recovery is allowed to complete or to make an honest guard refusal; no half merge reached origin.
   "$root/gate/land.sh" --branch ag-crash --report "$fixture/crash.md" --repo "$repo" --no-push >"$fixture/logs/crash-rerun" 2>&1 || has "$fixture/logs/crash-rerun" 'LAND step='
@@ -165,7 +165,6 @@ lease-fencing-under-restart() {
 ten-wide-with-mixed-fate() {
   local repo db mission i sha landed=0 origin_before origin_after token branches=0 worktrees=0
   repo=$(make_repo ten); db="$fixture/ten.db"; mission=$(cli "$db" mission create ten-wide | sed -n 's/^MISSION id=\([^ ]*\).*/\1/p'); cli "$db" mission transition "$mission" running >/dev/null
-  origin_before=$(git --git-dir="$fixture/ten-wide-with-mixed-fate-origin.git" rev-parse main)
   for i in $(seq 1 10); do
     sha=$(lane "$repo" "ag-ten-$i" "lanes/$i.txt" "$i")
     report "$fixture/ten-$i.md" "$sha"
@@ -173,17 +172,19 @@ ten-wide-with-mixed-fate() {
     cli "$db" lane transition "ten-$i" running >/dev/null
   done
   # six clean lanes land; every other fate is deliberately refused/recovered.
-  for i in 1 2 3 4 5 6; do "$root/gate/land.sh" --branch "ag-ten-$i" --report "$fixture/ten-$i.md" --repo "$repo" --no-push >"$fixture/logs/ten-$i" 2>&1 && landed=$((landed + 1)); done
+  for i in 1 2 3 4 5 6; do "$root/gate/land.sh" --branch "ag-ten-$i" --report "$fixture/ten-$i.md" --repo "$repo" >"$fixture/logs/ten-$i" 2>&1 && landed=$((landed + 1)); done
   "$root/gate/land.sh" --branch ag-ten-7 --report "$fixture/no-such-report.md" --repo "$repo" --no-push >"$fixture/logs/ten-7" 2>&1 && return 1
   token="gh"; token="${token}p_$(printf 'x%.0s' $(seq 1 36))"; git -C "$repo" checkout -q ag-ten-8; printf '%s\n' "$token" > "$repo/secret.txt"; git -C "$repo" add secret.txt && git -C "$repo" commit -m '[CODER] secret fate' >/dev/null; git -C "$repo" checkout -q main; report "$fixture/ten-8.md" "$(git -C "$repo" rev-parse ag-ten-8)"
   "$root/gate/land.sh" --branch ag-ten-8 --report "$fixture/ten-8.md" --repo "$repo" --no-push >"$fixture/logs/ten-8" 2>&1 && return 1
-  git -C "$repo" checkout -q ag-ten-9; printf conflict > "$repo/base.txt"; git -C "$repo" add base.txt && git -C "$repo" commit -m '[CODER] conflict fate' >/dev/null; git -C "$repo" checkout -q main; printf main-change > "$repo/base.txt"; git -C "$repo" add base.txt && git -C "$repo" commit -m '[ORCH] divergent base' >/dev/null; report "$fixture/ten-9.md" "$(git -C "$repo" rev-parse ag-ten-9)"
+  git -C "$repo" checkout -q ag-ten-9; printf conflict > "$repo/base.txt"; git -C "$repo" add base.txt && git -C "$repo" commit -m '[CODER] conflict fate' >/dev/null; git -C "$repo" checkout -q main; printf main-change > "$repo/base.txt"; git -C "$repo" add base.txt && git -C "$repo" commit -m '[ORCH] divergent base' >/dev/null; git -C "$repo" push origin main >/dev/null; report "$fixture/ten-9.md" "$(git -C "$repo" rev-parse ag-ten-9)"
   "$root/gate/land.sh" --branch ag-ten-9 --report "$fixture/ten-9.md" --repo "$repo" --no-push >"$fixture/logs/ten-9" 2>&1 && return 1
   # shellcheck disable=SC2016 # PPID belongs to the disposable verifier shell.
   printf 'commit: %s fixture\nverify: kill -9 "$PPID"\nresult: clean\nsecret-scan: clean\nremaining: none\n' "$(git -C "$repo" rev-parse ag-ten-10)" > "$fixture/ten-10.md"
+  # The crash-injected no-push land must not publish its half-completed merge.
+  origin_before=$(origin_main "$repo")
   "$root/gate/land.sh" --branch ag-ten-10 --report "$fixture/ten-10.md" --repo "$repo" --no-push --run-verify >"$fixture/logs/ten-10" 2>&1 & wait "$!" || true
   git -C "$repo" merge --abort >/dev/null 2>&1 || true; git -C "$repo" worktree prune
-  origin_after=$(git --git-dir="$fixture/ten-wide-with-mixed-fate-origin.git" rev-parse main)
+  origin_after=$(origin_main "$repo")
   for i in $(seq 1 6); do cli "$db" lane transition "ten-$i" succeeded >/dev/null; done
   for i in 7 8 9 10; do cli "$db" lane transition "ten-$i" failed >/dev/null; done
   cli "$db" mission transition "$mission" failed >/dev/null

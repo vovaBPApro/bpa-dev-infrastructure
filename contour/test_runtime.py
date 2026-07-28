@@ -15,6 +15,18 @@ class RuntimeWiringTest(unittest.TestCase):
         r.submit("m", "w", now=0)
         self.assertEqual(r.watchdog(now=481), {"m": "retry"})
 
+    def test_verify_rollback_and_mismatch_guards(self):
+        import subprocess, tempfile, os
+        root = os.path.dirname(os.path.dirname(__file__))
+        head = subprocess.check_output(["git", "-C", root, "rev-parse", "HEAD"], text=True).strip()
+        with tempfile.TemporaryDirectory() as d:
+            path = d + "/evidence.jsonl"
+            got = RuntimeManager().verify_rollback(root, head, image_digest="sha:x", actual_image_digest="sha:x", evidence_store=path)
+            self.assertTrue(got["verified"])
+            self.assertIn('"verified":true', open(path).read())
+            with self.assertRaises(ValueError): RuntimeManager().verify_rollback(root, "bad", image_digest="sha:x", actual_image_digest="sha:x")
+            with self.assertRaises(ValueError): RuntimeManager().verify_rollback(root, head, image_digest="sha:x", actual_image_digest="sha:y")
+
 
 if __name__ == "__main__":
     unittest.main()

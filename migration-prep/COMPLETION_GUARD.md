@@ -47,3 +47,5 @@ or absent fixture into green.
 
 This guard is part of the orchestrator prompt/bootstrap and must be checked by
 the independent reviewer before a migration cutover is accepted.
+
+The step-by-step contract is [`ORCHESTRATOR_EXECUTION_CONTRACT.md`](ORCHESTRATOR_EXECUTION_CONTRACT.md).

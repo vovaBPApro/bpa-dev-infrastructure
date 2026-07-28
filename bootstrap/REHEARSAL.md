@@ -19,10 +19,8 @@ docker run --rm -v "$scratch/source:/src:ro" ubuntu:24.04 bash -lc '
   git clone /src /work/bpa-dev-infrastructure >/dev/null
   cd /work/bpa-dev-infrastructure
   INSTALL_ROOT=/opt/bpa bootstrap/install.sh --dry-run
-  INSTALL_ROOT=/opt/bpa REPO_URL=/src bootstrap/install.sh
+  INSTALL_ROOT=/opt/bpa REPO_URL=/src bootstrap/install.sh --no-cron
   INSTALL_ROOT=/opt/bpa bootstrap/install.sh --verify
-  cd /opt/bpa/daemon
-  /root/.bun/bin/bun test
 '
 ```
 
@@ -42,16 +40,37 @@ docker run --rm -v "$scratch/source:/src:ro" ubuntu:24.04 bash -lc '
   rehearsal. Verification reports that condition as `SKIP`.
 - A Docker bind mount can trigger Git's dubious-ownership safeguard. The
   harness marks only `/src/.git` as safe before cloning its read-only copy.
+- `--no-cron` is the container-safe switch: it avoids installing a cron daemon
+  in the throwaway image and records the verification row as a reasoned `SKIP`.
+- The installer exports the Bun binary directory before its test gate. This is
+  required because gate tests spawn `bun` by name rather than using `BUN_BIN`.
 
 `bootstrap/bootstrap.test.sh` includes a fixture that proves unavailable
 user-systemd and an unconfigured token are reported as `SKIP`.
 
-## Final transcript tail
+## Latest transcript tail (NO-GO)
 
 ```text
-PLAN apt          check git, curl, tmux, envsubst, unzip, and xz; install missing Ubuntu packages
-PLAN bun          install Bun 1.2.20 if /root/.bun/bin/bun is absent
+PLAN apt          check git, curl, tmux, envsubst, unzip, and xz; install cron unless --no-cron is set
+PLAN bun          install Bun 1.3.14 if /root/.bun/bin/bun is absent
 PLAN repository   clone or fast-forward update /opt/bpa from REPO_URL
+PLAN state-db     initialize /opt/bpa/runtime/state.db with core/mission-cli.ts status
+PLAN workspace    make workspace/workspace.sh sync capability available
+PLAN hygiene      install hygiene cron unless --no-cron is set
+PLAN test-gate    run the full daemon, core, gate, stand, and workspace test sweep
+{"missions":[],"lanes":[],"leases":[]}
+Hygiene cron skipped: --no-cron.
+INSTALL GATE: daemon tests
+Ran 21 tests across 2 files. [33.00ms]
+INSTALL GATE: core tests
+Ran 10 tests across 2 files. [1283.00ms]
+INSTALL GATE: gate tests
+Ran 7 tests across 1 file. [440.00ms]
+INSTALL GATE: stand tests
+Ran 8 tests across 2 files. [32.00ms]
+INSTALL GATE: workspace tests
+workspace tests: PASS
+INSTALL GATE: PASS full sweep
 User systemd is unavailable; units were rendered only. On a VM with a user session, run:
   systemctl --user daemon-reload
   systemctl --user enable --now bpa-telegram-daemon.service bpa-orchestrator-watchdog.timer
@@ -64,6 +83,12 @@ PASS bun
 PASS repository
 PASS environment file
 PASS environment permissions
+PASS state-db
+PASS workspace
+SKIP hygiene-cron             disabled by --no-cron
+usage: bun gate/completion-guard.ts --report <file> --repo <path> [--branch <name>] [--run-verify]
+FAIL gate
+SKIP stand                    docker command unavailable
 SKIP token configured         token placeholder remains
 PASS daemon unit
 PASS watchdog service
@@ -71,12 +96,13 @@ PASS watchdog timer
 SKIP user systemd             no user-systemd session
 SKIP daemon enabled           user-systemd unavailable
 SKIP watchdog enabled         user-systemd unavailable
-
-bun test v1.2.20
- 21 pass
- 0 fail
-Ran 21 tests across 2 files.
 ```
+
+The complete install-time test sweep passed in the clean Ubuntu container.
+The rehearsal remains `NO-GO`: `gate/completion-guard.ts --help` exits 2,
+although HR-04 requires that command to exit 0. This lane is restricted to
+`bootstrap/`, so the required gate CLI fix must land in its owning component;
+the bootstrap verifier intentionally fails closed until then.
 
 ## Real VM-only steps
 

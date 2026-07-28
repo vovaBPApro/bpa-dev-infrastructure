@@ -3,22 +3,28 @@
 # Secrets are never accepted on the command line; edit INSTALL_ROOT/.env locally.
 set -euo pipefail
 
-BUN_VERSION="${BUN_VERSION:-1.2.20}"
+BUN_VERSION="${BUN_VERSION:-1.3.14}"
 INSTALL_ROOT="${INSTALL_ROOT:-/home/bpa-dev-infrastructure}"
 DRY_RUN=false
 VERIFY=false
+NO_CRON=false
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ENV_FILE="${ENV_FILE:-$INSTALL_ROOT/.env}"
 SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 BUN_BIN="${BUN_BIN:-$HOME/.bun/bin/bun}"
+RUNTIME_DIR="${RUNTIME_DIR:-$INSTALL_ROOT/runtime}"
+STATE_DB="${INFRA_STATE_DB:-$RUNTIME_DIR/state.db}"
+CRONTAB_CMD="${CRONTAB_CMD:-crontab}"
+HYGIENE_CRON_SKIP_FILE="$RUNTIME_DIR/hygiene-cron.skip"
 
 usage() {
   cat <<'EOF'
-Usage: bootstrap/install.sh [--dry-run | --verify]
+Usage: bootstrap/install.sh [--dry-run | --verify] [--no-cron]
 
-Environment overrides: INSTALL_ROOT, REPO_URL, BUN_VERSION, ENV_FILE, BUN_BIN.
+Environment overrides: INSTALL_ROOT, REPO_URL, BUN_VERSION, ENV_FILE, BUN_BIN,
+RUNTIME_DIR, INFRA_STATE_DB, and CRONTAB_CMD.
 The Telegram token is never accepted as an argument. Paste it into .env locally.
 EOF
 }
@@ -27,14 +33,20 @@ while (($#)); do
   case "$1" in
     --dry-run) DRY_RUN=true ;;
     --verify) VERIFY=true ;;
+    --no-cron) NO_CRON=true ;;
     -h|--help) usage; exit 0 ;;
     *) echo "ERROR: unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
   shift
 done
 
-if "$DRY_RUN" && "$VERIFY"; then
-  echo "ERROR: --dry-run and --verify cannot be combined" >&2
+if "$DRY_RUN" && { "$VERIFY" || "$NO_CRON"; }; then
+  echo "ERROR: --dry-run cannot be combined with --verify or --no-cron" >&2
+  exit 2
+fi
+
+if "$VERIFY" && "$NO_CRON"; then
+  echo "ERROR: --verify and --no-cron cannot be combined" >&2
   exit 2
 fi
 
@@ -45,10 +57,14 @@ systemd_user_available() {
 }
 
 print_plan() {
-  plan "apt" "check git, curl, tmux, envsubst, unzip, and xz; install missing Ubuntu packages"
+  plan "apt" "check git, curl, tmux, envsubst, unzip, and xz; install cron unless --no-cron is set"
   plan "bun" "install Bun ${BUN_VERSION} if $BUN_BIN is absent"
   plan "repository" "clone or fast-forward update $INSTALL_ROOT from REPO_URL"
   plan "environment" "create $ENV_FILE from bootstrap/env.template if absent (operator edits token locally)"
+  plan "state-db" "initialize $STATE_DB with core/mission-cli.ts status"
+  plan "workspace" "make workspace/workspace.sh sync capability available"
+  plan "hygiene" "install hygiene cron unless --no-cron is set"
+  plan "test-gate" "run the full daemon, core, gate, stand, and workspace test sweep"
   plan "units" "render daemon and watchdog systemd --user units in $SYSTEMD_USER_DIR"
   plan "activate" "reload user systemd and enable units when available; otherwise print VM activation instructions"
 }
@@ -77,6 +93,22 @@ has_configured_token() {
   [[ -f "$ENV_FILE" ]] && ! grep -q '^TELEGRAM_BOT_TOKEN=__OPERATOR_' "$ENV_FILE"
 }
 
+state_db_status() {
+  INFRA_STATE_DB="$STATE_DB" "$BUN_BIN" "$INSTALL_ROOT/core/mission-cli.ts" status >/dev/null
+}
+
+workspace_status() {
+  "$INSTALL_ROOT/workspace/workspace.sh" ls >/dev/null
+}
+
+hygiene_cron_status() {
+  "$CRONTAB_CMD" -l 2>/dev/null | grep -Fxq '# BEGIN bpa-dev-infrastructure hygiene'
+}
+
+gate_status() {
+  "$BUN_BIN" "$INSTALL_ROOT/gate/completion-guard.ts" --help >/dev/null
+}
+
 verify() {
   printf '%-6s %-24s\n' 'STATUS' 'CHECK'
   printf '%-6s %-24s\n' '------' '------------------------'
@@ -87,6 +119,21 @@ verify() {
   check "repository" test -d "$INSTALL_ROOT/.git"
   check "environment file" test -f "$ENV_FILE"
   check "environment permissions" test "$(stat -c '%a' "$ENV_FILE" 2>/dev/null || true)" = 600
+  check "state-db" state_db_status
+  check "workspace" workspace_status
+  if [[ -f "$HYGIENE_CRON_SKIP_FILE" ]]; then
+    skip "hygiene-cron" "$(<"$HYGIENE_CRON_SKIP_FILE")"
+  elif ! command -v "$CRONTAB_CMD" >/dev/null 2>&1; then
+    skip "hygiene-cron" "crontab command unavailable"
+  else
+    check "hygiene-cron" hygiene_cron_status
+  fi
+  check "gate" gate_status
+  if command -v docker >/dev/null 2>&1; then
+    check "stand" docker --version
+  else
+    skip "stand" "docker command unavailable"
+  fi
   if has_configured_token; then
     check "token configured" true
   else
@@ -127,6 +174,9 @@ ensure_prerequisites() {
   for command_name in "${!packages[@]}"; do
     command -v "$command_name" >/dev/null 2>&1 || missing+=("${packages[$command_name]}")
   done
+  if ! "$NO_CRON" && ! command -v crontab >/dev/null 2>&1; then
+    missing+=(cron)
+  fi
   if ((${#missing[@]})); then
     if ((EUID == 0)); then
       apt-get update
@@ -142,10 +192,13 @@ ensure_prerequisites() {
 }
 
 install_bun() {
+  local bun_directory
   if [[ ! -x "$BUN_BIN" ]]; then
     BUN_INSTALL="$HOME/.bun" curl -fsSL https://bun.sh/install | bash -s "bun-v$BUN_VERSION"
   fi
   "$BUN_BIN" --version >/dev/null
+  bun_directory="$(dirname "$BUN_BIN")"
+  export PATH="$bun_directory:$PATH"
 }
 
 repository_url() {
@@ -175,6 +228,42 @@ render_environment() {
     install -d -m 700 "$(dirname "$ENV_FILE")"
     install -m 600 "$SOURCE_ROOT/bootstrap/env.template" "$ENV_FILE"
   fi
+}
+
+initialize_state_db() {
+  install -d -m 700 "$RUNTIME_DIR"
+  INFRA_STATE_DB="$STATE_DB" "$BUN_BIN" "$INSTALL_ROOT/core/mission-cli.ts" status
+}
+
+install_hygiene_cron() {
+  if "$NO_CRON"; then
+    install -d -m 700 "$RUNTIME_DIR"
+    printf '%s\n' 'disabled by --no-cron' > "$HYGIENE_CRON_SKIP_FILE"
+    chmod 600 "$HYGIENE_CRON_SKIP_FILE"
+    echo 'Hygiene cron skipped: --no-cron.'
+    return
+  fi
+  rm -f "$HYGIENE_CRON_SKIP_FILE"
+  CRONTAB_CMD="$CRONTAB_CMD" "$INSTALL_ROOT/hygiene/install-cron.sh"
+}
+
+run_install_test_gate() {
+  echo 'INSTALL GATE: installing daemon dependencies'
+  (
+    cd "$INSTALL_ROOT/daemon"
+    "$BUN_BIN" install --frozen-lockfile
+  )
+  echo 'INSTALL GATE: daemon tests'
+  (cd "$INSTALL_ROOT/daemon" && "$BUN_BIN" test)
+  echo 'INSTALL GATE: core tests'
+  (cd "$INSTALL_ROOT" && "$BUN_BIN" test core/state.test.ts core/mission-cli.test.ts)
+  echo 'INSTALL GATE: gate tests'
+  (cd "$INSTALL_ROOT" && "$BUN_BIN" test gate/completion-guard.test.ts)
+  echo 'INSTALL GATE: stand tests'
+  (cd "$INSTALL_ROOT" && "$BUN_BIN" test stand/matrix.test.ts stand/stand.test.ts)
+  echo 'INSTALL GATE: workspace tests'
+  (cd "$INSTALL_ROOT" && bash workspace/workspace.test.sh)
+  echo 'INSTALL GATE: PASS full sweep'
 }
 
 render_units() {
@@ -211,6 +300,9 @@ ensure_prerequisites
 install_bun
 sync_repository
 render_environment
+initialize_state_db
+install_hygiene_cron
+run_install_test_gate
 render_units
 activate_units
 echo "Bootstrap completed. Run '$SCRIPT_DIR/install.sh --verify' after configuring the local token."

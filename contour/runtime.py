@@ -26,6 +26,10 @@ class RuntimeManager:
 
     def verify_rollback(self, root, expected_commit, *, prior_commit=None, image_digest=None,
                         actual_image_digest=None, evidence_store=None, lifecycle=None):
+        if evidence_store and lifecycle is None:
+            raise ValueError("lifecycle required for persisted rollback evidence")
+        if evidence_store and image_digest is None:
+            raise ValueError("image digest required for persisted rollback evidence")
         if lifecycle is not None:
             if prior_commit is None: prior_commit = lifecycle.capture_source()
             if lifecycle.current_commit() != expected_commit:

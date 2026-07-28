@@ -49,3 +49,17 @@
 - Same-vendor lock review may cover low-risk docs or narrow Tier-B fixes, but it
   still verifies the exact SHA and commands.
 - Unsure means risky.
+
+## Operating Boundaries
+
+- The orchestrator keeps dispatch, diagnosis, landing, and reporting separate
+  from authorship and review; a novel failure is delegated for diagnosis rather
+  than guessed.
+- A manager, when used, owns one bounded mission and one terminal rollup. The
+  flat coder-lane fleet remains bounded by capacity policy, not by a manager
+  hierarchy.
+- Coders and reviewers preserve the mission file allowlist/denylist and record
+  exact evidence. Reviewers cannot approve their own authored work.
+- Approved, reviewed dev-only work proceeds without a routine confirmation;
+  only the documented irreversible set is routed for an asynchronous operator
+  decision.

@@ -75,3 +75,29 @@ land_secret_scan() {
   done < <(git -C "$repo" -c core.quotepath=false diff --name-only -z --diff-filter=ACMRT "$merge_base..$branch")
   [ "$secret_hits" -eq 0 ]
 }
+
+land_payload_guard() {
+  local repo="$1" branch="$2" merge_base raw_entry changed_file
+  local old_mode new_mode change_status
+  merge_base=$(git -C "$repo" merge-base "$LAND_DEFAULT_BRANCH" "$branch") || return 2
+  while IFS= read -r -d '' raw_entry; do
+    IFS= read -r -d '' changed_file || return 2
+    read -r old_mode new_mode _ _ change_status <<< "${raw_entry#:}"
+    case "$change_status" in
+      A|M|T)
+        case "$new_mode" in
+          120000|160000)
+            echo "LAND step=payload-guard status=fail detail=mode-$new_mode path=$changed_file" >&2
+            return 1
+            ;;
+          100755)
+            if [ "$old_mode" != "100755" ] && [[ "$changed_file" != *.sh ]] && ! git -C "$repo" show "$branch:$changed_file" | head -c 2 | grep -Fqx '#!'; then
+              echo "LAND step=payload-guard status=fail detail=unexpected-executable path=$changed_file" >&2
+              return 1
+            fi
+            ;;
+        esac
+        ;;
+    esac
+  done < <(git -C "$repo" -c core.quotepath=false diff --raw -z --no-renames --diff-filter=AMT "$merge_base..$branch")
+}

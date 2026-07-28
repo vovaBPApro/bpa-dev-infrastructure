@@ -103,4 +103,48 @@ if "$batch" --branches ag-secret,ag-plain --reports "$fixture_root/secret.md,$fi
 assert_output_has "$secret_output" 'BATCH step=secret-scan branch=ag-secret status=fail'
 assert test "$(git -C "$repo" rev-parse main)" = "$(git -C "$repo" rev-parse origin/main)"
 
+make_fixture stale
+stale_one_sha=$(make_lane "$repo" ag-stale-one one.txt one)
+stale_two_sha=$(make_lane "$repo" ag-stale-two two.txt two)
+report "$fixture_root/stale-one.md" "$stale_one_sha"; report "$fixture_root/stale-two.md" "$stale_two_sha"
+git clone "file://$bare" "$fixture_root/stale-peer" >/dev/null
+git -C "$fixture_root/stale-peer" config user.email peer@example.test
+git -C "$fixture_root/stale-peer" config user.name Peer
+printf 'remote advance\n' > "$fixture_root/stale-peer/remote.txt"
+git -C "$fixture_root/stale-peer" add remote.txt
+git -C "$fixture_root/stale-peer" commit -m remote-advance >/dev/null
+git -C "$fixture_root/stale-peer" push origin main >/dev/null
+stale_output="$fixture_root/stale.out"
+if "$batch" --branches ag-stale-one,ag-stale-two --reports "$fixture_root/stale-one.md,$fixture_root/stale-two.md" --repo "$repo" >"$stale_output" 2>&1; then exit 1; fi
+assert_output_has "$stale_output" 'BATCH step=freshness status=fail'
+assert test "$(git -C "$repo" rev-parse main)" != "$(git -C "$repo" rev-parse origin/main)"
+
+make_fixture payload
+git -C "$repo" checkout -b ag-payload >/dev/null
+ln -s /home/user/.env "$repo/env.template"
+git -C "$repo" add env.template
+git -C "$repo" commit -m payload-symlink >/dev/null
+payload_sha=$(git -C "$repo" rev-parse HEAD)
+git -C "$repo" checkout main >/dev/null
+plain_payload_sha=$(make_lane "$repo" ag-payload-plain plain.txt plain)
+report "$fixture_root/payload.md" "$payload_sha"; report "$fixture_root/payload-plain.md" "$plain_payload_sha"
+payload_output="$fixture_root/payload.out"
+if "$batch" --branches ag-payload,ag-payload-plain --reports "$fixture_root/payload.md,$fixture_root/payload-plain.md" --repo "$repo" --no-push >"$payload_output" 2>&1; then exit 1; fi
+assert_output_has "$payload_output" 'LAND step=payload-guard status=fail detail=mode-120000'
+assert test "$(git -C "$repo" rev-parse main)" = "$(git -C "$repo" rev-parse origin/main)"
+
+make_fixture push-rollback
+rollback_one_sha=$(make_lane "$repo" ag-rollback-one one.txt one)
+rollback_two_sha=$(make_lane "$repo" ag-rollback-two two.txt two)
+report "$fixture_root/rollback-one.md" "$rollback_one_sha"; report "$fixture_root/rollback-two.md" "$rollback_two_sha"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$bare/hooks/pre-receive"
+chmod +x "$bare/hooks/pre-receive"
+rollback_output="$fixture_root/rollback.out"
+if "$batch" --branches ag-rollback-one,ag-rollback-two --reports "$fixture_root/rollback-one.md,$fixture_root/rollback-two.md" --repo "$repo" >"$rollback_output" 2>&1; then exit 1; fi
+assert_output_has "$rollback_output" 'BATCH step=push status=fail'
+assert_output_has "$rollback_output" 'main reset to origin/main'
+assert test "$(git -C "$repo" rev-parse main)" = "$(git -C "$repo" rev-parse origin/main)"
+assert git -C "$repo" show-ref --verify --quiet refs/heads/ag-rollback-one
+assert git -C "$repo" show-ref --verify --quiet refs/heads/ag-rollback-two
+
 echo "land batch tests: pass"

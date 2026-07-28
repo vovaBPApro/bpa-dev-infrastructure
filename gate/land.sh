@@ -19,6 +19,7 @@ merged=false
 merge_sha="none"
 pushed=false
 review_verdict="not-required"
+pre_merge_sha=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -65,6 +66,14 @@ if ! git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   land_fail repo 2
 fi
 
+git_dir=$(git -C "$repo" rev-parse --git-dir) || land_fail repo 2
+case "$git_dir" in
+  /*) lock_file="$git_dir/bpa-land.lock" ;;
+  *) lock_file="$repo/$git_dir/bpa-land.lock" ;;
+esac
+exec 9>"$lock_file"
+if ! flock -n 9; then land_fail lock 2; fi
+
 default_ref=$(git -C "$repo" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
 if [ -n "$default_ref" ]; then
   default_branch=${default_ref#origin/}
@@ -90,6 +99,12 @@ fi
 if [ -n "$(git -C "$repo" status --porcelain)" ]; then
   land_fail working-tree 2
 fi
+if ! git -C "$repo" fetch origin; then land_fail freshness 2; fi
+if [ "$(git -C "$repo" rev-parse "$default_branch")" != "$(git -C "$repo" rev-parse "origin/$default_branch")" ]; then
+  land_fail freshness 2
+fi
+pre_merge_sha=$(git -C "$repo" rev-parse "$default_branch")
+land_pass freshness
 
 script_dir=$(CDPATH='' cd "$(dirname "$0")" && pwd)
 # shellcheck source=gate/land-lib.sh
@@ -109,6 +124,12 @@ land_pass review
 
 if ! land_secret_scan "$repo" "$branch"; then land_fail secret-scan 2; fi
 land_pass secret-scan
+
+if ! land_payload_guard "$repo" "$branch"; then
+  echo "LAND verdict=aborted sha=$merge_sha" >&2
+  exit 2
+fi
+land_pass payload-guard
 
 if ! git -C "$repo" merge --no-ff "$branch" -m "[ORCH] land lane $branch" -m "secret-scan: clean"; then
   git -C "$repo" merge --abort >/dev/null 2>&1 || true
@@ -133,7 +154,15 @@ fi
 
 if [ "$no_push" = false ]; then
   if ! git -C "$repo" push origin "$default_branch"; then
-    echo "LAND push failure: merge retained for inspection" >&2
+    if git -C "$repo" fetch origin >/dev/null 2>&1; then
+      rollback_sha=$(git -C "$repo" rev-parse "origin/$default_branch")
+    else
+      rollback_sha="$pre_merge_sha"
+    fi
+    git -C "$repo" reset --hard "$rollback_sha" >/dev/null || land_fail rollback
+    merged=false
+    merge_sha="none"
+    echo "LAND push failure: main reset to origin/main" >&2
     land_fail push
   fi
   pushed=true

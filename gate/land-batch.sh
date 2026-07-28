@@ -9,6 +9,7 @@ usage() {
 }
 
 branches_arg="" reports_arg="" repo="" no_push=false run_verify=false skip_review=false
+pre_merge_sha=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --branches|--reports|--repo)
@@ -35,6 +36,13 @@ batch_pass() { echo "BATCH step=$1 status=pass"; }
 batch_skip() { echo "BATCH step=$1 status=skipped"; }
 
 if ! git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then batch_fail repo 2; fi
+git_dir=$(git -C "$repo" rev-parse --git-dir) || batch_fail repo 2
+case "$git_dir" in
+  /*) lock_file="$git_dir/bpa-land.lock" ;;
+  *) lock_file="$repo/$git_dir/bpa-land.lock" ;;
+esac
+exec 9>"$lock_file"
+if ! flock -n 9; then batch_fail lock 2; fi
 default_ref=$(git -C "$repo" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
 if [ -n "$default_ref" ]; then default_branch=${default_ref#origin/}
 elif git -C "$repo" show-ref --verify --quiet refs/heads/main; then default_branch=main
@@ -42,6 +50,10 @@ elif git -C "$repo" show-ref --verify --quiet refs/heads/master; then default_br
 else batch_fail default-branch 2; fi
 if [ "$(git -C "$repo" branch --show-current)" != "$default_branch" ]; then batch_fail default-branch 2; fi
 if [ -n "$(git -C "$repo" status --porcelain)" ]; then batch_fail working-tree 2; fi
+if ! git -C "$repo" fetch origin; then batch_fail freshness 2; fi
+if [ "$(git -C "$repo" rev-parse "$default_branch")" != "$(git -C "$repo" rev-parse "origin/$default_branch")" ]; then batch_fail freshness 2; fi
+pre_merge_sha=$(git -C "$repo" rev-parse "$default_branch")
+batch_pass freshness
 
 script_dir=$(CDPATH='' cd "$(dirname "$0")" && pwd)
 # shellcheck source=gate/land-lib.sh
@@ -58,6 +70,11 @@ for index in "${!branches[@]}"; do
   batch_pass "completion-guard branch=$branch"
   if ! land_secret_scan "$repo" "$branch"; then batch_fail "secret-scan branch=$branch" 2; fi
   batch_pass "secret-scan branch=$branch"
+  if ! land_payload_guard "$repo" "$branch"; then
+    echo "BATCH verdict=aborted" >&2
+    exit 2
+  fi
+  batch_pass "payload-guard branch=$branch"
   if ! land_review_check "$repo" "$branch" "$report" "$policy_file" "$skip_review"; then batch_fail "review branch=$branch" 2; fi
   batch_pass "review branch=$branch"
   if [ -n "$review_summary" ]; then review_summary+=","; fi
@@ -95,7 +112,17 @@ if ! git -C "$repo" checkout "$default_branch" >/dev/null || ! git -C "$repo" me
   batch_fail land-default
 fi
 if [ "$no_push" = false ]; then
-  if ! git -C "$repo" push origin "$default_branch"; then echo "BATCH push failure: merge retained for inspection" >&2; batch_fail push; fi
+  if ! git -C "$repo" push origin "$default_branch"; then
+    if git -C "$repo" fetch origin >/dev/null 2>&1; then
+      rollback_sha=$(git -C "$repo" rev-parse "origin/$default_branch")
+    else
+      rollback_sha="$pre_merge_sha"
+    fi
+    git -C "$repo" reset --hard "$rollback_sha" >/dev/null || batch_fail rollback
+    git -C "$repo" branch -D "$integration_branch" >/dev/null 2>&1 || true
+    echo "BATCH push failure: main reset to origin/main" >&2
+    batch_fail push
+  fi
   batch_pass push
 else
   batch_skip push

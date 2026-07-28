@@ -25,7 +25,12 @@ class RuntimeManager:
         return self.controller.reap(now=now)
 
     def verify_rollback(self, root, expected_commit, *, prior_commit=None, image_digest=None,
-                        actual_image_digest=None, evidence_store=None):
+                        actual_image_digest=None, evidence_store=None, lifecycle=None):
+        if lifecycle is not None:
+            if prior_commit is None: prior_commit = lifecycle.capture_source()
+            if lifecycle.current_commit() != expected_commit:
+                raise ValueError("lifecycle target mismatch")
+            actual_image_digest = lifecycle.current_image_digest()
         if evidence_store and (not prior_commit or prior_commit == expected_commit):
             raise ValueError("explicit distinct prior_commit required")
         evidence = verify_checkout(root, expected_commit, image_digest, actual_image_digest)

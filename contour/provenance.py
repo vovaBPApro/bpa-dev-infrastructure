@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 import threading, os
 import fcntl
+import subprocess
 from dataclasses import dataclass, asdict
 from typing import Any, Mapping
 
@@ -53,6 +54,13 @@ def rollback_evidence(provenance: Provenance, *, restored_commit: str,
         "redaction": provenance.redaction,
     }
     return json.dumps(data, sort_keys=True, separators=(",", ":"))
+
+def verify_checkout(root, expected_commit, image_digest=None, actual_image_digest=None):
+    """Verify rollback target is current HEAD and (when supplied) image digest."""
+    head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+    if head != expected_commit or (image_digest is not None and image_digest != actual_image_digest):
+        raise ValueError("rollback target verification failed")
+    return {"commit": head, "image_digest": actual_image_digest, "verified": True}
 
 
 class ProvenanceStore:

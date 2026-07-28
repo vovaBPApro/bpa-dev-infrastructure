@@ -7,11 +7,12 @@ services:
       dockerfile: Dockerfile
     image: bpa-dev-contour:stand
     ports:
-      - "127.0.0.1:18080:8080"
+      - "127.0.0.1:${HOST_PORT:-18080}:8080"
     init: true
     restart: "no"
     environment:
       PORT: "8080"
+      AUTH_TOKEN: "stand-dev-token"
     read_only: true
     security_opt:
       - no-new-privileges:true

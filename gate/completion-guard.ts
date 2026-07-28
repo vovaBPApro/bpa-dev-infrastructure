@@ -30,15 +30,34 @@ function fail(check: string, detail: string): void {
   failures.push(`${check}: ${detail}`);
 }
 
-function usage(): never {
-  console.error("usage: bun gate/completion-guard.ts --report <file> --repo <path> [--branch <name>] [--run-verify]");
-  process.exit(2);
+function usage({ stdout = false, exitCode = 2 } = {}): never {
+  const message = [
+    "Usage: bun gate/completion-guard.ts --report <file> --repo <path> [--branch <name>] [--run-verify]",
+    "",
+    "Options:",
+    "  --report <file>    Path to completion report (required)",
+    "  --repo <path>      Path to repository (required)",
+    "  --branch <name>    Verify commit is reachable from this branch",
+    "  --run-verify       Run the report's verify command",
+    "  -h, --help         Show this usage",
+    "",
+    "Exit codes:",
+    "  0 pass",
+    "  2 contract violation",
+    "  3 valid report declaring NO-GO",
+  ].join("\n");
+  const output = stdout ? process.stdout : process.stderr;
+  output.write(message + "\n");
+  process.exit(exitCode);
 }
 
 function parseArgs(args: string[]): Options {
   const options: Options = { runVerify: false };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
+    if (arg === "-h" || arg === "--help") {
+      usage({ stdout: true, exitCode: 0 });
+    }
     if (arg === "--run-verify") {
       options.runVerify = true;
       continue;

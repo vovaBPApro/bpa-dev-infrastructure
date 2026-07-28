@@ -102,18 +102,20 @@ run_disk_check() {
 }
 
 run_full_suite_check() {
-  local summary timestamp pass fail failed duration summary_epoch now age
+  local summary timestamp pass fail skipped failed skipped_list duration summary_epoch now age
   if [[ ! -f "$FULL_SUITE_LOG" ]]; then
     row SKIP 'FULL-SUITE' 'summary log absent'
     return
   fi
   summary="$(tail -n 1 "$FULL_SUITE_LOG")"
-  if [[ "$summary" =~ ^FULL-SUITE\ ts=([^[:space:]]+)\ pass=([0-9]+)\ fail=([0-9]+)\ failed=([^[:space:]]+)\ duration_s=([0-9]+)$ ]]; then
+  if [[ "$summary" =~ ^FULL-SUITE\ ts=([^[:space:]]+)\ pass=([0-9]+)\ fail=([0-9]+)\ skipped=([0-9]+)\ failed=([^[:space:]]+)\ skipped_list=([^[:space:]]+)\ duration_s=([0-9]+)$ ]]; then
     timestamp="${BASH_REMATCH[1]}"
     pass="${BASH_REMATCH[2]}"
     fail="${BASH_REMATCH[3]}"
-    failed="${BASH_REMATCH[4]}"
-    duration="${BASH_REMATCH[5]}"
+    skipped="${BASH_REMATCH[4]}"
+    failed="${BASH_REMATCH[5]}"
+    skipped_list="${BASH_REMATCH[6]}"
+    duration="${BASH_REMATCH[7]}"
   else
     row SKIP 'FULL-SUITE' 'summary unavailable'
     return
@@ -126,9 +128,9 @@ run_full_suite_check() {
   fi
   age=$(( now - summary_epoch ))
   if (( fail == 0 )); then
-    row PASS 'FULL-SUITE' "pass=$pass fail=$fail age_s=$age duration_s=$duration"
+    row PASS 'FULL-SUITE' "pass=$pass fail=$fail skipped=$skipped age_s=$age duration_s=$duration"
   else
-    row FAIL 'FULL-SUITE' "pass=$pass fail=$fail failed=$failed age_s=$age duration_s=$duration"
+    row FAIL 'FULL-SUITE' "pass=$pass fail=$fail skipped=$skipped failed=$failed skipped_list=$skipped_list age_s=$age duration_s=$duration"
   fi
 }
 
@@ -138,11 +140,6 @@ run_stand
 run_systemd_check
 run_disk_check
 run_full_suite_check
-
-if (( RESULT != 0 )); then
-  printf 'Morning readiness failed; digest was not delivered.\n' >&2
-  exit 1
-fi
 
 if [[ -f "$WATERMARK_FILE" ]]; then
   WATERMARK="$(<"$WATERMARK_FILE")"
@@ -171,7 +168,15 @@ trap 'rm -f "$TABLE_FILE" "$DETAIL_FILE" "$DIGEST_FILE" "${OUTBOX_TMP:-}"' EXIT
 
 if "$DRY_RUN"; then
   cat "$DIGEST_FILE"
-  exit 0
+  if (( RESULT != 0 )); then
+    printf 'Morning readiness failed; digest was not delivered.\n' >&2
+  fi
+  exit "$RESULT"
+fi
+
+if (( RESULT != 0 )); then
+  printf 'Morning readiness failed; digest was not delivered.\n' >&2
+  exit 1
 fi
 mkdir -p "$(dirname "$OUTBOX_FILE")" "$(dirname "$WATERMARK_FILE")"
 OUTBOX_TMP="$(mktemp "$(dirname "$OUTBOX_FILE")/.morning.outbox.XXXXXX")"

@@ -34,6 +34,8 @@ run_tick() {
     FULL_SUITE_NUDGE_REPEAT_MS=3600000 "$SCRIPT_DIR/full-suite.sh"
 }
 
+MORNING_SCRIPT="${MORNING_SCRIPT:-$SCRIPT_DIR/morning.sh}"
+
 FAIL_ROOT="$SCRATCH/failing-repo"
 FAIL_RUNTIME="$SCRATCH/failing-runtime"
 FAIL_OUTBOX="$SCRATCH/failing.outbox"
@@ -110,19 +112,30 @@ chmod +x "$SCRATCH/bootstrap.sh" "$MORNING_BIN/docker" "$MORNING_BIN/systemctl"
 BUN_PATH="$(command -v bun)"
 MISSION_CLI="$SCRIPT_DIR/../core/mission-cli.ts"
 INFRA_STATE_DB="$MORNING_RUNTIME/state.db" "$BUN_PATH" "$MISSION_CLI" mission create full-suite-fixture >/dev/null
-printf 'FULL-SUITE ts=%s pass=2 fail=0 failed=none duration_s=3\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$MORNING_RUNTIME/full-suite.log"
-MORNING_OUTPUT="$SCRATCH/morning-pass.out"
-assert env PATH="$MORNING_BIN:$PATH" ORCH_CONFIG_FILE="$SCRATCH/no-runtime.env" ORCH_RUNTIME_DIR="$MORNING_RUNTIME" \
+run_morning() {
+  env PATH="$MORNING_BIN:$PATH" ORCH_CONFIG_FILE="$SCRATCH/no-runtime.env" ORCH_RUNTIME_DIR="$MORNING_RUNTIME" \
   FULL_SUITE_LOG="$MORNING_RUNTIME/full-suite.log" MORNING_REPO_ROOT="$MORNING_REPO" MORNING_BOOTSTRAP_SCRIPT="$SCRATCH/bootstrap.sh" \
   MORNING_MISSION_CLI="$MISSION_CLI" INFRA_STATE_DB="$MORNING_RUNTIME/state.db" BUN_BIN="$BUN_PATH" \
-  "$SCRIPT_DIR/morning.sh" --dry-run > "$MORNING_OUTPUT"
-contains 'PASS — FULL-SUITE (pass=2 fail=0 age_s=' "$MORNING_OUTPUT"
+  "$MORNING_SCRIPT" --dry-run
+}
+
+# Feed the exact, durable production summary emitted by full-suite.sh into the
+# morning parser. This locks both scripts to the same summary format.
+tail -n 1 "$FAIL_RUNTIME/full-suite.log" > "$MORNING_RUNTIME/full-suite.log"
+MORNING_FAIL="$SCRATCH/morning-fail.out"
+MORNING_FAIL_ERR="$SCRATCH/morning-fail.err"
+assert_not run_morning > "$MORNING_FAIL" 2> "$MORNING_FAIL_ERR"
+contains 'FAIL — FULL-SUITE (pass=1 fail=1 skipped=0 failed=orchestrator/fail.test.sh skipped_list=none age_s=' "$MORNING_FAIL"
+assert_not grep -Fq 'SKIP — FULL-SUITE' "$MORNING_FAIL"
+contains 'Morning readiness failed; digest was not delivered.' "$MORNING_FAIL_ERR"
+
+tail -n 1 "$PASS_RUNTIME/full-suite.log" > "$MORNING_RUNTIME/full-suite.log"
+MORNING_OUTPUT="$SCRATCH/morning-pass.out"
+assert run_morning > "$MORNING_OUTPUT"
+contains 'PASS — FULL-SUITE (pass=2 fail=0 skipped=0 age_s=' "$MORNING_OUTPUT"
 rm -f "$MORNING_RUNTIME/full-suite.log"
 MORNING_SKIP="$SCRATCH/morning-skip.out"
-assert env PATH="$MORNING_BIN:$PATH" ORCH_CONFIG_FILE="$SCRATCH/no-runtime.env" ORCH_RUNTIME_DIR="$MORNING_RUNTIME" \
-  FULL_SUITE_LOG="$MORNING_RUNTIME/full-suite.log" MORNING_REPO_ROOT="$MORNING_REPO" MORNING_BOOTSTRAP_SCRIPT="$SCRATCH/bootstrap.sh" \
-  MORNING_MISSION_CLI="$MISSION_CLI" INFRA_STATE_DB="$MORNING_RUNTIME/state.db" BUN_BIN="$BUN_PATH" \
-  "$SCRIPT_DIR/morning.sh" --dry-run > "$MORNING_SKIP"
+assert run_morning > "$MORNING_SKIP"
 contains 'SKIP — FULL-SUITE (summary log absent)' "$MORNING_SKIP"
 
 printf 'full-suite tests: PASS\n'

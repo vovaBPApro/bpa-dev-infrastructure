@@ -6,6 +6,7 @@ INSTALLER="$SCRIPT_DIR/install.sh"
 
 # shellcheck disable=SC2016 # inspect the literal default assignment
 grep -Fxq 'INSTALL_ROOT="${INSTALL_ROOT:-/home/bpa-dev-infrastructure}"' "$INSTALLER"
+grep -Fxq 'TimeoutSec=3600' "$SCRIPT_DIR/units/bpa-full-suite.service.in"
 
 dry_run="$($INSTALLER --dry-run)"
 for expected in \

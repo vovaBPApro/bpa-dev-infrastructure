@@ -8,5 +8,6 @@ Type=oneshot
 WorkingDirectory=$INSTALL_ROOT
 EnvironmentFile=$ENV_FILE
 ExecStart=$INSTALL_ROOT/orchestrator/full-suite.sh
+TimeoutSec=3600
 NoNewPrivileges=true
 PrivateTmp=true

@@ -77,9 +77,26 @@ secret_pattern+="gh"'p_'
 secret_pattern+='|'
 secret_pattern+="client"'_secret'
 secret_pattern+='|private[[:space:]_]+key|[0-9]{8,10}:AA)'
-if rg -n -i "$secret_pattern" \
-  "$SCRIPT_DIR/env.template" "$SCRIPT_DIR/units"; then
+
+set +e
+secret_scan_output="$(grep -RInE "$secret_pattern" \
+  "$SCRIPT_DIR/env.template" "$SCRIPT_DIR/units" 2>&1)"
+secret_scan_rc=$?
+set -e
+
+if [ "$secret_scan_rc" -eq 0 ]; then
   echo 'ERROR: secret-like value found in bootstrap templates' >&2
+  echo "$secret_scan_output" >&2
+  exit 1
+elif [ "$secret_scan_rc" -eq 1 ]; then
+  : # no matches
+elif [ "$secret_scan_rc" -eq 2 ]; then
+  echo 'ERROR: secret scan command failed while running grep' >&2
+  echo "$secret_scan_output" >&2
+  exit 1
+else
+  echo "ERROR: secret scan command failed with status $secret_scan_rc" >&2
+  echo "$secret_scan_output" >&2
   exit 1
 fi
 

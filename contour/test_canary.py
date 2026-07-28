@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import json
 from pathlib import Path
 from canary import run
 from docker_canary import run as docker_run
@@ -21,6 +22,11 @@ class CanaryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             with self.assertRaises(ValueError):
                 docker_run(str(Path(td) / "docker.json"), soak_seconds=1, short=True, execute=False)
+
+    def test_contract_gap_is_fail_closed(self):
+        gap = json.loads((Path(__file__).with_name("canary_contract_gap.json")).read_text())
+        self.assertEqual(gap["status"], "blocked")
+        self.assertFalse(any(gap["observed"].values()))
 
 
 if __name__ == "__main__": unittest.main()

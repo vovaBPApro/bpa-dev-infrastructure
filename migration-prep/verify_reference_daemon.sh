@@ -24,6 +24,8 @@ required=(
   templates/daemon/reliability.ts
   templates/daemon/package.json
   templates/daemon/bun.lock
+  tools/claude-telegram-daemon/package.json
+  tools/claude-telegram-daemon/bun.lock
   tools/claude-telegram-daemon/orchestrator-watchdog.sh
 )
 for path in "${required[@]}"; do

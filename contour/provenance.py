@@ -36,9 +36,9 @@ def _redact(value):
 
 
 def rollback_evidence(provenance: Provenance, *, restored_commit: str,
-                      recovery_event_id: str, commit_exists=lambda _sha: True) -> str:
+                      recovery_event_id: str, commit_exists=None) -> str:
     """Return stable evidence that recovery restored the prior immutable SHA."""
-    if not restored_commit or restored_commit == provenance.commit or not commit_exists(restored_commit) or not recovery_event_id:
+    if not restored_commit or restored_commit == provenance.commit or commit_exists is None or not commit_exists(restored_commit) or not recovery_event_id:
         raise ValueError("rollback must restore a different known commit")
     data: Mapping[str, Any] = {
         "kind": "rollback",
@@ -47,6 +47,7 @@ def rollback_evidence(provenance: Provenance, *, restored_commit: str,
         "from_commit": provenance.commit,
         "restored_commit": restored_commit,
         "recovery_event_id": recovery_event_id,
+        "verified": True,
         "redaction": provenance.redaction,
     }
     return json.dumps(data, sort_keys=True, separators=(",", ":"))
@@ -56,7 +57,12 @@ class ProvenanceStore:
     def __init__(self, path): self.path = Path(path)
     def append(self, manifest: Provenance):
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as f: f.write(manifest.serialize() + "\n")
+        import tempfile, os
+        old = self.path.read_text() if self.path.exists() else ""
+        fd, tmp = tempfile.mkstemp(dir=self.path.parent)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(old + manifest.serialize() + "\n"); f.flush(); os.fsync(f.fileno())
+        os.replace(tmp, self.path)
     def load(self):
         if not self.path.exists(): return []
         return [json.loads(x) for x in self.path.read_text().splitlines() if x.strip()]

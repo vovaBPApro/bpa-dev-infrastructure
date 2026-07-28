@@ -90,30 +90,28 @@ bootstrap environment is deliberately overridden.
    INFRA_STATE_DB=/home/bpa-dev-infrastructure/runtime/state.db
    ```
 
-   Lock down the file, rerun bootstrap so it activates the configured units,
-   install the separately managed morning-report timer, and keep user services
-   running after logout.
+   Rerun bootstrap so it enforces mode `0600`, renders and activates the
+   configured units (including the morning-report service and timer), and keep
+   user services running after logout. Bootstrap fails loudly if `.env` is a
+   symlink or is not a regular file.
 
    ```bash
-   chmod 600 /home/bpa-dev-infrastructure/.env
    cd /home/bpa-dev-infrastructure
-   bootstrap/install.sh
    loginctl enable-linger "$USER"
-   systemctl --user daemon-reload
-   systemctl --user enable --now bpa-telegram-daemon.service bpa-orchestrator-watchdog.timer bpa-full-suite.timer
-   orchestrator/install-morning-timer.sh install
+   bootstrap/install.sh
    ```
 
 7. Verify the install. The heading is `STATUS CHECK`; a healthy configured VM
    has `PASS` lines for `git`, `curl`, `tmux`, `bun`, `repository`,
-   `environment file`, `environment permissions`, `state-db`, `workspace`,
-   `gate`, all five rendered unit files, `unit Exec paths`, and the enabled
-   daemon/watchdog/full suite. `unit Exec paths` confirms each rendered
-   `Exec*` program exists and is executable (installed BPA programs must remain
-   beneath the install root; the configured `BUN_BIN` is the sole external
-   executable). `stand` is also `PASS` when Docker is available. Treat any
-   `FAIL` as a stop condition; `SKIP token configured` means the token is still
-   a placeholder.
+   `environment file`, `environment permissions`, `linger`, `state-db`,
+   `workspace`, `gate`, `hygiene-cron`, all seven rendered unit files, `unit
+   Exec paths`, and the enabled daemon/watchdog/full-suite/morning units. The
+   `linger` row confirms the preceding `loginctl enable-linger` step. `unit
+   Exec paths` confirms each rendered `Exec*` program exists and is executable
+   (installed BPA programs must remain beneath the install root; the configured
+   `BUN_BIN` is the sole external executable). `stand` is also `PASS` when
+   Docker is available. Treat any `FAIL` as a stop condition; `SKIP token
+   configured` means the token is still a placeholder.
 
    ```bash
    cd /home/bpa-dev-infrastructure

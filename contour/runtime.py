@@ -28,5 +28,6 @@ class RuntimeManager:
                         actual_image_digest=None, evidence_store=None):
         evidence = verify_checkout(root, expected_commit, image_digest, actual_image_digest)
         if evidence_store:
+            evidence.update({"kind":"rollback", "mission_id":"runtime", "dispatch_id":"runtime", "from_commit":expected_commit, "restored_commit":expected_commit, "recovery_event_id":"runtime-rollback"})
             ProvenanceStore(evidence_store).append_raw(evidence)
         return evidence

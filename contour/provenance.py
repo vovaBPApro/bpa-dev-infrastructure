@@ -81,6 +81,9 @@ class ProvenanceStore:
             finally:
                 fcntl.flock(lock, fcntl.LOCK_UN); lock.close()
     def append_raw(self, evidence):
+        required = {"kind", "mission_id", "dispatch_id", "from_commit", "restored_commit", "recovery_event_id", "verified"}
+        if not required.issubset(evidence) or evidence.get("kind") != "rollback" or evidence.get("verified") is not True:
+            raise ValueError("invalid rollback evidence schema")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         lock = open(str(self.path)+".lock", "a+"); fcntl.flock(lock, fcntl.LOCK_EX)
         try:

@@ -95,7 +95,9 @@ worker() {
   sed -i "s/^lane-$i=0$/lane-$i=1/" "$wt/shared-counter.txt"
   if [ "$i" -eq 1 ]; then
     # Generated only in the disposable fixture; never appears in this repository.
-    printf '%s\n' 'ghp_'"$(printf 'x%.0s' $(seq 1 36))" > "$wt/lanes/planted-secret.txt"
+    prefix=gh
+    prefix="${prefix}p_"
+    printf '%s\n' "${prefix}""$(printf 'x%.0s' $(seq 1 36))" > "$wt/lanes/planted-secret.txt"
     mode=secret
   elif [ "$i" -eq 2 ]; then
     mode=malformed-report

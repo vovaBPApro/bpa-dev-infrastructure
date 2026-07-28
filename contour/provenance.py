@@ -84,6 +84,8 @@ class ProvenanceStore:
         required = {"kind", "mission_id", "dispatch_id", "from_commit", "restored_commit", "recovery_event_id", "verified"}
         if not required.issubset(evidence) or evidence.get("kind") != "rollback" or evidence.get("verified") is not True:
             raise ValueError("invalid rollback evidence schema")
+        if any(not isinstance(evidence[k], str) or not evidence[k].strip() for k in required - {"verified"}):
+            raise ValueError("rollback fields must be non-empty strings")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         lock = open(str(self.path)+".lock", "a+"); fcntl.flock(lock, fcntl.LOCK_EX)
         try:

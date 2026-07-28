@@ -23,3 +23,16 @@ Run the test suite with:
 ```sh
 bun test gate/completion-guard.test.ts
 ```
+
+## Landing a lane
+
+`land.sh` makes the completion guard, range secret scan, no-ff merge, optional
+post-merge verification, push, and branch/worktree reap one fail-closed command:
+
+```sh
+gate/land.sh --branch ag-lane --report /path/to/report.md --repo /path/to/repo --worktree /path/to/lane --run-verify
+```
+
+Use `--no-push` for a local landing. Every stage emits a `LAND step=` record;
+the final line is a `LAND verdict=landed` or `LAND verdict=aborted` record.
+Run its fixture suite with `gate/land.test.sh`.

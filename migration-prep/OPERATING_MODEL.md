@@ -47,3 +47,7 @@ Every report uses the same compact shape: **done**, **evidence**, **remaining**,
 **blocker**, **next action**. Human words that define a mission are preserved
 verbatim in its artifact; generated summaries are separate and labelled.
 
+The mandatory anti-distraction and completion protocol is defined in
+[`COMPLETION_GUARD.md`](COMPLETION_GUARD.md). It is a hard gate: an explanation,
+percentage, or new topic never substitutes for the current artifact's SHA,
+tests, and runtime evidence.

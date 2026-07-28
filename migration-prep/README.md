@@ -13,6 +13,10 @@ Carry forward only mechanisms with durable evidence: correlation IDs, signed
 dispatch envelopes, mailbox guards, heartbeat-ingest tests, role/vendor policy,
 and one-mission-in/one-rollup-out contracts.
 
+The orchestrator must follow [`COMPLETION_GUARD.md`](COMPLETION_GUARD.md): one
+mission chain at a time, evidence-backed terminal records, explicit NO-GO
+blockers, immediate commit pushes, and preserved verbatim Human requirements.
+
 Quarantine rather than copy runtime worktree files, ad-hoc shell orchestration,
 status inferred from historical heartbeats, worker-owned Telegram leases, and
 unverified generated product snapshots.
@@ -22,4 +26,3 @@ unverified generated product snapshots.
 Run the new control plane as a read-only shadow beside the current one on a
 disposable stand. Compare projections for three missions before allowing one
 canary manager to dispatch work.
-

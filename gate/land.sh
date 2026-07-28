@@ -106,19 +106,35 @@ if [ ! -r "$policy_file" ]; then
   echo "ERROR review-required policy-unreadable file=$policy_file" >&2
   land_fail review 2
 fi
-while IFS= read -r -d '' changed_file; do
-  [ -n "$changed_file" ] || continue
+is_policy_path() {
+  candidate_path="$1"
   while IFS= read -r policy_prefix; do
     [ -n "$policy_prefix" ] || continue
-    case "$changed_file" in
-      "$policy_prefix"*)
-        review_required=true
-        break
-        ;;
+    case "$candidate_path" in
+      "$policy_prefix"*) return 0 ;;
     esac
   done < <(sed -e 's/[[:space:]]*#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$policy_file")
+  return 1
+}
+
+while IFS= read -r -d '' change_status; do
+  case "$change_status" in
+    R*|C*)
+      IFS= read -r -d '' old_path || land_fail review 2
+      IFS= read -r -d '' new_path || land_fail review 2
+      if is_policy_path "$old_path" || is_policy_path "$new_path"; then
+        review_required=true
+      fi
+      ;;
+    *)
+      IFS= read -r -d '' changed_file || land_fail review 2
+      if is_policy_path "$changed_file"; then
+        review_required=true
+      fi
+      ;;
+  esac
   [ "$review_required" = true ] && break
-done < <(git -C "$repo" -c core.quotepath=false diff --name-only -z --diff-filter=ACMRT "$merge_base..$branch")
+done < <(git -C "$repo" -c core.quotepath=false diff --name-status -z --diff-filter=ACDMRT "$merge_base..$branch")
 
 if [ "$review_required" = true ]; then
   review_artifact="$(dirname "$report")/$branch.review.md"
@@ -129,8 +145,8 @@ if [ "$review_required" = true ]; then
     echo "ERROR review-required missing-artifact file=$review_artifact" >&2
     land_fail review 2
   else
-    review_verdict_value=$(sed -n 's/^verdict:[[:space:]]*//p' "$review_artifact")
-    reviewer_value=$(sed -n 's/^reviewer:[[:space:]]*//p' "$review_artifact")
+    review_verdict_value=$(sed -n 's/^verdict:[[:space:]]*//p' "$review_artifact" | sed 's/[[:space:]]*$//')
+    reviewer_value=$(sed -n 's/^reviewer:[[:space:]]*//p' "$review_artifact" | sed 's/[[:space:]]*$//')
     review_verdict_count=$(grep -c '^verdict:' "$review_artifact" || true)
     reviewer_count=$(grep -c '^reviewer:' "$review_artifact" || true)
     if [ "$review_verdict_value" = "REJECT" ]; then

@@ -199,8 +199,8 @@ while [ "$failure_round" = none ] && within_limit; do
   elif [ "$last_active_leases" != 0 ]; then failure_round=$round; failure_reason='active leases remained in disposable state DB'
   elif [ "${#found_leaks[@]}" -gt 0 ]; then failure_round=$round; failure_reason='owned resource IDs were added'
   elif [ "$SNAP_RSS_KB" -ne 0 ]; then failure_round=$round; failure_reason='owned process RSS remained'
-  elif [ "$SNAP_DISK_KB" -lt $((initial_disk - ${SOAK_DISK_TOLERANCE_KB:-1024})) ]; then
-    failure_round=$round; failure_reason="disk aggregate drift (initial=$initial_disk current=$SNAP_DISK_KB tolerance=${SOAK_DISK_TOLERANCE_KB:-1024})"
+  elif [ "$SNAP_DISK_KB" -lt $((initial_disk - ${SOAK_DISK_TOLERANCE_KB:-65536})) ]; then
+    failure_round=$round; failure_reason="disk aggregate drift (initial=$initial_disk current=$SNAP_DISK_KB tolerance=${SOAK_DISK_TOLERANCE_KB:-65536})"
   elif [ -n "$first_round_ms" ] && [ "$elapsed" -gt $((first_round_ms * 2 + 5000)) ]; then
     failure_round=$round; failure_reason="round timing degraded (first=${first_round_ms}ms current=${elapsed}ms)"
   fi

@@ -1,3 +1,12 @@
+---
+id: tool-permissions
+layer: L1
+status: binding
+audience: all
+tags: [permissions, security, fail-closed]
+summary: Maintain a versioned, fail-closed permission surface; committed policy stays portable and free of secrets.
+---
+
 # Tool Permissions
 
 Maintain a versioned, fail-closed permission surface. Local enforcement may be

@@ -1,3 +1,12 @@
+---
+id: human-requirements
+layer: L1
+status: binding
+audience: all
+tags: [human, verbatim]
+summary: Verbatim Human requirements and final authority.
+---
+
 # Human Requirements
 
 For every Human-directed concept, plan, backlog item, or defect, copy the

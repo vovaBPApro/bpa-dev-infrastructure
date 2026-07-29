@@ -1,3 +1,12 @@
+---
+id: branching-policy
+layer: L1
+status: binding
+audience: all
+tags: [git, branching]
+summary: Trunk-based branch model: `main` plus short-lived `ag-` lanes; environments are not branches.
+---
+
 # Branching Policy
 
 Decided with the Human on 2026-07-29 (Telegram 11549–11550), before the VM

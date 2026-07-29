@@ -1,3 +1,12 @@
+---
+id: roles
+layer: L1
+status: binding
+audience: all
+tags: [roles]
+summary: Orchestrator, coder, reviewer, and risk-routing duties.
+---
+
 # Roles
 
 ## Orchestrator

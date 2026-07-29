@@ -1,3 +1,12 @@
+---
+id: lang-documentation-philosophy
+layer: L2-parked
+status: binding
+audience: all
+tags: [lang, documentation]
+summary: AI-native documentation philosophy for Markdown docs and code comments.
+---
+
 Applies to Markdown documentation and code comments.
 
 # AI-Native Documentation Philosophy

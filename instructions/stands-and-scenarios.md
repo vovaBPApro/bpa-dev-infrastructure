@@ -1,3 +1,12 @@
+---
+id: stands-and-scenarios
+layer: L1
+status: binding
+audience: coder
+tags: [stands, docker, scenarios]
+summary: A stand is disposable, named, isolated, and resource-bounded, owning its Compose project, ports, state, and teardown.
+---
+
 # Stands and Scenarios
 
 ## Binding rules

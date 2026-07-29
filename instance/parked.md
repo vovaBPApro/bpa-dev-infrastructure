@@ -20,6 +20,9 @@ enforces parked-manifest consistency.
 |---|---|---|
 | `migration-prep/STACK_DECISION.md` | L2 (framework) | L2 framework repo creation |
 | `migration-prep/STACK_CONSILIUM_FINAL.md` | L2 (framework) | L2 framework repo creation |
+| `instructions/lang/documentation-philosophy.md` | L2 (framework) | L2 framework repo creation |
+| `instructions/lang/react-rules.md` | L2 (framework) | L2 framework repo creation |
+| `instructions/lang/typescript-ai-guidelines.md` | L2 (framework) | L2 framework repo creation |
 
 Notes:
 

@@ -1,3 +1,12 @@
+---
+id: migration-day
+layer: L1
+status: binding
+audience: orchestrator
+tags: [migration, runbook, instance-candidate]
+summary: Operator runbook for wiping and rebuilding the VM (instance-candidate: pending move to instance/ in a later lane).
+---
+
 # Migration day: VM wipe and re-initialization
 
 This runbook is for a fresh Ubuntu 24.04 VM. Target sizing (Vova, 2026-07-29,

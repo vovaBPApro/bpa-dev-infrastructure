@@ -1,3 +1,12 @@
+---
+id: verification-and-locks
+layer: L1
+status: binding
+audience: all
+tags: [verification, regression-lock, testing]
+summary: Test, regression-lock, visual-lock, and false-green rules for features and bug fixes.
+---
+
 # Verification and Regression Locks
 
 - Ship every feature with automated tests for its required behavior, important

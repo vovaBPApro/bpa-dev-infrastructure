@@ -1,3 +1,12 @@
+---
+id: planning-and-specs
+layer: L1
+status: binding
+audience: all
+tags: [planning, specs]
+summary: Self-contained, interface-first planning and specifications.
+---
+
 # Planning and Specifications
 
 Write each plan or specification so a fresh agent can implement it using only

@@ -1,3 +1,12 @@
+---
+id: lessons
+layer: L1
+status: informational
+audience: all
+tags: [lessons, traceability]
+summary: Operating lessons distilled from past failures into durable guidance.
+---
+
 # Operating Lessons
 
 - **Require live daemon evidence.** Source-shape tests are false-green for daemons; changes need parse/boot and live-health locks.

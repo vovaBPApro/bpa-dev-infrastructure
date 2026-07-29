@@ -1,3 +1,12 @@
+---
+id: repository-hygiene
+layer: L1
+status: binding
+audience: all
+tags: [hygiene, git, secrets]
+summary: Git holds reviewed source, tests, docs, and retained governance evidence — not host state, caches, logs, or secrets.
+---
+
 # Repository Hygiene
 
 ## Binding rules

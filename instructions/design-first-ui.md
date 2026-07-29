@@ -1,3 +1,12 @@
+---
+id: design-first-ui
+layer: L1
+status: binding
+audience: all
+tags: [ui, design, workflow]
+summary: Approve the UI design before implementation, then re-read the feature plan.
+---
+
 # Design-First UI Workflow
 
 Decided with the Human on 2026-07-29 (Telegram 11558). Verbatim source (Vova):

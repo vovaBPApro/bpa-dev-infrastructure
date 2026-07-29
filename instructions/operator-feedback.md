@@ -1,3 +1,12 @@
+---
+id: operator-feedback
+layer: L1
+status: binding
+audience: all
+tags: [human, feedback, verbatim]
+summary: Treat operator input as test evidence and preserve the words that define work.
+---
+
 # Operator Feedback
 
 Treat operator input as test evidence and preserve the words that define work.

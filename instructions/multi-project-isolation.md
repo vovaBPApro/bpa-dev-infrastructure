@@ -1,3 +1,12 @@
+---
+id: multi-project-isolation
+layer: L1
+status: binding
+audience: orchestrator
+tags: [isolation, multi-project]
+summary: Give each project an independent state root, secrets, identity, ports, leases, workspaces, logs, and mission store.
+---
+
 # Multi-Project Isolation
 
 ## Binding rules

@@ -72,6 +72,7 @@ land_reap_fail() {
 
 script_dir=$(CDPATH='' cd "$(dirname "$0")" && pwd)
 # shellcheck source=gate/land-lib.sh
+# shellcheck disable=SC1091
 source "$script_dir/land-lib.sh"
 if ! land_resolve_bun; then exit 2; fi
 

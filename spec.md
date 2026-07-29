@@ -1,16 +1,7 @@
-# Control-plane specification (draft)
+# Control-plane specification (archived stub)
 
-The control plane persists append-only mission events and snapshots. A lease has
-an owner, expiry and fencing token. A dispatch is signed and idempotent. Active
-status requires a fresh heartbeat, an unexpired lease and a running report;
-terminal reports are never active. Telegram/MCP uses one poll lease, durable
-offsets, message-ID deduplication and bounded retry/backoff.
-
-See `migration-prep/contracts.md` for the P0 contract detail and
-`migration-prep/test-plan.md` for acceptance gates.
-
-Universal deployment adds a clean-host bootstrap contract: pinned prerequisites,
-unprivileged service identity, redacted self-check, idempotent initialization,
-explicit Telegram pairing, and an operator-approved readiness transition.
-Access roles, audit events, secret redaction, cache quotas, branch retention,
-and friend-install export/uninstall are part of the contract surface.
+Former draft control-plane spec. The P0 durability contract (append-only events,
+leases, fencing tokens, idempotent dispatch, poll-lease dedup) lives in
+`migration-prep/contracts.md`; its binding projections are in
+`instructions/restart-recovery` and `instructions/multi-project-isolation`. The
+universal clean-host bootstrap contract is `migration-prep/UNIVERSAL_PROJECT_PLAN.md`.

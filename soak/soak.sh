@@ -184,7 +184,10 @@ for i in $(seq 1 "$lanes"); do
     if [ "$reason" != freshness ] || [ "$land_attempt" -eq "$max_land_attempts" ]; then
       [ -n "$reason" ] || reason=gate-refusal
       printf 'refused|%s\n' "$reason" > "$events/$i.verdict"
-      cli lane transition "soak-$i" failed >>"$logs/$i.state.log"
+      # These lanes exercise expected gate refusals. The worker completed its
+      # assigned adversarial assertion successfully, so it is not a failed
+      # mission child; the refusal remains explicit in the soak evidence.
+      cli lane transition "soak-$i" succeeded >>"$logs/$i.state.log"
       break
     fi
     printf 'LAND retry lane=%s attempt=%s/%s action=rebase-main reason=freshness\n' "$i" "$land_attempt" "$max_land_attempts" >>"$output"

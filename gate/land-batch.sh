@@ -94,6 +94,7 @@ for index in "${!branches[@]}"; do
     if ! land_record_review_skip "$repo" "$branch" "$branch_sha" "$skip_review_reason"; then batch_fail "review branch=$branch" 2; fi
   fi
   guard_args=("$script_dir/completion-guard.ts" --report "$report" --repo "$repo" --branch "$branch")
+  if [ "$run_verify" = true ]; then guard_args+=(--defer-verify); fi
   if ! "$BUN_BIN" "${guard_args[@]}"; then batch_fail completion-guard 2; fi
   batch_pass "completion-guard branch=$branch"
   if ! land_secret_scan "$repo" "$branch"; then batch_fail "secret-scan branch=$branch" 2; fi

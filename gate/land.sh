@@ -90,7 +90,9 @@ land_rollback_on_exit() {
   status=$?
   trap - EXIT TERM INT HUP
   if [ "$landing_complete" != true ] && [ -n "$pre_merge_sha" ]; then
-    git -C "$repo" merge --abort >/dev/null 2>&1 || true
+    if git -C "$repo" rev-parse --verify -q MERGE_HEAD >/dev/null 2>&1; then
+      git -C "$repo" merge --abort >/dev/null 2>&1 || true
+    fi
     git -C "$repo" checkout -q "$default_branch" >/dev/null 2>&1 || true
     git -C "$repo" reset --hard "$pre_merge_sha" >/dev/null 2>&1 || true
   fi

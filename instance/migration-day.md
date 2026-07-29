@@ -3,8 +3,8 @@ id: migration-day
 layer: L1
 status: binding
 audience: orchestrator
-tags: [migration, runbook, instance-candidate]
-summary: Operator runbook for wiping and rebuilding the VM (instance-candidate: pending move to instance/ in a later lane).
+tags: [migration, runbook, instance]
+summary: Operator runbook for wiping and rebuilding this installation's VM.
 ---
 
 # Migration day: VM wipe and re-initialization

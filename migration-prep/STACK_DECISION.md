@@ -92,7 +92,7 @@ L2 has no repo).
 Related earlier decisions (same day): framework and each agent get their own
 new repositories (`instructions/repo-layout.md`); trunk-based branching
 (`instructions/branching-policy.md`); 64 GB RAM target VM
-(`instructions/migration-day.md`); no legacy DB carry-over (Telegram 11543).
+(`instance/migration-day.md`); no legacy DB carry-over (Telegram 11543).
 
 ## Derived requirements (binding)
 

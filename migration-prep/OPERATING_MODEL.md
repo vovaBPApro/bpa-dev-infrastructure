@@ -1,5 +1,7 @@
 # Universal operating model
 
+> Status: informational — the fleet shape here yields to instructions/roles.md.
+
 Requirement traceability is maintained in
 [`HUMAN_REQUIREMENTS_MATRIX_2026-07-28.md`](HUMAN_REQUIREMENTS_MATRIX_2026-07-28.md).
 

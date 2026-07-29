@@ -1,11 +1,14 @@
 #!/usr/bin/env bun
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
 
 export const HANDOFF_SCHEMA_VERSION = 1;
 export const HANDOFF_MAX_AGE_MS = 30 * 60 * 1000;
+export const HANDOFF_MAX_STRING_LENGTH = 4_096;
+export const HANDOFF_MAX_ARRAY_ITEMS = 1_000;
+export const HANDOFF_MAX_BYTES = 1_048_576;
 export const HANDOFF_RELATIVE_DIR = join("orchestrator", "runtime", "handoffs");
 
 export type Worktree = { path: string; head: string; branch: string | null };
@@ -114,24 +117,46 @@ export function validateHandoff(value: unknown, nowMs: number, maxAgeMs = HANDOF
   const errors: string[] = [];
   if (!value || typeof value !== "object" || Array.isArray(value)) return { valid: false, errors: ["handoff must be an object"] };
   const row = value as Record<string, unknown>;
-  const keys = ["source_sha", "timestamp", "from", "to", "from_vendor", "from_session", "to_vendor", "to_session"];
+  try {
+    const encodedBytes = Buffer.byteLength(JSON.stringify(value));
+    if (encodedBytes > HANDOFF_MAX_BYTES) errors.push(`handoff encoded size ${encodedBytes} exceeds byte ceiling ${HANDOFF_MAX_BYTES}`);
+  } catch {
+    errors.push("handoff must be JSON-serializable");
+  }
+  const stringKeys = ["source_sha", "timestamp", "from", "to", "from_vendor", "from_session", "to_vendor", "to_session"] as const;
+  const allowedKeys = new Set(["schema_version", ...stringKeys, "worktrees", "unlanded_reports", "open_decisions"]);
+  for (const key of Object.keys(row)) if (!allowedKeys.has(key)) errors.push(`unknown handoff property: ${key}`);
   if (row.schema_version !== 1) errors.push("schema_version must equal 1");
-  for (const key of keys) if (typeof row[key] !== "string" || row[key] === "") errors.push(`${key} must be a non-empty string`);
+  for (const key of stringKeys) {
+    if (typeof row[key] !== "string" || row[key] === "") errors.push(`${key} must be a non-empty string`);
+    else if (row[key].length > HANDOFF_MAX_STRING_LENGTH) errors.push(`${key} exceeds maxLength ${HANDOFF_MAX_STRING_LENGTH}`);
+  }
   if (typeof row.source_sha === "string" && !/^[0-9a-f]{40}$/.test(row.source_sha)) errors.push("source_sha must be a full 40-character lowercase SHA");
-  for (const key of ["worktrees", "unlanded_reports", "open_decisions"]) if (!Array.isArray(row[key])) errors.push(`${key} must be an array`);
+  for (const key of ["worktrees", "unlanded_reports", "open_decisions"] as const) {
+    if (!Array.isArray(row[key])) errors.push(`${key} must be an array`);
+    else if (row[key].length > HANDOFF_MAX_ARRAY_ITEMS) errors.push(`${key} exceeds maxItems ${HANDOFF_MAX_ARRAY_ITEMS}`);
+  }
   if (Array.isArray(row.worktrees)) row.worktrees.forEach((item, index) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) errors.push(`worktrees[${index}] must be an object`);
     else {
       const wt = item as Record<string, unknown>;
+      for (const key of Object.keys(wt)) if (!["path", "head", "branch"].includes(key)) errors.push(`unknown worktrees[${index}] property: ${key}`);
       if (typeof wt.path !== "string" || !wt.path) errors.push(`worktrees[${index}].path must be non-empty`);
+      else if (wt.path.length > HANDOFF_MAX_STRING_LENGTH) errors.push(`worktrees[${index}].path exceeds maxLength ${HANDOFF_MAX_STRING_LENGTH}`);
       if (typeof wt.head !== "string" || !/^[0-9a-f]{40}$/.test(wt.head)) errors.push(`worktrees[${index}].head must be a full SHA`);
       if (!(typeof wt.branch === "string" || wt.branch === null)) errors.push(`worktrees[${index}].branch must be string or null`);
+      else if (typeof wt.branch === "string" && wt.branch.length > HANDOFF_MAX_STRING_LENGTH) errors.push(`worktrees[${index}].branch exceeds maxLength ${HANDOFF_MAX_STRING_LENGTH}`);
     }
   });
-  if (Array.isArray(row.unlanded_reports) && !row.unlanded_reports.every((item) => typeof item === "string" && item.length > 0)) errors.push("unlanded_reports entries must be non-empty strings");
+  if (Array.isArray(row.unlanded_reports) && !row.unlanded_reports.every((item) => typeof item === "string" && item.length > 0 && item.length <= HANDOFF_MAX_STRING_LENGTH)) errors.push(`unlanded_reports entries must be non-empty strings at most ${HANDOFF_MAX_STRING_LENGTH} characters`);
   if (Array.isArray(row.open_decisions)) row.open_decisions.forEach((item, index) => {
-    const decision = item as Record<string, unknown> | null;
-    if (!decision || typeof decision.id !== "string" || !decision.id || typeof decision.path !== "string" || !decision.path) errors.push(`open_decisions[${index}] must contain non-empty id and path`);
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      errors.push(`open_decisions[${index}] must be an object`);
+      return;
+    }
+    const decision = item as Record<string, unknown>;
+    for (const key of Object.keys(decision)) if (!["id", "path"].includes(key)) errors.push(`unknown open_decisions[${index}] property: ${key}`);
+    if (typeof decision.id !== "string" || !decision.id || decision.id.length > HANDOFF_MAX_STRING_LENGTH || typeof decision.path !== "string" || !decision.path || decision.path.length > HANDOFF_MAX_STRING_LENGTH) errors.push(`open_decisions[${index}] must contain non-empty id and path at most ${HANDOFF_MAX_STRING_LENGTH} characters`);
   });
   const timestampMs = typeof row.timestamp === "string" ? Date.parse(row.timestamp) : NaN;
   let ageMs: number | undefined;
@@ -191,6 +216,8 @@ if (import.meta.main) {
       const nowMs = Number(required(values, "--now-ms"));
       const maxAgeMs = values.has("--max-age-ms") ? Number(values.get("--max-age-ms")) : HANDOFF_MAX_AGE_MS;
       if (!Number.isFinite(nowMs) || !Number.isFinite(maxAgeMs)) throw new Error("--now-ms and --max-age-ms must be numbers");
+      const size = statSync(path).size;
+      if (size > HANDOFF_MAX_BYTES) throw new Error(`handoff file is ${size} bytes and exceeds byte ceiling ${HANDOFF_MAX_BYTES}`);
       const validation = validateHandoff(JSON.parse(readFileSync(path, "utf8")), nowMs, maxAgeMs);
       if (!validation.valid) {
         console.error(`FAIL ${basename(path)}: ${validation.errors.join("; ")}`);

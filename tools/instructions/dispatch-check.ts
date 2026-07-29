@@ -38,8 +38,11 @@ import {
   realpathSync,
   statSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { PACK_MARKER_PREFIX } from "./compose.ts";
+import { PACK_MARKER_PREFIX, readPacks } from "./compose.ts";
+import { collectDocs } from "./docs.ts";
 import { AUDIENCES } from "./schema.ts";
 
 // The ops journal is a runtime artifact: gitignored, host-only. Overridable via
@@ -50,7 +53,7 @@ export const DEFAULT_OPS_JOURNAL_RELATIVE = join("orchestrator", "runtime", "ops
 
 const COMPOSE_ROLES = AUDIENCES.filter((audience) => audience !== "all");
 const COMPOSE_MARKER = new RegExp(
-  `^${escapeRegExp(PACK_MARKER_PREFIX)} role=(?:${COMPOSE_ROLES.join("|")}) l1=[0-9a-fA-F]{8,40} -->$`,
+  `^${escapeRegExp(PACK_MARKER_PREFIX)} role=(${COMPOSE_ROLES.join("|")}) l1=([0-9a-fA-F]{8,40}) -->$`,
 );
 
 function escapeRegExp(value: string): string {
@@ -77,6 +80,101 @@ export function hasComposeMarker(contents: string): boolean {
     return COMPOSE_MARKER.test(rawLine.trimStart());
   }
   return false; // empty / whitespace-only file has no marker
+}
+
+type PackValidation = { valid: true } | { valid: false; reason: string };
+
+function shortHash(contents: string): string {
+  return createHash("sha256").update(contents, "utf8").digest("hex").slice(0, 12);
+}
+
+function repositorySha(repo: string): string {
+  return execFileSync("git", ["-C", repo, "rev-parse", "--short", "HEAD"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  }).trim();
+}
+
+// Validates the complete compiler output, not merely its public marker. Because
+// the marker is pinned to the current repository SHA, the repository's docs are
+// the unambiguous source bytes for checking each embedded materialized body.
+export function validateComposePack(contents: string, repo: string): PackValidation {
+  const normalized = contents.replace(/^﻿/, "");
+  const firstLine = normalized.split(/\r?\n/).find((line) => line.trim() !== "");
+  const marker = firstLine?.trimStart().match(COMPOSE_MARKER);
+  if (!marker) return { valid: false, reason: "missing or invalid compose.ts pack marker" };
+
+  const [, role, stampedL1] = marker;
+  let currentL1: string;
+  try {
+    currentL1 = repositorySha(repo);
+  } catch {
+    return { valid: false, reason: "cannot resolve repository L1 SHA" };
+  }
+  if (stampedL1.toLowerCase() !== currentL1.toLowerCase()) {
+    return { valid: false, reason: `L1 SHA mismatch (pack ${stampedL1}, repository ${currentL1})` };
+  }
+
+  const manifestStart = normalized.indexOf("## MANIFEST\n");
+  const factsStart = normalized.indexOf("\n## INSTANCE FACTS", manifestStart);
+  const documentsStart = normalized.indexOf("\n## DOCUMENTS\n", factsStart);
+  if (manifestStart < 0 || factsStart < 0 || documentsStart < 0) {
+    return { valid: false, reason: "missing MANIFEST, INSTANCE FACTS, or DOCUMENTS section" };
+  }
+
+  const manifestText = normalized.slice(manifestStart, factsStart);
+  const manifestRows = [...manifestText.matchAll(
+    /^- ([a-z0-9][a-z0-9-]*)  sha256:([0-9a-f]{12})  \((baseline|tag|interim)\)  .+$/gm,
+  )];
+  if (manifestRows.length === 0) return { valid: false, reason: "MANIFEST declares no documents" };
+
+  let baseline: string[];
+  try {
+    baseline = readPacks(repo).get(role) ?? [];
+  } catch (error) {
+    return { valid: false, reason: `cannot load role baseline: ${(error as Error).message}` };
+  }
+  if (baseline.length === 0) return { valid: false, reason: `role '${role}' has no baseline` };
+
+  const declared = new Map<string, { hash: string; reason: string }>();
+  for (const row of manifestRows) {
+    const [, id, hash, reason] = row;
+    if (declared.has(id)) return { valid: false, reason: `duplicate MANIFEST id '${id}'` };
+    declared.set(id, { hash, reason });
+  }
+  for (const id of baseline) {
+    if (declared.get(id)?.reason !== "baseline") {
+      return { valid: false, reason: `missing baseline id '${id}' from MANIFEST` };
+    }
+  }
+
+  const docs = new Map(
+    collectDocs(join(repo, "instructions"))
+      .filter((doc) => doc.valid)
+      .map((doc) => [doc.valid!.id, doc]),
+  );
+  const documentText = normalized.slice(documentsStart + 1);
+  for (const [id, entry] of declared) {
+    if (entry.reason === "interim") continue;
+    const doc = docs.get(id);
+    if (!doc) return { valid: false, reason: `declared doc '${id}' does not exist at stamped L1` };
+    const actualHash = shortHash(doc.contents);
+    if (entry.hash !== actualHash) {
+      return { valid: false, reason: `hash mismatch for manifest doc '${id}'` };
+    }
+    const header = `<!-- doc id=${id} sha256:${entry.hash} source=${doc.relative} -->\n`;
+    const headerAt = documentText.indexOf(header);
+    if (headerAt < 0) return { valid: false, reason: `missing materialized doc '${id}'` };
+    if (documentText.indexOf(header, headerAt + header.length) >= 0) {
+      return { valid: false, reason: `duplicate materialized doc '${id}'` };
+    }
+    const materialized = doc.contents.replace(/\s+$/, "");
+    if (!documentText.startsWith(materialized, headerAt + header.length)) {
+      return { valid: false, reason: `hash mismatch for materialized doc '${id}'` };
+    }
+  }
+
+  return { valid: true };
 }
 
 function isPathWithin(path: string, root: string): boolean {
@@ -192,8 +290,9 @@ if (import.meta.main) {
     fail(`cannot read prompt file '${options.promptPath}': ${(error as Error).message}`);
   }
 
-  if (hasComposeMarker(contents)) {
-    process.stdout.write(`dispatch-check: OK (compose marker present) ${options.promptPath}\n`);
+  const validation = validateComposePack(contents, repo);
+  if (validation.valid) {
+    process.stdout.write(`dispatch-check: OK (full pack valid) ${options.promptPath}\n`);
     process.exit(0);
   }
 
@@ -213,13 +312,13 @@ if (import.meta.main) {
     }
     process.stderr.write(
       `dispatch-check: OVERRIDE accepted (reason logged to ${journal}); ` +
-        `prompt lacks a compose marker: ${options.promptPath}\n`,
+        `prompt failed full-pack validation (${validation.reason}): ${options.promptPath}\n`,
     );
     process.exit(0);
   }
 
   process.stderr.write(
-    `dispatch-check: REFUSED — prompt lacks the compose.ts pack marker: ${options.promptPath}\n` +
+    `dispatch-check: REFUSED — ${validation.reason}: ${options.promptPath}\n` +
       `dispatch-check: render lane prompts via 'bun tools/instructions/compose.ts', or set ` +
       `DISPATCH_OVERRIDE=<reason> to break glass for a tooling-repair lane.\n`,
   );

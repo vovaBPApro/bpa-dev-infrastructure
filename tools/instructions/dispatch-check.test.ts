@@ -12,6 +12,8 @@ import {
 import { PACK_MARKER_PREFIX } from "./compose.ts";
 
 const CLI = join(import.meta.dir, "dispatch-check.ts");
+const REPO = join(import.meta.dir, "..", "..");
+const COMPOSE = join(import.meta.dir, "compose.ts");
 const temporaryDirectories: string[] = [];
 
 afterEach(() => {
@@ -27,6 +29,11 @@ function tempRepo(): string {
 }
 
 const MARKER_LINE = `${PACK_MARKER_PREFIX} role=coder l1=abc12345 -->`;
+const composed = spawnSync("bun", [COMPOSE, "--role", "coder", "--repo", REPO], {
+  encoding: "utf8",
+});
+if (composed.status !== 0) throw new Error(`compose failed: ${composed.stderr}`);
+const GENUINE_PACK = composed.stdout;
 
 // Runs the CLI, returning {status, stdout, stderr}. spawnSync never throws on a
 // non-zero exit, so both stdout and stderr are captured on every path.
@@ -114,10 +121,11 @@ describe("appendOverrideJournal", () => {
 });
 
 describe("dispatch-check CLI", () => {
-  test("exit 0 for a prompt with the compose marker", () => {
-    const repo = tempRepo();
-    const prompt = join(repo, "good.txt");
-    writeFileSync(prompt, MARKER_LINE + "\n\npack body\n");
+  test("exit 0 for a complete compose-produced prompt", () => {
+    const repo = REPO;
+    const dir = tempRepo();
+    const prompt = join(dir, "good.txt");
+    writeFileSync(prompt, GENUINE_PACK);
     const result = runCli([prompt, "--repo", repo]);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("OK");
@@ -203,12 +211,12 @@ describe("dispatch-lane.sh wrapper", () => {
     return { status: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
   }
 
-  test("gate-only: passes a marker prompt, refuses a marker-less one", () => {
+  test("gate-only: passes a complete pack, refuses a marker-less one", () => {
     const dir = mkdtempSync(join(tmpdir(), "dispatch-wrap-"));
     temporaryDirectories.push(dir);
     const good = join(dir, "good.txt");
     const bad = join(dir, "bad.txt");
-    writeFileSync(good, MARKER_LINE + "\n\nbody\n");
+    writeFileSync(good, GENUINE_PACK);
     writeFileSync(bad, "no marker\n");
 
     const okResult = runWrapper([good]);
@@ -237,7 +245,7 @@ describe("dispatch-lane.sh wrapper", () => {
     temporaryDirectories.push(dir);
     const good = join(dir, "good.txt");
     const out = join(dir, "launched.txt");
-    writeFileSync(good, MARKER_LINE + "\n\nbody\n");
+    writeFileSync(good, GENUINE_PACK);
     // A trivial launcher: `sh -c 'printf %s "$1" > out' _` — the prompt path is
     // appended as the final arg by the wrapper.
     const result = runWrapper([good, "--", "sh", "-c", `printf '%s' "$1" > '${out}'`, "_"]);

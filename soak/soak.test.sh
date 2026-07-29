@@ -35,3 +35,9 @@ fi
 grep -Fq '| 5 | 0 | setup-failure | worktree-add-or-validation |' "$report"
 grep -Fq 'cleanup: worktrees=0 branches=0 processes=0' "$report"
 grep -Fq 'overall: FAIL' "$report"
+fixture=$(sed -n 's/^fixture: //p' "$report")
+mission_state=$(bun -e "import { Database } from 'bun:sqlite'; const db = new Database(process.argv[1]); const rows = db.query('SELECT state FROM missions').all(); console.log(rows.length === 1 ? rows[0].state : 'invalid-mission-count'); db.close();" "$fixture/state.db")
+[ "$mission_state" = failed ] || {
+  echo "expected failed mission state, got: $mission_state" >&2
+  exit 1
+}

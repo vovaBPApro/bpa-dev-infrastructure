@@ -211,7 +211,6 @@ for i in $(seq 1 "$lanes"); do
   fi
 done
 landing_ended=$(now_ms)
-cli mission transition "$mission_id" succeeded >/dev/null
 
 max_concurrent=0
 for point in $(cat "$events"/*.start "$events"/*.end | sort -n | uniq); do
@@ -236,6 +235,12 @@ secret_refused=$(grep -c '^refused|secret-scan$' "$events/1.verdict" || true)
 malformed_refused=$(grep -c '^refused|completion-guard$' "$events/2.verdict" || true)
 overall=PASS
 if [ "$workers_ok" != true ] || [ "$setup_failed" -ne 0 ] || [ "$landed" -ne "$good_expected" ] || [ "$secret_refused" -ne 1 ] || [ "$malformed_refused" -ne 1 ] || [ "$max_concurrent" -lt 2 ] || [ "$leftover_worktrees" -ne 0 ] || [ "$leftover_branches" -ne 0 ] || [ "$leftover_processes" -ne 0 ]; then overall=FAIL; fi
+mission_state=succeeded
+[ "$overall" = PASS ] || mission_state=failed
+if ! cli mission transition "$mission_id" "$mission_state" >/dev/null; then
+  echo "failed to persist terminal mission state: $mission_state" >&2
+  overall=FAIL
+fi
 ended=$(now_ms)
 
 {

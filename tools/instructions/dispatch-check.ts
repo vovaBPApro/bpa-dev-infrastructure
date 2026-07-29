@@ -27,15 +27,35 @@
 // Usage: bun tools/instructions/dispatch-check.ts <prompt-file> [--repo <path>]
 // See --help for the full flag semantics.
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import {
+  accessSync,
+  appendFileSync,
+  constants,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { PACK_MARKER_PREFIX } from "./compose.ts";
+import { AUDIENCES } from "./schema.ts";
 
 // The ops journal is a runtime artifact: gitignored, host-only. Overridable via
 // ORCH_OPS_JOURNAL (tests point it at a temp dir; the daemon/orchestrator may
 // relocate its state dir). Default lives under orchestrator/runtime/, which the
 // repo .gitignore excludes.
 export const DEFAULT_OPS_JOURNAL_RELATIVE = join("orchestrator", "runtime", "ops-journal.log");
+
+const COMPOSE_ROLES = AUDIENCES.filter((audience) => audience !== "all");
+const COMPOSE_MARKER = new RegExp(
+  `^${escapeRegExp(PACK_MARKER_PREFIX)} role=(?:${COMPOSE_ROLES.join("|")}) l1=[0-9a-fA-F]{8,40} -->$`,
+);
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 export function resolveOpsJournalPath(
   repoRoot: string,
@@ -47,16 +67,39 @@ export function resolveOpsJournalPath(
   return join(repoRoot, DEFAULT_OPS_JOURNAL_RELATIVE);
 }
 
-// True when `contents` begins — after any leading blank lines — with the compose
-// marker. Anchored at the first non-blank line so a marker appearing deeper in
-// the body cannot spoof the check.
+// True when `contents` begins — after any leading blank lines — with a complete,
+// valid compose marker. Anchoring at the first non-blank line prevents a quoted
+// marker deeper in the body from spoofing the check.
 export function hasComposeMarker(contents: string): boolean {
   const normalized = contents.replace(/^﻿/, "");
   for (const rawLine of normalized.split(/\r?\n/)) {
     if (rawLine.trim() === "") continue;
-    return rawLine.trimStart().startsWith(PACK_MARKER_PREFIX);
+    return COMPOSE_MARKER.test(rawLine.trimStart());
   }
   return false; // empty / whitespace-only file has no marker
+}
+
+function isPathWithin(path: string, root: string): boolean {
+  const pathFromRoot = relative(root, path);
+  return pathFromRoot !== "" && !pathFromRoot.startsWith(".." + "/") && pathFromRoot !== ".." && !isAbsolute(pathFromRoot);
+}
+
+function requireDurableJournalPath(repoRoot: string, path: string): void {
+  const journalRoot = resolve(repoRoot, dirname(DEFAULT_OPS_JOURNAL_RELATIVE));
+  if (!isPathWithin(resolve(path), journalRoot)) {
+    throw new Error(`ops journal must be a regular writable file under ${journalRoot}`);
+  }
+
+  mkdirSync(dirname(path), { recursive: true });
+  const canonicalRoot = realpathSync(journalRoot);
+  const canonicalParent = realpathSync(dirname(path));
+  if (!isPathWithin(canonicalParent, canonicalRoot) && canonicalParent !== canonicalRoot) {
+    throw new Error(`ops journal parent escapes ${journalRoot}`);
+  }
+
+  if (existsSync(path) && !lstatSync(path).isFile()) {
+    throw new Error("ops journal must be a regular file (symlinks and special files are refused)");
+  }
 }
 
 // Appends one override record to the ops journal, creating the file and its
@@ -68,13 +111,19 @@ export function appendOverrideJournal(
   override?: string,
 ): string {
   const path = resolveOpsJournalPath(repoRoot, override);
-  mkdirSync(dirname(path), { recursive: true });
+  requireDurableJournalPath(repoRoot, path);
   const ts = entry.ts ?? new Date().toISOString();
   // Single line; the reason is JSON-escaped so a newline in it cannot forge a
   // second journal row.
   const line =
     `${ts}\tDISPATCH_OVERRIDE\tprompt=${entry.promptPath}\treason=${JSON.stringify(entry.reason)}\n`;
+  const sizeBefore = existsSync(path) ? statSync(path).size : 0;
   appendFileSync(path, line);
+  const after = statSync(path);
+  accessSync(path, constants.W_OK);
+  if (!after.isFile() || after.size < sizeBefore + Buffer.byteLength(line) || !readFileSync(path, "utf8").includes(line)) {
+    throw new Error("ops journal append could not be durably verified");
+  }
   return path;
 }
 
@@ -153,10 +202,15 @@ if (import.meta.main) {
     if (override.trim() === "") {
       fail("DISPATCH_OVERRIDE is set but empty — a break-glass override MUST carry a reason");
     }
-    const journal = appendOverrideJournal(repo, {
-      promptPath: options.promptPath,
-      reason: override,
-    });
+    let journal: string;
+    try {
+      journal = appendOverrideJournal(repo, {
+        promptPath: options.promptPath,
+        reason: override,
+      });
+    } catch (error) {
+      fail(`DISPATCH_OVERRIDE refused: ${(error as Error).message}`);
+    }
     process.stderr.write(
       `dispatch-check: OVERRIDE accepted (reason logged to ${journal}); ` +
         `prompt lacks a compose marker: ${options.promptPath}\n`,

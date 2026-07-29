@@ -26,7 +26,7 @@ function tempRepo(): string {
   return root;
 }
 
-const MARKER_LINE = `${PACK_MARKER_PREFIX} role=coder l1=abc123 -->`;
+const MARKER_LINE = `${PACK_MARKER_PREFIX} role=coder l1=abc12345 -->`;
 
 // Runs the CLI, returning {status, stdout, stderr}. spawnSync never throws on a
 // non-zero exit, so both stdout and stderr are captured on every path.
@@ -56,6 +56,14 @@ describe("hasComposeMarker", () => {
 
   test("false when the marker only appears deeper in the body (no spoofing)", () => {
     expect(hasComposeMarker("some hand-written intro\n" + MARKER_LINE + "\n")).toBe(false);
+  });
+
+  test("false for forged or incomplete marker lookalikes", () => {
+    expect(hasComposeMarker("<!-- compose.ts pack v1 forged -->\n")).toBe(false);
+    expect(hasComposeMarker("<!-- compose.ts pack v1 role=coder -->\n")).toBe(false);
+    expect(hasComposeMarker("<!-- compose.ts pack v1 l1=abc12345 -->\n")).toBe(false);
+    expect(hasComposeMarker("<!-- compose.ts pack v1 role=attacker l1=abc12345 -->\n")).toBe(false);
+    expect(hasComposeMarker(MARKER_LINE + " junk\n")).toBe(false);
   });
 
   test("false for a marker-less prompt", () => {
@@ -125,6 +133,15 @@ describe("dispatch-check CLI", () => {
     expect(existsSync(join(repo, DEFAULT_OPS_JOURNAL_RELATIVE))).toBe(false);
   });
 
+  test("exit 3 for a forged compose-marker lookalike", () => {
+    const repo = tempRepo();
+    const prompt = join(repo, "forged.txt");
+    writeFileSync(prompt, "<!-- compose.ts pack v1 forged -->\nhand-written prompt\n");
+    const result = runCli([prompt, "--repo", repo]);
+    expect(result.status).toBe(3);
+    expect(result.stderr).toContain("REFUSED");
+  });
+
   test("DISPATCH_OVERRIDE with a reason forces exit 0 and journals the override", () => {
     const repo = tempRepo();
     const prompt = join(repo, "bad.txt");
@@ -147,6 +164,18 @@ describe("dispatch-check CLI", () => {
     expect(existsSync(join(repo, DEFAULT_OPS_JOURNAL_RELATIVE))).toBe(false);
   });
 
+  test("DISPATCH_OVERRIDE is refused when its journal is outside runtime", () => {
+    const repo = tempRepo();
+    const prompt = join(repo, "bad.txt");
+    writeFileSync(prompt, "no marker\n");
+    const result = runCli([prompt, "--repo", repo], {
+      DISPATCH_OVERRIDE: "repairing compose tooling",
+      ORCH_OPS_JOURNAL: "/dev/null",
+    });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("OVERRIDE refused");
+  });
+
   test("a missing prompt file is a usage error (exit 2)", () => {
     const repo = tempRepo();
     const result = runCli([join(repo, "nope.txt"), "--repo", repo]);
@@ -163,8 +192,14 @@ describe("dispatch-check CLI", () => {
 describe("dispatch-lane.sh wrapper", () => {
   const WRAPPER = join(import.meta.dir, "..", "..", "orchestrator", "dispatch-lane.sh");
 
-  function runWrapper(args: string[]): { status: number; stdout: string; stderr: string } {
-    const result = spawnSync("bash", [WRAPPER, ...args], { encoding: "utf8" });
+  function runWrapper(
+    args: string[],
+    env: Record<string, string> = {},
+  ): { status: number; stdout: string; stderr: string } {
+    const result = spawnSync("bash", [WRAPPER, ...args], {
+      encoding: "utf8",
+      env: { ...process.env, ...env },
+    });
     return { status: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
   }
 
@@ -182,6 +217,19 @@ describe("dispatch-lane.sh wrapper", () => {
 
     const refused = runWrapper([bad]);
     expect(refused.status).toBe(3);
+  });
+
+  test("refuses a marker-less prompt even when ORCH_DISPATCH_CHECK names an always-ok checker", () => {
+    const dir = mkdtempSync(join(tmpdir(), "dispatch-wrap-"));
+    temporaryDirectories.push(dir);
+    const bad = join(dir, "bad.txt");
+    const alwaysOk = join(dir, "always-ok.ts");
+    writeFileSync(bad, "no marker\n");
+    writeFileSync(alwaysOk, "process.exit(0);\n");
+
+    const result = runWrapper([bad], { ORCH_DISPATCH_CHECK: alwaysOk });
+    expect(result.status).toBe(3);
+    expect(result.stderr).toContain("REFUSED");
   });
 
   test("with a launcher tail, the launcher receives the prompt path", () => {

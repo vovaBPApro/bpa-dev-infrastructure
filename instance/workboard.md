@@ -49,6 +49,36 @@ note. Derived-work items live here; Human directives stay in
 - **W-10 — install memory-sweep daily timer** on the host once W-08 triage
   is done (orchestrator/install-memory-sweep.sh).
 
+## Deep consilium residuals (2026-07-29)
+
+Source: `migration-prep/DEEP_CONSILIUM_AUDIT_2026-07-29.md` (4 Codex auditors).
+The CRITICAL/HIGH findings already LANDED: /status honesty (running_agents vs
+lane_worktrees, git timeout) `7fe97222`; gate provenance 7 fixes incl.
+self-review reviewer!=author + partial-identity + NUL-byte `b3a42d14`; dispatch
+marker/override 3 fixes `c1ad0c7e`; flaky lease-race test `d1b64754`. These rows
+are the remaining MEDIUM/LOW.
+
+- **W-11 — gate secret-scan: decoded/entropy detection** (redteam MEDIUM +
+  test-quality): base64-encoded and split-string secret forms still evade the
+  signature grep; secret-shaped path names are now scanned (landed) but content
+  encodings are not. Add a real decoding/entropy pass or document the residual
+  boundary in `instructions/verification-and-locks.md`. Home: `gate/land-lib.sh`.
+- **W-12 — gate reviewer-identity heuristic hardening** (gate re-review LOW
+  residual + redteam LOW): the reviewer!=author guard is a string heuristic — a
+  multi-token author name reordered with a spoofed email could evade name
+  detection (not reproducible now: this repo's author is single-token). Also
+  normalize CRLF/trailing whitespace in artifact identity fields. Home:
+  `gate/land-lib.sh`.
+- **W-13 — /status process-local fields relabeled as observations** (daemon
+  audit MED): `last_relay`→`last_relay_attempt` (+ ack state), `buffered_msgs`→
+  `in_memory_buffer` (+ dropped count + restart epoch), `bot`/`claude_connected`
+  reflect a live probe not a cached value. The stale-state labeling + PID probe
+  already landed in `7fe97222`; this is the remaining honesty polish. Home:
+  `daemon/status.ts`.
+
+Note: W-07 (batch --skip-review test) and W-09 (handoff write-time future-ts
+guard) already cover the test-quality auditor's other two findings.
+
 ## Parked (needs Human go or a phase flip)
 
 - **P-01 — VM migration to the 64 GB machine** (`instance/migration-day.md`)

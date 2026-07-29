@@ -1,5 +1,6 @@
 # Instructions
 
+- [branching-policy.md](branching-policy.md) — trunk-based branch model: `main` plus short-lived `ag-` lanes; environments are not branches.
 - [development-workflow.md](development-workflow.md) — lifecycle, scope control, verification, and documentation truth.
 - [human-requirements.md](human-requirements.md) — verbatim Human requirements and final authority.
 - [incidents.md](incidents.md) — traceability from operating failures to rules.

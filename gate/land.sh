@@ -19,6 +19,7 @@ skip_review_reason=""
 merged=false
 merge_sha="none"
 pushed=false
+landing_complete=false
 review_verdict="not-required"
 pre_merge_sha=""
 
@@ -85,6 +86,20 @@ case "$git_dir" in
 esac
 exec 9>"$lock_file"
 if ! flock -n 9; then land_fail lock 2; fi
+land_rollback_on_exit() {
+  status=$?
+  trap - EXIT TERM INT HUP
+  if [ "$landing_complete" != true ] && [ -n "$pre_merge_sha" ]; then
+    git -C "$repo" merge --abort >/dev/null 2>&1 || true
+    git -C "$repo" checkout -q "$default_branch" >/dev/null 2>&1 || true
+    git -C "$repo" reset --hard "$pre_merge_sha" >/dev/null 2>&1 || true
+  fi
+  exit "$status"
+}
+trap land_rollback_on_exit EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
+trap 'exit 129' HUP
 
 default_ref=$(git -C "$repo" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
 if [ -n "$default_ref" ]; then
@@ -124,7 +139,7 @@ land_pass freshness
 
 export LAND_DEFAULT_BRANCH="$default_branch"
 guard_args=("$script_dir/completion-guard.ts" --report "$report" --repo "$repo" --branch "$branch")
-if [ "$run_verify" = true ]; then guard_args+=(--run-verify); fi
+if [ "$run_verify" = true ]; then guard_args+=(--defer-verify); fi
 if ! "$BUN_BIN" "${guard_args[@]}"; then
   land_fail completion-guard 2
 fi
@@ -138,6 +153,14 @@ if [ "$skip_review" = true ]; then echo "LAND review=SKIPPED reason=$skip_review
 
 if ! land_secret_scan "$repo" "$branch"; then land_fail secret-scan 2; fi
 land_pass secret-scan
+
+report_sha=$(sed -n 's/^commit:[[:space:]]*\([0-9a-fA-F]\{40\}\).*/\1/p' "$report" | head -n 1)
+branch_sha=$(git -C "$repo" rev-parse --verify "${branch}^{commit}") || land_fail branch-tip 2
+if [ -z "$report_sha" ] || [ "${report_sha,,}" != "${branch_sha,,}" ]; then
+  echo "LAND branch-tip mismatch report=${report_sha:-missing} branch=$branch_sha" >&2
+  land_fail branch-tip 2
+fi
+land_pass branch-tip
 
 if ! land_payload_guard "$repo" "$branch"; then
   echo "LAND verdict=aborted sha=$merge_sha" >&2
@@ -185,6 +208,7 @@ else
   land_skip push
 fi
 
+landing_complete=true
 if [ "$merged" != true ]; then
   land_reap_fail
 fi

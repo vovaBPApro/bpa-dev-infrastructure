@@ -103,7 +103,9 @@ review() {
   path="$1"
   verdict="$2"
   reviewer="$3"
-  printf 'verdict: %s\nreviewer: %s\n' "$verdict" "$reviewer" > "$path"
+  reviewed_sha="$4"
+  independence="$5"
+  printf 'verdict: %s\nreviewer: %s\nreviewed-sha: %s\nindependence: %s\n' "$verdict" "$reviewer" "$reviewed_sha" "$independence" > "$path"
 }
 
 assert_output_has() {
@@ -139,7 +141,7 @@ assert_output_lacks "$review_malformed_output" 'LAND step=merge status=pass'
 make_fixture review-rejected
 review_rejected_sha=$(make_policy_lane "$fixture_root/review-rejected-repo" ag-review-rejected)
 report "$fixture_root/review-rejected-report.md" "$review_rejected_sha"
-review "$fixture_root/ag-review-rejected.review.md" REJECT independent-reviewer
+review "$fixture_root/ag-review-rejected.review.md" REJECT independent-reviewer "$review_rejected_sha" separate-session
 review_rejected_output="$fixture_root/review-rejected-output.txt"
 if "$land" --branch ag-review-rejected --report "$fixture_root/review-rejected-report.md" --repo "$fixture_root/review-rejected-repo" >"$review_rejected_output" 2>&1; then exit 1; fi
 assert_output_has "$review_rejected_output" 'ERROR review-rejected'
@@ -148,7 +150,7 @@ assert_output_lacks "$review_rejected_output" 'LAND step=merge status=pass'
 make_fixture review-self
 review_self_sha=$(make_policy_lane "$fixture_root/review-self-repo" ag-review-self)
 report "$fixture_root/review-self-report.md" "$review_self_sha"
-review "$fixture_root/ag-review-self.review.md" ACCEPT ag-review-self
+review "$fixture_root/ag-review-self.review.md" ACCEPT ag-review-self "$review_self_sha" separate-session
 review_self_output="$fixture_root/review-self-output.txt"
 if "$land" --branch ag-review-self --report "$fixture_root/review-self-report.md" --repo "$fixture_root/review-self-repo" >"$review_self_output" 2>&1; then exit 1; fi
 assert_output_has "$review_self_output" 'ERROR review-required malformed-artifact'
@@ -170,7 +172,7 @@ review_policy_deletion_output="$fixture_root/review-policy-deletion-output.txt"
 if "$land" --branch ag-review-policy-deletion --report "$fixture_root/review-policy-deletion-report.md" --repo "$fixture_root/review-policy-deletion-repo" >"$review_policy_deletion_output" 2>&1; then exit 1; fi
 assert_output_has "$review_policy_deletion_output" 'ERROR review-required missing-artifact'
 assert_output_lacks "$review_policy_deletion_output" 'LAND step=merge status=pass'
-review "$fixture_root/ag-review-policy-deletion.review.md" ACCEPT independent-reviewer
+review "$fixture_root/ag-review-policy-deletion.review.md" ACCEPT independent-reviewer "$review_policy_deletion_sha" separate-session
 "$land" --branch ag-review-policy-deletion --report "$fixture_root/review-policy-deletion-report.md" --repo "$fixture_root/review-policy-deletion-repo" --no-push >"$review_policy_deletion_output" 2>&1
 assert_output_has "$review_policy_deletion_output" 'review=accepted'
 assert git -C "$fixture_root/review-policy-deletion-repo" merge-base --is-ancestor "$review_policy_deletion_sha" HEAD
@@ -186,20 +188,49 @@ assert_output_lacks "$review_policy_rename_output" 'LAND step=merge status=pass'
 make_fixture review-accepted
 review_accepted_sha=$(make_policy_lane "$fixture_root/review-accepted-repo" ag-review-accepted)
 report "$fixture_root/review-accepted-report.md" "$review_accepted_sha"
-review "$fixture_root/ag-review-accepted.review.md" ACCEPT independent-reviewer
+review "$fixture_root/ag-review-accepted.review.md" ACCEPT independent-reviewer "$review_accepted_sha" separate-session
 review_accepted_output="$fixture_root/review-accepted-output.txt"
 "$land" --branch ag-review-accepted --report "$fixture_root/review-accepted-report.md" --repo "$fixture_root/review-accepted-repo" --no-push >"$review_accepted_output" 2>&1
 assert_output_has "$review_accepted_output" 'LAND verdict=landed sha='
 assert_output_has "$review_accepted_output" 'review=accepted'
 assert git -C "$fixture_root/review-accepted-repo" merge-base --is-ancestor "$review_accepted_sha" HEAD
 
+make_fixture review-stale-sha
+review_stale_sha=$(make_policy_lane "$fixture_root/review-stale-sha-repo" ag-review-stale-sha)
+report "$fixture_root/review-stale-sha-report.md" "$review_stale_sha"
+review "$fixture_root/ag-review-stale-sha.review.md" ACCEPT independent-reviewer aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa separate-session
+review_stale_output="$fixture_root/review-stale-sha-output.txt"
+if "$land" --branch ag-review-stale-sha --report "$fixture_root/review-stale-sha-report.md" --repo "$fixture_root/review-stale-sha-repo" >"$review_stale_output" 2>&1; then exit 1; fi
+assert_output_has "$review_stale_output" 'ERROR review-required stale-artifact reviewed-sha-mismatch'
+
+make_fixture review-missing-sha
+review_missing_sha=$(make_policy_lane "$fixture_root/review-missing-sha-repo" ag-review-missing-sha)
+report "$fixture_root/review-missing-sha-report.md" "$review_missing_sha"
+printf 'verdict: ACCEPT\nreviewer: independent-reviewer\nindependence: separate-session\n' > "$fixture_root/ag-review-missing-sha.review.md"
+review_missing_sha_output="$fixture_root/review-missing-sha-output.txt"
+if "$land" --branch ag-review-missing-sha --report "$fixture_root/review-missing-sha-report.md" --repo "$fixture_root/review-missing-sha-repo" >"$review_missing_sha_output" 2>&1; then exit 1; fi
+assert_output_has "$review_missing_sha_output" "line='reviewed-sha: <40-hex>'"
+
+make_fixture review-missing-independence
+review_missing_independence_sha=$(make_policy_lane "$fixture_root/review-missing-independence-repo" ag-review-missing-independence)
+report "$fixture_root/review-missing-independence-report.md" "$review_missing_independence_sha"
+printf 'verdict: ACCEPT\nreviewer: independent-reviewer\nreviewed-sha: %s\n' "$review_missing_independence_sha" > "$fixture_root/ag-review-missing-independence.review.md"
+review_missing_independence_output="$fixture_root/review-missing-independence-output.txt"
+if "$land" --branch ag-review-missing-independence --report "$fixture_root/review-missing-independence-report.md" --repo "$fixture_root/review-missing-independence-repo" >"$review_missing_independence_output" 2>&1; then exit 1; fi
+assert_output_has "$review_missing_independence_output" "line='independence: <text>'"
+
 make_fixture review-skipped
 review_skipped_sha=$(make_policy_lane "$fixture_root/review-skipped-repo" ag-review-skipped)
 report "$fixture_root/review-skipped-report.md" "$review_skipped_sha"
 review_skipped_output="$fixture_root/review-skipped-output.txt"
-"$land" --branch ag-review-skipped --report "$fixture_root/review-skipped-report.md" --repo "$fixture_root/review-skipped-repo" --no-push --skip-review >"$review_skipped_output" 2>&1
+if "$land" --branch ag-review-skipped --report "$fixture_root/review-skipped-report.md" --repo "$fixture_root/review-skipped-repo" --no-push --skip-review >"$review_skipped_output" 2>&1; then exit 1; fi
+assert_output_has "$review_skipped_output" 'usage: gate/land.sh'
+"$land" --branch ag-review-skipped --report "$fixture_root/review-skipped-report.md" --repo "$fixture_root/review-skipped-repo" --no-push --skip-review 'emergency rollback window' >"$review_skipped_output" 2>&1
 assert_output_has "$review_skipped_output" 'WARN review-skipped'
 assert_output_has "$review_skipped_output" 'review=skipped'
+assert_output_has "$review_skipped_output" 'LAND review=SKIPPED reason=emergency rollback window'
+assert grep -Fq $'branch=ag-review-skipped\tsha=' "$fixture_root/review-skipped-repo/orchestrator/runtime/review-skips.log"
+assert grep -Fq $'reason=emergency rollback window' "$fixture_root/review-skipped-repo/orchestrator/runtime/review-skips.log"
 assert git -C "$fixture_root/review-skipped-repo" merge-base --is-ancestor "$review_skipped_sha" HEAD
 
 make_fixture good

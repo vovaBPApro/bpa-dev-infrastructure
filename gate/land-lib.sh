@@ -30,7 +30,8 @@ land_resolve_bun() {
 land_review_check() {
   local repo="$1" branch="$2" report="$3" policy_file="$4" skip_review="$5"
   local merge_base candidate_path policy_prefix change_status old_path new_path
-  local review_artifact review_verdict_value reviewer_value review_verdict_count reviewer_count
+  local review_artifact review_verdict_value reviewer_value reviewed_sha_value independence_value
+  local review_verdict_count reviewer_count reviewed_sha_count independence_count report_sha
   export LAND_REVIEW_VERDICT="not-required"
   merge_base=$(git -C "$repo" merge-base "$LAND_DEFAULT_BRANCH" "$branch") || return 2
   if [ ! -r "$policy_file" ]; then
@@ -71,15 +72,45 @@ land_review_check() {
     else
       review_verdict_value=$(sed -n 's/^verdict:[[:space:]]*//p' "$review_artifact" | sed 's/[[:space:]]*$//')
       reviewer_value=$(sed -n 's/^reviewer:[[:space:]]*//p' "$review_artifact" | sed 's/[[:space:]]*$//')
+      reviewed_sha_value=$(sed -n 's/^reviewed-sha:[[:space:]]*//p' "$review_artifact" | sed 's/[[:space:]]*$//')
+      independence_value=$(sed -n 's/^independence:[[:space:]]*//p' "$review_artifact" | sed 's/[[:space:]]*$//')
       review_verdict_count=$(grep -c '^verdict:' "$review_artifact" || true)
       reviewer_count=$(grep -c '^reviewer:' "$review_artifact" || true)
+      reviewed_sha_count=$(grep -c '^reviewed-sha:' "$review_artifact" || true)
+      independence_count=$(grep -c '^independence:' "$review_artifact" || true)
       if [ "$review_verdict_value" = "REJECT" ]; then echo "ERROR review-rejected file=$review_artifact" >&2; return 2; fi
       if [ "$review_verdict_count" -ne 1 ] || [ "$review_verdict_value" != "ACCEPT" ] || [ "$reviewer_count" -ne 1 ] || [ -z "$reviewer_value" ] || [ "$reviewer_value" = "$branch" ]; then
         echo "ERROR review-required malformed-artifact file=$review_artifact" >&2
         return 2
       fi
+      if [ "$reviewed_sha_count" -ne 1 ] || ! [[ "$reviewed_sha_value" =~ ^[0-9a-fA-F]{40}$ ]]; then
+        echo "ERROR review-required stale-artifact missing-reviewed-sha line='reviewed-sha: <40-hex>' file=$review_artifact" >&2
+        return 2
+      fi
+      report_sha=$(sed -n 's/^commit:[[:space:]]*\([0-9a-fA-F]\{40\}\).*/\1/p' "$report" | head -n 1)
+      if [ -z "$report_sha" ] || [ "${reviewed_sha_value,,}" != "${report_sha,,}" ]; then
+        echo "ERROR review-required stale-artifact reviewed-sha-mismatch line='reviewed-sha: <40-hex>' expected=${report_sha:-missing-report-sha} actual=$reviewed_sha_value file=$review_artifact" >&2
+        return 2
+      fi
+      if [ "$independence_count" -ne 1 ] || [ -z "$independence_value" ]; then
+        echo "ERROR review-required malformed-artifact missing-independence line='independence: <text>' file=$review_artifact" >&2
+        return 2
+      fi
       export LAND_REVIEW_VERDICT="accepted"
     fi
+  fi
+}
+
+land_record_review_skip() {
+  local repo="$1" branch="$2" sha="$3" reason="$4" audit_file timestamp
+  audit_file="$repo/orchestrator/runtime/review-skips.log"
+  timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ) || return 2
+  reason=${reason//$'\n'/ }
+  reason=${reason//$'\r'/ }
+  reason=${reason//$'\t'/ }
+  if ! mkdir -p "$(dirname "$audit_file")" || ! printf '%s\tbranch=%s\tsha=%s\treason=%s\n' "$timestamp" "$branch" "$sha" "$reason" >> "$audit_file"; then
+    echo "ERROR review-skipped audit-write-failed file=$audit_file" >&2
+    return 2
   fi
 }
 

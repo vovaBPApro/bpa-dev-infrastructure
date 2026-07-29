@@ -38,6 +38,12 @@ run, evidence inspected, findings, and one verdict: `ACCEPT`, `REJECT`, or
 `NO-GO`. Any reject, missing evidence, timeout, scope breach, or unverified
 rollback blocks landing until dispositioned.
 
+For gate-routed changes, the record must include plain column-1 `reviewed-sha:`
+and non-empty `independence:` fields. The landing gate verifies that the SHA
+equals the report's commit before it accepts the record. Break-glass
+`--skip-review` requires a reason and is durably audited in the runtime review
+skip log; see the gate's usage output for operational mechanics.
+
 ## Blocked-review fallback
 
 Use a same-provider emergency consortium for urgent Tier A only after a normal

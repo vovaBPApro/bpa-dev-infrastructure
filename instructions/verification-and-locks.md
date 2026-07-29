@@ -49,15 +49,21 @@ screenshot, heartbeat, or promise is never `clean`.
 
 ### Canonical secret-scan command
 
-Run this over the changed files before every commit and record `secret-scan: clean`:
+The secret-scan pattern has ONE home: the `secret_pattern` variable in the
+`land_secret_scan()` function of `gate/land-lib.sh` (the same scan the landing
+gate runs). Do not copy the pattern text into any other file — a copied literal
+both drifts from the gate and trips the gate's own diff scan on itself. Extract
+the pattern from the gate at run time and scan the diff against it:
 
 ```sh
-grep -rEn '[0-9]{8,10}:AA|ghp_|github_pat|client_secret|PRIVATE KEY|AKIA|sk-ant-' <changed files>
+pat=$(eval "$(sed -n 's/^[[:space:]]*secret_pattern=/REPLY=/p' gate/land-lib.sh)"; printf '%s' "$REPLY")
+git diff origin/main...HEAD | LC_ALL=C grep -aE "$pat"   # any output = a hit
 ```
 
-Any hit blocks the commit or landing until removed and reassessed. If the
-scanner is absent or fails to run, report `secret-scan: NO-GO` (scanner
-missing) — never write `secret-scan: clean` from manual inspection alone.
+Any hit blocks the commit or landing until removed and reassessed. If
+`gate/land-lib.sh` (or the extracted pattern) is absent or the scan fails to
+run, report `secret-scan: NO-GO` (scanner missing) — never write
+`secret-scan: clean` from manual inspection alone.
 
 ## Reject False Greens
 

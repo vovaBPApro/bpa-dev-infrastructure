@@ -25,3 +25,13 @@ report=""
 # This concurrent case regression-locks freshness rebase/retry: pre-fix it
 # lands only one of these four good lanes.
 assert_soak 6
+
+# Deterministic guard: an existing target makes worktree setup fail. The worker
+# must not run there, and fixture cleanup must still be complete.
+report=$(mktemp "${TMPDIR:-/tmp}/bpa-soak-setup-failure-report.XXXXXX")
+if SOAK_REPORT_FILE="$report" SOAK_FAIL_SETUP_LANE=5 bash "$root/soak/soak.sh" 6; then
+  exit 1
+fi
+grep -Fq '| 5 | 0 | setup-failure | worktree-add-or-validation |' "$report"
+grep -Fq 'cleanup: worktrees=0 branches=0 processes=0' "$report"
+grep -Fq 'overall: FAIL' "$report"

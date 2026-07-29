@@ -5,9 +5,14 @@ set -o pipefail
 
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 lanes=${1:-10}
+fail_setup_lane=${SOAK_FAIL_SETUP_LANE:-}
 
 if ! [[ "$lanes" =~ ^[0-9]+$ ]] || [ "$lanes" -lt 3 ]; then
   echo "usage: soak/soak.sh [N >= 3]" >&2
+  exit 2
+fi
+if [ -n "$fail_setup_lane" ] && { ! [[ "$fail_setup_lane" =~ ^[0-9]+$ ]] || [ "$fail_setup_lane" -lt 1 ] || [ "$fail_setup_lane" -gt "$lanes" ]; }; then
+  echo "SOAK_FAIL_SETUP_LANE must name a lane between 1 and $lanes" >&2
   exit 2
 fi
 
@@ -89,7 +94,6 @@ worker() {
     printf 'worker lease acquire failed\n' > "$logs/$i.worker.log"
     end_worker; return 1
   fi
-  git -C "$repo" worktree add -b "$branch" "$wt" main >"$logs/$i.worker.log" 2>&1
   mkdir -p "$wt/lanes"
   printf 'lane %s deterministic worker\n' "$i" > "$wt/lanes/lane-$i.txt"
   sed -i "s/^lane-$i=0$/lane-$i=1/" "$wt/shared-counter.txt"
@@ -117,9 +121,39 @@ worker() {
   printf '%s\n' "$ended_at" > "$events/$i.end"
 }
 
+# Git updates the shared $GIT_DIR/worktrees administration directory while
+# adding a worktree. Keep this small setup phase serial; workers stay parallel.
+setup_failed=0
+for i in $(seq 1 "$lanes"); do
+  wt="$worktrees/$i"
+  branch="ag-soak-$i"
+  if [ "$i" = "$fail_setup_lane" ]; then
+    mkdir -p "$wt"
+    printf 'intentional setup blocker\n' > "$wt/.soak-setup-blocker"
+  fi
+  if ! git -C "$repo" worktree add -b "$branch" "$wt" main >"$logs/$i.setup.log" 2>&1 \
+    || [ "$(git -C "$wt" rev-parse --is-inside-work-tree 2>/dev/null || true)" != true ] \
+    || [ ! -f "$wt/shared-counter.txt" ]; then
+    printf 'setup-failure|worktree-add-or-validation\n' > "$events/$i.verdict"
+    now_ms > "$events/$i.start"
+    cp "$events/$i.start" "$events/$i.end"
+    cli lane transition "soak-$i" failed >>"$logs/$i.state.log" 2>&1 || true
+    # A failed add can leave an unregistered directory, so remove both Git's
+    # registration (if any) and the known disposable fixture target.
+    git -C "$repo" worktree remove --force "$wt" >/dev/null 2>&1 || true
+    rm -rf -- "$wt"
+    git -C "$repo" worktree prune >/dev/null 2>&1 || true
+    git -C "$repo" branch -D "$branch" >/dev/null 2>&1 || true
+    setup_failed=$((setup_failed + 1))
+  fi
+done
+
 coding_started=$(now_ms)
 pids=""
 for i in $(seq 1 "$lanes"); do
+  if [ -f "$events/$i.verdict" ]; then
+    continue
+  fi
   worker "$i" &
   pids="$pids $!"
 done
@@ -129,6 +163,9 @@ coding_ended=$(now_ms)
 
 landing_started=$(now_ms)
 for i in $(seq 1 "$lanes"); do
+  if [ -f "$events/$i.verdict" ]; then
+    continue
+  fi
   branch="ag-soak-$i"
   output="$logs/$i.land.log"
   max_land_attempts=$((lanes + 2))
@@ -198,7 +235,7 @@ landed=$(grep -l '^landed|' "$events"/*.verdict | wc -l | tr -d ' ')
 secret_refused=$(grep -c '^refused|secret-scan$' "$events/1.verdict" || true)
 malformed_refused=$(grep -c '^refused|completion-guard$' "$events/2.verdict" || true)
 overall=PASS
-if [ "$workers_ok" != true ] || [ "$landed" -ne "$good_expected" ] || [ "$secret_refused" -ne 1 ] || [ "$malformed_refused" -ne 1 ] || [ "$max_concurrent" -lt 2 ] || [ "$leftover_worktrees" -ne 0 ] || [ "$leftover_branches" -ne 0 ] || [ "$leftover_processes" -ne 0 ]; then overall=FAIL; fi
+if [ "$workers_ok" != true ] || [ "$setup_failed" -ne 0 ] || [ "$landed" -ne "$good_expected" ] || [ "$secret_refused" -ne 1 ] || [ "$malformed_refused" -ne 1 ] || [ "$max_concurrent" -lt 2 ] || [ "$leftover_worktrees" -ne 0 ] || [ "$leftover_branches" -ne 0 ] || [ "$leftover_processes" -ne 0 ]; then overall=FAIL; fi
 ended=$(now_ms)
 
 {

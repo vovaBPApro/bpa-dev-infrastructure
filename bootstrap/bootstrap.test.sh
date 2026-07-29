@@ -87,7 +87,9 @@ for expected in \
 done
 grep -Eq '^(PASS|SKIP) stand' <<<"$verify_output"
 
-old_watchdog_exec="$(git -C "$SCRIPT_DIR/.." show 148b9ad0:bootstrap/units/bpa-orchestrator-watchdog.service.in | sed -n 's/^ExecStart=//p')"
+# Keep this regression fixture self-contained: Actions checks out depth one, so
+# the historical pre-fix commit is intentionally unavailable in CI.
+old_watchdog_exec="\$INSTALL_ROOT/daemon/orchestrator-watchdog.sh"
 expected_old_watchdog_exec="\$INSTALL_ROOT/daemon/orchestrator-watchdog.sh"
 [[ "$old_watchdog_exec" == "$expected_old_watchdog_exec" ]]
 old_watchdog_exec="${old_watchdog_exec/\$INSTALL_ROOT/$verify_fixture/root}"

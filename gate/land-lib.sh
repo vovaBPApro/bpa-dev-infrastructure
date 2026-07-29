@@ -31,7 +31,9 @@ land_review_check() {
   local repo="$1" branch="$2" report="$3" policy_file="$4" skip_review="$5"
   local merge_base candidate_path policy_prefix change_status old_path new_path
   local review_artifact review_verdict_value reviewer_value reviewed_sha_value independence_value
-  local review_verdict_count reviewer_count reviewed_sha_count independence_count report_sha commit_author
+  local review_verdict_count reviewer_count reviewed_sha_count independence_count report_sha
+  local commit_author_name commit_author_email reviewer_name reviewer_email reviewer_normalized
+  local author_name_normalized author_email_normalized reviewer_name_tokens author_name_tokens nul_status
   export LAND_REVIEW_VERDICT="not-required"
   merge_base=$(git -C "$repo" merge-base "$LAND_DEFAULT_BRANCH" "$branch") || return 2
   if [ ! -r "$policy_file" ]; then
@@ -73,6 +75,17 @@ land_review_check() {
       echo "ERROR review-required missing-artifact file=$review_artifact" >&2
       return 2
     else
+      # Check raw bytes before command substitution can discard a NUL from any field.
+      if LC_ALL=C grep -aqP '\x00' "$review_artifact"; then
+        echo "ERROR review-required invalid-artifact nul-byte file=$review_artifact" >&2
+        return 2
+      else
+        nul_status=$?
+        if [ "$nul_status" -ne 1 ]; then
+          echo "ERROR review-required invalid-artifact unreadable file=$review_artifact" >&2
+          return 2
+        fi
+      fi
       review_verdict_value=$(sed -n 's/^verdict:[[:space:]]*//p' "$review_artifact" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
       reviewer_value=$(sed -n 's/^reviewer:[[:space:]]*//p' "$review_artifact" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
       reviewed_sha_value=$(sed -n 's/^reviewed-sha:[[:space:]]*//p' "$review_artifact" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
@@ -91,8 +104,17 @@ land_review_check() {
         echo "ERROR review-required malformed-artifact unsafe-identity-field file=$review_artifact" >&2
         return 2
       fi
-      commit_author=$(git -C "$repo" log -1 --format='%an <%ae>' "$branch" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//') || return 2
-      if [ "${reviewer_value,,}" = "${commit_author,,}" ]; then
+      commit_author_name=$(git -C "$repo" log -1 --format='%an' "$branch" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//') || return 2
+      commit_author_email=$(git -C "$repo" log -1 --format='%ae' "$branch" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//') || return 2
+      reviewer_name=$(printf '%s' "$reviewer_value" | sed -E 's/[[:space:]]*<[^<>]*>[[:space:]]*$//' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+      reviewer_email=$(printf '%s' "$reviewer_value" | sed -nE 's/^.*<([^<>]*)>[[:space:]]*$/\1/p' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+      if [ -z "$reviewer_email" ] && [[ "$reviewer_value" == *'@'* ]]; then reviewer_email="$reviewer_value"; fi
+      reviewer_normalized=${reviewer_value,,}
+      author_name_normalized=${commit_author_name,,}
+      author_email_normalized=${commit_author_email,,}
+      reviewer_name_tokens=$(printf '%s' "$reviewer_normalized" | LC_ALL=C sed 's/[^[:alnum:] ]/ /g; s/[[:space:]][[:space:]]*/ /g')
+      author_name_tokens=$(printf '%s' "$author_name_normalized" | LC_ALL=C sed 's/[^[:alnum:] ]/ /g; s/[[:space:]][[:space:]]*/ /g')
+      if [ "${reviewer_name,,}" = "$author_name_normalized" ] || [ -n "$reviewer_email" ] && [ "${reviewer_email,,}" = "$author_email_normalized" ] || [[ "$reviewer_normalized" == *"$author_email_normalized"* ]] || { [ -n "$author_name_tokens" ] && [[ " $reviewer_name_tokens " == *" $author_name_tokens "* ]]; }; then
         echo "ERROR review-required self-authored-review file=$review_artifact" >&2
         return 2
       fi

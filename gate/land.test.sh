@@ -174,6 +174,42 @@ if "$land" --branch ag-review-self-authored --report "$fixture_root/review-self-
 assert_output_has "$review_self_authored_output" 'ERROR review-required self-authored-review'
 assert_output_lacks "$review_self_authored_output" 'LAND step=merge status=pass'
 
+make_fixture review-self-author-name
+review_self_author_name_sha=$(make_policy_lane "$fixture_root/review-self-author-name-repo" ag-review-self-author-name)
+report "$fixture_root/review-self-author-name-report.md" "$review_self_author_name_sha"
+review "$fixture_root/ag-review-self-author-name.review.md" ACCEPT land "$review_self_author_name_sha" separate-session
+review_self_author_name_output="$fixture_root/review-self-author-name-output.txt"
+if "$land" --branch ag-review-self-author-name --report "$fixture_root/review-self-author-name-report.md" --repo "$fixture_root/review-self-author-name-repo" >"$review_self_author_name_output" 2>&1; then exit 1; fi
+assert_output_has "$review_self_author_name_output" 'ERROR review-required self-authored-review'
+assert_output_lacks "$review_self_author_name_output" 'LAND step=merge status=pass'
+
+make_fixture review-self-author-email
+review_self_author_email_sha=$(make_policy_lane "$fixture_root/review-self-author-email-repo" ag-review-self-author-email)
+report "$fixture_root/review-self-author-email-report.md" "$review_self_author_email_sha"
+review "$fixture_root/ag-review-self-author-email.review.md" ACCEPT LAND@EXAMPLE.TEST "$review_self_author_email_sha" separate-session
+review_self_author_email_output="$fixture_root/review-self-author-email-output.txt"
+if "$land" --branch ag-review-self-author-email --report "$fixture_root/review-self-author-email-report.md" --repo "$fixture_root/review-self-author-email-repo" >"$review_self_author_email_output" 2>&1; then exit 1; fi
+assert_output_has "$review_self_author_email_output" 'ERROR review-required self-authored-review'
+assert_output_lacks "$review_self_author_email_output" 'LAND step=merge status=pass'
+
+make_fixture review-nul-artifact
+review_nul_artifact_sha=$(make_policy_lane "$fixture_root/review-nul-artifact-repo" ag-review-nul-artifact)
+report "$fixture_root/review-nul-artifact-report.md" "$review_nul_artifact_sha"
+printf 'verdict: ACCEPT\nreviewer: land\0x <other@example.test>\nreviewed-sha: %s\nindependence: separate-session\n' "$review_nul_artifact_sha" > "$fixture_root/ag-review-nul-artifact.review.md"
+review_nul_artifact_output="$fixture_root/review-nul-artifact-output.txt"
+if "$land" --branch ag-review-nul-artifact --report "$fixture_root/review-nul-artifact-report.md" --repo "$fixture_root/review-nul-artifact-repo" >"$review_nul_artifact_output" 2>&1; then exit 1; fi
+assert_output_has "$review_nul_artifact_output" 'ERROR review-required invalid-artifact nul-byte'
+assert_output_lacks "$review_nul_artifact_output" 'LAND step=merge status=pass'
+
+make_fixture review-independent-identity
+review_independent_identity_sha=$(make_policy_lane "$fixture_root/review-independent-identity-repo" ag-review-independent-identity)
+report "$fixture_root/review-independent-identity-report.md" "$review_independent_identity_sha"
+review "$fixture_root/ag-review-independent-identity.review.md" ACCEPT 'Other Reviewer <other@example.test>' "$review_independent_identity_sha" separate-session
+review_independent_identity_output="$fixture_root/review-independent-identity-output.txt"
+"$land" --branch ag-review-independent-identity --report "$fixture_root/review-independent-identity-report.md" --repo "$fixture_root/review-independent-identity-repo" --no-push >"$review_independent_identity_output" 2>&1
+assert_output_has "$review_independent_identity_output" 'LAND verdict=landed sha='
+assert_output_has "$review_independent_identity_output" 'review=accepted'
+
 make_fixture review-artifact-symlink
 review_artifact_symlink_sha=$(make_policy_lane "$fixture_root/review-artifact-symlink-repo" ag-review-artifact-symlink)
 report "$fixture_root/review-artifact-symlink-report.md" "$review_artifact_symlink_sha"

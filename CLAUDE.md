@@ -10,6 +10,15 @@ leases, cleanup, restart/recovery, evidence gates, and review routing.
 The repo is not a dumping ground for the old project. Import old behavior only
 after source inventory, parity notes, and tests show why it belongs here.
 
+## Instruction Routing
+
+Instructions live in three layers — L1 infra (this repo), L2 framework repo,
+L3 agent repo. Where to add or update one: would it survive unchanged on a
+completely different product? → here (L1). Applies to every agent of this
+product? → framework (L2). Otherwise → that agent's repo (L3). One instruction
+has one home; reference, never copy. Full rule:
+`instructions/instruction-layers.md`.
+
 ## Report Contract
 
 Every report to the Human must contain:

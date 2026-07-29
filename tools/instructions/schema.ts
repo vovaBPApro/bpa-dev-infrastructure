@@ -32,6 +32,9 @@ export type Frontmatter = {
   overrides?: string[];
   // Tombstone pointer for a moved doc (§2.2, §2.5).
   "moved-to"?: string;
+  // Pack-coverage opt-out: `pack: none` declares a binding doc is intentionally
+  // never delivered via a pack (§2.3 coverage rule). Any other value is invalid.
+  pack?: string;
 };
 
 // kebab-case, globally unique. Lowercase letters, digits, single hyphens.
@@ -156,6 +159,9 @@ export function validateFrontmatter(fm: Record<string, unknown> | undefined): Va
   }
   if ("moved-to" in fm && typeof fm["moved-to"] !== "string") {
     errors.push("moved-to must be an id string");
+  }
+  if ("pack" in fm && fm.pack !== "none") {
+    errors.push(`pack, when set, must be 'none' (got '${String(fm.pack)}')`);
   }
 
   if (errors.length > 0) return { valid: false, errors };

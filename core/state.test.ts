@@ -70,6 +70,44 @@ test("successful mutations append audit rows", async () => {
   store.close();
 });
 
+test("injected logical lease time prevents a delayed wall-clock acquirer from replacing a live holder", async () => {
+  const path = await databasePath();
+  const start = `${path}.start`;
+  const acquired = `${path}.worker-a.acquired`;
+  const setup = new StateStore(path);
+  setup.close();
+  const source = resolve(import.meta.dir, "state.ts");
+  const program = `
+    import { StateStore } from ${JSON.stringify(source)};
+    const [path, start, acquired, owner, legacyNow] = process.argv.slice(1);
+    Date.now = () => Number(legacyNow);
+    while (!(await Bun.file(start).exists())) await Bun.sleep(1);
+    if (owner === "worker-b") while (!(await Bun.file(acquired).exists())) await Bun.sleep(1);
+    const store = new StateStore(path, { now: () => 1_000 });
+    try { console.log(JSON.stringify({ result: "won", ...store.acquireLease(owner, "shared-key", 10_000) })); }
+    catch (error) {
+      if (error.constructor.name !== "LeaseHeldError") throw error;
+      console.log(JSON.stringify({ result: "held" }));
+    }
+    finally {
+      if (owner === "worker-a") await Bun.write(acquired, "acquired");
+      store.close();
+    }
+  `;
+  const first = Bun.spawn([process.execPath, "-e", program, path, start, acquired, "worker-a", "1000"], { stdout: "pipe", stderr: "pipe" });
+  const second = Bun.spawn([process.execPath, "-e", program, path, start, acquired, "worker-b", "11001"], { stdout: "pipe", stderr: "pipe" });
+  await Bun.write(start, "go");
+  const [firstOutput, secondOutput, firstExit, secondExit] = await Promise.all([
+    new Response(first.stdout).text(), new Response(second.stdout).text(), first.exited, second.exited,
+  ]);
+  expect([firstExit, secondExit]).toEqual([0, 0]);
+  const outcomes = [firstOutput, secondOutput].map((output) => JSON.parse(output.trim()) as { result: "won" | "held"; fencingToken?: number });
+  expect(outcomes).toEqual([{ result: "won", fencingToken: 1 }, { result: "held" }]);
+  const store = new StateStore(path, { now: () => 1_000 });
+  expect(store.listActive()).toEqual([expect.objectContaining({ key: "shared-key", owner: "worker-a", fencingToken: 1 })]);
+  store.close();
+});
+
 test("two independent Bun processes racing to acquire one SQLite lease have exactly one winner", async () => {
   const path = await databasePath();
   const start = `${path}.start`;
@@ -80,9 +118,9 @@ test("two independent Bun processes racing to acquire one SQLite lease have exac
   const program = `
     import { StateStore } from ${JSON.stringify(source)};
     const [path, start, ready, owner] = process.argv.slice(1);
+    const store = new StateStore(path, { now: () => 1_000 });
     await Bun.write(ready, "ready");
     while (!(await Bun.file(start).exists())) await Bun.sleep(10);
-    const store = new StateStore(path, { now: () => 1_000 });
     try { console.log(JSON.stringify({ result: "won", ...store.acquireLease(owner, "shared-key", 1) })); }
     catch (error) {
       if (error.constructor.name !== "LeaseHeldError") throw error;
@@ -91,17 +129,21 @@ test("two independent Bun processes racing to acquire one SQLite lease have exac
     finally { store.close(); }
   `;
   const first = Bun.spawn([process.execPath, "-e", program, path, start, ready[0], "worker-a"], { stdout: "pipe", stderr: "pipe" });
-  const second = Bun.spawn([process.execPath, "-e", program, path, start, ready[1], "worker-b"], { stdout: "pipe", stderr: "pipe" });
   const deadline = Date.now() + 30_000;
-  while (!(await Promise.all(ready.map((file) => Bun.file(file).exists()))).every(Boolean)) {
-    if (Date.now() >= deadline) throw new Error("lease racers did not reach the start barrier within 30 seconds");
+  while (!(await Bun.file(ready[0]).exists())) {
+    if (Date.now() >= deadline) throw new Error("first lease racer did not initialize within 30 seconds");
+    await Bun.sleep(10);
+  }
+  const second = Bun.spawn([process.execPath, "-e", program, path, start, ready[1], "worker-b"], { stdout: "pipe", stderr: "pipe" });
+  while (!(await Bun.file(ready[1]).exists())) {
+    if (Date.now() >= deadline) throw new Error("second lease racer did not initialize within 30 seconds");
     await Bun.sleep(10);
   }
   await Bun.write(start, "go");
-  const [firstOutput, secondOutput, firstExit, secondExit] = await Promise.all([
-    new Response(first.stdout).text(), new Response(second.stdout).text(), first.exited, second.exited,
+  const [firstOutput, secondOutput, firstError, secondError, firstExit, secondExit] = await Promise.all([
+    new Response(first.stdout).text(), new Response(second.stdout).text(), new Response(first.stderr).text(), new Response(second.stderr).text(), first.exited, second.exited,
   ]);
-  expect([firstExit, secondExit]).toEqual([0, 0]);
+  expect({ exits: [firstExit, secondExit], stderr: [firstError, secondError] }).toEqual({ exits: [0, 0], stderr: ["", ""] });
   const outcomes = [firstOutput, secondOutput].map((output) => JSON.parse(output.trim()) as { result: "won" | "held"; fencingToken?: number });
   expect(outcomes).toEqual(expect.arrayContaining([{ result: "won", fencingToken: 1 }, { result: "held" }]));
   const store = new StateStore(path, { now: () => 1_000 });

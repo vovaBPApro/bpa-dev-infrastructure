@@ -28,6 +28,7 @@ import {
   FloorError,
   CLAUDE_FILENAME,
 } from "./floor.ts";
+import { runLedgerChecks } from "./ledger.ts";
 
 type Options = { repo: string; strict: boolean };
 type Level = "PASS" | "WARN" | "FAIL" | "SKIP";
@@ -237,6 +238,14 @@ if (!existsSync(claudePath)) {
       throw error;
     }
   }
+}
+
+// (g) ledger aging (§2.4): untriaged inbox.jsonl rows >24h and pending HR files
+// >72h. The inbox check honours --strict (FAIL vs WARN) like the other
+// transition-mode checks; HR pending aging is always a FAIL (the SLA is
+// absolute — a pending row past its window is a defect regardless of mode).
+for (const finding of runLedgerChecks(options.repo, options.strict)) {
+  record(finding.level, finding.file, "ledger", finding.detail);
 }
 
 function checkReferences(

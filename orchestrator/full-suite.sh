@@ -17,6 +17,7 @@ FULL_SUITE_LOG="${FULL_SUITE_LOG:-$RUNTIME_DIR/full-suite.log}"
 NUDGE_OUTBOX_FILE="${NUDGE_OUTBOX_FILE:-$RUNTIME_DIR/nudges.outbox}"
 FULL_SUITE_NUDGE_REPEAT_MS="${FULL_SUITE_NUDGE_REPEAT_MS:-21600000}"
 FULL_SUITE_NUDGE_RATE_FILE="${FULL_SUITE_NUDGE_RATE_FILE:-$RUNTIME_DIR/full-suite-nudge-rate.tsv}"
+FULL_SUITE_TIMEOUT_S="${FULL_SUITE_TIMEOUT_S:-1800}"
 DEFAULT_FULL_SUITE_EXCLUDE="migration-prep/"
 FULL_SUITE_EXCLUDE="${FULL_SUITE_EXCLUDE:-$DEFAULT_FULL_SUITE_EXCLUDE}"
 
@@ -87,6 +88,7 @@ record_nudge() {
 }
 
 validate_numeric_knob FULL_SUITE_NUDGE_REPEAT_MS 21600000
+validate_numeric_knob FULL_SUITE_TIMEOUT_S 1800
 validate_exclude_knob
 
 if [[ ! -d "$INSTALL_ROOT" ]]; then
@@ -113,7 +115,7 @@ while IFS= read -r -d '' suite; do
     log "FULL-SUITE SUITE ts=$timestamp suite=$relative rc=SKIP reason=excluded"
     continue
   fi
-  if bash "$suite" >> "$FULL_SUITE_LOG" 2>&1; then
+  if timeout "$FULL_SUITE_TIMEOUT_S" bash "$suite" >> "$FULL_SUITE_LOG" 2>&1; then
     rc=0
     pass=$((pass + 1))
   else
@@ -141,7 +143,7 @@ done < <(find "$INSTALL_ROOT" -type f -name '*.test.ts' -print0 | sort -z)
 if ((${#ts_suites[@]} > 0)); then
   # BUN_OPTIONS is a caller-level CLI injection surface (for example,
   # --only-failures or --test-name-pattern). Nightly semantics are fixed here.
-  if (cd "$INSTALL_ROOT" && env -u BUN_OPTIONS bun test "${ts_suites[@]}") >> "$FULL_SUITE_LOG" 2>&1; then
+  if (cd "$INSTALL_ROOT" && timeout "$FULL_SUITE_TIMEOUT_S" env -u BUN_OPTIONS bun test "${ts_suites[@]}") >> "$FULL_SUITE_LOG" 2>&1; then
     rc=0
     pass=$((pass + ${#ts_suites[@]}))
   else

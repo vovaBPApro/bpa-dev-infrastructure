@@ -31,6 +31,7 @@ STAND_SCRIPT="${MORNING_STAND_SCRIPT:-$REPO_ROOT/stand/matrix.sh}"
 INSTALL_ROOT="${ORCH_INSTALL_ROOT:-${INSTALL_ROOT:-$REPO_ROOT}}"
 DISK_ALERT_PCT="${DISK_ALERT_PCT:-80}"
 FULL_SUITE_LOG="${FULL_SUITE_LOG:-$RUNTIME_DIR/full-suite.log}"
+FULL_SUITE_MAX_AGE_S="${FULL_SUITE_MAX_AGE_S:-93600}"
 TABLE_FILE="$(mktemp)"
 DETAIL_FILE="$(mktemp)"
 trap 'rm -f "$TABLE_FILE" "$DETAIL_FILE" "${OUTBOX_TMP:-}"' EXIT
@@ -118,17 +119,23 @@ run_full_suite_check() {
     skipped_list="${BASH_REMATCH[6]}"
     duration="${BASH_REMATCH[7]}"
   else
-    row SKIP 'FULL-SUITE' 'summary unavailable'
+    row FAIL 'FULL-SUITE' 'reason=summary-unavailable'
     return
   fi
   summary_epoch="$(date -u -d "$timestamp" +%s 2>/dev/null || true)"
   now="$(date +%s)"
   if ! [[ "$summary_epoch" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]]; then
-    row SKIP 'FULL-SUITE' 'summary timestamp unavailable'
+    row FAIL 'FULL-SUITE' 'reason=summary-timestamp-unavailable'
     return
   fi
   age=$(( now - summary_epoch ))
-  if (( fail == 0 )); then
+  if ! [[ "$FULL_SUITE_MAX_AGE_S" =~ ^[0-9]+$ ]]; then
+    row FAIL 'FULL-SUITE' "reason=invalid-max-age value=$FULL_SUITE_MAX_AGE_S"
+  elif (( age < 0 )); then
+    row FAIL 'FULL-SUITE' "reason=future-timestamp age_s=$age"
+  elif (( age > FULL_SUITE_MAX_AGE_S )); then
+    row FAIL 'FULL-SUITE' "reason=stale age_s=$age max_age_s=$FULL_SUITE_MAX_AGE_S"
+  elif (( fail == 0 )); then
     row PASS 'FULL-SUITE' "pass=$pass fail=$fail skipped=$skipped age_s=$age duration_s=$duration"
   else
     row FAIL 'FULL-SUITE' "pass=$pass fail=$fail skipped=$skipped failed=$failed skipped_list=$skipped_list age_s=$age duration_s=$duration"

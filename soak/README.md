@@ -33,3 +33,7 @@ worktrees, disk-pressure nudge rate limiting, fenced lease restart, and a
 mixed-fate ten-lane run. It never contacts an LLM or a network origin.
 
 Run the CI-cheap subset with `bash soak/chaos.test.sh` (under 30 seconds).
+
+## Endurance soak
+
+`bash soak/soak-endurance.sh` sustains the real concurrent round soak for a fixed number of rounds (20 at 10 lanes by default) or a wall-clock cap, and proves that the pace holds without cross-round cleanup or resource degradation: before round 1 and after every round it snapshots disposable fixture directories, worktrees, `ag-soak-*` branches, fixture-associated Bun/Git processes and RSS, temporary-disk free space, and active leases in that round's disposable state DB. It fails on any non-PASS round, residual resource, monotonic disk decline, or a round that is drastically slower than round 1; it does not prove LLM quality, network behavior, or real Codex quota. For an overnight run, use `bash soak/soak-endurance.sh --minutes 600 --lanes 10`.

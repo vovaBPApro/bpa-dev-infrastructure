@@ -30,21 +30,34 @@ export type LedgerFinding = { level: LedgerLevel; file: string; detail: string }
 type InboxRow = { msg_id: number | string; ts: string };
 type TriageRow = { msg_id: number | string; verdict: string };
 
-// Reads and JSON-parses a .jsonl file, skipping blank/garbled lines silently:
-// a runtime append log can have a torn last line and must not crash the gate.
-function readJsonl<T>(path: string): T[] {
-  const rows: T[] = [];
+type JsonlResult<T> = { rows: Array<{ line: number; value: T }>; findings: LedgerFinding[] };
+
+// Reads and JSON-parses a .jsonl file with line provenance. A non-newline-
+// terminated final fragment may be a torn append, so it is a visible WARN.
+// Every malformed complete line is durable corrupt content and fails closed.
+function readJsonl<T>(path: string, file: string): JsonlResult<T> {
+  const rows: Array<{ line: number; value: T }> = [];
+  const findings: LedgerFinding[] = [];
   const raw = readFileSync(path, "utf8");
-  for (const line of raw.split("\n")) {
+  const lines = raw.split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
     const trimmed = line.trim();
     if (trimmed === "") continue;
     try {
-      rows.push(JSON.parse(trimmed) as T);
-    } catch {
-      /* torn/garbled line — skip, never crash the checker */
+      rows.push({ line: index + 1, value: JSON.parse(trimmed) as T });
+    } catch (error) {
+      const tornFinalAppend = index === lines.length - 1 && !raw.endsWith("\n");
+      findings.push({
+        level: tornFinalAppend ? "WARN" : "FAIL",
+        file: `${file}:${index + 1}`,
+        detail: tornFinalAppend
+          ? "unterminated final JSON fragment; append may be torn and requires recovery"
+          : `malformed JSON: ${(error as Error).message}`,
+      });
     }
   }
-  return rows;
+  return { rows, findings };
 }
 
 // Set of msg-ids that already have a routed HR file (HR-<msgid>.md). The daemon
@@ -112,26 +125,65 @@ export function checkInboxAging(
     return [{ level: "SKIP", file: "instance/decisions/inbox.jsonl", detail: "capture.mode=manual — inbox not expected yet" }];
   }
 
-  const rows = readJsonl<InboxRow>(inboxPath);
+  const inbox = readJsonl<InboxRow>(inboxPath, "instance/decisions/inbox.jsonl");
+  findings.push(...inbox.findings);
   const routed = routedMsgIds(decisionsDir);
 
   const triagePath = join(decisionsDir, "triage.jsonl");
   const triaged = new Set<string>();
   if (existsSync(triagePath)) {
-    for (const row of readJsonl<TriageRow>(triagePath)) {
+    const triage = readJsonl<TriageRow>(triagePath, "instance/decisions/triage.jsonl");
+    findings.push(...triage.findings);
+    for (const { line, value: row } of triage.rows) {
       // Any recorded verdict (chatter OR directive) triages the row: it is no
       // longer an unrouted-unknown. A `directive` verdict still expects an HR
       // file, but that is the reconciliation sweep's job, not aging.
-      if (row && row.msg_id !== undefined) triaged.add(String(row.msg_id));
+      if (
+        row &&
+        (typeof row.msg_id === "number" || typeof row.msg_id === "string") &&
+        row.msg_id !== "" &&
+        typeof row.verdict === "string" &&
+        row.verdict !== ""
+      ) {
+        triaged.add(String(row.msg_id));
+      } else {
+        findings.push({
+          level: "FAIL",
+          file: `instance/decisions/triage.jsonl:${line}`,
+          detail: "invalid triage row: non-empty msg_id and verdict are required",
+        });
+      }
     }
   }
 
   let aged = 0;
-  for (const row of rows) {
+  for (const { line, value: row } of inbox.rows) {
+    if (
+      !row ||
+      !(
+        (typeof row.msg_id === "number" && Number.isFinite(row.msg_id)) ||
+        (typeof row.msg_id === "string" && row.msg_id !== "")
+      )
+    ) {
+      findings.push({
+        level: "FAIL",
+        file: `instance/decisions/inbox.jsonl:${line}`,
+        detail: "invalid inbox row: non-empty msg_id is required",
+      });
+      continue;
+    }
     const id = String(row.msg_id);
+    const timestampMs = typeof row.ts === "string" ? toMs(row.ts) : NaN;
+    if (!Number.isFinite(timestampMs)) {
+      findings.push({
+        level: "FAIL",
+        file: `inbox.jsonl:msg ${id}`,
+        detail: `invalid or missing timestamp '${typeof row.ts === "string" ? row.ts : ""}'`,
+      });
+      continue;
+    }
     if (routed.has(id) || triaged.has(id)) continue;
-    const ageMs = nowMs - toMs(row.ts);
-    if (!Number.isFinite(ageMs)) continue; // unparseable ts — cannot age it
+    const ageMs = nowMs - timestampMs;
     if (ageMs > INBOX_TRIAGE_SLA_MS) {
       aged += 1;
       findings.push({
@@ -141,8 +193,8 @@ export function checkInboxAging(
       });
     }
   }
-  if (aged === 0) {
-    findings.push({ level: "PASS", file: "instance/decisions/inbox.jsonl", detail: `${rows.length} rows, none aged untriaged` });
+  if (aged === 0 && findings.length === 0) {
+    findings.push({ level: "PASS", file: "instance/decisions/inbox.jsonl", detail: `${inbox.rows.length} rows, none aged untriaged` });
   }
   return findings;
 }

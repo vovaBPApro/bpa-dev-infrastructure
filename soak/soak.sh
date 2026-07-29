@@ -131,15 +131,44 @@ landing_started=$(now_ms)
 for i in $(seq 1 "$lanes"); do
   branch="ag-soak-$i"
   output="$logs/$i.land.log"
-  if "$root/gate/land.sh" --branch "$branch" --report "$reports/$i.md" --repo "$repo" --worktree "$worktrees/$i" --no-push >"$output" 2>&1; then
-    sha=$(sed -n 's/^LAND verdict=landed sha=\([^ ]*\).*/\1/p' "$output")
-    printf 'landed|%s\n' "$sha" > "$events/$i.verdict"
-    cli lane transition "soak-$i" succeeded >>"$logs/$i.state.log"
-  else
+  max_land_attempts=$((lanes + 2))
+  land_attempt=1
+  landed_lane=false
+  while [ "$land_attempt" -le "$max_land_attempts" ]; do
+    printf 'LAND retry lane=%s attempt=%s/%s action=gate\n' "$i" "$land_attempt" "$max_land_attempts" >>"$output"
+    if "$root/gate/land.sh" --branch "$branch" --report "$reports/$i.md" --repo "$repo" --worktree "$worktrees/$i" --no-push >>"$output" 2>&1; then
+      sha=$(sed -n 's/^LAND verdict=landed sha=\([^ ]*\).*/\1/p' "$output" | tail -n 1)
+      printf 'landed|%s\n' "$sha" > "$events/$i.verdict"
+      cli lane transition "soak-$i" succeeded >>"$logs/$i.state.log"
+      landed_lane=true
+      break
+    fi
     reason=$(sed -n 's/^LAND step=\([^ ]*\) status=fail.*/\1/p' "$output" | tail -n 1)
-    [ -n "$reason" ] || reason=gate-refusal
-    printf 'refused|%s\n' "$reason" > "$events/$i.verdict"
-    cli lane transition "soak-$i" failed >>"$logs/$i.state.log"
+    if [ "$reason" != freshness ] || [ "$land_attempt" -eq "$max_land_attempts" ]; then
+      [ -n "$reason" ] || reason=gate-refusal
+      printf 'refused|%s\n' "$reason" > "$events/$i.verdict"
+      cli lane transition "soak-$i" failed >>"$logs/$i.state.log"
+      break
+    fi
+    printf 'LAND retry lane=%s attempt=%s/%s action=rebase-main reason=freshness\n' "$i" "$land_attempt" "$max_land_attempts" >>"$output"
+    # --no-push leaves the prior serialized landing local. Publish only the
+    # disposable fixture main before retrying, matching a real pushed landing.
+    if ! git -C "$repo" push origin main >>"$output" 2>&1; then
+      printf 'refused|fixture-sync\n' > "$events/$i.verdict"
+      cli lane transition "soak-$i" failed >>"$logs/$i.state.log"
+      break
+    fi
+    if ! git -C "$worktrees/$i" rebase main >>"$output" 2>&1; then
+      git -C "$worktrees/$i" rebase --abort >/dev/null 2>&1 || true
+      printf 'refused|merge-conflict\n' > "$events/$i.verdict"
+      cli lane transition "soak-$i" failed >>"$logs/$i.state.log"
+      break
+    fi
+    sha=$(git -C "$worktrees/$i" rev-parse HEAD)
+    sed -i "1s/^commit: [^ ]*/commit: $sha/" "$reports/$i.md"
+    land_attempt=$((land_attempt + 1))
+  done
+  if [ "$landed_lane" != true ]; then
     git -C "$repo" worktree remove --force "$worktrees/$i" >/dev/null 2>&1 || true
     git -C "$repo" branch -D "$branch" >/dev/null 2>&1 || true
   fi

@@ -68,6 +68,13 @@ import {
 } from './reliability';
 import { drainOutbox, resolveOrchestratorLauncher } from './control';
 import { appendInboxLine } from './inbox-mirror';
+import {
+  buildAgentLines,
+  buildRuntimeStatus,
+  type ShRunner,
+  type JsonReader,
+  type JsonReadResult,
+} from './status';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -125,6 +132,12 @@ const ORCHESTRATOR_CLAUDE_LABEL = ORCHESTRATOR_CLAUDE_CMD;
 const ORCHESTRATOR_CODEX_LABEL = `Codex (${ORCHESTRATOR_CODEX_MODEL})`;
 const GIT_STALL_REPO_PATH = process.env.ORCH_GIT_REPO_PATH ?? '';
 const GIT_STALL_REF = process.env.ORCH_GIT_REF ?? '';
+// Canonical repo whose `git worktree list` is the ground truth for the
+// active coder-lane count on the new infra layout. Lanes are worktrees under
+// /home/bpa-shell/.cache/infra-lanes/* with ag-* branches.
+const CANONICAL_REPO =
+  process.env.ORCH_CANONICAL_REPO_PATH ??
+  (GIT_STALL_REPO_PATH || join(homedir(), 'bpa-dev-infrastructure'));
 const CONFIGURED_BOUND_CHAT_ID =
   process.env.TELEGRAM_BOUND_CHAT_ID ?? process.env.TELEGRAM_CHAT_ID ?? null;
 
@@ -1171,6 +1184,32 @@ async function sh(cmd: string): Promise<{ out: string; ok: boolean }> {
   return { out: out.trim(), ok: proc.exitCode === 0 };
 }
 
+// Synchronous shell runner for the pure /status builders. Bun.spawnSync is
+// already synchronous under `sh`, so this shares its semantics without the
+// Promise wrapper the pure builders would otherwise have to await per lane.
+const shSync: ShRunner = (cmd) => {
+  const proc = Bun.spawnSync(['bash', '-c', cmd], { stderr: 'pipe' });
+  const out =
+    (proc.stdout?.toString() ?? '') + (proc.stderr?.toString() ?? '');
+  return { out: out.trim(), ok: proc.exitCode === 0 };
+};
+
+// Tri-state JSON reader so /status can tell "file absent" from "present but
+// unparseable/empty" and degrade honestly instead of fabricating a 0.
+const readJsonTri: JsonReader = (path): JsonReadResult => {
+  let raw: string;
+  try {
+    raw = readFileSync(path, 'utf8');
+  } catch {
+    return { present: false };
+  }
+  try {
+    return { present: true, value: JSON.parse(raw) };
+  } catch {
+    return { present: true, value: null };
+  }
+};
+
 async function tmuxAlive(): Promise<boolean> {
   if (!TMUX_SESSION) return false;
   const { ok } = await sh(`tmux has-session -t '${TMUX_SESSION}' 2>/dev/null`);
@@ -1694,12 +1733,6 @@ setInterval(() => {
   });
 }, WATCHDOG_TICK_MS);
 
-function formatIso(input: unknown): string {
-  if (typeof input !== 'string' || input.length === 0) return 'n/a';
-  const d = new Date(input);
-  return Number.isNaN(d.getTime()) ? input : d.toISOString();
-}
-
 // Telegram caps messages at 4096 chars; split long bodies so reports/relays are
 // never silently truncated or rejected.
 const TG_MAX = 4000;
@@ -1775,27 +1808,9 @@ function statusRelay(chatId: string, text: string): void {
 // One-line-per-agent view of active ag-* worktrees (commits ahead of dev), for
 // /status. Provider-agnostic: any orchestrator's dispatched agents land here.
 async function activeAgentLines(): Promise<string[]> {
-  const repo =
-    GIT_STALL_REPO_PATH || join(homedir(), 'BPAprojects', 'agent-bill');
-  const list = await sh(
-    `git -C '${repo}' worktree list --porcelain 2>/dev/null | awk '/^worktree/{print $2}' | grep '/ag-' || true`,
-  );
-  const wts = list.out
-    .split('\n')
-    .map((s) => s.trim())
-    .filter(Boolean);
-  if (!wts.length) return ['agents: none'];
-  const lines = [`agents (${wts.length}):`];
-  for (const wt of wts.slice(0, 15)) {
-    const nm = wt.split('/').pop() ?? wt;
-    const c = (
-      await sh(
-        `git -C '${wt}' rev-list --count dev..HEAD 2>/dev/null || echo 0`,
-      )
-    ).out.trim();
-    lines.push(`  ${nm}: +${c}`);
-  }
-  return lines;
+  return buildAgentLines(CANONICAL_REPO, shSync, {
+    baseRef: GIT_STALL_REF || 'origin/main',
+  });
 }
 
 function buildOrchRuntimeStatus(): string[] {
@@ -1804,78 +1819,26 @@ function buildOrchRuntimeStatus(): string[] {
   const statePath = join(home, '.claude', 'orchestrator-state.json');
   const lockPath = chatId
     ? join(home, '.claude', `orchestrator-chat-${chatId}.lock`)
-    : '';
-
-  const state = maybeReadJson(statePath) as Record<string, unknown> | null;
-  const lock = lockPath
-    ? (maybeReadJson(lockPath) as Record<string, unknown> | null)
     : null;
-  const mission = loadMissionRecord(maybeReadJson(MISSIONS_FILE));
-
-  const currentPlan = (state?.current_plan ?? null) as Record<
-    string,
-    unknown
-  > | null;
-  const plan =
-    currentPlan &&
-    typeof currentPlan.id === 'string' &&
-    typeof currentPlan.phase === 'string'
-      ? `${currentPlan.id} (${currentPlan.phase})`
-      : 'idle';
-
-  const runtimeStats = (state?.runtime_stats ?? {}) as Record<string, unknown>;
-  const contextBand =
-    typeof runtimeStats.context_band === 'string'
-      ? runtimeStats.context_band
-      : 'unknown';
-  const agentsActive =
-    typeof runtimeStats.agents_active === 'number'
-      ? runtimeStats.agents_active
-      : 0;
-  const providersActiveObj = (runtimeStats.providers_active ?? {}) as Record<
-    string,
-    unknown
-  >;
-  const providerLabels = ['codex', 'opus', 'gemini'].map((k) => {
-    const v = providersActiveObj[k];
-    return `${k}:${typeof v === 'number' ? v : 0}`;
+  return buildRuntimeStatus({
+    canonicalRepo: CANONICAL_REPO,
+    runCmd: shSync,
+    readJson: readJsonTri,
+    statePath,
+    lockPath,
+    missionsPath: MISSIONS_FILE,
+    parseMission: (raw) => loadMissionRecord(raw),
+    binding: activeBinding
+      ? {
+          provider: activeBinding.provider,
+          session_id: activeBinding.session_id,
+        }
+      : null,
+    lastRelayResult,
+    lastPaneProgressAt,
+    lastGitProgressAt,
+    laneOpts: { baseRef: GIT_STALL_REF || 'origin/main' },
   });
-
-  const vendorQuota = (state?.vendor_quota ?? {}) as Record<string, unknown>;
-  const vAnth =
-    typeof vendorQuota.anthropic === 'string' ? vendorQuota.anthropic : 'n/a';
-  const vOpen =
-    typeof vendorQuota.openai === 'string' ? vendorQuota.openai : 'n/a';
-  const vGem =
-    typeof vendorQuota.gemini === 'string' ? vendorQuota.gemini : 'n/a';
-
-  const override = (state?.current_vendor_override ?? null) as Record<
-    string,
-    unknown
-  > | null;
-  const overrideLabel =
-    override && typeof override.vendor === 'string' ? override.vendor : 'auto';
-
-  const lockPid = lock && typeof lock.pid === 'number' ? lock.pid : null;
-  const lockStartedAt = lock ? formatIso(lock.pid_started_at) : 'n/a';
-  const bindingLabel = activeBinding
-    ? `${activeBinding.provider}/${activeBinding.session_id || 'unknown'}`
-    : 'idle/unbound';
-  const missionLabel = mission ? `${mission.status}: ${mission.desc}` : 'none';
-
-  return [
-    `plan: ${plan}`,
-    `context: ${contextBand}`,
-    `agents_active: ${agentsActive}`,
-    `providers_active: ${providerLabels.join(', ')}`,
-    `vendor_quota: anthropic=${vAnth}, openai=${vOpen}, gemini=${vGem}`,
-    `vendor_override: ${overrideLabel}`,
-    `instance: ${lockPid ? 'running' : 'stopped'}, pid=${lockPid ?? 'n/a'}, started_at=${lockStartedAt}`,
-    `binding: ${bindingLabel}`,
-    `mission: ${missionLabel}`,
-    `last_relay: ${lastRelayResult}`,
-    `last_progress: pane=${lastPaneProgressAt ? new Date(lastPaneProgressAt).toISOString() : 'n/a'}, git=${lastGitProgressAt ? new Date(lastGitProgressAt).toISOString() : 'n/a'}`,
-  ];
 }
 
 function commandToProviderCmd(cmd: string): string {

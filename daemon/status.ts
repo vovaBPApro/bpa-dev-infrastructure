@@ -2,25 +2,20 @@
 //
 // These are extracted from server.ts so the truthfulness of /status can be
 // tested without the live system. Every field either reflects ground truth the
-// new stack actually uses, or degrades HONESTLY: a value that could not be read
-// is shown as `n/a (<reason>)`, never fabricated as a stale `0` or a value
-// presented as current. We distinguish "0 (verified)" from "unknown".
-//
-// Ground truth for the active coder-lane count is `git worktree list` on the
-// canonical repo, filtered to lane worktrees — the ONLY thing that is true
-// regardless of whether any orchestrator wrote a runtime-state file. The old
-// daemon derived the count from a hand-maintained `orchestrator-state.json`
-// field (or a hard-coded `agent-bill` repo path that does not exist on this
-// layout), so it happily printed `0 coders` while three lanes were running.
+// stack actually measured, or degrades HONESTLY to `unknown`/`n/a`.
 
 // A shell runner with the same shape as server.ts's `sh`.
-export type ShRunner = (cmd: string) => { out: string; ok: boolean };
+export type ShRunner = (cmd: string) => {
+  out: string;
+  ok: boolean;
+  timedOut?: boolean;
+};
 
 // A JSON reader with the same shape as reliability.ts's `maybeReadJson`, but
 // tri-state so callers can tell "file absent" from "file present but empty".
 export type JsonReadResult =
   | { present: false }
-  | { present: true; value: unknown };
+  | { present: true; value: unknown; modifiedAt?: number };
 
 export type JsonReader = (path: string) => JsonReadResult;
 
@@ -29,6 +24,10 @@ export const LANE_WORKTREE_ROOT = '/home/bpa-shell/.cache/infra-lanes/';
 export const LANE_BRANCH_PREFIX = 'ag-';
 
 export type LaneWorktree = { path: string; branch: string; ahead: number };
+export type RunningAgents = { count: number; source: string } | null;
+export type RunningAgentCounter = () => RunningAgents;
+
+export const STATE_FRESHNESS_MS = 10 * 60 * 1000;
 
 export type ActiveLanes =
   | {
@@ -73,8 +72,8 @@ export function parseWorktreePorcelain(
   return entries;
 }
 
-// Derive the active coder-lane set from `git worktree list` on the canonical
-// repo — the ground truth the new stack actually uses. A lane is a worktree
+// Derive the configured coder-lane worktree set from `git worktree list` on the
+// canonical repo. This measures worktrees, not processes. A lane is a worktree
 // under LANE_WORKTREE_ROOT whose checked-out branch starts with
 // LANE_BRANCH_PREFIX.
 export function countActiveLanes(
@@ -93,6 +92,7 @@ export function countActiveLanes(
   const res = runCmd(
     `git -C '${canonicalRepo}' worktree list --porcelain 2>/dev/null`,
   );
+  if (res.timedOut) return { verified: false, reason: 'git timeout' };
   if (!res.ok) {
     return {
       verified: false,
@@ -108,6 +108,9 @@ export function countActiveLanes(
     const aheadRes = runCmd(
       `git -C '${path}' rev-list --count '${baseRef}'..HEAD 2>/dev/null`,
     );
+    if (aheadRes.timedOut) {
+      return { verified: false, reason: 'git timeout' };
+    }
     const ahead =
       aheadRes.ok && /^\d+$/.test(aheadRes.out.trim())
         ? parseInt(aheadRes.out.trim(), 10)
@@ -117,19 +120,29 @@ export function countActiveLanes(
   return { verified: true, count: lanes.length, lanes };
 }
 
-// One-line-per-lane view for /status. Truthful count first; "0 (verified)" when
-// the repo really has no lanes, "unknown" when git could not be queried.
+// One-line-per-lane view for /status. A process census, when available, is
+// separate from the worktree census; git failure is always "unknown".
 export function buildAgentLines(
   canonicalRepo: string,
   runCmd: ShRunner,
-  opts: { root?: string; branchPrefix?: string; baseRef?: string } = {},
+  opts: {
+    root?: string;
+    branchPrefix?: string;
+    baseRef?: string;
+    countRunningAgents?: RunningAgentCounter;
+  } = {},
 ): string[] {
   const lanes = countActiveLanes(canonicalRepo, runCmd, opts);
+  const running = opts.countRunningAgents?.() ?? null;
+  const runningLine = running
+    ? `running_agents: ${running.count} (processes: ${running.source})`
+    : 'running_agents: unknown (process query unavailable)';
   if (!lanes.verified) {
-    return [`agents: unknown (${lanes.reason})`];
+    return [runningLine, `lane_worktrees: unknown (${lanes.reason})`];
   }
-  if (lanes.count === 0) return ['agents: 0 (verified, no lane worktrees)'];
-  const lines = [`agents: ${lanes.count} (verified)`];
+  if (lanes.count === 0)
+    return [runningLine, 'lane_worktrees: 0 (worktree query ok)'];
+  const lines = [runningLine, `lane_worktrees: ${lanes.count} (worktree query ok)`];
   for (const l of lanes.lanes.slice(0, 15)) {
     const nm = l.branch || l.path.split('/').pop() || l.path;
     const ahead = l.ahead >= 0 ? `+${l.ahead}` : 'ahead=n/a';
@@ -144,10 +157,19 @@ type FieldResult =
   | { kind: 'value'; text: string }
   | { kind: 'na'; text: string };
 
+function stateAge(read: JsonReadResult, now: number): string | null {
+  if (!read.present || read.modifiedAt === undefined) return null;
+  const ageMs = Math.max(0, now - read.modifiedAt);
+  return ageMs > STATE_FRESHNESS_MS
+    ? `stale, age ${Math.floor(ageMs / 60000)}m`
+    : null;
+}
+
 function stateField(
   read: JsonReadResult,
   label: string,
   pick: (obj: Record<string, unknown>) => string | null,
+  now: number,
 ): FieldResult {
   if (!read.present) return { kind: 'na', text: `n/a (no ${label})` };
   const obj =
@@ -156,9 +178,13 @@ function stateField(
       : null;
   if (!obj) return { kind: 'na', text: `n/a (${label} not an object)` };
   const v = pick(obj);
+  const age = stateAge(read, now);
   return v === null
-    ? { kind: 'na', text: `n/a (field absent in ${label})` }
-    : { kind: 'value', text: v };
+    ? {
+        kind: 'na',
+        text: `unknown (field absent in ${label}${age ? `; ${age}` : ''})`,
+      }
+    : { kind: 'value', text: age ? `${v} (${age})` : v };
 }
 
 function asString(v: unknown): string | null {
@@ -183,13 +209,16 @@ export type RuntimeStatusDeps = {
   lastPaneProgressAt: number;
   lastGitProgressAt: number;
   laneOpts?: { root?: string; branchPrefix?: string; baseRef?: string };
+  countRunningAgents?: RunningAgentCounter;
+  isPidAlive?: (pid: number) => boolean;
+  now?: number;
 };
 
-// Build the orchestrator runtime status lines. Unlike the old builder, the
-// active-agent count is NOT read from orchestrator-state.json (which is absent
-// on this layout and would fabricate 0); it is derived from real worktrees. All
-// state-file-backed fields degrade to `n/a (no <file>)` instead of a silent 0.
+// Build the orchestrator runtime status lines. Process and worktree censuses
+// are never read from legacy state, and state-file-backed fields show freshness
+// rather than being presented as current by default.
 export function buildRuntimeStatus(deps: RuntimeStatusDeps): string[] {
+  const now = deps.now ?? Date.now();
   const stateRead = deps.readJson(deps.statePath);
   const lockRead = deps.lockPath
     ? deps.readJson(deps.lockPath)
@@ -207,18 +236,22 @@ export function buildRuntimeStatus(deps: RuntimeStatusDeps): string[] {
       }
     }
     return null;
-  });
+  }, now);
 
   const context = stateField(stateRead, stateLabel, (s) => {
     const rs = (s.runtime_stats ?? {}) as Record<string, unknown>;
     return asString(rs.context_band);
-  });
+  }, now);
 
-  // Ground-truth agent count — from worktrees, never the state file.
+  // Worktrees and live agent processes are distinct measurements.
   const lanes = countActiveLanes(deps.canonicalRepo, deps.runCmd, deps.laneOpts);
-  const agentsLine = lanes.verified
-    ? `agents_active: ${lanes.count} (verified)`
-    : `agents_active: unknown (${lanes.reason})`;
+  const running = deps.countRunningAgents?.() ?? null;
+  const runningLine = running
+    ? `running_agents: ${running.count} (processes: ${running.source})`
+    : 'running_agents: unknown (process query unavailable)';
+  const laneLine = lanes.verified
+    ? `lane_worktrees: ${lanes.count} (worktree query ok)`
+    : `lane_worktrees: unknown (${lanes.reason})`;
 
   const providers = stateField(stateRead, stateLabel, (s) => {
     const rs = (s.runtime_stats ?? {}) as Record<string, unknown>;
@@ -226,9 +259,9 @@ export function buildRuntimeStatus(deps: RuntimeStatusDeps): string[] {
     if (!pa || typeof pa !== 'object') return null;
     const o = pa as Record<string, unknown>;
     return ['codex', 'opus', 'gemini']
-      .map((k) => `${k}:${typeof o[k] === 'number' ? o[k] : 0}`)
+      .map((k) => `${k}:${typeof o[k] === 'number' ? o[k] : 'unknown'}`)
       .join(', ');
-  });
+  }, now);
 
   const quota = (() => {
     if (!stateRead.present) return `n/a (no ${stateLabel})`;
@@ -236,9 +269,14 @@ export function buildRuntimeStatus(deps: RuntimeStatusDeps): string[] {
       stateRead.value && typeof stateRead.value === 'object'
         ? (stateRead.value as Record<string, unknown>)
         : {};
-    const vq = (s.vendor_quota ?? {}) as Record<string, unknown>;
-    const g = (k: string) => asString(vq[k]) ?? 'n/a';
-    return `anthropic=${g('anthropic')}, openai=${g('openai')}, gemini=${g('gemini')}`;
+    const vq =
+      s.vendor_quota && typeof s.vendor_quota === 'object'
+        ? (s.vendor_quota as Record<string, unknown>)
+        : {};
+    const g = (k: string) => asString(vq[k]) ?? 'unknown';
+    const text = `anthropic=${g('anthropic')}, openai=${g('openai')}, gemini=${g('gemini')}`;
+    const age = stateAge(stateRead, now);
+    return age ? `${text} (${age})` : text;
   })();
 
   const override = stateField(stateRead, stateLabel, (s) => {
@@ -247,7 +285,7 @@ export function buildRuntimeStatus(deps: RuntimeStatusDeps): string[] {
       return asString((o as Record<string, unknown>).vendor);
     }
     return null;
-  });
+  }, now);
 
   const instanceLine = (() => {
     if (!lockRead.present) {
@@ -261,7 +299,11 @@ export function buildRuntimeStatus(deps: RuntimeStatusDeps): string[] {
         : {};
     const pid = typeof lock.pid === 'number' ? lock.pid : null;
     const started = formatIso(lock.pid_started_at) ?? 'n/a';
-    return `instance: ${pid ? 'running' : 'stopped'}, pid=${pid ?? 'n/a'}, started_at=${started}`;
+    if (!pid) return `instance: stopped, pid=n/a, started_at=${started}`;
+    const alive = deps.isPidAlive ? deps.isPidAlive(pid) : null;
+    const age = stateAge(lockRead, now);
+    const state = alive === false ? 'dead' : alive === null ? 'unknown' : 'running';
+    return `instance: ${state}, pid=${pid}, started_at=${started}${age ? ` (${age})` : ''}`;
   })();
 
   const bindingLabel = deps.binding
@@ -271,16 +313,19 @@ export function buildRuntimeStatus(deps: RuntimeStatusDeps): string[] {
   const mission = (() => {
     if (!missionsRead.present) return 'n/a (no orchestrator-missions.json)';
     const m = deps.parseMission(missionsRead.value);
-    return m ? `${m.status}: ${m.desc}` : 'none';
+    const text = m ? `${m.status}: ${m.desc}` : 'none';
+    const age = stateAge(missionsRead, now);
+    return age ? `${text} (${age})` : text;
   })();
 
   return [
     `plan: ${plan.text}`,
     `context: ${context.text}`,
-    agentsLine,
+    runningLine,
+    laneLine,
     `providers_active: ${providers.text}`,
     `vendor_quota: ${quota}`,
-    `vendor_override: ${override.kind === 'value' ? override.text : 'auto (no override recorded)'}`,
+    `vendor_override: ${override.text}`,
     instanceLine,
     `binding: ${bindingLabel}`,
     `mission: ${mission}`,

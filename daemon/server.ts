@@ -1184,29 +1184,66 @@ async function sh(cmd: string): Promise<{ out: string; ok: boolean }> {
   return { out: out.trim(), ok: proc.exitCode === 0 };
 }
 
-// Synchronous shell runner for the pure /status builders. Bun.spawnSync is
-// already synchronous under `sh`, so this shares its semantics without the
-// Promise wrapper the pure builders would otherwise have to await per lane.
+// Status git probes must have a deadline: /status runs on the daemon's event
+// loop, and a wedged repository must become "unknown" rather than wedging chat.
+const STATUS_GIT_TIMEOUT_MS = 1_000;
 const shSync: ShRunner = (cmd) => {
-  const proc = Bun.spawnSync(['bash', '-c', cmd], { stderr: 'pipe' });
+  const proc = Bun.spawnSync(['bash', '-c', cmd], {
+    stderr: 'pipe',
+    timeout: STATUS_GIT_TIMEOUT_MS,
+  });
   const out =
     (proc.stdout?.toString() ?? '') + (proc.stderr?.toString() ?? '');
-  return { out: out.trim(), ok: proc.exitCode === 0 };
+  return {
+    out: out.trim(),
+    ok: proc.exitCode === 0,
+    timedOut: proc.exitedDueToTimeout,
+  };
 };
+
+// This is a process census, not a claim about worktrees. `pgrep` exit 1 means
+// it successfully found no matching processes; unavailable/timed-out probes
+// deliberately remain unknown.
+function countRunningAgents() {
+  const proc = Bun.spawnSync(['pgrep', '-af', 'codex exec'], {
+    stdout: 'pipe',
+    stderr: 'pipe',
+    timeout: STATUS_GIT_TIMEOUT_MS,
+  });
+  if (proc.exitedDueToTimeout || (proc.exitCode !== 0 && proc.exitCode !== 1)) {
+    return null;
+  }
+  const out = proc.stdout?.toString().trim() ?? '';
+  return {
+    count: out ? out.split('\n').filter(Boolean).length : 0,
+    source: "pgrep -af 'codex exec'",
+  };
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 // Tri-state JSON reader so /status can tell "file absent" from "present but
 // unparseable/empty" and degrade honestly instead of fabricating a 0.
 const readJsonTri: JsonReader = (path): JsonReadResult => {
   let raw: string;
+  let modifiedAt: number;
   try {
+    modifiedAt = statSync(path).mtimeMs;
     raw = readFileSync(path, 'utf8');
   } catch {
     return { present: false };
   }
   try {
-    return { present: true, value: JSON.parse(raw) };
+    return { present: true, value: JSON.parse(raw), modifiedAt };
   } catch {
-    return { present: true, value: null };
+    return { present: true, value: null, modifiedAt };
   }
 };
 
@@ -1805,11 +1842,12 @@ function statusRelay(chatId: string, text: string): void {
   }
 }
 
-// One-line-per-agent view of active ag-* worktrees (commits ahead of dev), for
-// /status. Provider-agnostic: any orchestrator's dispatched agents land here.
+// Separate process and lane-worktree census for /status. Neither is inferred
+// from the other.
 async function activeAgentLines(): Promise<string[]> {
   return buildAgentLines(CANONICAL_REPO, shSync, {
     baseRef: GIT_STALL_REF || 'origin/main',
+    countRunningAgents,
   });
 }
 
@@ -1838,6 +1876,8 @@ function buildOrchRuntimeStatus(): string[] {
     lastPaneProgressAt,
     lastGitProgressAt,
     laneOpts: { baseRef: GIT_STALL_REF || 'origin/main' },
+    countRunningAgents,
+    isPidAlive,
   });
 }
 

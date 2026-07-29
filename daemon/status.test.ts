@@ -72,26 +72,37 @@ test('REGRESSION: lane worktrees present -> count is 2, never 0', () => {
 
 test('buildAgentLines shows the verified count and per-lane ahead', () => {
   const lines = buildAgentLines(CANON, fakeRunner(PORCELAIN_TWO_LANES, '5'));
-  expect(lines[0]).toBe('agents: 2 (verified)');
+  expect(lines).toContain('lane_worktrees: 2 (worktree query ok)');
   expect(lines).toContain('  ag-status-fix: +5');
   expect(lines).toContain('  ag-item6-tail: +5');
 });
 
-test('buildAgentLines: no lanes -> honest "0 (verified)", not "unknown"', () => {
+test('REGRESSION: running processes with no lane worktrees are never presented as zero agents', () => {
   const onlyCanonical = [
     'worktree /home/bpa-shell/bpa-dev-infrastructure',
     'branch refs/heads/main',
     '',
   ].join('\n');
-  const lines = buildAgentLines(CANON, fakeRunner(onlyCanonical));
-  expect(lines).toEqual(['agents: 0 (verified, no lane worktrees)']);
+  const lines = buildAgentLines(CANON, fakeRunner(onlyCanonical), {
+    countRunningAgents: () => ({ count: 4, source: 'test process census' }),
+  });
+  expect(lines).toContain('running_agents: 4 (processes: test process census)');
+  expect(lines).toContain('lane_worktrees: 0 (worktree query ok)');
+  expect(lines.join('\n')).not.toMatch(/agents[^\n]*0.*verified/i);
 });
 
 test('buildAgentLines: git failure -> "unknown", never a fabricated 0', () => {
   const failing: ShRunner = () => ({ out: '', ok: false });
   const lines = buildAgentLines(CANON, failing);
-  expect(lines[0].startsWith('agents: unknown')).toBe(true);
-  expect(lines[0]).not.toContain('0 (verified');
+  expect(lines).toContain(`lane_worktrees: unknown (git worktree list failed on ${CANON})`);
+  expect(lines.join('\n')).not.toContain('0 (verified');
+});
+
+test('REGRESSION: git timeout becomes unknown and does not fabricate a zero', () => {
+  const timeout: ShRunner = () => ({ out: '', ok: false, timedOut: true });
+  const lines = buildAgentLines(CANON, timeout);
+  expect(lines).toContain('lane_worktrees: unknown (git timeout)');
+  expect(lines.join('\n')).not.toContain('lane_worktrees: 0');
 });
 
 // Full runtime-status builder wiring: fixtures for the JSON reader, no real
@@ -115,13 +126,11 @@ function statusDeps(
   };
 }
 
-test('buildRuntimeStatus agents_active is from worktrees, not the state file', () => {
+test('buildRuntimeStatus reports worktrees separately from running agents', () => {
   // State file entirely absent, yet lanes exist -> must report the real count.
   const lines = buildRuntimeStatus(statusDeps());
-  expect(lines).toContain('agents_active: 2 (verified)');
-  // and NOT a fabricated zero anywhere on the agents line.
-  const agentLine = lines.find((l) => l.startsWith('agents_active'));
-  expect(agentLine).not.toBe('agents_active: 0');
+  expect(lines).toContain('lane_worktrees: 2 (worktree query ok)');
+  expect(lines).toContain('running_agents: unknown (process query unavailable)');
 });
 
 test('buildRuntimeStatus: missing state files degrade to honest n/a, no throw', () => {
@@ -159,21 +168,52 @@ test('buildRuntimeStatus: present state file surfaces real fields', () => {
   const joined = lines.join('\n');
   expect(joined).toContain('plan: PLAN_X (impl)');
   expect(joined).toContain('context: green');
-  expect(joined).toContain('agents_active: 2 (verified)');
-  expect(joined).toContain('providers_active: codex:3, opus:0, gemini:0');
+  expect(joined).toContain('lane_worktrees: 2 (worktree query ok)');
+  expect(joined).toContain('providers_active: codex:3, opus:unknown, gemini:unknown');
   expect(joined).toContain('vendor_override: codex');
-  expect(joined).toContain('instance: running, pid=4242');
+  expect(joined).toContain('instance: unknown, pid=4242');
   expect(joined).toContain('binding: codex/sess-9');
+});
+
+test('REGRESSION: a missing provider key is unknown, never zero', () => {
+  const state = { runtime_stats: { providers_active: { codex: 2 } } };
+  const lines = buildRuntimeStatus(
+    statusDeps({
+      readJson: (path) =>
+        path.includes('state')
+          ? { present: true, value: state }
+          : { present: false },
+    }),
+  );
+  expect(lines).toContain('providers_active: codex:2, opus:unknown, gemini:unknown');
+});
+
+test('REGRESSION: stale state values are labeled with their age', () => {
+  const now = Date.parse('2026-07-29T10:30:00.000Z');
+  const state = {
+    current_plan: { id: 'PLAN_OLD', phase: 'impl' },
+    runtime_stats: { context_band: 'green' },
+  };
+  const lines = buildRuntimeStatus(
+    statusDeps({
+      now,
+      readJson: (path) =>
+        path.includes('state')
+          ? { present: true, value: state, modifiedAt: now - 11 * 60_000 }
+          : { present: false },
+    }),
+  );
+  expect(lines).toContain('plan: PLAN_OLD (impl) (stale, age 11m)');
+  expect(lines).toContain('context: green (stale, age 11m)');
 });
 
 // This is the field the /status handler embeds verbatim in the Telegram message
 // (server.ts handleSessionCommand joins buildOrchRuntimeStatus() + agent lines).
-// Proving the truthful count is in the builder output proves it reaches the msg.
-test('status message body contains the truthful agent count', () => {
+test('status message body contains truthful process and worktree labels', () => {
   const orch = buildRuntimeStatus(statusDeps());
   const agents = buildAgentLines(CANON, fakeRunner(PORCELAIN_TWO_LANES));
   const msg = `Orchestrator:\n${orch.join('\n')}\n\n${agents.join('\n')}`;
-  expect(msg).toContain('agents_active: 2 (verified)');
-  expect(msg).toContain('agents: 2 (verified)');
-  expect(msg).not.toContain('agents: none');
+  expect(msg).toContain('lane_worktrees: 2 (worktree query ok)');
+  expect(msg).toContain('running_agents: unknown (process query unavailable)');
+  expect(msg).not.toContain('agents_active:');
 });

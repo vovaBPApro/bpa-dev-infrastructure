@@ -1,0 +1,8 @@
+# Runtime state and logs live on the host, never in git (the predecessor repo
+# died from committed secrets/state). Subtrees that also carry runtime state keep
+# their own .gitignore (daemon/, instance/decisions/); this root list covers the
+# orchestrator runtime dir the ops journal and lane state live in.
+orchestrator/runtime/
+
+node_modules/
+*.log

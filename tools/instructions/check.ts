@@ -29,6 +29,7 @@ import {
   CLAUDE_FILENAME,
 } from "./floor.ts";
 import { runLedgerChecks } from "./ledger.ts";
+import { runSessionLoadCheck } from "./session-load.ts";
 
 type Options = { repo: string; strict: boolean };
 type Level = "PASS" | "WARN" | "FAIL" | "SKIP";
@@ -246,6 +247,15 @@ if (!existsSync(claudePath)) {
 // absolute — a pending row past its window is a defect regardless of mode).
 for (const finding of runLedgerChecks(options.repo, options.strict)) {
   record(finding.level, finding.file, "ledger", finding.detail);
+}
+
+// (h) session-load budget (§2.3): the orchestrator SessionStart load (params +
+// open ledger + orchestrator binding docs) is line-capped so growth forces
+// demotion to summaries. Always reports the measured size (never SKIPs) so the
+// cap bites as the corpus grows.
+{
+  const finding = runSessionLoadCheck(options.repo);
+  record(finding.level, finding.file, "session-load", finding.detail);
 }
 
 function checkReferences(

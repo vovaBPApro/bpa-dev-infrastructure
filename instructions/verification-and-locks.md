@@ -30,6 +30,35 @@ running surface. Assert rendered output, post-interaction state, geometry, or
 a reviewed visual snapshot as appropriate. A jsdom-only or behavioral-unit
 assertion cannot lock a visual defect.
 
+## Decidable report contract — what `result: clean` means
+
+`result: clean` is the binding claim of a completed, verified change. It is
+allowed ONLY when every one of these holds:
+
+- the reported SHA is current (`git rev-parse HEAD` matches the reported commit);
+- the verification command was actually run at that SHA and exited 0 — not a
+  prior run, not a partial run, not inferred;
+- every required review/landing evidence artifact for the change's risk tier
+  exists (see `review-policy`, `landing-and-merge`);
+- `git status --short` shows no unexplained change relevant to the work;
+- secret-scan evidence is present (see below).
+
+Anything skipped, partial, stale, timed out, or inferred makes the result
+`NO-GO` with a concrete `blocker: <reason>`. A percentage, explanation,
+screenshot, heartbeat, or promise is never `clean`.
+
+### Canonical secret-scan command
+
+Run this over the changed files before every commit and record `secret-scan: clean`:
+
+```sh
+grep -rEn '[0-9]{8,10}:AA|ghp_|github_pat|client_secret|PRIVATE KEY|AKIA|sk-ant-' <changed files>
+```
+
+Any hit blocks the commit or landing until removed and reassessed. If the
+scanner is absent or fails to run, report `secret-scan: NO-GO` (scanner
+missing) — never write `secret-scan: clean` from manual inspection alone.
+
 ## Reject False Greens
 
 Reject a lock review when it did not execute the lock; did not demonstrate red

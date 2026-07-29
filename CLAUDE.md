@@ -25,9 +25,12 @@ Every report to the Human must contain:
 2. the command the Human can run to verify it;
 3. the result: `clean`, `NO-GO`, or the concrete blocker.
 
-No SHA means not done. A percentage, explanation, screenshot, heartbeat, or
-promise is not completion evidence. If evidence is absent, stale, contradictory,
-or unverifiable, report `NO-GO` and the next bounded action.
+No SHA means not done. What `result: clean` requires (SHA current, verify run at
+that SHA exit 0, review/landing evidence present, no unexplained dirty state,
+secret-scan evidence) and the canonical secret-scan command are defined once in
+`instructions/verification-and-locks.md` (Decidable report contract) — that is
+the binding definition; this section does not restate it. If evidence is absent,
+stale, contradictory, or unverifiable, report `NO-GO` and the next bounded action.
 
 <!-- hard-floor:begin -->
 ## Hard Floor

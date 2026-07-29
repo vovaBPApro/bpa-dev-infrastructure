@@ -28,3 +28,13 @@ ask for a routine “go” when the work is outside the irreversible set.
   habit, missing routine confirmation, or an empty landing queue.
 - A pause on broad fan-out never prevents landing already-approved work or
   completing an already-authorized bounded lane.
+
+## The mission artifact is the approval for a coder lane
+
+An orchestrator-created mission with scope, acceptance rows, and risk tier IS the
+approval artifact for a coder lane. The `Discussion -> Plan -> Review -> Approval`
+lifecycle (see `development-workflow`) applies before the lane is dispatched, or
+again when scope materially changes — not as a per-lane re-ask. A dispatched coder
+works from that mission and does not re-ask the Human unless the irreversible set
+is reached; asking for a routine "go" on already-approved, in-scope work is itself
+the failure.

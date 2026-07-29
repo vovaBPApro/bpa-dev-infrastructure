@@ -229,10 +229,18 @@ type Decision = {
   heading: string;
 };
 
+export type InstanceFacts = {
+  phase: string;
+  active_scope: string;
+  capture_mode: string;
+  operator_language: string;
+};
+
 export type ComposeResult = {
   preamble: string;
   entries: PackEntry[];
   decisions: Decision[];
+  instanceFacts: InstanceFacts;
   manifest: {
     role: string;
     l1: string;
@@ -240,6 +248,39 @@ export type ComposeResult = {
     interim: { id: string; hash: string; heading: string }[];
   };
 };
+
+// Extracts the four pack-binding installation facts from the deliberately
+// simple params.yaml shape. Inline comments are discarded. Missing facts are a
+// config error: a pack must never claim self-containment while silently
+// omitting scope or capture state.
+export function readInstanceFacts(repo: string): InstanceFacts {
+  const path = join(repo, "instance", "params.yaml");
+  if (!existsSync(path)) fail(`instance facts not found: ${path}`);
+  const values = new Map<string, string>();
+  let section = "";
+  for (const raw of readFileSync(path, "utf8").split(/\r?\n/)) {
+    const line = raw.replace(/\s+#.*$/, "").replace(/\s+$/, "");
+    if (!line.trim() || line.trimStart().startsWith("#")) continue;
+    const top = line.match(/^([A-Za-z][A-Za-z0-9_-]*):\s*$/);
+    if (top) {
+      section = top[1];
+      continue;
+    }
+    const nested = line.match(/^\s{2}([A-Za-z][A-Za-z0-9_-]*):\s*(.+?)\s*$/);
+    if (nested && section) values.set(`${section}.${nested[1]}`, nested[2].replace(/^["']|["']$/g, ""));
+  }
+  const required = (key: string): string => {
+    const value = values.get(key);
+    if (!value) fail(`instance/params.yaml missing required pack fact '${key}'`);
+    return value;
+  };
+  return {
+    phase: required("phase.current"),
+    active_scope: required("phase.active_scope"),
+    capture_mode: required("capture.mode"),
+    operator_language: required("operator.language"),
+  };
+}
 
 // Selects docs for a role: baseline pack (in order) always in full, then any
 // doc matching a requested tag whose audience admits the role — appended in a
@@ -357,6 +398,7 @@ export function renderPreamble(
   l1: string,
   entries: PackEntry[],
   decisions: Decision[],
+  facts: InstanceFacts,
 ): string {
   const lines: string[] = [];
   lines.push(`${PACK_MARKER_PREFIX} role=${role} l1=${l1} -->`);
@@ -383,6 +425,11 @@ export function renderPreamble(
       lines.push(`- ${decision.id}  sha256:${decision.hash}  (interim)  ${decision.heading}`);
     }
   }
+  lines.push("");
+
+  lines.push("## INSTANCE FACTS");
+  lines.push("");
+  lines.push(`phase=${facts.phase} active_scope=${facts.active_scope} capture.mode=${facts.capture_mode} operator.language=${facts.operator_language}`);
   lines.push("");
 
   // Doc bodies, in order.
@@ -427,13 +474,15 @@ export function compose(options: Options): ComposeResult {
   const docs = collectDocs(instructionsRoot);
   const entries = selectDocs(options.role, options.tags, docs, vocabulary, baseline);
   const decisions = collectPendingDecisions(options.repo);
+  const instanceFacts = readInstanceFacts(options.repo);
   const l1 = gitSha(options.repo);
-  const preamble = renderPreamble(options.role, l1, entries, decisions);
+  const preamble = renderPreamble(options.role, l1, entries, decisions, instanceFacts);
 
   return {
     preamble,
     entries,
     decisions,
+    instanceFacts,
     manifest: {
       role: options.role,
       l1,

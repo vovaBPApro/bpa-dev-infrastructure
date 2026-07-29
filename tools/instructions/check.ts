@@ -258,6 +258,28 @@ for (const finding of runLedgerChecks(options.repo, options.strict)) {
   record(finding.level, finding.file, "session-load", finding.detail);
 }
 
+// (i) Referenced command readiness: executable commands in backticks are part
+// of the binding contract. Check only the two canonical repository command
+// forms, and only the command's first path token, so prose/code fragments and
+// arguments cannot make the parser greedy.
+for (const doc of docs) {
+  if (!doc.valid || doc.valid.status !== "binding") continue;
+  const commands = new Set<string>();
+  for (const match of doc.contents.matchAll(/`([^`\r\n]+)`/g)) {
+    const command = match[1].trim();
+    if (/^(?:bun\s+tools\/|bash\s+gate\/)/.test(command)) commands.add(command);
+  }
+  for (const command of commands) {
+    const path = command.match(/^(?:bun|bash)\s+([^\s;|&]+)/)?.[1];
+    if (!path) continue;
+    if (existsSync(join(options.repo, path))) {
+      record("PASS", doc.relative, "cmd-exists", command);
+    } else {
+      record("FAIL", doc.relative, "cmd-exists", `missing '${path}' referenced by command '${command}'`);
+    }
+  }
+}
+
 function checkReferences(
   doc: InstructionDoc,
   field: string,

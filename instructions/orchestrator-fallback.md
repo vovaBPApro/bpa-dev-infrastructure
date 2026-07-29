@@ -63,12 +63,22 @@ model returns — a deferral is never a silent skip.
 ## Switchover handoff — both directions
 
 Switching orchestrator vendors is a state handoff, not a hot swap. Before and
-after every switch, write a handoff note recording current fleet state so the
-incoming orchestrator reads it first: open lanes and branches
-(`git branch --list 'ag-*'` plus the worktree list), unlanded terminal reports
-in the reports dir, and open decision rows. Switching back reverses the same
-step. An orchestrator that starts without reading the latest handoff is
-operating blind — reconstruct from durable records first (see `restart-recovery`).
+after every switch, write the versioned JSON handoff with
+`bun tools/instructions/handoff.ts write --ts <ISO> --from <name> --to <name> --from-vendor <vendor> --from-session <id> --to-vendor <vendor> --to-session <id> --reports-dir <path>`.
+The runtime artifact lives at
+`orchestrator/runtime/handoffs/<ISO-ts>-<from>-to-<to>.json` (gitignored);
+the tracked contract is `tools/instructions/handoff.schema.json`. The tool
+collects the source SHA, all Git worktrees with lane branches, terminal reports
+in the supplied reports directory, and pending decision rows.
+
+The incoming session runs
+`bun tools/instructions/handoff.ts validate --file <handoff.json> --now-ms <epoch-ms>`
+before relying on it; the default freshness window is 30 minutes. Then it runs
+`bun tools/instructions/session-load.ts`, whose output includes the latest
+handoff or the exact warning "no handoff found — degraded start". Switching
+back reverses the same procedure. A missing, invalid, or stale handoff is a
+degraded start: reconstruct from durable records first and do not claim a clean
+startup verdict (see `restart-recovery`).
 
 ## Human capture — read `capture.mode`, do not assume the mirror is live
 
@@ -81,4 +91,3 @@ degraded mode — `NO-GO` on a binding "capture is live" claim — not "no speci
 handling required". `capture.mode` flips to `daemon` only once the mirror is
 proven to be writing `inbox.jsonl` live; only then does capture become
 vendor-independent with no per-session hand-capture step.
-</content>

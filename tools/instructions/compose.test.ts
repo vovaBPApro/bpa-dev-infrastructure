@@ -23,6 +23,7 @@ function repoWith(spec: {
   tags: string;
   packs: string;
   decisions?: Record<string, string>;
+  params?: string;
 }): string {
   const repo = mkdtempSync(join(tmpdir(), "compose-"));
   temporaryDirectories.push(repo);
@@ -37,6 +38,11 @@ function repoWith(spec: {
   mkdirSync(instanceRoot, { recursive: true });
   writeFileSync(join(instanceRoot, "tags.conf"), spec.tags);
   writeFileSync(join(instanceRoot, "packs.conf"), spec.packs);
+  writeFileSync(
+    join(instanceRoot, "params.yaml"),
+    spec.params ??
+      "operator:\n  language: uk\nphase:\n  current: sole-mission\n  active_scope: instruction-mechanics-only\ncapture:\n  mode: manual\n",
+  );
   if (spec.decisions) {
     const decRoot = join(instanceRoot, "decisions");
     mkdirSync(decRoot, { recursive: true });
@@ -109,6 +115,34 @@ describe("compose.ts", () => {
     expect(result.stdout).toContain("verification-and-locks  sha256:");
     // Full body materialized, not a pointer.
     expect(result.stdout).toContain("One branch, one worktree, one writer.");
+  });
+
+  test("renders a compact normalized INSTANCE FACTS snapshot in every pack", () => {
+    const repo = repoWith({
+      docs: DOCS,
+      tags: TAGS,
+      packs: PACKS,
+      params:
+        "operator:\n  language: uk # chat locale\nphase:\n  current: sole-mission\n  active_scope: instruction-mechanics-only\ncapture:\n  mode: daemon\n",
+    });
+    const result = runCompose(repo, ["--role", "coder"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(
+      "## INSTANCE FACTS\n\nphase=sole-mission active_scope=instruction-mechanics-only capture.mode=daemon operator.language=uk\n",
+    );
+    expect(result.stdout.match(/## INSTANCE FACTS/g)?.length).toBe(1);
+  });
+
+  test("fails closed when a required instance fact is absent", () => {
+    const repo = repoWith({
+      docs: DOCS,
+      tags: TAGS,
+      packs: PACKS,
+      params: "operator:\n  language: uk\nphase:\n  current: sole-mission\ncapture:\n  mode: manual\n",
+    });
+    const result = runCompose(repo, ["--role", "coder"]);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("phase.active_scope");
   });
 
   test("--tags ADDS a matching doc; baseline is never removed", () => {

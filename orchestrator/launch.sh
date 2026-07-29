@@ -20,6 +20,7 @@ MODEL="${ORCH_MODEL:-}"
 LOCK_FILE="${ORCH_LOCK_FILE:-$RUNTIME_DIR/launch.lock}"
 AUTH_PREFLIGHT="${ORCH_AUTH_PREFLIGHT:-$SCRIPT_DIR/preflight-cli-auth.sh}"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+SINGLETON_LOCK_FILE="${ORCH_SINGLETON_LOCK_FILE:-$REPO_DIR/runtime/orchestrator.singleton.lock}"
 MISSION_CLI="${ORCH_MISSION_CLI:-$REPO_DIR/core/mission-cli.ts}"
 STATE_DB="${ORCH_STATE_DB:-$REPO_DIR/runtime/state.db}"
 LEASE_TTL_MS="${ORCH_LEASE_TTL_MS:-120000}"
@@ -99,7 +100,10 @@ build_command() {
 }
 
 start() {
-  mkdir -p "$RUNTIME_DIR"
+  mkdir -p "$RUNTIME_DIR" "$(dirname "$SINGLETON_LOCK_FILE")"
+  umask 077
+  : >> "$SINGLETON_LOCK_FILE"
+  chmod 0600 "$SINGLETON_LOCK_FILE"
   exec 9>"$LOCK_FILE"
   if ! flock -n 9; then
     printf 'launch already in progress\n' >&2
@@ -140,15 +144,24 @@ start() {
     printf 'auth preflight missing or not executable: %s\n' "$AUTH_PREFLIGHT" >&2
     return 2
   fi
-  local command provider_bin unit
+  local command provider_bin singleton_command unit
   command="$(build_command)"
   provider_bin="${command#exec }"; provider_bin="${provider_bin%% *}"
   command -v "$provider_bin" >/dev/null 2>&1 || { printf 'provider not found: %s\n' "$provider_bin" >&2; release_current_lease; return 2; }
+  printf -v singleton_command 'flock -n %q sh -c %q' "$SINGLETON_LOCK_FILE" "$command"
   unit="orch-${SESSION//[^a-zA-Z0-9_.-]/-}"
   # Do not leak the launch mutex into tmux/the provider process.
   exec 9>&-
   if ! systemd-run --user --scope --quiet --unit="$unit" \
-    tmux new-session -d -s "$SESSION" -c "$WORK_DIR" "$command"; then
+    tmux new-session -d -s "$SESSION" -c "$WORK_DIR" "$singleton_command"; then
+    release_current_lease
+    return 1
+  fi
+  # tmux reports success before the pane command can reject a held flock.
+  # Give that command a bounded window to exit, then fail the launch loudly.
+  sleep 0.1
+  if ! session_exists; then
+    printf 'ERROR orchestrator-singleton-held lock=%s\n' "$SINGLETON_LOCK_FILE" >&2
     release_current_lease
     return 1
   fi

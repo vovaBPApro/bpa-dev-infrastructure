@@ -122,6 +122,24 @@ describe("check.ts", () => {
     expect(result.stdout).toContain("0 FAIL");
   });
 
+  test("decision: reference resolves against the instance/decisions ledger", () => {
+    const repo = repoWith({
+      "x.md": doc({ ...VALID, id: "referrer", decision: "[hr-9999]" }),
+    });
+    // Without the ledger entry, hr-9999 is a dangling FAIL.
+    const before = runCheck(repo);
+    expect(before.status).toBe(1);
+    expect(before.stdout).toContain("decision-reference");
+
+    // Add the ledger file; the reference now resolves and the check is clean.
+    const ledger = join(repo, "instance", "decisions");
+    mkdirSync(ledger, { recursive: true });
+    writeFileSync(join(ledger, "HR-9999.md"), doc({ ...VALID, id: "hr-9999" }));
+    const after = runCheck(repo);
+    expect(after.status).toBe(0);
+    expect(after.stdout).toContain("0 FAIL");
+  });
+
   test("hand-written index (no marker) is SKIP, not FAIL", () => {
     const repo = repoWith({
       "valid-doc.md": doc(VALID),

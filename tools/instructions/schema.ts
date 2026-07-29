@@ -27,6 +27,10 @@ export type Frontmatter = {
   // Optional fields (§2.1).
   decision?: string[];
   floor?: boolean;
+  // One-line imperative rendered into CLAUDE.md's generated Hard Floor section
+  // (§2.1). Required in practice when `floor: true`; the checker enforces that
+  // pairing rather than the schema, so a floor doc missing its line fails loudly.
+  "floor-line"?: string;
   risk?: Risk;
   sunset?: string;
   overrides?: string[];
@@ -150,6 +154,9 @@ export function validateFrontmatter(fm: Record<string, unknown> | undefined): Va
   if ("overrides" in fm) validateStringList(fm, "overrides", errors);
   if ("floor" in fm && typeof fm.floor !== "boolean") {
     errors.push(`floor must be a boolean (got '${String(fm.floor)}')`);
+  }
+  if ("floor-line" in fm && (typeof fm["floor-line"] !== "string" || (fm["floor-line"] as string).trim() === "")) {
+    errors.push("floor-line must be a non-empty string");
   }
   if ("risk" in fm && !RISKS.includes(fm.risk as Risk)) {
     errors.push(`risk must be one of ${RISKS.join("|")} (got '${String(fm.risk)}')`);

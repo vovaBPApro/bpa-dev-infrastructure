@@ -5,6 +5,8 @@ status: binding
 audience: all
 tags: [hygiene, git, secrets]
 summary: Git holds reviewed source, tests, docs, and retained governance evidence — not host state, caches, logs, or secrets.
+floor: true
+floor-line: Zero secrets in git — secret-scan before every commit and record `secret-scan: clean`.
 ---
 
 # Repository Hygiene

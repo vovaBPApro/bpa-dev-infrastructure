@@ -12,11 +12,9 @@ after source inventory, parity notes, and tests show why it belongs here.
 
 ## Instruction Routing
 
-Instructions live in three layers — L1 infra (this repo), L2 framework repo,
-L3 agent repo. Where to add or update one: would it survive unchanged on a
-completely different product? → here (L1). Applies to every agent of this
-product? → framework (L2). Otherwise → that agent's repo (L3). One instruction
-has one home; reference, never copy. Full rule:
+Instructions live in three layers — L1 infra (this repo), L2 framework, L3 agent
+— plus L1 `instance/` for this-installation facts. One instruction has one home;
+reference, never copy. Full routing rule (Step 0 + Q1–Q4, delivery, capture):
 `instructions/instruction-layers.md`.
 
 ## Report Contract
@@ -31,6 +29,19 @@ No SHA means not done. A percentage, explanation, screenshot, heartbeat, or
 promise is not completion evidence. If evidence is absent, stale, contradictory,
 or unverifiable, report `NO-GO` and the next bounded action.
 
+<!-- hard-floor:begin -->
+## Hard Floor
+
+Generated from `instructions/*` docs carrying `floor: true` (edit the source doc's `floor-line:`, then regenerate — hand-edits here fail the checker).
+
+1. Branch and worktree hygiene is mandatory — lane branches die after merge; do not let refs breed. (`branching-policy`)
+2. Preserve Human words verbatim when they define work; never reword, trim, or "fix" them. (`human-requirements`)
+3. Artifacts beat explanations — finish the file, commit, test, and report the exact SHA. (`lane-lifecycle`)
+4. Zero secrets in git — secret-scan before every commit and record `secret-scan: clean`. (`repository-hygiene`)
+5. Keep the permission surface versioned and fail-closed; ask the Human only for the irreversible set. (`tool-permissions`)
+6. Green is fail-closed — never relabel a failure as a warning; missing evidence is `NO-GO`. (`verification-and-locks`)
+<!-- hard-floor:end -->
+
 ## Hard Rules
 
 1. **Artifacts beat explanations.** Finish the file, commit, test, and report the
@@ -40,15 +51,19 @@ or unverifiable, report `NO-GO` and the next bounded action.
    Run a secret scan before every commit and record `secret-scan: clean`.
 3. **Clean history only.** Do not seed this repo with legacy commits. Bring in
    files through reviewed, narrow commits that preserve no old secret history.
-4. **Bun/TypeScript only for runtime code.** The daemon/orchestrator stack is
-   Bun + TypeScript. Python may exist only as temporary migration evidence until
-   replaced; no new Python runtime or tests for the target infra.
+4. **Bun/TypeScript only for THIS repository's runtime code.** This repo's
+   daemon/orchestrator stack is Bun + TypeScript; Python may exist only as
+   temporary migration evidence until replaced. This is an instance fact about
+   this control plane, not a generic rule for every agent — product repos pick
+   their own stack (L2).
 5. **No provider-specific prompt files.** `CLAUDE.md` is the single root agent
    contract; `AGENTS.md` must be a symlink to it. Do not add `GEMINI.md`,
    `CODEX.md`, or other vendor rule forks.
-6. **Single-repo boundary.** Work in this repository only. Coder lanes touch only
-   assigned paths. For instruction work, only `instructions/` plus the root
-   `CLAUDE.md`/`AGENTS.md` pair are in scope.
+6. **Single-repo boundary.** Binding while `phase: sole-mission` in
+   `instance/params.yaml` (`sunset: phase != sole-mission` — stops applying the
+   day product repos exist). Work in this repository only; coder lanes touch only
+   assigned paths. For instruction work, only `instructions/`, `instance/`, plus
+   the root `CLAUDE.md`/`AGENTS.md` pair are in scope.
 7. **Orchestrator dispatches, lands, reports.** The orchestrator does not author
    product/runtime code, tests, migrations, or risky diffs. It creates missions,
    routes lanes, verifies terminal evidence, merges/lands, cleans up, and reports.
@@ -80,7 +95,8 @@ or unverifiable, report `NO-GO` and the next bounded action.
 16. **Preserve Human words when they define work.** Store verbatim Human
     requirements in the mission artifact and keep generated summaries separate.
 17. **Language.** Code, comments, docs, commits, and reports are English. Chat
-    with the Human is Ukrainian unless the Human asks otherwise.
+    with the Human in the operator's language (`instance/params.yaml:
+    operator.language`) unless the Human asks otherwise.
 
 ## Required Before Commit
 

@@ -15,12 +15,19 @@
 // the current un-migrated corpus does not fail. With --strict it is a FAIL.
 // Exit non-zero on any FAIL.
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { validateFrontmatter } from "./schema.ts";
 import { collectDocs, INDEX_FILENAME, INDEX_MARKER, type InstructionDoc } from "./docs.ts";
 import { renderIndex } from "./index.ts";
 import { readTagVocabulary, readPacks } from "./compose.ts";
+import {
+  renderFloor,
+  extractFloorSection,
+  collectFloorLines,
+  FloorError,
+  CLAUDE_FILENAME,
+} from "./floor.ts";
 
 type Options = { repo: string; strict: boolean };
 type Level = "PASS" | "WARN" | "FAIL" | "SKIP";
@@ -121,6 +128,12 @@ for (const [id, files] of byId) {
 }
 const localIds = new Set(byId.keys());
 
+// Decision-ledger ids (instance/decisions/*.md `id:`). A `decision:` reference
+// implements an HR directive (§2.1), which lives in the ledger, not in
+// instructions/. Collect those ids so `decision:` refs resolve against them.
+// overrides:/moved-to: still resolve against instructions/ ids only.
+const decisionIds = collectDecisionIds(options.repo);
+
 // (c) generated-index freshness — only when the index carries the marker.
 const indexPath = join(instructionsRoot, INDEX_FILENAME);
 if (!existsSync(indexPath)) {
@@ -145,12 +158,15 @@ if (!existsSync(indexPath)) {
 }
 
 // (d) dangling references: decision:/overrides:/moved-to: → unknown id.
+// `decision:` resolves against instructions/ ids OR the decision ledger; the
+// other two resolve against instructions/ ids only.
+const decisionResolvable = new Set([...localIds, ...decisionIds]);
 for (const doc of docs) {
   if (!doc.valid) continue;
-  checkReferences(doc, "decision", doc.valid.decision);
-  checkReferences(doc, "overrides", doc.valid.overrides);
+  checkReferences(doc, "decision", doc.valid.decision, decisionResolvable);
+  checkReferences(doc, "overrides", doc.valid.overrides, localIds);
   const movedTo = doc.valid["moved-to"];
-  if (typeof movedTo === "string") checkReferences(doc, "moved-to", [movedTo]);
+  if (typeof movedTo === "string") checkReferences(doc, "moved-to", [movedTo], localIds);
 }
 
 // (e) pack coverage: every `status: binding` doc must be reachable via some
@@ -193,11 +209,46 @@ if (!existsSync(tagsPath) || !existsSync(packsPath)) {
   }
 }
 
-function checkReferences(doc: InstructionDoc, field: string, refs: string[] | undefined): void {
+// (f) Hard Floor drift: the section between the markers in CLAUDE.md must be
+// byte-identical to what floor.ts generates from `floor: true` docs. A hand-edit
+// (drift), a missing marker, or a floor doc without its floor-line all FAIL —
+// this is what makes the generated section un-forgeable by hand. Runs only when
+// CLAUDE.md exists (a fixture repo without it SKIPs rather than aborting).
+const claudePath = join(options.repo, CLAUDE_FILENAME);
+if (!existsSync(claudePath)) {
+  record("SKIP", CLAUDE_FILENAME, "hard-floor", "no CLAUDE.md at repo root");
+} else {
+  const claudeText = readFileSync(claudePath, "utf8");
+  try {
+    const expected = renderFloor(docs);
+    const actual = extractFloorSection(claudeText);
+    if (actual === undefined) {
+      record("FAIL", CLAUDE_FILENAME, "hard-floor", "hard-floor markers missing or out of order");
+    } else if (actual === expected) {
+      const count = collectFloorLines(docs).length;
+      record("PASS", CLAUDE_FILENAME, "hard-floor", `up to date (${count} floor lines)`);
+    } else {
+      record("FAIL", CLAUDE_FILENAME, "hard-floor", "section drifted — regenerate with tools/instructions/floor.ts");
+    }
+  } catch (error) {
+    if (error instanceof FloorError) {
+      record("FAIL", CLAUDE_FILENAME, "hard-floor", error.message);
+    } else {
+      throw error;
+    }
+  }
+}
+
+function checkReferences(
+  doc: InstructionDoc,
+  field: string,
+  refs: string[] | undefined,
+  resolvable: Set<string>,
+): void {
   if (!refs || refs.length === 0) return;
   for (const ref of refs) {
     if (ref.trim() === "" || ref.toLowerCase() === "none") continue;
-    if (localIds.has(ref)) continue;
+    if (resolvable.has(ref)) continue;
     // Cross-tree ids (an id that names another repo's doc) cannot be resolved
     // here; report as WARN so a stranger's fork does not go red. A locally
     // dangling id is a FAIL.
@@ -207,6 +258,24 @@ function checkReferences(doc: InstructionDoc, field: string, refs: string[] | un
       record("FAIL", doc.relative, `${field}-reference`, `dangling id '${ref}' exists in no local doc`);
     }
   }
+}
+
+// Collects `id:` values from instance/decisions/*.md so `decision:` references
+// resolve against the ledger. Missing dir yields an empty set (a fixture repo
+// without a ledger simply has no ledger ids to resolve against).
+function collectDecisionIds(repo: string): Set<string> {
+  const ids = new Set<string>();
+  const dir = join(repo, "instance", "decisions");
+  if (!existsSync(dir)) return ids;
+  for (const entry of readdirSync(dir)) {
+    if (!entry.endsWith(".md")) continue;
+    const contents = readFileSync(join(dir, entry), "utf8");
+    const match = contents.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    if (!match) continue;
+    const idLine = match[1].split(/\r?\n/).find((line) => /^id\s*:/.test(line));
+    if (idLine) ids.add(idLine.replace(/^id\s*:\s*/, "").trim().replace(/^["']|["']$/g, ""));
+  }
+  return ids;
 }
 
 // A cross-tree id is one prefixed with a known non-local layer namespace, e.g.

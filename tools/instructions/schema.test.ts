@@ -18,6 +18,7 @@ describe("schema", () => {
     expect(fm.id).toBe("valid-full");
     expect(fm.layer).toBe("L1");
     expect(fm.floor).toBe(true);
+    expect(fm["floor-line"]).toBe("Exercise the generated Hard Floor imperative field.");
     expect(fm.risk).toBe("high");
     expect(fm.sunset).toBe("phase != sole-mission");
     // Block-style list under `decision:` and inline `[...]` under `tags:`.
@@ -32,6 +33,15 @@ describe("schema", () => {
     const result = validateFrontmatter(parsed.frontmatter);
     expect(result.valid).toBe(false);
     expect(result.errors.some((error) => error.includes("status must be one of"))).toBe(true);
+  });
+
+  test("rejects an empty floor-line", () => {
+    const parsed = parseFrontmatter(
+      "---\nid: x\nlayer: L1\nstatus: binding\naudience: all\ntags: [t]\nsummary: s\nfloor-line: ''\n---\n\nBody.\n",
+    );
+    const result = validateFrontmatter(parsed.frontmatter);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((error) => error.includes("floor-line"))).toBe(true);
   });
 
   test("reports missing frontmatter", () => {

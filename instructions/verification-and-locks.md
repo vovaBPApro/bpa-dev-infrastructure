@@ -5,6 +5,8 @@ status: binding
 audience: all
 tags: [verification, regression-lock, testing]
 summary: Test, regression-lock, visual-lock, and false-green rules for features and bug fixes.
+floor: true
+floor-line: Green is fail-closed — never relabel a failure as a warning; missing evidence is `NO-GO`.
 ---
 
 # Verification and Regression Locks

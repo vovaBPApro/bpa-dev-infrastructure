@@ -5,71 +5,85 @@ status: binding
 audience: all
 tags: [routing, instruction-layers]
 summary: The three instruction layers (infra / framework / agent) and the routing rule for updates.
+decision: [hr-11557]
 ---
 
 # Instruction Layers
 
-> **Status note (2026-07-29):** an adversarial consilium ordered by the Human
-> (Telegram 11562/11564) reviewed this document. Its verdict KEEPS the three
-> layers, the first-yes routing spine, and one-home-reference-never-copy, and
-> HARDENS everything else: an `instance/` bucket for this-installation facts,
-> machine-checked frontmatter routing, compiled context packs instead of
-> hand-injected excerpts, and daemon-side capture of every Human directive.
-> The operative design and its implementation order:
-> `migration-prep/INSTRUCTIONS_CONSILIUM_FINAL.md` (§4 is the diff plan for
-> this file — the rewrite lands after the checker tooling exists, per its own
-> sequencing rule). Until then this document remains the binding routing rule.
-
 How agent instructions are split across repositories so nothing gets lost and
 every update has one obvious home. Decided with the Human on 2026-07-29
-(Telegram 11557; full verbatim in `migration-prep/STACK_DECISION.md`). Key
-verbatim (Vova):
-
-> «…все, що generic, все, що пов'язано безпосередньо з оркеструванням, з
-> інфраструктурою, бранчуванням, процесом розробки, оці речі, що спільні для
-> всіх, їх тримати самі в цій інфраструктурі репозиторію. […] І щоб, коли нам
-> треба оновити інструкції, то оркестратор одразу розумів дуже чітко, де саме
-> цю інструкцію треба оновити, в якому репозиторії, і чого саме це стосується.»
+(`decision: hr-11557`; verbatim in `instance/decisions/HR-11557.md`). Full design
+rationale: `migration-prep/INSTRUCTIONS_CONSILIUM_FINAL.md`.
 
 ## The three layers
 
-- **L1 — Infrastructure** (`bpa-dev-infrastructure/instructions/`): everything
-  generic — orchestration, lanes, gate, branching, review, verification,
-  process. Product-agnostic by construction: this layer must make sense for a
-  completely different project run by different people.
-- **L2 — Framework** (the agent-framework repository): framework architecture,
-  the design system and its quality tooling configuration, conventions shared
-  by ALL agents, and how an agent integrates into the framework.
-- **L3 — Agent** (each agent's own repository): domain knowledge, prompts, and
-  everything specific to that one agent.
+- **L1 — Infrastructure** (`bpa-dev-infrastructure/instructions/` + `instance/`):
+  everything generic — orchestration, lanes, gate, branching, review, process.
+  Product-agnostic by construction. `instance/` holds this installation's facts.
+- **L2 — Framework** (the agent-framework repo): framework architecture, stack
+  and coding conventions, the design system, and how an agent integrates. Stack
+  and conventions are L2 **by definition**. While no L2 repo exists, such content
+  is `layer: L2-parked` in L1 with a row in `instance/parked.md`.
+- **L3 — Agent** (each agent's own repo): domain knowledge, prompts, and
+  everything specific to that one agent. A frameworkless adopter may merge L2
+  into L3; the routing function below is unchanged.
+
+Same skeleton in every repo: a short root `CLAUDE.md` (`AGENTS.md` symlinked), an
+`instructions/` dir of frontmatter-tagged docs, and a generated `README.md` index.
 
 ## Routing rule (where does an instruction live / get updated)
 
-Ask in order; the first "yes" decides:
+**Step 0 — scope by location.** Binding instruction text may live only in root
+`CLAUDE.md`, `instructions/`, `instance/` (params/registry), or an open
+decisions-ledger row (interim). Journals, `migration-prep/`, subsystem READMEs,
+memory, chat, and dispatch prompts are non-binding and may only cite ids
+(evidence/history carries `status: informational`).
 
-1. Would this instruction survive unchanged if the product were completely
-   different? → **L1**.
-2. Does it apply to every agent of this product family? → **L2**.
-3. Otherwise → **L3**.
+Split a compound directive into its smallest statements; for each, first "yes"
+decides:
 
-## Binding rules
+1. **Instance fact** — operator, host, repo registry, concrete numbers, phase,
+   verbatim words, this project's history? → **L1 `instance/`**. A rule carrying
+   an instance value SPLITS: rule text continues to Q2–Q4, the value goes to
+   `instance/params.yaml`, in the same commit.
+2. **Survives a stranger's completely different product** (after
+   parameterization)? → **L1 `instructions/`**.
+3. **Applies to every agent of this product family** (incl. stack, language,
+   design system, integration contract)? → **L2** (or `L2-parked` in L1 + a
+   `parked.md` row while L2 has no repo).
+4. Otherwise → **L3**, that one agent's repo.
 
-- One instruction, one home. Never copy an instruction between repositories;
-  reference it. The dispatching orchestrator injects the needed L1 excerpts
-  (lane contract, report shape, binding process rules) into each mission
-  prompt, so product lanes obey L1 without L1 files being duplicated into
-  product repos.
-- Every repository keeps the same shape: a short root `CLAUDE.md` entry point
-  (with `AGENTS.md` symlinked to it) plus an `instructions/` directory with a
-  `README.md` index line per document.
-- Each repository's root `CLAUDE.md` states this routing rule, so any agent in
-  any repo can answer "which repo do I update" without asking.
-- Instruction changes land through the same gate as code: lane, review per
-  `gate/review-policy.conf`, landing record. No silent instruction edits.
+Tie-breakers: unsure L2-vs-L3 → **L3**; promote to L2 on the second consuming
+agent as one move-and-delete commit with a 5-line tombstone (`moved-to: <id>`)
+kept for one landing cycle. Precedence on conflict is a single order **L1 > L2 >
+L3**; a lower layer narrows only via declared `overrides`. Updating is the same
+lookup: grep the id in the generated index → exactly one home (checker-enforced
+uniqueness), recorded once in frontmatter, never re-litigated.
+
+## Delivery — compiled, not hand-pasted
+
+Lanes never hand-copy L1 excerpts. `tools/instructions/compose.ts` packs a
+role's mission preamble: the role's **baseline pack always in full**, plus docs
+matched by `--tags` from the closed vocabulary (`instance/tags.conf`) — tags only
+ADD, never remove the floor; an unknown tag is a hard refusal. Referenced docs
+are **materialized** as pinned-SHA snapshots into the lane workspace, so ephemeral
+lanes never chase foreign-repo paths. The preamble's manifest (id, hash, source
+SHA) is echoed by the lane and diffed by the landing gate — a wrong echo is NO-GO;
+break-glass (`DISPATCH_OVERRIDE`) is only for lanes repairing the tooling.
+
+## Capture — mechanical at the source
+
+Every Human directive is recorded in the decisions ledger as
+`instance/decisions/HR-<telegram-msg-id>.md`: the verbatim block (sacred), date,
+tentative routing, and a `state` of `pending | routed | parked | superseded`.
+Open (`pending`) rows are **interim-binding** the moment they land — the composer
+appends them to every pack until the routed doc exists, and aging checks re-redden
+stale rows. A daemon auto-mirror into the ledger is **planned, not yet wired**;
+until then triage is manual.
 
 ## Why
 
-The previous split across three repositories had no routing rule, so
-instructions were duplicated, drifted, and lost. A first-yes-decides question
-plus one-home-with-references makes every instruction findable, updatable in
-exactly one place, and auditable through git history.
+The previous split had no routing rule, so instructions were duplicated,
+drifted, and lost. First-yes routing recorded as data, one home with references,
+and machine checks make every instruction findable and updatable in one place.
+Changes land through the gate like code — no silent edits.

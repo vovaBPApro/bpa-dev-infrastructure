@@ -6,7 +6,6 @@
 - [design-first-ui.md](design-first-ui.md) — Approve the UI design before implementation, then re-read the feature plan.
 - [development-workflow.md](development-workflow.md) — Lifecycle, scope control, verification, and documentation truth.
 - [human-requirements.md](human-requirements.md) — Verbatim Human requirements and final authority.
-- [incidents.md](incidents.md) — Traceability from operating failures to rules (instance-candidate: pending move to instance/ in a later lane).
 - [instruction-layers.md](instruction-layers.md) — The three instruction layers (infra / framework / agent) and the routing rule for updates.
 - [isolated-test-environments.md](isolated-test-environments.md) — Each lane gets an isolated checkout and dependency output; never mutate the canonical tree for a lane test.
 - [landing-and-merge.md](landing-and-merge.md) — Landing is serialized on the canonical tree; worktrees are evidence sources, not the integration tree.
@@ -15,7 +14,6 @@
 - [lang/react-rules.md](lang/react-rules.md) — React AI coding guidelines for TSX components and hooks, extending the TypeScript guidelines.
 - [lang/typescript-ai-guidelines.md](lang/typescript-ai-guidelines.md) — TypeScript AI coding guidelines for TypeScript and TSX source files.
 - [lessons.md](lessons.md) — Operating lessons distilled from past failures into durable guidance.
-- [migration-day.md](migration-day.md) — Operator runbook for wiping and rebuilding the VM (instance-candidate: pending move to instance/ in a later lane).
 - [multi-project-isolation.md](multi-project-isolation.md) — Give each project an independent state root, secrets, identity, ports, leases, workspaces, logs, and mission store.
 - [operator-feedback.md](operator-feedback.md) — Treat operator input as test evidence and preserve the words that define work.
 - [orchestrator-playbook.md](orchestrator-playbook.md) — The orchestrator dispatches, verifies, lands, cleans up, and reports; it does not author code, tests, or reviews.

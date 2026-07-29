@@ -20,6 +20,7 @@ import { resolve, join } from "node:path";
 import { validateFrontmatter } from "./schema.ts";
 import { collectDocs, INDEX_FILENAME, INDEX_MARKER, type InstructionDoc } from "./docs.ts";
 import { renderIndex } from "./index.ts";
+import { readTagVocabulary, readPacks } from "./compose.ts";
 
 type Options = { repo: string; strict: boolean };
 type Level = "PASS" | "WARN" | "FAIL" | "SKIP";
@@ -150,6 +151,46 @@ for (const doc of docs) {
   checkReferences(doc, "overrides", doc.valid.overrides);
   const movedTo = doc.valid["moved-to"];
   if (typeof movedTo === "string") checkReferences(doc, "moved-to", [movedTo]);
+}
+
+// (e) pack coverage: every `status: binding` doc must be reachable via some
+// role's baseline pack OR ≥1 tag in tags.conf admitted for its audience, OR
+// carry `pack: none`. Runs only when both config files exist (a fixture repo
+// without instance/ SKIPs rather than aborting). FAIL under --strict, WARN
+// otherwise, matching the frontmatter transition-mode policy.
+const tagsPath = join(options.repo, "instance", "tags.conf");
+const packsPath = join(options.repo, "instance", "packs.conf");
+if (!existsSync(tagsPath) || !existsSync(packsPath)) {
+  record("SKIP", "instance/", "pack-coverage", "no instance/tags.conf + packs.conf");
+} else {
+  const vocabulary = readTagVocabulary(options.repo);
+  const packs = readPacks(options.repo);
+  // A doc's id is baseline-reachable if it appears in ANY role's baseline.
+  const baselineIds = new Set<string>();
+  for (const ids of packs.values()) for (const id of ids) baselineIds.add(id);
+
+  for (const doc of docs) {
+    if (!doc.valid) continue;
+    if (doc.valid.status !== "binding") continue;
+    if (doc.valid.pack === "none") {
+      record("PASS", doc.relative, "pack-coverage", "opted out via pack: none");
+      continue;
+    }
+    if (baselineIds.has(doc.valid.id)) {
+      record("PASS", doc.relative, "pack-coverage", "in a role baseline");
+      continue;
+    }
+    // Tag-reachable: at least one of its tags is a real (vocabulary) tag. Any
+    // requester whose audience the doc admits could then pull it via --tags.
+    const hasRealTag = doc.valid.tags.some((tag) => vocabulary.has(tag));
+    if (hasRealTag) {
+      record("PASS", doc.relative, "pack-coverage", "reachable via a known tag");
+      continue;
+    }
+    const detail = "binding doc unreachable: no baseline, no known tag, no pack: none";
+    if (options.strict) record("FAIL", doc.relative, "pack-coverage", detail);
+    else record("WARN", doc.relative, "pack-coverage", detail);
+  }
 }
 
 function checkReferences(doc: InstructionDoc, field: string, refs: string[] | undefined): void {

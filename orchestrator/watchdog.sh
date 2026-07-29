@@ -13,8 +13,10 @@ source "$SCRIPT_DIR/lib.sh"
 SESSION="${ORCH_SESSION:-orchestrator}"
 RUNTIME_DIR="${ORCH_RUNTIME_DIR:-$SCRIPT_DIR/runtime}"
 LOG_FILE="${ORCH_WATCHDOG_LOG:-$RUNTIME_DIR/watchdog.log}"
-HEARTBEAT_FILE="${ORCH_HEARTBEAT_FILE:-}"
+HEARTBEAT_FILE="${ORCH_HEARTBEAT_FILE:-$RUNTIME_DIR/orchestrator.heartbeat}"
 HEARTBEAT_MAX_AGE="${ORCH_HEARTBEAT_MAX_AGE:-1200}"
+HEARTBEAT_MISSING_SINCE_FILE="${ORCH_HEARTBEAT_MISSING_SINCE_FILE:-$RUNTIME_DIR/heartbeat-missing-since}"
+LAUNCH_SCRIPT="${ORCH_LAUNCH_SCRIPT:-$SCRIPT_DIR/launch.sh}"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MISSION_CLI="${ORCH_MISSION_CLI:-$REPO_DIR/core/mission-cli.ts}"
 STATE_DB="${ORCH_STATE_DB:-$REPO_DIR/runtime/state.db}"
@@ -37,6 +39,7 @@ validate_numeric_knob() {
 validate_numeric_knob FLEET_IDLE_NUDGE_MS 900000
 validate_numeric_knob FLEET_NUDGE_REPEAT_MS 3600000
 validate_numeric_knob DISK_ALERT_PCT 80
+validate_numeric_knob HEARTBEAT_MAX_AGE 1200
 
 pane_pid() { tmux list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -n 1; }
 state_available() { [[ -f "$STATE_DB" ]]; }
@@ -53,13 +56,22 @@ session_healthy() {
   local pid; pid="$(pane_pid)"; [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null
 }
 heartbeat_stale() {
-  [[ -n "$HEARTBEAT_FILE" ]] || return 1
-  [[ -f "$HEARTBEAT_FILE" ]] || return 1
-  local modified now
-  modified="$(stat -c %Y "$HEARTBEAT_FILE" 2>/dev/null || stat -f %m "$HEARTBEAT_FILE")"
+  local heartbeat now
   now="${ORCH_WATCHDOG_NOW:-$(date +%s)}"
-  [[ "$modified" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]] || return 1
-  (( now - modified > HEARTBEAT_MAX_AGE ))
+  if [[ ! -f "$HEARTBEAT_FILE" ]]; then
+    if [[ ! -f "$HEARTBEAT_MISSING_SINCE_FILE" ]]; then
+      printf '%s\n' "$now" > "$HEARTBEAT_MISSING_SINCE_FILE"
+      return 1
+    fi
+    heartbeat="$(cat "$HEARTBEAT_MISSING_SINCE_FILE" 2>/dev/null)" || return 0
+    [[ "$heartbeat" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]] || return 0
+    (( now - heartbeat > HEARTBEAT_MAX_AGE ))
+    return
+  fi
+  rm -f "$HEARTBEAT_MISSING_SINCE_FILE"
+  heartbeat="$(cat "$HEARTBEAT_FILE" 2>/dev/null)" || return 0
+  [[ "$heartbeat" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]] || return 0
+  (( now - heartbeat > HEARTBEAT_MAX_AGE ))
 }
 
 # Watchdog nudge updates are written to a same-directory temporary file then
@@ -145,13 +157,17 @@ fi
 
 if ! session_healthy; then
   log "dead session=$SESSION action=relaunch"
-  "$SCRIPT_DIR/launch.sh" start
+  "$LAUNCH_SCRIPT" start
   exit 0
 fi
 if heartbeat_stale; then
-  log "zombie session=$SESSION action=kill-relaunch"
-  "$SCRIPT_DIR/launch.sh" stop
-  "$SCRIPT_DIR/launch.sh" start
+  if [[ -f "$HEARTBEAT_FILE" ]]; then
+    log "zombie session=$SESSION action=kill-relaunch"
+  else
+    log "heartbeat-missing session=$SESSION action=kill-relaunch"
+  fi
+  "$LAUNCH_SCRIPT" stop
+  "$LAUNCH_SCRIPT" start
   exit 0
 fi
 

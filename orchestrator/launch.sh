@@ -24,6 +24,7 @@ MISSION_CLI="${ORCH_MISSION_CLI:-$REPO_DIR/core/mission-cli.ts}"
 STATE_DB="${ORCH_STATE_DB:-$REPO_DIR/runtime/state.db}"
 LEASE_TTL_MS="${ORCH_LEASE_TTL_MS:-120000}"
 LEASE_FILE="${ORCH_LEASE_FILE:-$RUNTIME_DIR/orchestrator.lease}"
+HEARTBEAT_FILE="${ORCH_HEARTBEAT_FILE:-$RUNTIME_DIR/orchestrator.heartbeat}"
 
 usage() {
   printf '%s\n' 'Usage: launch.sh [start|stop|status|--help]'
@@ -152,6 +153,8 @@ start() {
     release_current_lease
     return 1
   fi
+  mkdir -p "$(dirname "$HEARTBEAT_FILE")"
+  printf '%s\n' "$(date +%s)" > "$HEARTBEAT_FILE"
   printf 'started: %s (%s)\n' "$SESSION" "$PROVIDER"
 }
 

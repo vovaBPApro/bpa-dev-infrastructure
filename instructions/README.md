@@ -1,7 +1,9 @@
 # Instructions
 
 - [branching-policy.md](branching-policy.md) — trunk-based branch model: `main` plus short-lived `ag-` lanes; environments are not branches.
+- [design-first-ui.md](design-first-ui.md) — approve the UI design before implementation, then re-read the feature plan.
 - [development-workflow.md](development-workflow.md) — lifecycle, scope control, verification, and documentation truth.
+- [instruction-layers.md](instruction-layers.md) — the three instruction layers (infra / framework / agent) and the routing rule for updates.
 - [human-requirements.md](human-requirements.md) — verbatim Human requirements and final authority.
 - [incidents.md](incidents.md) — traceability from operating failures to rules.
 - [planning-and-specs.md](planning-and-specs.md) — self-contained, interface-first planning and specifications.

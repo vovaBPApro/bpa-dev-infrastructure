@@ -39,6 +39,9 @@ make_lane() {
 report() { printf 'commit: %s fixture\nverify: true\nresult: clean\nsecret-scan: clean\nremaining: none\n' "$2" > "$1"; }
 
 make_fixture disjoint
+batch_whitespace_output="$fixture_root/whitespace-skip-review.out"
+if "$batch" --branches ag-one,ag-two --reports "$fixture_root/one.md,$fixture_root/two.md" --repo "$repo" --skip-review '   ' >"$batch_whitespace_output" 2>&1; then exit 1; fi
+assert_output_has "$batch_whitespace_output" 'usage: gate/land-batch.sh'
 one_sha=$(make_lane "$repo" ag-one one.txt one)
 two_sha=$(make_lane "$repo" ag-two two.txt two)
 three_sha=$(make_lane "$repo" ag-three three.txt three)

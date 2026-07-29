@@ -47,6 +47,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ -z "$branch" ] || [ -z "$report" ] || [ -z "$repo" ]; then usage; fi
+if [ "$skip_review" = true ] && [[ -z "${skip_review_reason//[[:space:]]/}" ]]; then usage; fi
 
 land_pass() { echo "LAND step=$1 status=pass"; }
 land_skip() { echo "LAND step=$1 status=skipped"; }

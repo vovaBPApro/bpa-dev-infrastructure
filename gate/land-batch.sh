@@ -28,6 +28,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 if [ -z "$branches_arg" ] || [ -z "$reports_arg" ] || [ -z "$repo" ]; then usage; fi
+if [ "$skip_review" = true ] && [[ -z "${skip_review_reason//[[:space:]]/}" ]]; then usage; fi
 
 IFS=',' read -r -a branches <<< "$branches_arg"
 IFS=',' read -r -a reports <<< "$reports_arg"

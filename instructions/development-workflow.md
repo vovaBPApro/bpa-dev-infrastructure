@@ -1,3 +1,12 @@
+---
+id: development-workflow
+layer: L1
+status: binding
+audience: all
+tags: [workflow, verification]
+summary: Lifecycle, scope control, verification, and documentation truth.
+---
+
 # Development Workflow
 
 Use this lifecycle for every change:

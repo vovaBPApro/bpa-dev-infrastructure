@@ -1,3 +1,12 @@
+---
+id: review-policy
+layer: L1
+status: binding
+audience: reviewer
+tags: [review, risk]
+summary: Review is a risk and evidence gate: check the SHA, changed paths, acceptance evidence, and rollback posture.
+---
+
 # Review Policy
 
 Review is a risk and evidence gate, not a style ritual. Review the exact commit

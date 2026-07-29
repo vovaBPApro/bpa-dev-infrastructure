@@ -1,3 +1,12 @@
+---
+id: lang-react-rules
+layer: L2-parked
+status: binding
+audience: coder
+tags: [lang, react, typescript]
+summary: React AI coding guidelines for TSX components and hooks, extending the TypeScript guidelines.
+---
+
 Applies to TSX React components and hooks; TypeScript guidelines apply first.
 
 # React AI Coding Guidelines

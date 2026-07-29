@@ -1,3 +1,12 @@
+---
+id: orchestrator-playbook
+layer: L1
+status: binding
+audience: orchestrator
+tags: [orchestrator, playbook]
+summary: The orchestrator dispatches, verifies, lands, cleans up, and reports; it does not author code, tests, or reviews.
+---
+
 # Orchestrator Playbook
 
 The orchestrator dispatches, verifies, lands, cleans up, and reports. It does

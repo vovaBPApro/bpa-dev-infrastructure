@@ -1,3 +1,12 @@
+---
+id: landing-and-merge
+layer: L1
+status: binding
+audience: orchestrator
+tags: [landing, merge, git]
+summary: Landing is serialized on the canonical tree; worktrees are evidence sources, not the integration tree.
+---
+
 # Landing and Merge
 
 ## Binding rules

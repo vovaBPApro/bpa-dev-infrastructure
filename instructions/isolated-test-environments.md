@@ -1,3 +1,12 @@
+---
+id: isolated-test-environments
+layer: L1
+status: binding
+audience: coder
+tags: [testing, isolation]
+summary: Each lane gets an isolated checkout and dependency output; never mutate the canonical tree for a lane test.
+---
+
 # Isolated Test Environments
 
 ## Binding rules

@@ -1,3 +1,12 @@
+---
+id: repo-layout
+layer: L1
+status: binding
+audience: all
+tags: [repo-layout, instance-candidate]
+summary: Target repository layout: control plane, framework repo, one repo per agent, legacy donors (registry is an instance-candidate).
+---
+
 # Target Repository Layout
 
 Decided with the Human on 2026-07-29 (Telegram 11552–11555), before the VM

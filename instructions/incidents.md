@@ -1,3 +1,12 @@
+---
+id: incidents
+layer: L1
+status: informational
+audience: all
+tags: [incidents, traceability, instance-candidate]
+summary: Traceability from operating failures to rules (instance-candidate: pending move to instance/ in a later lane).
+---
+
 # Incident Traceability
 
 | Rule | Incident that created it |

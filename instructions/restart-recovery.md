@@ -1,3 +1,12 @@
+---
+id: restart-recovery
+layer: L1
+status: binding
+audience: orchestrator
+tags: [restart, recovery, durability]
+summary: Reconstruct mission and lane state from durable records; never trust chat memory, process lists, or stale heartbeats.
+---
+
 # Restart Recovery
 
 ## Binding rules

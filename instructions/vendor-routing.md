@@ -1,3 +1,12 @@
+---
+id: vendor-routing
+layer: L1
+status: binding
+audience: orchestrator
+tags: [vendor, routing]
+summary: Route work by risk, independence, capability, and available capacity, not by brand loyalty or round-robin.
+---
+
 # Vendor Routing
 
 Route work by risk, independence, capability, and available capacity, not by

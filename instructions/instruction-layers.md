@@ -1,3 +1,12 @@
+---
+id: instruction-layers
+layer: L1
+status: binding
+audience: all
+tags: [routing, instruction-layers]
+summary: The three instruction layers (infra / framework / agent) and the routing rule for updates.
+---
+
 # Instruction Layers
 
 > **Status note (2026-07-29):** an adversarial consilium ordered by the Human

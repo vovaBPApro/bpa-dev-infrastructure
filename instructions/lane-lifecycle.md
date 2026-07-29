@@ -1,3 +1,12 @@
+---
+id: lane-lifecycle
+layer: L1
+status: binding
+audience: all
+tags: [lane, lifecycle]
+summary: Mission scope and evidence contract from dispatch through verification, teardown, and reaping.
+---
+
 # Lane Lifecycle
 
 ## Binding rules

@@ -1,3 +1,12 @@
+---
+id: lang-typescript-ai-guidelines
+layer: L2-parked
+status: binding
+audience: coder
+tags: [lang, typescript]
+summary: TypeScript AI coding guidelines for TypeScript and TSX source files.
+---
+
 Applies to TypeScript and TSX source files.
 
 # TypeScript AI Coding Guidelines

@@ -1,3 +1,12 @@
+---
+id: ui-quality
+layer: L1
+status: binding
+audience: all
+tags: [ui, design, quality]
+summary: Route every UI change and review through the design-quality system and its anti-pattern detector before acceptance.
+---
+
 # UI Quality
 
 Route every UI creation, modification, and UI review through the repository's

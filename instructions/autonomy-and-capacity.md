@@ -1,3 +1,12 @@
+---
+id: autonomy-and-capacity
+layer: L1
+status: binding
+audience: orchestrator
+tags: [autonomy, capacity, workboard]
+summary: Execute approved reviewed dev-only work immediately; keep the fleet saturated; ask only for the irreversible set.
+---
+
 # Autonomy and Capacity
 
 Default posture: execute approved, reviewed, dev-only work immediately. Do not

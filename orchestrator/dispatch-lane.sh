@@ -24,7 +24,7 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib.sh"
 
-DISPATCH_CHECK="${ORCH_DISPATCH_CHECK:-$REPO_DIR/tools/instructions/dispatch-check.ts}"
+DISPATCH_CHECK="$REPO_DIR/tools/instructions/dispatch-check.ts"
 
 usage() {
   printf '%s\n' 'Usage: dispatch-lane.sh <prompt-file> [-- <launcher> [args...]]'

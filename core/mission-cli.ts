@@ -3,8 +3,8 @@ import { dirname, resolve } from "node:path";
 import { LeaseHeldError, StateStore } from "./state";
 
 const renewalTtlMs = 30_000;
-const terminalMissionStates = new Set(["succeeded", "failed"]);
-const terminalLaneStates = new Set(["succeeded", "failed"]);
+const hiddenMissionStates = new Set(["succeeded"]);
+const hiddenLaneStates = new Set(["succeeded"]);
 
 function databasePath(): string {
   const configured = process.env.INFRA_STATE_DB;
@@ -30,8 +30,8 @@ function status(store: StateStore): void {
   const missions = store.db.query("SELECT id, correlation_id, state, created_at, updated_at FROM missions ORDER BY id").all() as Array<{ id: string; correlation_id: string; state: string; created_at: number; updated_at: number }>;
   const lanes = store.db.query("SELECT id, mission_id, state, created_at, updated_at FROM lanes ORDER BY id").all() as Array<{ id: string; mission_id: string; state: string; created_at: number; updated_at: number }>;
   console.log(JSON.stringify({
-    missions: missions.filter((mission) => !terminalMissionStates.has(mission.state)).map((mission) => ({ id: mission.id, correlationId: mission.correlation_id, state: mission.state, createdAt: mission.created_at, updatedAt: mission.updated_at })),
-    lanes: lanes.filter((lane) => !terminalLaneStates.has(lane.state)).map((lane) => ({ id: lane.id, missionId: lane.mission_id, state: lane.state, createdAt: lane.created_at, updatedAt: lane.updated_at })),
+    missions: missions.filter((mission) => !hiddenMissionStates.has(mission.state)).map((mission) => ({ id: mission.id, correlationId: mission.correlation_id, state: mission.state, createdAt: mission.created_at, updatedAt: mission.updated_at })),
+    lanes: lanes.filter((lane) => !hiddenLaneStates.has(lane.state)).map((lane) => ({ id: lane.id, missionId: lane.mission_id, state: lane.state, createdAt: lane.created_at, updatedAt: lane.updated_at })),
     leases: store.listActive(),
   }));
 }

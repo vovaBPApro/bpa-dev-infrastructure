@@ -90,3 +90,29 @@ test("status reads durable truth after a simulated orchestrator restart", async 
   expect(state.lanes).toEqual([expect.objectContaining({ id: "lane-status", state: "running" })]);
   expect(state.leases).toEqual([expect.objectContaining({ key: "restart-key", owner: "restart-owner" })]);
 });
+
+test("status exposes persisted failures after restart", async () => {
+  const database = await databasePath();
+  const mission = missionId((await invoke(database, "mission", "create", "corr-failed")).stdout);
+  expect(await invoke(database, "mission", "transition", mission, "running")).toEqual({
+    exitCode: 0, stdout: `MISSION id=${mission} state=running`, stderr: "",
+  });
+  expect(await invoke(database, "lane", "create", mission, "lane-failed")).toEqual({
+    exitCode: 0, stdout: `LANE id=lane-failed mission=${mission} state=queued`, stderr: "",
+  });
+  expect(await invoke(database, "lane", "transition", "lane-failed", "failed")).toEqual({
+    exitCode: 0, stdout: `LANE id=lane-failed mission=${mission} state=failed`, stderr: "",
+  });
+  expect(await invoke(database, "mission", "transition", mission, "failed")).toEqual({
+    exitCode: 0, stdout: `MISSION id=${mission} state=failed`, stderr: "",
+  });
+
+  const restarted = await invoke(database, "status");
+  const state = JSON.parse(restarted.stdout) as { missions: Array<{ id: string; state: string }>; lanes: Array<{ id: string; state: string }> };
+  expect(state.missions).toEqual([expect.objectContaining({ id: mission, state: "failed" })]);
+  expect(state.lanes).toEqual([expect.objectContaining({ id: "lane-failed", state: "failed" })]);
+
+  const emptyDatabase = await databasePath();
+  const healthy = await invoke(emptyDatabase, "status");
+  expect(restarted.stdout).not.toBe(healthy.stdout);
+});

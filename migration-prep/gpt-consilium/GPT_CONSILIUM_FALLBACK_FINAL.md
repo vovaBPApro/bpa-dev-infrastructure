@@ -108,6 +108,10 @@ false-green language; pack sizes fine for GPT models.
 - **Wave 2:** review-record schema + `--skip-review` hardening; handoff
   schema + session-load freshness; pack instance-facts/active-scope section;
   checker readiness checks.
-- **Wave 3 (Tier A / decisions):** Codex launch permission profiles (remove
-  dangerous default); scaffold L1 pinning + fresh-Codex integration test;
+- **Wave 3 (Tier A / decisions):** ~~Codex launch permission profiles (remove
+  dangerous default)~~ — DISPOSITIONED by Human decision `hr-11589`
+  (2026-07-29): the maximally-free launch mode stays; the fail-closed floor is
+  the control-plane layer (landing gate, mandatory risky-path review,
+  secret-scan, isolated worktrees), not model-harness approval prompts.
+  Remaining wave-3 items: scaffold L1 pinning + fresh-Codex integration test;
   cold-start doc; capability contract.

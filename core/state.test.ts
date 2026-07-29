@@ -72,40 +72,25 @@ test("successful mutations append audit rows", async () => {
 
 test("injected logical lease time prevents a delayed wall-clock acquirer from replacing a live holder", async () => {
   const path = await databasePath();
-  const start = `${path}.start`;
-  const acquired = `${path}.worker-a.acquired`;
-  const setup = new StateStore(path);
-  setup.close();
-  const source = resolve(import.meta.dir, "state.ts");
-  const program = `
-    import { StateStore } from ${JSON.stringify(source)};
-    const [path, start, acquired, owner, legacyNow] = process.argv.slice(1);
-    Date.now = () => Number(legacyNow);
-    while (!(await Bun.file(start).exists())) await Bun.sleep(1);
-    if (owner === "worker-b") while (!(await Bun.file(acquired).exists())) await Bun.sleep(1);
-    const store = new StateStore(path, { now: () => 1_000 });
-    try { console.log(JSON.stringify({ result: "won", ...store.acquireLease(owner, "shared-key", 10_000) })); }
-    catch (error) {
-      if (error.constructor.name !== "LeaseHeldError") throw error;
-      console.log(JSON.stringify({ result: "held" }));
-    }
-    finally {
-      if (owner === "worker-a") await Bun.write(acquired, "acquired");
-      store.close();
-    }
-  `;
-  const first = Bun.spawn([process.execPath, "-e", program, path, start, acquired, "worker-a", "1000"], { stdout: "pipe", stderr: "pipe" });
-  const second = Bun.spawn([process.execPath, "-e", program, path, start, acquired, "worker-b", "11001"], { stdout: "pipe", stderr: "pipe" });
-  await Bun.write(start, "go");
-  const [firstOutput, secondOutput, firstExit, secondExit] = await Promise.all([
-    new Response(first.stdout).text(), new Response(second.stdout).text(), first.exited, second.exited,
-  ]);
-  expect([firstExit, secondExit]).toEqual([0, 0]);
-  const outcomes = [firstOutput, secondOutput].map((output) => JSON.parse(output.trim()) as { result: "won" | "held"; fencingToken?: number });
-  expect(outcomes).toEqual([{ result: "won", fencingToken: 1 }, { result: "held" }]);
-  const store = new StateStore(path, { now: () => 1_000 });
-  expect(store.listActive()).toEqual([expect.objectContaining({ key: "shared-key", owner: "worker-a", fencingToken: 1 })]);
-  store.close();
+  const logicalNow = 1_000;
+  let wallClockNow = logicalNow;
+  const originalDateNow = Date.now;
+  const holder = new StateStore(path, { now: () => logicalNow });
+  const delayedAcquirer = new StateStore(path, { now: () => logicalNow });
+  try {
+    expect(holder.acquireLease("worker-a", "shared-key", 10_000).fencingToken).toBe(1);
+    wallClockNow = 11_001;
+    Date.now = () => wallClockNow;
+
+    expect(() => delayedAcquirer.acquireLease("worker-b", "shared-key", 10_000)).toThrow(LeaseHeldError);
+    expect(delayedAcquirer.listActive()).toEqual([
+      { key: "shared-key", owner: "worker-a", fencingToken: 1, expiresAt: 11_000 },
+    ]);
+  } finally {
+    Date.now = originalDateNow;
+    delayedAcquirer.close();
+    holder.close();
+  }
 });
 
 test("two independent Bun processes racing to acquire one SQLite lease have exactly one winner", async () => {

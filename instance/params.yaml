@@ -1,0 +1,45 @@
+# Instance parameters for this BPA control-plane deployment.
+#
+# Every value here is a this-installation fact. Generic instructions/ rules cite
+# these parameters by name instead of hard-coding a name or number. Each entry
+# cites the source doc in THIS repo that establishes it. No secrets/tokens/keys.
+
+operator:
+  name: Vova                       # instructions/repo-layout.md, STACK_DECISION.md verbatim blocks (Vova)
+  language: uk                     # CLAUDE.md Hard Rule 17 (chat with the Human in Ukrainian)
+  timezone: Europe/Warsaw          # migration-prep/HUMAN_REQUIREMENTS_MATRIX_2026-07-28.md (Kraków clock; morning rhythm)
+
+phase:
+  current: sole-mission            # instance/README + CLAUDE.md Mission (this repo is the sole current mission)
+  # Predicate used by instruction `sunset:` frontmatter, per
+  # migration-prep/INSTRUCTIONS_CONSILIUM_FINAL.md §2.1, §4.2.
+
+repos:
+  control_plane: bpa-dev-infrastructure   # instructions/repo-layout.md (this repo, control plane only)
+  framework: planned                      # instructions/repo-layout.md (a NEW separate repo, not yet created)
+  per_agent: planned                      # instructions/repo-layout.md (one NEW repo per agent: Bill, Mila, future)
+  legacy_donors:                          # instructions/repo-layout.md (read-only donors, deleted over time)
+    - bpa-master
+    - agent-bill
+    - agent-mila
+  legacy_rescue_branch: rescue/vm-final-20260728   # instructions/repo-layout.md
+  canonical_root: /home/bpa-dev-infrastructure     # instructions/migration-day.md (install root)
+  git_remote: git@github.com:vovaBPApro/bpa-dev-infrastructure.git  # instructions/migration-day.md (clone step)
+
+vm:
+  os: Ubuntu 24.04                 # instructions/migration-day.md
+  ram_gb: 64                       # instructions/migration-day.md, instructions/repo-layout.md (msg 11555)
+
+fleet:
+  # Historical width band from the legacy control plane. Currently suspended:
+  # this repo's phase is sole-mission and the legacy fleet rules are dead.
+  floor: 6                         # historical (legacy CLAUDE.md Rule 24); status: suspended
+  ceiling: 15                      # historical (legacy CLAUDE.md Rule 24); status: suspended
+  status: suspended
+
+# NOTE: no model/vendor map is set here — this repo's docs do not state one.
+# It is deliberately omitted rather than carried over from the legacy control
+# plane. Add it only when a doc in THIS repo establishes it.
+
+db:
+  legacy_carry_over: none          # instructions/repo-layout.md (msg 11543: no legacy DB carry-over)

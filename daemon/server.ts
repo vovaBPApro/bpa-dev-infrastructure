@@ -67,6 +67,7 @@ import {
   sanitizeChatRegion,
 } from './reliability';
 import { drainOutbox, resolveOrchestratorLauncher } from './control';
+import { appendInboxLine } from './inbox-mirror';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -3048,6 +3049,22 @@ async function handleInbound(
       rmSync(join(RUNTIME_DIR, 'orchestrator-done'), { force: true });
     } catch {
       /* best-effort; never block delivery on logging */
+    }
+
+    // Daemon-side auto-mirror (INSTRUCTIONS_CONSILIUM_FINAL.md §2.4): append the
+    // raw inbound Human message to instance/decisions/inbox.jsonl so capture is
+    // mechanical at the source and survives an OOM-kill before the next session.
+    // Append-only, runtime artifact (kept out of git); best-effort so a mirror
+    // failure never blocks delivery. Only {msg_id, chat_id, ts, text} — no token.
+    try {
+      appendInboxLine(INSTALL_ROOT, {
+        msg_id: msgId ?? '',
+        chat_id,
+        ts: new Date((ctx.message?.date ?? 0) * 1000).toISOString(),
+        text,
+      });
+    } catch {
+      /* best-effort; never block delivery on mirroring */
     }
   }
 

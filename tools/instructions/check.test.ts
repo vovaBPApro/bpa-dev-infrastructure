@@ -175,6 +175,115 @@ describe("check.ts", () => {
   });
 });
 
+// Fixed clock for deterministic aging via the LEDGER_NOW_MS test seam.
+const LEDGER_NOW = Date.parse("2026-07-29T12:00:00.000Z");
+
+function runCheckAt(repo: string, nowMs: number, extra: string[] = []) {
+  return spawnSync("bun", [checker, "--repo", repo, ...extra], {
+    encoding: "utf8",
+    env: { ...process.env, LEDGER_NOW_MS: String(nowMs) },
+  });
+}
+
+// Writes files under instance/decisions/ of an existing check-repo.
+function writeDecision(repo: string, name: string, contents: string): void {
+  const dir = join(repo, "instance", "decisions");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, name), contents);
+}
+
+const hoursAgoIso = (h: number) => new Date(LEDGER_NOW - h * 3600_000).toISOString();
+const daysAgoDate = (d: number) =>
+  new Date(LEDGER_NOW - d * 86_400_000).toISOString().slice(0, 10);
+
+describe("check.ts ledger aging", () => {
+  test("missing inbox.jsonl is a SKIP, not a FAIL", () => {
+    const repo = repoWith({ "valid-doc.md": doc(VALID) });
+    const result = runCheckAt(repo, LEDGER_NOW);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("SKIP instance/decisions/inbox.jsonl [ledger]");
+  });
+
+  test("an aged, untriaged inbox row FAILs under --strict, WARNs otherwise", () => {
+    const repo = repoWith({ "valid-doc.md": doc(VALID) });
+    writeDecision(
+      repo,
+      "inbox.jsonl",
+      JSON.stringify({ msg_id: 700, chat_id: 1, ts: hoursAgoIso(30), text: "aged" }) + "\n",
+    );
+    const strict = runCheckAt(repo, LEDGER_NOW, ["--strict"]);
+    expect(strict.status).toBe(1);
+    expect(strict.stdout).toContain("[ledger]");
+    expect(strict.stdout).toContain("700");
+
+    const lenient = runCheckAt(repo, LEDGER_NOW);
+    expect(lenient.status).toBe(0);
+    expect(lenient.stdout).toContain("WARN inbox.jsonl:msg 700 [ledger]");
+  });
+
+  test("a triaged-chatter row does not age", () => {
+    const repo = repoWith({ "valid-doc.md": doc(VALID) });
+    writeDecision(
+      repo,
+      "inbox.jsonl",
+      JSON.stringify({ msg_id: 701, chat_id: 1, ts: hoursAgoIso(48), text: "hey" }) + "\n",
+    );
+    writeDecision(
+      repo,
+      "triage.jsonl",
+      JSON.stringify({ msg_id: 701, verdict: "chatter", ts: hoursAgoIso(47) }) + "\n",
+    );
+    const result = runCheckAt(repo, LEDGER_NOW, ["--strict"]);
+    expect(result.status).toBe(0);
+  });
+
+  test("a pending HR older than 72h FAILs", () => {
+    const repo = repoWith({ "valid-doc.md": doc(VALID) });
+    writeDecision(
+      repo,
+      "HR-702.md",
+      doc({ ...VALID, id: "hr-702" }).replace(
+        "summary: A valid instruction doc.",
+        `summary: A valid instruction doc.\nstate: pending\ndate: ${daysAgoDate(5)}`,
+      ),
+    );
+    const result = runCheckAt(repo, LEDGER_NOW);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain("FAIL instance/decisions/HR-702.md [ledger]");
+    expect(result.stdout).toContain("pending >72h");
+  });
+
+  test("a pending HR parked with a future review-by is clean", () => {
+    const repo = repoWith({ "valid-doc.md": doc(VALID) });
+    writeDecision(
+      repo,
+      "HR-703.md",
+      doc({ ...VALID, id: "hr-703" }).replace(
+        "summary: A valid instruction doc.",
+        `summary: A valid instruction doc.\nstate: pending\ndate: ${daysAgoDate(10)}\nparked: waiting\nreview-by: 2026-09-01`,
+      ),
+    );
+    const result = runCheckAt(repo, LEDGER_NOW);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("PASS instance/decisions/HR-703.md [ledger]");
+  });
+
+  test("a parked HR past its review-by re-reddens", () => {
+    const repo = repoWith({ "valid-doc.md": doc(VALID) });
+    writeDecision(
+      repo,
+      "HR-704.md",
+      doc({ ...VALID, id: "hr-704" }).replace(
+        "summary: A valid instruction doc.",
+        `summary: A valid instruction doc.\nstate: pending\ndate: ${daysAgoDate(10)}\nparked: waiting\nreview-by: ${daysAgoDate(1)}`,
+      ),
+    );
+    const result = runCheckAt(repo, LEDGER_NOW);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain("past its review-by");
+  });
+});
+
 describe("index.ts", () => {
   test("generates a marked index sorted by id, idempotently", () => {
     const repo = repoWith({

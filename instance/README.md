@@ -22,3 +22,8 @@ generic layer give-to-a-friend clean while this bucket holds the specifics.
 Contents: `params.yaml` (named instance values), `decisions/HR-<msg-id>.md`
 (verbatim Human directives, sacred), `parked.md` (L2/L3 content parked here
 until its repo exists). No secrets, tokens, or keys ever live in this bucket.
+
+`decisions/inbox.jsonl` and `decisions/triage.jsonl` are runtime capture
+artifacts (the daemon's auto-mirror of raw inbound Human messages, §2.4) — they
+carry verbatim chat text and are git-ignored, never committed; only the
+routed `HR-<msg-id>.md` files are tracked.

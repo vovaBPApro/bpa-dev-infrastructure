@@ -1,6 +1,10 @@
 # Migration day: VM wipe and re-initialization
 
-This runbook is for a fresh Ubuntu 24.04 VM. Run it as the normal operator
+This runbook is for a fresh Ubuntu 24.04 VM. Target sizing (Vova, 2026-07-29,
+msg 11555): **64 GB RAM** — lane builds and Playwright stands are memory-bound,
+and upgrading the machine was chosen over throttling test concurrency.
+Provisioning a new, bigger VM instead of wiping in place follows this same
+runbook. Run it as the normal operator
 account, not as root. The installed control plane lives at
 `/home/bpa-dev-infrastructure`; do not choose another root unless the
 bootstrap environment is deliberately overridden.

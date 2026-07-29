@@ -24,6 +24,7 @@ esac
 RUNTIME_DIR="${ORCH_RUNTIME_DIR:-$SCRIPT_DIR/runtime}"
 OUTBOX_FILE="${MORNING_OUTBOX_FILE:-$RUNTIME_DIR/morning.outbox}"
 WATERMARK_FILE="${MORNING_WATERMARK_FILE:-$RUNTIME_DIR/morning.watermark}"
+PENDING_FILE="${MORNING_PENDING_FILE:-$WATERMARK_FILE.pending}"
 STATE_DB="${INFRA_STATE_DB:-$RUNTIME_DIR/state.db}"
 BOOTSTRAP_SCRIPT="${MORNING_BOOTSTRAP_SCRIPT:-$REPO_ROOT/bootstrap/install.sh}"
 MISSION_CLI="${MORNING_MISSION_CLI:-$REPO_ROOT/core/mission-cli.ts}"
@@ -34,8 +35,30 @@ FULL_SUITE_LOG="${FULL_SUITE_LOG:-$RUNTIME_DIR/full-suite.log}"
 FULL_SUITE_MAX_AGE_S="${FULL_SUITE_MAX_AGE_S:-93600}"
 TABLE_FILE="$(mktemp)"
 DETAIL_FILE="$(mktemp)"
-trap 'rm -f "$TABLE_FILE" "$DETAIL_FILE" "${OUTBOX_TMP:-}"' EXIT
+trap 'rm -f "$TABLE_FILE" "$DETAIL_FILE" "${OUTBOX_TMP:-}" "${STATE_TMP:-}"' EXIT
 RESULT=0
+
+atomic_write() {
+  local value="$1" target="$2"
+  STATE_TMP="$(mktemp "$(dirname "$target")/.morning.state.XXXXXX")"
+  printf '%s\n' "$value" > "$STATE_TMP"
+  mv -f "$STATE_TMP" "$target"
+  STATE_TMP=''
+}
+
+mkdir -p "$(dirname "$OUTBOX_FILE")" "$(dirname "$WATERMARK_FILE")"
+# A pending HEAD plus an existing outbox means publication happened. The outbox
+# may already be empty because the daemon delivered it; finalize instead of
+# exposing the same stable digest ID again.
+if [[ -f "$PENDING_FILE" && -e "$OUTBOX_FILE" ]]; then
+  PENDING_HEAD="$(<"$PENDING_FILE")"
+  if [[ "$PENDING_HEAD" =~ ^[0-9a-f]{40}$ ]] &&
+     { [[ ! -s "$OUTBOX_FILE" ]] || grep -Fq "BPA-MORNING-DIGEST-ID: $PENDING_HEAD" "$OUTBOX_FILE"; }; then
+    atomic_write "$PENDING_HEAD" "$WATERMARK_FILE"
+    rm -f "$PENDING_FILE"
+    exit 0
+  fi
+fi
 
 row() {
   local state="$1" label="$2" detail="${3:-}"
@@ -154,16 +177,18 @@ if [[ -f "$WATERMARK_FILE" ]]; then
 else
   WATERMARK=''
 fi
+TARGET_HEAD="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 if [[ -n "$WATERMARK" ]] && git -C "$REPO_ROOT" cat-file -e "$WATERMARK^{commit}" 2>/dev/null; then
-  COMMITS="$(git -C "$REPO_ROOT" log --format='%h %s' "$WATERMARK..HEAD")"
+  COMMITS="$(git -C "$REPO_ROOT" log --format='%h %s' "$WATERMARK..$TARGET_HEAD")"
 else
-  COMMITS="$(git -C "$REPO_ROOT" log -1 --format='%h %s')"
+  COMMITS="$(git -C "$REPO_ROOT" log -1 --format='%h %s' "$TARGET_HEAD")"
 fi
 [[ -n "$COMMITS" ]] || COMMITS='Нових комітів немає.'
 
 DIGEST_FILE="$(mktemp)"
-trap 'rm -f "$TABLE_FILE" "$DETAIL_FILE" "$DIGEST_FILE" "${OUTBOX_TMP:-}"' EXIT
+trap 'rm -f "$TABLE_FILE" "$DETAIL_FILE" "$DIGEST_FILE" "${OUTBOX_TMP:-}" "${STATE_TMP:-}"' EXIT
 {
+  printf 'BPA-MORNING-DIGEST-ID: %s\n' "$TARGET_HEAD"
   printf 'Ранковий звіт BPA — %s (Краків)\n\n' "$(TZ=Europe/Warsaw date '+%Y-%m-%d %H:%M')"
   printf 'Що нового\n%s\n\n' "$COMMITS"
   printf 'Активні місії / лейни / lease-и\n%s\n\n' "$STATUS_JSON"
@@ -186,13 +211,14 @@ if (( RESULT != 0 )); then
   printf 'Morning readiness failed; digest was not delivered.\n' >&2
   exit 1
 fi
-mkdir -p "$(dirname "$OUTBOX_FILE")" "$(dirname "$WATERMARK_FILE")"
 OUTBOX_TMP="$(mktemp "$(dirname "$OUTBOX_FILE")/.morning.outbox.XXXXXX")"
 cp "$DIGEST_FILE" "$OUTBOX_TMP"
 if [[ "${MORNING_INJECT_FAILURE:-}" == before-mv ]]; then
   printf 'Injected failure before atomic outbox replacement.\n' >&2
   exit 1
 fi
+atomic_write "$TARGET_HEAD" "$PENDING_FILE"
 mv -f "$OUTBOX_TMP" "$OUTBOX_FILE"
 OUTBOX_TMP=''
-printf '%s\n' "$(git -C "$REPO_ROOT" rev-parse HEAD)" > "$WATERMARK_FILE"
+atomic_write "$TARGET_HEAD" "$WATERMARK_FILE"
+rm -f "$PENDING_FILE"

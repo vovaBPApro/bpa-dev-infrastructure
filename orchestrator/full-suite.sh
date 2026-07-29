@@ -139,7 +139,9 @@ while IFS= read -r -d '' suite; do
 done < <(find "$INSTALL_ROOT" -type f -name '*.test.ts' -print0 | sort -z)
 
 if ((${#ts_suites[@]} > 0)); then
-  if (cd "$INSTALL_ROOT" && bun test "${ts_suites[@]}") >> "$FULL_SUITE_LOG" 2>&1; then
+  # BUN_OPTIONS is a caller-level CLI injection surface (for example,
+  # --only-failures or --test-name-pattern). Nightly semantics are fixed here.
+  if (cd "$INSTALL_ROOT" && env -u BUN_OPTIONS bun test "${ts_suites[@]}") >> "$FULL_SUITE_LOG" 2>&1; then
     rc=0
     pass=$((pass + ${#ts_suites[@]}))
   else

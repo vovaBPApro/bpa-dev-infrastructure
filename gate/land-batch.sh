@@ -10,6 +10,9 @@ usage() {
 
 branches_arg="" reports_arg="" repo="" no_push=false run_verify=false skip_review=false skip_review_reason=""
 pre_merge_sha=""
+default_branch=""
+integration_branch=""
+batch_complete=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --branches|--reports|--repo)
@@ -43,6 +46,7 @@ batch_skip() { echo "BATCH step=$1 status=skipped"; }
 
 script_dir=$(CDPATH='' cd "$(dirname "$0")" && pwd)
 # shellcheck source=gate/land-lib.sh
+# shellcheck disable=SC1091
 source "$script_dir/land-lib.sh"
 if ! land_resolve_bun; then exit 2; fi
 
@@ -54,6 +58,18 @@ case "$git_dir" in
 esac
 exec 9>"$lock_file"
 if ! flock -n 9; then batch_fail lock 2; fi
+batch_cleanup() {
+  local exit_status=$?
+  if [ "$batch_complete" != true ] && [ -n "$integration_branch" ] && [ -n "$default_branch" ] && [ -n "$pre_merge_sha" ]; then
+    git -C "$repo" merge --abort >/dev/null 2>&1 || true
+    git -C "$repo" checkout "$default_branch" >/dev/null 2>&1 || true
+    git -C "$repo" reset --hard "$pre_merge_sha" >/dev/null 2>&1 || true
+    git -C "$repo" branch -D "$integration_branch" >/dev/null 2>&1 || true
+  fi
+  return "$exit_status"
+}
+trap batch_cleanup EXIT
+trap 'exit 143' TERM
 default_ref=$(git -C "$repo" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
 if [ -n "$default_ref" ]; then default_branch=${default_ref#origin/}
 elif git -C "$repo" show-ref --verify --quiet refs/heads/main; then default_branch=main
@@ -78,6 +94,7 @@ for index in "${!branches[@]}"; do
     if ! land_record_review_skip "$repo" "$branch" "$branch_sha" "$skip_review_reason"; then batch_fail "review branch=$branch" 2; fi
   fi
   guard_args=("$script_dir/completion-guard.ts" --report "$report" --repo "$repo" --branch "$branch")
+  if [ "$run_verify" = true ]; then guard_args+=(--defer-verify); fi
   if ! "$BUN_BIN" "${guard_args[@]}"; then batch_fail completion-guard 2; fi
   batch_pass "completion-guard branch=$branch"
   if ! land_secret_scan "$repo" "$branch"; then batch_fail "secret-scan branch=$branch" 2; fi
@@ -93,6 +110,30 @@ for index in "${!branches[@]}"; do
   review_summary+="$branch:$LAND_REVIEW_VERDICT"
 done
 if [ "$skip_review" = true ]; then echo "BATCH review=SKIPPED reason=$skip_review_reason"; fi
+
+declare -A changed_path_owner=()
+for branch in "${branches[@]}"; do
+  merge_base=$(git -C "$repo" merge-base "$default_branch" "$branch") || batch_fail "changed-paths branch=$branch" 2
+  while IFS= read -r -d '' status; do
+    IFS= read -r -d '' path || batch_fail "changed-paths branch=$branch" 2
+    paths=("$path")
+    case "$status" in
+      R*|C*)
+        IFS= read -r -d '' path || batch_fail "changed-paths branch=$branch" 2
+        paths+=("$path")
+        ;;
+    esac
+    for path in "${paths[@]}"; do
+      if [ -n "${changed_path_owner[$path]+set}" ]; then
+        echo "BATCH overlap path=$path branches=${changed_path_owner[$path]},$branch" >&2
+        echo "BATCH verdict=conflict pair=$branch" >&2
+        batch_fail disjoint-paths 2
+      fi
+      changed_path_owner["$path"]="$branch"
+    done
+  done < <(git -C "$repo" diff --name-status -z --find-renames "$merge_base" "$branch")
+done
+batch_pass disjoint-paths
 
 integration_branch="batch-integration-$$"
 if ! git -C "$repo" checkout -b "$integration_branch" "$default_branch" >/dev/null; then batch_fail integration-branch; fi
@@ -112,11 +153,14 @@ merge_sha=$(git -C "$repo" rev-parse HEAD)
 batch_pass merge
 
 if [ "$run_verify" = true ]; then
-  verify_command=$(sed -n 's/^verify:[[:space:]]*//p' "${reports[0]}" | head -n 1)
-  if [ -z "$verify_command" ] || ! (cd "$repo" && sh -c "$verify_command"); then
-    integration_cleanup
-    batch_fail post-merge-verify
-  fi
+  for index in "${!reports[@]}"; do
+    verify_command=$(sed -n 's/^verify:[[:space:]]*//p' "${reports[$index]}" | head -n 1)
+    if [ -z "$verify_command" ] || ! (cd "$repo" && sh -c "$verify_command"); then
+      integration_cleanup
+      batch_fail "post-merge-verify branch=${branches[$index]}"
+    fi
+    batch_pass "post-merge-verify branch=${branches[$index]}"
+  done
   batch_pass post-merge-verify
 else
   batch_skip post-merge-verify
@@ -153,4 +197,6 @@ if [ "$reap_failed" = true ]; then
   exit 1
 fi
 batch_pass reap
+batch_complete=true
+trap - EXIT TERM
 echo "BATCH verdict=landed sha=$merge_sha branches=$branch_count review=$review_summary"

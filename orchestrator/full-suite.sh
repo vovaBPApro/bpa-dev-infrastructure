@@ -124,6 +124,36 @@ while IFS= read -r -d '' suite; do
   log "FULL-SUITE SUITE ts=$timestamp suite=$relative rc=$rc"
 done < <(find "$INSTALL_ROOT" -type f -name '*.test.sh' -print0 | sort -z)
 
+# Bun receives the complete, sorted TypeScript suite set in one deterministic
+# invocation. Shell suites retain their existing one-process-per-suite behavior.
+ts_suites=()
+while IFS= read -r -d '' suite; do
+  suite_count=$((suite_count + 1))
+  relative="${suite#"$INSTALL_ROOT"/}"
+  if suite_is_excluded "$relative"; then
+    skipped+=("$relative")
+    log "FULL-SUITE SUITE ts=$timestamp suite=$relative rc=SKIP reason=excluded"
+    continue
+  fi
+  ts_suites+=("$relative")
+done < <(find "$INSTALL_ROOT" -type f -name '*.test.ts' -print0 | sort -z)
+
+if ((${#ts_suites[@]} > 0)); then
+  # BUN_OPTIONS is a caller-level CLI injection surface (for example,
+  # --only-failures or --test-name-pattern). Nightly semantics are fixed here.
+  if (cd "$INSTALL_ROOT" && env -u BUN_OPTIONS bun test "${ts_suites[@]}") >> "$FULL_SUITE_LOG" 2>&1; then
+    rc=0
+    pass=$((pass + ${#ts_suites[@]}))
+  else
+    rc=$?
+    fail=$((fail + ${#ts_suites[@]}))
+    failed+=("${ts_suites[@]}")
+  fi
+  for relative in "${ts_suites[@]}"; do
+    log "FULL-SUITE SUITE ts=$timestamp suite=$relative rc=$rc"
+  done
+fi
+
 if (( suite_count == 0 )); then
   log "FULL-SUITE SKIP reason=no-test-suites root=$INSTALL_ROOT"
   exit 1
@@ -148,4 +178,4 @@ if (( fail > 0 )); then
   fi
 fi
 
-exit 0
+(( fail == 0 ))

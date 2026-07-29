@@ -7,7 +7,7 @@ cleanup() { [ -z "$report" ] || rm -f "$report"; }
 trap cleanup EXIT
 
 assert_soak() {
-  local lanes=$1 good_count landed_count
+  local lanes=$1 good_count landed_count fixture mission_state
   report=$(mktemp "${TMPDIR:-/tmp}/bpa-soak-test-report.XXXXXX")
   SOAK_REPORT_FILE="$report" bash "$root/soak/soak.sh" "$lanes"
   good_count=$((lanes - 2))
@@ -17,6 +17,9 @@ assert_soak() {
   grep -Fq 'refused | completion-guard' "$report"
   grep -Fq 'cleanup: worktrees=0 branches=0 processes=0' "$report"
   grep -Fq 'overall: PASS' "$report"
+  fixture=$(sed -n 's/^fixture: //p' "$report")
+  mission_state=$(bun -e "import { Database } from 'bun:sqlite'; const db = new Database(process.argv[1]); const rows = db.query('SELECT state FROM missions').all(); console.log(rows.length === 1 ? rows[0].state : 'invalid-mission-count'); db.close();" "$fixture/state.db")
+  [ "$mission_state" = succeeded ]
 }
 
 assert_soak 3
@@ -35,3 +38,9 @@ fi
 grep -Fq '| 5 | 0 | setup-failure | worktree-add-or-validation |' "$report"
 grep -Fq 'cleanup: worktrees=0 branches=0 processes=0' "$report"
 grep -Fq 'overall: FAIL' "$report"
+fixture=$(sed -n 's/^fixture: //p' "$report")
+mission_state=$(bun -e "import { Database } from 'bun:sqlite'; const db = new Database(process.argv[1]); const rows = db.query('SELECT state FROM missions').all(); console.log(rows.length === 1 ? rows[0].state : 'invalid-mission-count'); db.close();" "$fixture/state.db")
+[ "$mission_state" = failed ] || {
+  echo "expected failed mission state, got: $mission_state" >&2
+  exit 1
+}

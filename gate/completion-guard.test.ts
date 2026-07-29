@@ -76,6 +76,16 @@ describe("completion guard", () => {
     expect(result.stdout).toContain("FAIL commit-exists");
   });
 
+  test("rejects an ancestor SHA when branch tip is newer", () => {
+    const item = fixture();
+    const staleSha = item.sha;
+    writeFileSync(join(item.repo, "later.txt"), "later\n");
+    command("git add later.txt && git commit -m later", item.repo);
+    const result = run(report(item.directory, valid(staleSha)), item.repo, ["--branch", "master"]);
+    expect(result.status).toBe(2);
+    expect(result.stdout).toContain("FAIL branch-tip");
+  });
+
   test("rejects result=done", () => {
     const item = fixture();
     const result = run(report(item.directory, valid(item.sha, "done")), item.repo);

@@ -36,11 +36,41 @@ run_tick() {
 
 MORNING_SCRIPT="${MORNING_SCRIPT:-$SCRIPT_DIR/morning.sh}"
 
+# A TypeScript-only red tree must be discovered, reported, and make the core
+# runner fail. This is the regression lock for the previously invisible suites.
+TS_RED_ROOT="$SCRATCH/ts-red-repo"
+TS_RED_RUNTIME="$SCRATCH/ts-red-runtime"
+mkdir -p "$TS_RED_ROOT"
+printf '%s\n' \
+  'import { expect, test } from "bun:test";' \
+  'test("red fixture", () => expect(1).toBe(2));' > "$TS_RED_ROOT/red.test.ts"
+assert_not run_tick "$TS_RED_ROOT" "$TS_RED_RUNTIME" "$SCRATCH/ts-red.outbox"
+contains 'suite=red.test.ts rc=' "$TS_RED_RUNTIME/full-suite.log"
+contains 'failed=red.test.ts' "$TS_RED_RUNTIME/full-suite.log"
+
+# TypeScript and shell discovery are additive: a green TS suite still runs
+# when a shell suite is red, and the aggregate remains red.
+MIXED_ROOT="$SCRATCH/mixed-repo"
+MIXED_RUNTIME="$SCRATCH/mixed-runtime"
+mkdir -p "$MIXED_ROOT"
+printf '%s\n' \
+  'import { expect, test } from "bun:test";' \
+  'test("green fixture", () => expect(1).toBe(1));' > "$MIXED_ROOT/green.test.ts"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "shell-red-ran\n"' 'exit 9' > "$MIXED_ROOT/red.test.sh"
+chmod +x "$MIXED_ROOT/red.test.sh"
+assert_not run_tick "$MIXED_ROOT" "$MIXED_RUNTIME" "$SCRATCH/mixed.outbox"
+contains 'green fixture' "$MIXED_RUNTIME/full-suite.log"
+contains 'suite=green.test.ts rc=0' "$MIXED_RUNTIME/full-suite.log"
+contains 'shell-red-ran' "$MIXED_RUNTIME/full-suite.log"
+contains 'suite=red.test.sh rc=9' "$MIXED_RUNTIME/full-suite.log"
+grep -Eq 'FULL-SUITE ts=.* fail=[1-9][0-9]* ' "$MIXED_RUNTIME/full-suite.log" \
+  || fail 'aggregate fail count was not positive'
+
 FAIL_ROOT="$SCRATCH/failing-repo"
 FAIL_RUNTIME="$SCRATCH/failing-runtime"
 FAIL_OUTBOX="$SCRATCH/failing.outbox"
 make_suite_tree "$FAIL_ROOT"
-assert run_tick "$FAIL_ROOT" "$FAIL_RUNTIME" "$FAIL_OUTBOX"
+assert_not run_tick "$FAIL_ROOT" "$FAIL_RUNTIME" "$FAIL_OUTBOX"
 contains 'FULL-SUITE SUITE ts=' "$FAIL_RUNTIME/full-suite.log"
 contains 'suite=gate/pass.test.sh rc=0' "$FAIL_RUNTIME/full-suite.log"
 contains 'suite=orchestrator/fail.test.sh rc=7' "$FAIL_RUNTIME/full-suite.log"
@@ -48,7 +78,7 @@ contains 'FULL-SUITE ts=' "$FAIL_RUNTIME/full-suite.log"
 contains 'pass=1 fail=1 skipped=0 failed=orchestrator/fail.test.sh skipped_list=none' "$FAIL_RUNTIME/full-suite.log"
 contains 'NUDGE full-suite pass=1 fail=1 failed=orchestrator/fail.test.sh' "$FAIL_OUTBOX"
 first_nudges="$(wc -l < "$FAIL_OUTBOX")"
-assert run_tick "$FAIL_ROOT" "$FAIL_RUNTIME" "$FAIL_OUTBOX"
+assert_not run_tick "$FAIL_ROOT" "$FAIL_RUNTIME" "$FAIL_OUTBOX"
 [[ "$(wc -l < "$FAIL_OUTBOX")" == "$first_nudges" ]] || fail 'full-suite nudge ignored rate limit'
 
 PASS_ROOT="$SCRATCH/passing-repo"
@@ -74,7 +104,7 @@ not_exists "$EXCLUDED_OUTBOX"
 # A bogus numeric rate interval must be logged and replaced with the safe
 # default, without preventing the tick from reporting its red suite.
 KNOB_RUNTIME="$SCRATCH/knob-runtime"
-assert env ORCH_CONFIG_FILE="$SCRATCH/no-runtime.env" ORCH_INSTALL_ROOT="$FAIL_ROOT" ORCH_RUNTIME_DIR="$KNOB_RUNTIME" \
+assert_not env ORCH_CONFIG_FILE="$SCRATCH/no-runtime.env" ORCH_INSTALL_ROOT="$FAIL_ROOT" ORCH_RUNTIME_DIR="$KNOB_RUNTIME" \
   FULL_SUITE_LOG="$KNOB_RUNTIME/full-suite.log" NUDGE_OUTBOX_FILE="$KNOB_RUNTIME/nudges.outbox" \
   FULL_SUITE_NUDGE_REPEAT_MS=garbage "$SCRIPT_DIR/full-suite.sh"
 contains 'FULL-SUITE invalid-knob name=FULL_SUITE_NUDGE_REPEAT_MS value=garbage using-default=21600000' "$KNOB_RUNTIME/full-suite.log"

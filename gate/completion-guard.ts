@@ -1,14 +1,16 @@
 #!/usr/bin/env bun
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 type Options = {
   report?: string;
   repo?: string;
   branch?: string;
   runVerify: boolean;
+  deferVerify: boolean;
 };
 
 type Report = {
@@ -52,7 +54,7 @@ function usage({ stdout = false, exitCode = 2 } = {}): never {
 }
 
 function parseArgs(args: string[]): Options {
-  const options: Options = { runVerify: false };
+  const options: Options = { runVerify: false, deferVerify: false };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "-h" || arg === "--help") {
@@ -60,6 +62,10 @@ function parseArgs(args: string[]): Options {
     }
     if (arg === "--run-verify") {
       options.runVerify = true;
+      continue;
+    }
+    if (arg === "--defer-verify") {
+      options.deferVerify = true;
       continue;
     }
     if (arg === "--report" || arg === "--repo" || arg === "--branch") {
@@ -90,6 +96,22 @@ function git(repo: string, args: string[]) {
 function outputTail(output: string): string {
   const lines = output.trim().split("\n").filter(Boolean);
   return lines.slice(-10).join(" | ").slice(-200) || "(no output)";
+}
+
+function runVerification(repo: string, sha: string, command: string) {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), "completion-verify-"));
+  const checkout = join(temporaryRoot, "checkout");
+  const added = git(repo, ["worktree", "add", "--detach", checkout, sha]);
+  if (added.status !== 0) {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+    return { status: added.status, stdout: added.stdout, stderr: added.stderr };
+  }
+  try {
+    return spawnSync(command, { cwd: checkout, shell: true, encoding: "utf8" });
+  } finally {
+    git(repo, ["worktree", "remove", "--force", checkout]);
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
 }
 
 const options = parseArgs(process.argv.slice(2));
@@ -135,10 +157,11 @@ if (report) {
       const branchCommit = git(repoPath, ["rev-parse", "--verify", `${options.branch}^{commit}`]);
       if (branchCommit.status !== 0) {
         fail("branch", "not-found");
-      } else if (git(repoPath, ["merge-base", "--is-ancestor", sha, options.branch]).status !== 0) {
-        fail("branch-reachability", `${sha} not-reachable-from ${options.branch}`);
+      } else if (branchCommit.stdout.trim().toLowerCase() !== sha.toLowerCase()) {
+        const reachable = git(repoPath, ["merge-base", "--is-ancestor", sha, options.branch]).status === 0;
+        fail("branch-tip", `report=${sha} branch=${branchCommit.stdout.trim()}${reachable ? " report-is-ancestor" : ""}`);
       } else {
-        pass("branch-reachability", options.branch);
+        pass("branch-tip", options.branch);
       }
     }
   }
@@ -158,8 +181,8 @@ if (report) {
     fail("verify", "empty");
   } else {
     pass("verify", "present");
-    if (options.runVerify && repoCheck.status === 0) {
-      const verification = spawnSync(report.verify, { cwd: repoPath, shell: true, encoding: "utf8" });
+    if (!options.deferVerify && report.result === "clean" && repoCheck.status === 0 && /^[0-9a-f]{40}$/i.test(sha)) {
+      const verification = runVerification(repoPath, sha, report.verify);
       const evidence = outputTail(`${verification.stdout ?? ""}${verification.stderr ?? ""}`);
       if (verification.status !== 0) fail("verify-run", `exit=${verification.status ?? "signal"} tail=${evidence}`);
       else pass("verify-run", `tail=${evidence}`);

@@ -5,6 +5,8 @@ status: binding
 audience: all
 tags: [human, verbatim]
 summary: Verbatim Human requirements and final authority.
+floor: true
+floor-line: Preserve Human words verbatim when they define work; never reword, trim, or "fix" them.
 ---
 
 # Human Requirements

@@ -5,6 +5,8 @@ status: binding
 audience: all
 tags: [permissions, security, fail-closed]
 summary: Maintain a versioned, fail-closed permission surface; committed policy stays portable and free of secrets.
+floor: true
+floor-line: Keep the permission surface versioned and fail-closed; ask the Human only for the irreversible set.
 ---
 
 # Tool Permissions

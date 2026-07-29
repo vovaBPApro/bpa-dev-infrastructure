@@ -5,6 +5,8 @@ status: binding
 audience: all
 tags: [git, branching]
 summary: Trunk-based branch model: `main` plus short-lived `ag-` lanes; environments are not branches.
+floor: true
+floor-line: Branch and worktree hygiene is mandatory — lane branches die after merge; do not let refs breed.
 ---
 
 # Branching Policy

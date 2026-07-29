@@ -6,9 +6,10 @@
 // their filename and any summary the raw block yields) so the index never hides
 // a file — but the checker is what fails such docs.
 
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { collectDocs, INDEX_FILENAME, INDEX_MARKER, type InstructionDoc } from "./docs.ts";
+import { renderFloor, replaceFloorSection, CLAUDE_FILENAME, FloorError } from "./floor.ts";
 
 type Options = { repo: string; write: boolean };
 
@@ -78,6 +79,27 @@ if (import.meta.main) {
   if (options.write) {
     writeFileSync(join(instructionsRoot, INDEX_FILENAME), rendered);
     console.log(`wrote ${INDEX_FILENAME} (${docs.length} docs)`);
+    // Regenerate the CLAUDE.md Hard Floor from the same doc set so a single
+    // `index.ts` run keeps both generated surfaces fresh. Skipped silently when
+    // the repo has no CLAUDE.md (e.g. an instructions-only fixture).
+    const claudePath = join(options.repo, CLAUDE_FILENAME);
+    try {
+      const current = readFileSync(claudePath, "utf8");
+      const next = replaceFloorSection(current, renderFloor(docs));
+      if (next !== current) {
+        writeFileSync(claudePath, next);
+        console.log(`updated Hard Floor in ${CLAUDE_FILENAME}`);
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        // No CLAUDE.md — nothing to regenerate.
+      } else if (error instanceof FloorError) {
+        process.stderr.write(`index: hard floor not updated: ${error.message}\n`);
+        process.exitCode = 2;
+      } else {
+        throw error;
+      }
+    }
   } else {
     process.stdout.write(rendered);
   }

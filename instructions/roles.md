@@ -30,8 +30,8 @@ summary: Orchestrator, coder, reviewer, and risk-routing duties.
 - Reads the mission, nearest docs, and relevant source/tests before editing.
 - Produces the artifact, code, tests, docs, and verification evidence needed by
   the acceptance rows.
-- Uses Bun/TypeScript for target runtime work; does not introduce Python as new
-  infrastructure runtime.
+- Writes in the assigned repo's declared stack; does not introduce a new runtime
+  language on its own initiative.
 - Runs the smallest meaningful tests plus any required Docker/runtime checks.
 - Runs a pre-commit secret scan and records `secret-scan: clean`.
 - Commits locally with `[CODER]`; never pushes unless the mission explicitly says

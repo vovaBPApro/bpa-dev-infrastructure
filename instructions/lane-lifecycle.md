@@ -5,6 +5,8 @@ status: binding
 audience: all
 tags: [lane, lifecycle]
 summary: Mission scope and evidence contract from dispatch through verification, teardown, and reaping.
+floor: true
+floor-line: Artifacts beat explanations — finish the file, commit, test, and report the exact SHA.
 ---
 
 # Lane Lifecycle

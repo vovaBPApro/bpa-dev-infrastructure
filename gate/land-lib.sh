@@ -29,7 +29,7 @@ land_resolve_bun() {
 
 land_review_check() {
   local repo="$1" branch="$2" report="$3" policy_file="$4" skip_review="$5"
-  local merge_base candidate_path policy_prefix change_status old_path new_path
+  local merge_base candidate_path policy_prefix change_status old_path new_path diff_file diff_fd
   local review_artifact review_verdict_value reviewer_value reviewed_sha_value independence_value
   local review_verdict_count reviewer_count reviewed_sha_count independence_count report_sha
   local commit_author_name commit_author_email reviewer_name reviewer_email reviewer_normalized
@@ -49,20 +49,29 @@ land_review_check() {
     return 1
   }
   LAND_REVIEW_REQUIRED=false
+  diff_file=$(mktemp "${TMPDIR:-/tmp}/bpa-land-review-diff.XXXXXX") || return 2
+  if ! git -C "$repo" -c core.quotepath=false diff --name-status -z --diff-filter=ACDMRT "$merge_base..$branch" > "$diff_file"; then
+    rm -f "$diff_file"
+    echo "ERROR review-required diff-unreadable branch=$branch" >&2
+    return 2
+  fi
+  exec {diff_fd}< "$diff_file"
+  rm -f "$diff_file"
   while IFS= read -r -d '' change_status; do
     case "$change_status" in
       R*|C*)
-        IFS= read -r -d '' old_path || return 2
-        IFS= read -r -d '' new_path || return 2
+        IFS= read -r -d '' old_path || { exec {diff_fd}<&-; return 2; }
+        IFS= read -r -d '' new_path || { exec {diff_fd}<&-; return 2; }
         if land_is_policy_path "$old_path" || land_is_policy_path "$new_path"; then LAND_REVIEW_REQUIRED=true; fi
         ;;
       *)
-        IFS= read -r -d '' candidate_path || return 2
+        IFS= read -r -d '' candidate_path || { exec {diff_fd}<&-; return 2; }
         if land_is_policy_path "$candidate_path"; then LAND_REVIEW_REQUIRED=true; fi
         ;;
     esac
     [ "$LAND_REVIEW_REQUIRED" = true ] && break
-  done < <(git -C "$repo" -c core.quotepath=false diff --name-status -z --diff-filter=ACDMRT "$merge_base..$branch")
+  done <&"$diff_fd"
+  exec {diff_fd}<&-
   if [ "$LAND_REVIEW_REQUIRED" = true ]; then
     review_artifact="$(dirname "$report")/$branch.review.md"
     if [ "$skip_review" = true ]; then
@@ -150,55 +159,84 @@ land_record_review_skip() {
 }
 
 land_secret_scan() {
-  local repo="$1" branch="$2" merge_base changed_file scan_result scan_status_line line_count
+  local repo="$1" branch="$2" merge_base changed_file scan_result scan_status_line line_count diff_file diff_fd
   local scan_marker scan_show_status scan_grep_status secret_hits=0
   local secret_pattern
   merge_base=$(git -C "$repo" merge-base "$LAND_DEFAULT_BRANCH" "$branch") || return 2
   # TODO: Signature scanning does not detect base64 or split secret forms; keep this bounded until a reviewed detector exists.
-  secret_pattern=$(printf '%s%s%s%s%s%s%s%s%s' '[0-9]{8,10}:AA|' 'gh' 'p_|github' '_pat|client' '_secret|PRIVATE ' 'KEY|AK' 'IA[0-9A-Z]{16}|' 'sk' '-ant-')
+  secret_pattern=$(printf '%s%s%s%s%s%s%s%s%s%s%s' '[0-9]{8,10}:AA|' 'gh' 'p_|github' '_pat|client' '_secret|PRIVATE ' 'KEY|AK' 'IA[0-9A-Z]{16}|' 'sk' '-ant-|' '(^|[^0-9A-Za-z_-])AIza[0-9A-Za-z_-]{35}([^0-9A-Za-z_-]|$)|' '(^|[^0-9A-Za-z])xox[baprs]-[0-9A-Za-z-]{10,}([^0-9A-Za-z]|$)')
+  diff_file=$(mktemp "${TMPDIR:-/tmp}/bpa-land-secret-diff.XXXXXX") || return 2
+  if ! git -C "$repo" -c core.quotepath=false diff --name-only -z "$merge_base..$branch" > "$diff_file"; then
+    rm -f "$diff_file"
+    echo "LAND secret-scan unreadable path-list" >&2
+    return 2
+  fi
+  exec {diff_fd}< "$diff_file"
+  rm -f "$diff_file"
   while IFS= read -r -d '' changed_file; do
     scan_result=$(printf '%s' "$changed_file" | LC_ALL=C grep -aE -c "$secret_pattern"; scan_status=("${PIPESTATUS[@]}"); printf '__LAND_SCAN_STATUS__ %s %s\n' "${scan_status[0]}" "${scan_status[1]}")
     scan_status_line=${scan_result##*$'\n'}
     line_count=${scan_result%$'\n'*}
     read -r scan_marker scan_show_status scan_grep_status <<< "$scan_status_line"
-    if [ "$scan_marker" != '__LAND_SCAN_STATUS__' ] || [ "$scan_show_status" -ne 0 ] || { [ "$scan_grep_status" -ne 0 ] && [ "$scan_grep_status" -ne 1 ]; }; then echo "LAND secret-scan unreadable path-list" >&2; return 2; fi
+    if [ "$scan_marker" != '__LAND_SCAN_STATUS__' ] || [ "$scan_show_status" -ne 0 ] || { [ "$scan_grep_status" -ne 0 ] && [ "$scan_grep_status" -ne 1 ]; }; then echo "LAND secret-scan unreadable path-list" >&2; exec {diff_fd}<&-; return 2; fi
     if [ "$line_count" -gt 0 ]; then echo "LAND secret-scan match path-name" >&2; secret_hits=$((secret_hits + line_count)); fi
-  done < <(git -C "$repo" -c core.quotepath=false diff --name-only -z "$merge_base..$branch")
+  done <&"$diff_fd"
+  exec {diff_fd}<&-
+  diff_file=$(mktemp "${TMPDIR:-/tmp}/bpa-land-secret-content-diff.XXXXXX") || return 2
+  if ! git -C "$repo" -c core.quotepath=false diff --name-only -z --diff-filter=ACMRT "$merge_base..$branch" > "$diff_file"; then
+    rm -f "$diff_file"
+    echo "LAND secret-scan unreadable path-list" >&2
+    return 2
+  fi
+  exec {diff_fd}< "$diff_file"
+  rm -f "$diff_file"
   while IFS= read -r -d '' changed_file; do
     [ -n "$changed_file" ] || continue
-    if ! git -C "$repo" cat-file -e "$branch:$changed_file"; then echo "LAND secret-scan unreadable file=$changed_file" >&2; return 2; fi
+    if ! git -C "$repo" cat-file -e "$branch:$changed_file"; then echo "LAND secret-scan unreadable file=$changed_file" >&2; exec {diff_fd}<&-; return 2; fi
     scan_result=$(git -C "$repo" show "$branch:$changed_file" | LC_ALL=C grep -aE -c "$secret_pattern"; scan_status=("${PIPESTATUS[@]}"); printf '__LAND_SCAN_STATUS__ %s %s\n' "${scan_status[0]}" "${scan_status[1]}")
     scan_status_line=${scan_result##*$'\n'}
     line_count=${scan_result%$'\n'*}
     read -r scan_marker scan_show_status scan_grep_status <<< "$scan_status_line"
-    if [ "$scan_marker" != '__LAND_SCAN_STATUS__' ] || [ "$scan_show_status" -ne 0 ] || { [ "$scan_grep_status" -ne 0 ] && [ "$scan_grep_status" -ne 1 ]; }; then echo "LAND secret-scan unreadable file=$changed_file" >&2; return 2; fi
+    if [ "$scan_marker" != '__LAND_SCAN_STATUS__' ] || [ "$scan_show_status" -ne 0 ] || { [ "$scan_grep_status" -ne 0 ] && [ "$scan_grep_status" -ne 1 ]; }; then echo "LAND secret-scan unreadable file=$changed_file" >&2; exec {diff_fd}<&-; return 2; fi
     if [ "$line_count" -gt 0 ]; then echo "LAND secret-scan match file=$changed_file lines=$line_count" >&2; secret_hits=$((secret_hits + line_count)); fi
-  done < <(git -C "$repo" -c core.quotepath=false diff --name-only -z --diff-filter=ACMRT "$merge_base..$branch")
+  done <&"$diff_fd"
+  exec {diff_fd}<&-
   [ "$secret_hits" -eq 0 ]
 }
 
 land_payload_guard() {
-  local repo="$1" branch="$2" merge_base raw_entry changed_file
+  local repo="$1" branch="$2" merge_base raw_entry changed_file diff_file diff_fd
   local old_mode new_mode change_status
   merge_base=$(git -C "$repo" merge-base "$LAND_DEFAULT_BRANCH" "$branch") || return 2
+  diff_file=$(mktemp "${TMPDIR:-/tmp}/bpa-land-payload-diff.XXXXXX") || return 2
+  if ! git -C "$repo" -c core.quotepath=false diff --raw -z --no-renames --diff-filter=AMT "$merge_base..$branch" > "$diff_file"; then
+    rm -f "$diff_file"
+    echo "LAND step=payload-guard status=fail detail=diff-unreadable branch=$branch" >&2
+    return 2
+  fi
+  exec {diff_fd}< "$diff_file"
+  rm -f "$diff_file"
   while IFS= read -r -d '' raw_entry; do
-    IFS= read -r -d '' changed_file || return 2
+    IFS= read -r -d '' changed_file || { exec {diff_fd}<&-; return 2; }
     read -r old_mode new_mode _ _ change_status <<< "${raw_entry#:}"
     case "$change_status" in
       A|M|T)
         case "$new_mode" in
           120000|160000)
             echo "LAND step=payload-guard status=fail detail=mode-$new_mode path=$changed_file" >&2
+            exec {diff_fd}<&-
             return 1
             ;;
           100755)
             if [ "$old_mode" != "100755" ] && [[ "$changed_file" != *.sh ]] && ! git -C "$repo" show "$branch:$changed_file" | head -c 2 | grep -Fqx '#!'; then
               echo "LAND step=payload-guard status=fail detail=unexpected-executable path=$changed_file" >&2
+              exec {diff_fd}<&-
               return 1
             fi
             ;;
         esac
         ;;
     esac
-  done < <(git -C "$repo" -c core.quotepath=false diff --raw -z --no-renames --diff-filter=AMT "$merge_base..$branch")
+  done <&"$diff_fd"
+  exec {diff_fd}<&-
 }

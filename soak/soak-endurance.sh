@@ -84,7 +84,10 @@ snapshot_line() {
 }
 cleanup_fixture() {
   local fixture=$1
-  [ -n "$fixture" ] && [ -d "$fixture" ] && rm -rf -- "$fixture"
+  if [ -z "$fixture" ] || [ ! -d "$fixture" ]; then
+    return 0
+  fi
+  rm -rf -- "$fixture"
 }
 
 initial_disk=''
@@ -139,11 +142,16 @@ while [ "$failure_round" = none ] && within_limit; do
   timings+=("$elapsed")
   rounds_run=$round
   fixture=$(sed -n 's/^fixture: //p' "$output" | tail -n 1)
-  active_leases='unavailable'
+  active_leases=0
+  active_leases_probe_failed=false
   if [ -n "$fixture" ] && [ -f "$fixture/state.db" ]; then
-    active_leases=$(bun -e "import { Database } from 'bun:sqlite'; const db = new Database(process.argv[1]); console.log(db.query('SELECT COUNT(*) AS n FROM leases WHERE released_at IS NULL').get().n); db.close();" "$fixture/state.db")
+    if ! active_leases=$(bun -e "import { Database } from 'bun:sqlite'; const db = new Database(process.argv[1]); console.log(db.query('SELECT COUNT(*) AS n FROM leases WHERE released_at IS NULL').get().n); db.close();" "$fixture/state.db"); then
+      active_leases='unavailable'
+      active_leases_probe_failed=true
+    fi
   fi
-  cleanup_fixture "$fixture"
+  cleanup_failed=false
+  if ! cleanup_fixture "$fixture"; then cleanup_failed=true; fi
   round_overall_pass=false
   if [ "$soak_status" -eq 0 ] && grep -Fq 'overall: PASS' "$output"; then round_overall_pass=true; fi
   # Successful round logs are summarized below; retaining them would itself
@@ -158,9 +166,15 @@ while [ "$failure_round" = none ] && within_limit; do
   if [ "$round_overall_pass" != true ]; then
     failure_round=$round
     failure_reason='round did not reach overall PASS'
+  elif [ "$active_leases_probe_failed" = true ]; then
+    failure_round=$round
+    failure_reason='could not inspect active leases in disposable state DB'
   elif [ "$active_leases" != 0 ]; then
     failure_round=$round
     failure_reason='active leases remained in disposable state DB'
+  elif [ "$cleanup_failed" = true ]; then
+    failure_round=$round
+    failure_reason='could not remove disposable fixture'
   elif [ "$SNAP_WORKTREES" -ne 0 ] || [ "$SNAP_BRANCHES" -ne 0 ] || [ "$SNAP_PROCS" -ne 0 ] || [ "$SNAP_TMP_DIRS" -ne 0 ]; then
     failure_round=$round
     failure_reason='cross-round cleanup resource remained'

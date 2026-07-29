@@ -93,6 +93,12 @@ export class StateStore {
       if (!missionTransitions[previous.state].includes(state)) {
         throw new StateError(`invalid mission transition: ${previous.state} -> ${state}`);
       }
+      if (state === "succeeded") {
+        const incomplete = this.db.query("SELECT COUNT(*) AS count FROM lanes WHERE mission_id = ? AND state != 'succeeded'").get(id) as { count: number };
+        if (incomplete.count > 0) {
+          throw new StateError(`mission has running or failed child lanes: ${id}`);
+        }
+      }
       const at = this.now();
       this.db.query("UPDATE missions SET state = ?, updated_at = ? WHERE id = ?").run(state, at, id);
       const mission = { ...previous, state, updatedAt: at };
@@ -106,7 +112,11 @@ export class StateStore {
     this.nonEmpty(missionId, "mission id");
     const at = this.now();
     return this.transaction(() => {
-      if (!this.mission(missionId)) throw new StateError(`unknown mission: ${missionId}`);
+      const mission = this.mission(missionId);
+      if (!mission) throw new StateError(`unknown mission: ${missionId}`);
+      if (mission.state === "succeeded" || mission.state === "failed") {
+        throw new StateError(`cannot create lane for terminal mission: ${missionId}`);
+      }
       try {
         this.db.query("INSERT INTO lanes (id, mission_id, state, created_at, updated_at) VALUES (?, ?, 'queued', ?, ?)").run(id, missionId, at, at);
       } catch (error) {

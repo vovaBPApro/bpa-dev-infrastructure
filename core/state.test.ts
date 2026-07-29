@@ -56,6 +56,46 @@ test("mission state machine rejects invalid transitions", async () => {
   store.close();
 });
 
+test("mission success is fenced by child lane completion", async () => {
+  const store = new StateStore(await databasePath());
+  store.createMission("mission-running-child", "correlation-running-child");
+  store.transitionMission("mission-running-child", "running");
+  store.createLane("lane-running", "mission-running-child");
+  store.transitionLane("lane-running", "running");
+
+  const eventsBeforeRejectedTransition = store.listEvents();
+  expect(() => store.transitionMission("mission-running-child", "succeeded")).toThrow(StateError);
+  expect(store.db.query("SELECT state FROM missions WHERE id = ?").get("mission-running-child")).toEqual({ state: "running" });
+  expect(store.listEvents()).toEqual(eventsBeforeRejectedTransition);
+
+  store.transitionLane("lane-running", "succeeded");
+  expect(store.transitionMission("mission-running-child", "succeeded").state).toBe("succeeded");
+
+  store.createMission("mission-failed-child", "correlation-failed-child");
+  store.transitionMission("mission-failed-child", "running");
+  store.createLane("lane-failed", "mission-failed-child");
+  store.transitionLane("lane-failed", "failed");
+  expect(() => store.transitionMission("mission-failed-child", "succeeded")).toThrow(StateError);
+  expect(store.db.query("SELECT state FROM missions WHERE id = ?").get("mission-failed-child")).toEqual({ state: "running" });
+  store.close();
+});
+
+test("terminal mission rejects late lane creation", async () => {
+  const store = new StateStore(await databasePath());
+  store.createMission("mission-succeeded", "correlation-succeeded");
+  store.transitionMission("mission-succeeded", "running");
+  store.transitionMission("mission-succeeded", "succeeded");
+  store.createMission("mission-failed", "correlation-failed");
+  store.transitionMission("mission-failed", "failed");
+
+  const eventsBeforeRejectedLanes = store.listEvents();
+  expect(() => store.createLane("late-succeeded", "mission-succeeded")).toThrow(StateError);
+  expect(() => store.createLane("late-failed", "mission-failed")).toThrow(StateError);
+  expect(store.db.query("SELECT id FROM lanes WHERE id IN (?, ?)").all("late-succeeded", "late-failed")).toEqual([]);
+  expect(store.listEvents()).toEqual(eventsBeforeRejectedLanes);
+  store.close();
+});
+
 test("successful mutations append audit rows", async () => {
   let now = 1_000;
   const store = new StateStore(await databasePath(), { now: () => now });

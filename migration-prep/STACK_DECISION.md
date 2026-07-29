@@ -1,6 +1,10 @@
 # Stack Decision (agent framework + agents)
 
-Status: **RECOMMENDED (consilium verdict) — awaiting the Human's go.** The
+Status: **APPROVED** (Vova, 2026-07-29, Telegram decision 11567 «Го, стек
+затверджую», followed by 11568 — see `instance/decisions/HR-11567.md`). The
+operative stack is `migration-prep/STACK_CONSILIUM_FINAL.md`; its Phase 0
+(measured spike with binding go/no-go numbers) is the first implementation
+step, scheduled on the new 64 GB VM after migration day. The
 problem statement and requirements below are the Human's (binding, verbatim).
 The technology proposal was tested by an adversarial consilium the Human
 ordered (Telegram 11562/11564); its verdict — which confirms and substantially

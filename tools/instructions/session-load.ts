@@ -35,6 +35,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { collectDocs, type InstructionDoc } from "./docs.ts";
 import { admitsAudience } from "./compose.ts";
+import { latestHandoffPath } from "./handoff.ts";
 
 // The role a SessionStart load targets. Orchestrator is the only session that
 // gets a SessionStart hook (§2.3); factored out so the checker and tests share
@@ -188,7 +189,17 @@ export function collectSessionLoad(repo: string): SessionLoad {
   }
   sections.push({ title: "Open decisions-ledger rows", lines: ledgerLines });
 
-  // 3. Orchestrator-audience binding docs, as one-line summaries (id + summary
+  // 3. Latest durable vendor/session handoff. Absence is an explicit degraded
+  // start warning, never silent optimism.
+  const handoffPath = latestHandoffPath(root);
+  sections.push({
+    title: "Latest orchestrator handoff",
+    lines: handoffPath
+      ? [`<!-- ${handoffPath.slice(root.length + 1)} -->`, ...trimTrailing(readFileSync(handoffPath, "utf8"))]
+      : ["WARNING: no handoff found — degraded start"],
+  });
+
+  // 4. Orchestrator-audience binding docs, as one-line summaries (id + summary
   // + path). Full bodies are delivered on demand by compose; this is the
   // always-on standing index, kept small by construction.
   const docs = existsSync(instructionsRoot) ? collectDocs(instructionsRoot) : [];
@@ -255,7 +266,7 @@ export function runSessionLoadCheck(repo: string): SessionLoadFinding {
   const failAt = envInt("SESSION_LOAD_FAIL_LINES", SESSION_LOAD_FAIL_LINES);
   const warnAt = envInt("SESSION_LOAD_WARN_LINES", SESSION_LOAD_WARN_LINES);
   const { lineCount } = collectSessionLoad(repo);
-  const where = "instance/params.yaml + ledger + orchestrator binding docs";
+  const where = "instance/params.yaml + ledger + latest handoff + orchestrator binding docs";
   if (lineCount > failAt) {
     return {
       level: "FAIL",

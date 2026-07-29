@@ -5,11 +5,18 @@ status: binding
 audience: all
 tags: [permissions, security, fail-closed]
 summary: Maintain a versioned, fail-closed permission surface; committed policy stays portable and free of secrets.
+decision: [hr-11589]
 floor: true
 floor-line: Keep the permission surface versioned and fail-closed; ask the Human only for the irreversible set.
 ---
 
 # Tool Permissions
+
+By Human decision HR-11589, model harnesses run maximally free: harness-level
+approval prompts and sandboxing are not the safety boundary. The fail-closed
+floor is the control-plane layer — the landing gate, mandatory independent
+risky-path review, canonical secret-scan, and isolated lane worktrees. This
+deliberate freedom does not relax any of those controls.
 
 Maintain a versioned, fail-closed permission surface. Local enforcement may be
 implemented through settings and hooks, but committed policy must remain

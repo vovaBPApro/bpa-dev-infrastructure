@@ -7,7 +7,7 @@
 //       routed HR file (instance/decisions/HR-<msg_id>.md) nor a triage verdict
 //       (triage.jsonl row) AND is older than 24h is an untriaged directive at
 //       risk of B276-class loss: FAIL under --strict, WARN otherwise. Missing
-//       inbox.jsonl means the daemon mirror is not live yet: SKIP.
+//       inbox.jsonl is FAIL when capture.mode=daemon; in manual mode it SKIPs.
 //
 //   (b) HR pending aging — an HR file left `state: pending` past a 72h SLA (by
 //       its `date:` field) is a capture that never got routed: FAIL, unless the
@@ -105,7 +105,11 @@ export function checkInboxAging(
   const decisionsDir = join(repo, "instance", "decisions");
   const inboxPath = join(decisionsDir, "inbox.jsonl");
   if (!existsSync(inboxPath)) {
-    return [{ level: "SKIP", file: "instance/decisions/inbox.jsonl", detail: "no inbox.jsonl (daemon mirror not live yet)" }];
+    const mode = readCaptureMode(repo);
+    if (mode === "daemon") {
+      return [{ level: "FAIL", file: "instance/decisions/inbox.jsonl", detail: "capture.mode=daemon — required inbox.jsonl is missing" }];
+    }
+    return [{ level: "SKIP", file: "instance/decisions/inbox.jsonl", detail: "capture.mode=manual — inbox not expected yet" }];
   }
 
   const rows = readJsonl<InboxRow>(inboxPath);
@@ -141,6 +145,24 @@ export function checkInboxAging(
     findings.push({ level: "PASS", file: "instance/decisions/inbox.jsonl", detail: `${rows.length} rows, none aged untriaged` });
   }
   return findings;
+}
+
+export function readCaptureMode(repo: string): "manual" | "daemon" {
+  const path = join(repo, "instance", "params.yaml");
+  if (!existsSync(path)) return "manual";
+  let capture = false;
+  for (const raw of readFileSync(path, "utf8").split(/\r?\n/)) {
+    if (/^capture:\s*(?:#.*)?$/.test(raw)) {
+      capture = true;
+      continue;
+    }
+    if (/^[A-Za-z]/.test(raw)) capture = false;
+    if (capture) {
+      const match = raw.match(/^\s+mode:\s*(manual|daemon)\b/);
+      if (match) return match[1] as "manual" | "daemon";
+    }
+  }
+  return "manual";
 }
 
 // (b) HR pending aging. FAIL for a `state: pending` HR older than 72h unless

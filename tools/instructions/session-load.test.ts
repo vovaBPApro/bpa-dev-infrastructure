@@ -27,6 +27,7 @@ function repo(opts: {
   decisions?: Record<string, string>;
   inbox?: string;
   triage?: string;
+  handoffs?: Record<string, string>;
 }): string {
   const root = mkdtempSync(join(tmpdir(), "session-"));
   temporaryDirectories.push(root);
@@ -43,6 +44,11 @@ function repo(opts: {
   }
   if (opts.inbox !== undefined) writeFileSync(join(root, "instance", "decisions", "inbox.jsonl"), opts.inbox);
   if (opts.triage !== undefined) writeFileSync(join(root, "instance", "decisions", "triage.jsonl"), opts.triage);
+  if (opts.handoffs) {
+    const dir = join(root, "orchestrator", "runtime", "handoffs");
+    mkdirSync(dir, { recursive: true });
+    for (const [name, contents] of Object.entries(opts.handoffs)) writeFileSync(join(dir, name), contents);
+  }
   return root;
 }
 
@@ -62,6 +68,23 @@ describe("collectSessionLoad — composition", () => {
   test("params absent -> an (absent) placeholder, not a crash", () => {
     const root = repo({});
     expect(collectSessionLoad(root).text).toContain("(absent)");
+  });
+
+  test("prints the lexically latest handoff in full", () => {
+    const root = repo({
+      handoffs: {
+        "2026-01-01T00-00-00.000Z-a-to-b.json": '{"timestamp":"old"}\n',
+        "2026-07-29T12-00-00.000Z-b-to-c.json": '{"timestamp":"LATEST"}\n',
+      },
+    });
+    const text = collectSessionLoad(root).text;
+    expect(text).toContain('{"timestamp":"LATEST"}');
+    expect(text).not.toContain('{"timestamp":"old"}');
+  });
+
+  test("missing handoff emits the exact degraded-start warning", () => {
+    const root = repo({});
+    expect(collectSessionLoad(root).text).toContain("WARNING: no handoff found — degraded start");
   });
 
   test("pending HR rows are included in full; routed ones are not", () => {

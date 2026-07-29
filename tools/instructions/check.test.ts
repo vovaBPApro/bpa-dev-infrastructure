@@ -173,6 +173,31 @@ describe("check.ts", () => {
     expect(result.status).toBe(1);
     expect(result.stdout).toContain("root");
   });
+
+  test("[cmd-exists] passes for existing bun tools and bash gate command paths", () => {
+    const repo = repoWith({
+      "valid-doc.md": doc(VALID, "Run `bun tools/instructions/demo.ts --strict` and `bash gate/demo.sh arg`.\n"),
+    });
+    mkdirSync(join(repo, "tools", "instructions"), { recursive: true });
+    mkdirSync(join(repo, "gate"), { recursive: true });
+    writeFileSync(join(repo, "tools", "instructions", "demo.ts"), "");
+    writeFileSync(join(repo, "gate", "demo.sh"), "");
+    const result = runCheck(repo);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("PASS valid-doc.md [cmd-exists]");
+  });
+
+  test("[cmd-exists] fails with the document and exact missing command", () => {
+    const repo = repoWith({
+      "binding.md": doc(VALID, "Mandatory: `bun tools/instructions/absent.ts --strict`.\n"),
+      "informational.md": doc({ ...VALID, id: "info", status: "informational" }, "`bash gate/also-absent.sh`\n"),
+    });
+    const result = runCheck(repo);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain("FAIL binding.md [cmd-exists]");
+    expect(result.stdout).toContain("bun tools/instructions/absent.ts --strict");
+    expect(result.stdout).not.toContain("also-absent.sh");
+  });
 });
 
 // Fixed clock for deterministic aging via the LEDGER_NOW_MS test seam.
@@ -197,11 +222,26 @@ const daysAgoDate = (d: number) =>
   new Date(LEDGER_NOW - d * 86_400_000).toISOString().slice(0, 10);
 
 describe("check.ts ledger aging", () => {
-  test("missing inbox.jsonl is a SKIP, not a FAIL", () => {
+  test("capture.mode=manual keeps a missing inbox as a clear SKIP", () => {
     const repo = repoWith({ "valid-doc.md": doc(VALID) });
+    mkdirSync(join(repo, "instance"), { recursive: true });
+    writeFileSync(join(repo, "instance", "params.yaml"), "capture:\n  mode: manual\n");
     const result = runCheckAt(repo, LEDGER_NOW);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("SKIP instance/decisions/inbox.jsonl [ledger]");
+    expect(result.stdout).toContain("capture.mode=manual — inbox not expected yet");
+  });
+
+  test("capture.mode=daemon makes a missing inbox a FAIL in all checker modes", () => {
+    const repo = repoWith({ "valid-doc.md": doc(VALID) });
+    mkdirSync(join(repo, "instance"), { recursive: true });
+    writeFileSync(join(repo, "instance", "params.yaml"), "capture:\n  mode: daemon\n");
+    for (const extra of [[], ["--strict"]]) {
+      const result = runCheckAt(repo, LEDGER_NOW, extra);
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain("FAIL instance/decisions/inbox.jsonl [ledger]");
+      expect(result.stdout).toContain("capture.mode=daemon");
+    }
   });
 
   test("an aged, untriaged inbox row FAILs under --strict, WARNs otherwise", () => {

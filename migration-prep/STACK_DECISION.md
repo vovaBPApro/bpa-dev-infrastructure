@@ -1,10 +1,14 @@
 # Stack Decision (agent framework + agents)
 
-Status: **PROPOSED** — the problem statement and requirements below are the
-Human's (binding, verbatim); the technology proposal is the orchestrator's
-recommendation awaiting the Human's go. This document moves to the framework
-repository once it exists (per `instructions/instruction-layers.md` this is an
-L2 concern parked in L1 while L2 has no repo).
+Status: **RECOMMENDED (consilium verdict) — awaiting the Human's go.** The
+problem statement and requirements below are the Human's (binding, verbatim).
+The technology proposal was tested by an adversarial consilium the Human
+ordered (Telegram 11562/11564); its verdict — which confirms and substantially
+sharpens the proposal below — is the authoritative recommendation:
+**`migration-prep/STACK_CONSILIUM_FINAL.md`**. This document moves to the
+framework repository once it exists (per
+`instructions/instruction-layers.md` this is an L2 concern parked in L1 while
+L2 has no repo).
 
 ## Human requirements — verbatim (Vova, 2026-07-29, Telegram 11557 + 11558)
 
@@ -101,7 +105,12 @@ new repositories (`instructions/repo-layout.md`); trunk-based branching
 6. Design-first UI workflow is law: `instructions/design-first-ui.md`.
 7. A separate framework (каркас) stays — the Human explicitly likes it.
 
-## Proposal (orchestrator recommendation — NOT yet approved)
+## Proposal (orchestrator draft — superseded in detail by the consilium)
+
+The consilium confirmed every line of this draft and resolved the open
+questions (composition mechanism, contract strategy, test-cycle budgets,
+migration phasing). Read `STACK_CONSILIUM_FINAL.md` for the operative version;
+this section is kept as the historical draft the consilium started from.
 
 - **TypeScript everywhere.** One language across framework, agents, and infra
   (infra is already Bun/TypeScript by hard rule).
@@ -125,6 +134,7 @@ new repositories (`instructions/repo-layout.md`); trunk-based branching
 
 ## Next step
 
-The Human reviews the proposal section; on his go this document is finalized,
-moved to the framework repository at its creation, and the framework skeleton
-is scaffolded from it.
+The Human reviews `STACK_CONSILIUM_FINAL.md` (Ukrainian summary in its last
+section); on his go, Phase 0 of that document starts (the measured spike with
+binding go/no-go numbers), and the document moves to the framework repository
+at its creation.

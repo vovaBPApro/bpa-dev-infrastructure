@@ -1,5 +1,16 @@
 # Instruction Layers
 
+> **Status note (2026-07-29):** an adversarial consilium ordered by the Human
+> (Telegram 11562/11564) reviewed this document. Its verdict KEEPS the three
+> layers, the first-yes routing spine, and one-home-reference-never-copy, and
+> HARDENS everything else: an `instance/` bucket for this-installation facts,
+> machine-checked frontmatter routing, compiled context packs instead of
+> hand-injected excerpts, and daemon-side capture of every Human directive.
+> The operative design and its implementation order:
+> `migration-prep/INSTRUCTIONS_CONSILIUM_FINAL.md` (§4 is the diff plan for
+> this file — the rewrite lands after the checker tooling exists, per its own
+> sequencing rule). Until then this document remains the binding routing rule.
+
 How agent instructions are split across repositories so nothing gets lost and
 every update has one obvious home. Decided with the Human on 2026-07-29
 (Telegram 11557; full verbatim in `migration-prep/STACK_DECISION.md`). Key

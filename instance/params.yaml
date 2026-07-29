@@ -13,6 +13,12 @@ phase:
   current: sole-mission            # instance/README + CLAUDE.md Mission (this repo is the sole current mission)
   # Predicate used by instruction `sunset:` frontmatter, per
   # migration-prep/INSTRUCTIONS_CONSILIUM_FINAL.md §2.1, §4.2.
+  active_scope: instruction-mechanics-only   # instance/decisions/HR-11570.md (Vova 11570): active work is ONLY the
+  # L1 instruction tooling/restructure in this repo (checker, frontmatter, generated
+  # index, compose/packs, inbox capture, scaffold), each with thorough tests and a
+  # real-repo run before landing. VM migration and stack Phase 0 are parked awaiting
+  # his go. This is the pack-visible home of the HR-11570 restriction (that row is
+  # state: routed, so it is provenance, not pack-delivered — see instruction-layers.md).
 
 repos:
   control_plane: bpa-dev-infrastructure   # instructions/repo-layout.md (this repo, control plane only)
@@ -40,6 +46,13 @@ fleet:
 # NOTE: no model/vendor map is set here — this repo's docs do not state one.
 # It is deliberately omitted rather than carried over from the legacy control
 # plane. Add it only when a doc in THIS repo establishes it.
+
+capture:
+  # How Human directives reach the decisions ledger. `manual`: the orchestrator
+  # captures every directive by hand before dispatch; a missing inbox transport is
+  # a visible degraded mode, not "no special handling". Flip to `daemon` only when
+  # the mirror is proven live writing instance/decisions/inbox.jsonl.
+  mode: manual                     # instructions/orchestrator-fallback.md, instruction-layers.md (daemon mirror planned, not yet wired)
 
 db:
   legacy_carry_over: none          # instructions/repo-layout.md (msg 11543: no legacy DB carry-over)

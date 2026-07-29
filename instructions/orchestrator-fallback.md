@@ -18,13 +18,17 @@ than the Claude one, so several defaults no longer hold. These rules add to
 ## Session start — no Claude hook fires
 
 A fallback harness does not fire the Claude `SessionStart` hook, so nothing
-auto-loads the instruction context. The fallback orchestrator MUST make the
-session-load tool its mandatory first step: run `bun tools/instructions/session-load.ts`
-(may land slightly later than this doc — reference it by path). Until that tool
-exists, load the equivalent by hand before dispatching anything: `instance/params.yaml`,
-every open (`pending`/`routed`) row under `instance/decisions/`, and every
-`audience: orchestrator` and `audience: all` binding doc. Skipping load is a
-fail-closed `NO-GO` on the session, not a shortcut.
+auto-loads the instruction context. Follow this deterministic sequence — do not
+stop on a missing tool:
+
+1. First try `bun tools/instructions/session-load.ts`.
+2. If that file is missing or exits non-zero, do not stop: manually read, before
+   any dispatch, `CLAUDE.md`, `instance/params.yaml`, every
+   `instance/decisions/*.md` whose `state` is `pending`, and every binding doc
+   with `audience: orchestrator` or `audience: all`.
+3. Record the exact files loaded in the mission rollup.
+
+Skipping load entirely is a fail-closed `NO-GO` on the session, not a shortcut.
 
 ## Memory is vendor-local cache, not a source of truth
 
@@ -47,11 +51,14 @@ deferred cross-vendor review is still owed; the fallback never lowers the tier.
 
 ## Human-verbatim finalization stays deferred, never skipped
 
-Any step reserved to the primary (Fable-tier) model — the final pass over a
-Human verbatim artifact — cannot be performed on a fallback model. Do not
-silently skip it and do not let a non-primary model reword the sacred verbatim
-block. Mark the artifact `deferred-to-primary` and surface it the moment the
-primary model returns.
+Only one act is reserved to the primary model: the finalization or pruning of a
+Human verbatim source block. A fallback session must not perform that act, and
+must not let any non-primary model reword the sacred verbatim block. Everything
+else around Human requirements stays the fallback session's job: it still
+preserves, quotes, routes, implements from, and reports on them. When the
+reserved act is reached, mark the artifact `deferred-to-primary` with a durable
+marker (so it can be found and resumed) and surface it the moment the primary
+model returns — a deferral is never a silent skip.
 
 ## Switchover handoff — both directions
 
@@ -63,9 +70,15 @@ in the reports dir, and open decision rows. Switching back reverses the same
 step. An orchestrator that starts without reading the latest handoff is
 operating blind — reconstruct from durable records first (see `restart-recovery`).
 
-## What needs no special action
+## Human capture — read `capture.mode`, do not assume the mirror is live
 
-The Telegram daemon and Human-capture path are vendor-independent: the daemon
-inbox mirror keeps writing regardless of which model runs the orchestrator, so
-no special handling is required there.
+Human-capture behavior is governed by `instance/params.yaml: capture.mode`
+(`manual | daemon`), not by the model. While `capture.mode: manual`, the daemon
+inbox mirror is NOT a proven live transport: the incoming orchestrator captures
+every Human directive into the decisions ledger by hand before dispatch and
+verifies it with the ledger checker. A missing inbox transport is a visible
+degraded mode — `NO-GO` on a binding "capture is live" claim — not "no special
+handling required". `capture.mode` flips to `daemon` only once the mirror is
+proven to be writing `inbox.jsonl` live; only then does capture become
+vendor-independent with no per-session hand-capture step.
 </content>

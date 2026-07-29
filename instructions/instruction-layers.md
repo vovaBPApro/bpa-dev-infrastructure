@@ -76,10 +76,21 @@ break-glass (`DISPATCH_OVERRIDE`) is only for lanes repairing the tooling.
 Every Human directive is recorded in the decisions ledger as
 `instance/decisions/HR-<telegram-msg-id>.md`: the verbatim block (sacred), date,
 tentative routing, and a `state` of `pending | routed | parked | superseded`.
-Open (`pending`) rows are **interim-binding** the moment they land — the composer
+
+Only `state: pending` rows are interim-binding and pack-delivered: the composer
 appends them to every pack until the routed doc exists, and aging checks re-redden
-stale rows. A daemon auto-mirror into the ledger is **planned, not yet wired**;
-until then triage is manual.
+stale rows. A `state: routed` row is **provenance only** — its binding force lives
+in the doc named by `routes-to`, which MUST actually carry the restriction. A
+routed row whose target does not carry the restriction has silently dropped it;
+before routing, land the restriction in its target (a doc, or `instance/params.yaml`
+when it is an instance fact) so it stays pack-visible. Example: HR-11570 parks all
+work except the L1 instruction mechanics; it is `state: routed`, so that active
+scope restriction is carried pack-visibly by `instance/params.yaml: phase.active_scope`,
+not left only in the routed row.
+
+A daemon auto-mirror into the ledger is **planned, not yet wired**
+(`instance/params.yaml: capture.mode` is `manual`); until it is proven live,
+triage is manual.
 
 ## Why
 

@@ -78,12 +78,17 @@ heartbeat_stale() {
 # renamed, so a Telegram reader observes either the old complete file or the
 # new complete file. full-suite.sh follows the same outbox pattern.
 append_nudge() {
-  local line="$1" tmp
+  local line="$1" tmp lock_file lock_fd
   mkdir -p "$(dirname "$NUDGE_OUTBOX_FILE")"
+  lock_file="${NUDGE_OUTBOX_FILE}.lock"
+  exec {lock_fd}> "$lock_file"
+  flock "$lock_fd"
   tmp="$(mktemp "$(dirname "$NUDGE_OUTBOX_FILE")/.nudges.outbox.XXXXXX")"
   [[ -f "$NUDGE_OUTBOX_FILE" ]] && cat "$NUDGE_OUTBOX_FILE" > "$tmp"
   printf '%s\n' "$line" >> "$tmp"
   mv -f "$tmp" "$NUDGE_OUTBOX_FILE"
+  flock -u "$lock_fd"
+  exec {lock_fd}>&-
 }
 
 nudge_due() {

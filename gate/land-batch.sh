@@ -4,11 +4,11 @@ set -u
 set -o pipefail
 
 usage() {
-  echo "usage: gate/land-batch.sh --branches <b1,b2,b3> --reports <r1,r2,r3> --repo <path> [--no-push] [--run-verify] [--skip-review]" >&2
+  echo "usage: gate/land-batch.sh --branches <b1,b2,b3> --reports <r1,r2,r3> --repo <path> [--no-push] [--run-verify] [--skip-review <reason>]" >&2
   exit 2
 }
 
-branches_arg="" reports_arg="" repo="" no_push=false run_verify=false skip_review=false
+branches_arg="" reports_arg="" repo="" no_push=false run_verify=false skip_review=false skip_review_reason=""
 pre_merge_sha=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -18,7 +18,12 @@ while [ "$#" -gt 0 ]; do
       shift 2 ;;
     --no-push) no_push=true; shift ;;
     --run-verify) run_verify=true; shift ;;
-    --skip-review) skip_review=true; shift ;;
+    --skip-review)
+      if [ "$#" -lt 2 ] || [ -z "$2" ]; then usage; fi
+      skip_review=true
+      skip_review_reason="$2"
+      shift 2
+      ;;
     *) usage ;;
   esac
 done
@@ -67,6 +72,10 @@ for index in "${!branches[@]}"; do
   branch=${branches[$index]}
   report=${reports[$index]}
   if [ "$branch" = "$default_branch" ] || ! git -C "$repo" rev-parse --verify "${branch}^{commit}" >/dev/null 2>&1; then batch_fail branch 2; fi
+  if [ "$skip_review" = true ]; then
+    branch_sha=$(git -C "$repo" rev-parse "$branch") || batch_fail branch 2
+    if ! land_record_review_skip "$repo" "$branch" "$branch_sha" "$skip_review_reason"; then batch_fail "review branch=$branch" 2; fi
+  fi
   guard_args=("$script_dir/completion-guard.ts" --report "$report" --repo "$repo" --branch "$branch")
   if ! "$BUN_BIN" "${guard_args[@]}"; then batch_fail completion-guard 2; fi
   batch_pass "completion-guard branch=$branch"
@@ -82,6 +91,7 @@ for index in "${!branches[@]}"; do
   if [ -n "$review_summary" ]; then review_summary+=","; fi
   review_summary+="$branch:$LAND_REVIEW_VERDICT"
 done
+if [ "$skip_review" = true ]; then echo "BATCH review=SKIPPED reason=$skip_review_reason"; fi
 
 integration_branch="batch-integration-$$"
 if ! git -C "$repo" checkout -b "$integration_branch" "$default_branch" >/dev/null; then batch_fail integration-branch; fi

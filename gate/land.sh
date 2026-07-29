@@ -4,7 +4,7 @@ set -u
 set -o pipefail
 
 usage() {
-  echo "usage: gate/land.sh --branch <ag-name> --report <file> --repo <path> [--worktree <path>] [--no-push] [--run-verify] [--skip-review]" >&2
+  echo "usage: gate/land.sh --branch <ag-name> --report <file> --repo <path> [--worktree <path>] [--no-push] [--run-verify] [--skip-review <reason>]" >&2
   exit 2
 }
 
@@ -15,6 +15,7 @@ worktree=""
 no_push=false
 run_verify=false
 skip_review=false
+skip_review_reason=""
 merged=false
 merge_sha="none"
 pushed=false
@@ -35,7 +36,12 @@ while [ "$#" -gt 0 ]; do
       ;;
     --no-push) no_push=true; shift ;;
     --run-verify) run_verify=true; shift ;;
-    --skip-review) skip_review=true; shift ;;
+    --skip-review)
+      if [ "$#" -lt 2 ] || [ -z "$2" ]; then usage; fi
+      skip_review=true
+      skip_review_reason="$2"
+      shift 2
+      ;;
     *) usage ;;
   esac
 done
@@ -104,6 +110,10 @@ fi
 if [ -n "$(git -C "$repo" status --porcelain)" ]; then
   land_fail working-tree 2
 fi
+if [ "$skip_review" = true ]; then
+  branch_sha=$(git -C "$repo" rev-parse "$branch") || land_fail branch 2
+  if ! land_record_review_skip "$repo" "$branch" "$branch_sha" "$skip_review_reason"; then land_fail review 2; fi
+fi
 if ! git -C "$repo" fetch origin; then land_fail freshness 2; fi
 if [ "$(git -C "$repo" rev-parse "$default_branch")" != "$(git -C "$repo" rev-parse "origin/$default_branch")" ]; then
   land_fail freshness 2
@@ -123,6 +133,7 @@ policy_file="$script_dir/review-policy.conf"
 if ! land_review_check "$repo" "$branch" "$report" "$policy_file" "$skip_review"; then land_fail review 2; fi
 review_verdict="$LAND_REVIEW_VERDICT"
 land_pass review
+if [ "$skip_review" = true ]; then echo "LAND review=SKIPPED reason=$skip_review_reason"; fi
 
 if ! land_secret_scan "$repo" "$branch"; then land_fail secret-scan 2; fi
 land_pass secret-scan

@@ -50,6 +50,16 @@ CLAUDE_MCP_SERVER_NAME="${ORCH_CLAUDE_MCP_SERVER_NAME:-telegram-daemon}"
 # (orchestrator.fallback_model); this is the value that survives a fresh clone.
 # Precedence: ORCH_CODEX_MODEL > ORCH_MODEL (legacy, provider-agnostic) > pin.
 CODEX_MODEL="${ORCH_CODEX_MODEL:-${MODEL:-gpt-5.6-sol}}"
+# ── Claude (primary) top orchestrator ───────────────────────────────────────
+# Same shape, same reason: claude used to launch with no --model whenever
+# ORCH_MODEL was empty, so the top orchestrator silently became whatever the
+# account happened to default to — the identical bug that was fixed for codex
+# above. The instance fact lives in instance/params.yaml (orchestrator.top_model);
+# this is the value that survives a fresh clone with no runtime.env.
+# Precedence: ORCH_CLAUDE_MODEL > ORCH_MODEL (legacy) > pin. The Telegram
+# /model command writes ORCH_CLAUDE_MODEL — provider-scoped on purpose, so an
+# escalation to Fable can never leak into a codex launch.
+CLAUDE_MODEL="${ORCH_CLAUDE_MODEL:-${MODEL:-claude-opus-5}}"
 # codex-cli defaults this box to `reasoning effort: none`, which is not adequate
 # for the judgement this role does (routing, evidence verdicts, landing calls).
 CODEX_REASONING_EFFORT="${ORCH_CODEX_REASONING_EFFORT:-high}"
@@ -66,7 +76,19 @@ BOUND_CHAT_ID="${TELEGRAM_BOUND_CHAT_ID:-${TELEGRAM_CHAT_ID:-}}"
 INSTANCE_LOCK_FILE="${ORCH_INSTANCE_LOCK_FILE:-${BOUND_CHAT_ID:+$HOME/.claude/orchestrator-chat-$BOUND_CHAT_ID.lock}}"
 
 usage() {
-  printf '%s\n' 'Usage: launch.sh [start|stop|status|--help]'
+  printf '%s\n' 'Usage: launch.sh [start|stop|status|model|--help]'
+}
+
+# Machine-readable resolved model state, for the Telegram /model command.
+# Read-only by construction: it starts nothing, writes nothing, and takes no
+# lock. The launcher is the single source of truth for the precedence chain
+# (ORCH_<PROVIDER>_MODEL > ORCH_MODEL > pin); a second copy of it in the daemon
+# would eventually report a model that is not the one actually starting.
+model_report() {
+  printf 'provider=%s\n' "$PROVIDER"
+  printf 'config_file=%s\n' "$CONFIG_FILE"
+  printf 'claude_model=%s\n' "$CLAUDE_MODEL"
+  printf 'codex_model=%s\n' "$CODEX_MODEL"
 }
 
 session_exists() { tmux has-session -t "$SESSION" 2>/dev/null; }
@@ -240,7 +262,7 @@ process.stdout.write(JSON.stringify({
         mv -f "$mcp_tmp" "$CLAUDE_MCP_CONFIG"
         printf -v mcp ' --mcp-config %q' "$CLAUDE_MCP_CONFIG"
       fi
-      [[ -n "$MODEL" ]] && printf 'exec claude --model %q --dangerously-skip-permissions%s%s' "$MODEL" "$settings" "$mcp" || printf 'exec claude --dangerously-skip-permissions%s%s' "$settings" "$mcp"
+      [[ -n "$CLAUDE_MODEL" ]] && printf 'exec claude --model %q --dangerously-skip-permissions%s%s' "$CLAUDE_MODEL" "$settings" "$mcp" || printf 'exec claude --dangerously-skip-permissions%s%s' "$settings" "$mcp"
       ;;
     codex)
       local relay="${ORCH_TURNEND_RELAY:-$SCRIPT_DIR/orchestrator-turnend-relay.sh}"
@@ -408,6 +430,7 @@ case "${1:-start}" in
   start) start ;;
   stop) stop ;;
   status) status ;;
+  model) model_report ;;
   -h|--help|help) usage ;;
   *) usage >&2; exit 2 ;;
 esac

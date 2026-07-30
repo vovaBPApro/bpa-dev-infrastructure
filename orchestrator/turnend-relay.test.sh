@@ -57,6 +57,23 @@ if (JSON.stringify(actual) !== JSON.stringify(expected)) {
 }
 '
 
+# ── The TUI emits the same shape with a different `client` ─────────────────
+# Captured live from the interactive TUI: client is "codex-tui", not
+# "codex_exec". The launcher runs the TUI, so a parser that started keying on
+# `client` would break exactly the path production uses.
+TUI_PAYLOAD='{"type":"agent-turn-complete","thread-id":"019fb3bc-838b-7431-9c5f-77f0347dbffc","turn-id":"019fb3bc-96d6-7023-987f-ea5dcb4d8a4b","cwd":"/work/repo","client":"codex-tui","input-messages":["hi"],"last-assistant-message":"ok"}'
+"$SCRIPT_DIR/orchestrator-turnend-relay.sh" "$TUI_PAYLOAD"
+"$REAL_BUN" -e '
+const actual = JSON.parse(await Bun.file(process.env.ORCH_TEST_NORMALIZED).text());
+if (actual.provider !== "codex" || actual.source !== "codex_notify" ||
+    actual.session_id !== "019fb3bc-838b-7431-9c5f-77f0347dbffc" ||
+    actual.turn_id !== "019fb3bc-96d6-7023-987f-ea5dcb4d8a4b" ||
+    actual.assistant_text !== "ok") {
+  console.error(actual);
+  process.exit(1);
+}
+'
+
 # ── Liveness: a delivered turn refreshes the watchdog heartbeat ─────────────
 [[ -s "$SCRATCH/runtime/orchestrator.heartbeat" ]]
 grep -Eq '^[0-9]+$' "$SCRATCH/runtime/orchestrator.heartbeat"

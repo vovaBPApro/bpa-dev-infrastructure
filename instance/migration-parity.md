@@ -157,7 +157,25 @@ kill-everything watchdog. Restore the intent, verify the mechanism.
 with no writer in this repo — mechanism 2 above, caught automatically. It works
 and fail-closes.
 
-Two gaps in it, both open: its extension list is
+**But it catches only one shape of loss, and this bounds the promise.** The
+checker fires when a *dangling reference* survives — a reader whose writer left.
+A capability removed **cleanly**, with every reference taken out, leaves nothing
+to dangle and is invisible to it. Measured example: `mission-human.txt` is on the
+lost list above, and `grep -rn "mission-human"` over this tree returns **zero**
+hits, so no widening of the sweep will ever surface it. Its mirror image is
+`mission.txt`, whose only reference in the entire repo is an `rmSync` at
+`daemon/server.ts:2153` — the daemon deletes a file nothing writes and nothing
+reads, and the checker cannot see that either until the extension list is
+widened.
+
+So: the checker makes the *reader-migrated-writer-stayed* mechanism
+self-detecting, which is mechanism 2 of the three above. It does nothing for
+mechanism 1 (wrong baseline) or mechanism 3 (invisible to a switch-case grep).
+Those need this document and a periodic diff against the live source. Anyone
+promising that "the next loss will fail the build" — including an earlier message
+of mine to Vova — is overstating it by two thirds.
+
+Two further gaps in the checker itself, both open: its extension list is
 `json|db|lock|lease|heartbeat|outbox|watermark|tsv|pid`, so `.log`, `.txt`,
 `.jsonl`, `.state` and `.startup` are invisible **by construction** — which is
 exactly the set that went lost. And `ML-GOV` on the workboard: the rule that a

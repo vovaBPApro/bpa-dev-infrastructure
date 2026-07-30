@@ -36,9 +36,6 @@ note. Derived-work items live here; Human directives stay in
 - **W-06 — sandboxed-lane capability contract** (consilium wave 3, terra F7):
   declare trusted-executor vs sandboxed-lane capabilities; `NO-GO
   capability=<…>` evidence instead of stalls.
-- **W-07 — batch --skip-review test coverage** (wave2-gate review LOW
-  finding): land-batch.test.sh cases for bare rejection, per-branch audit
-  rows, `BATCH review=SKIPPED` output.
 - **W-08 — memory-sweep defect triage**: first real (non-dry) sweep filed
   39 rule-stating memory entries without `home:` ids; run the sweep live,
   then triage rows into instruction homes or drop. (Sweep tool landed
@@ -64,7 +61,8 @@ W-12 gate reviewer-identity hardening LANDED `1c920ba` and W-13 /status
 process-local honesty relabel LANDED `fa2a974` (both review=accepted,
 cross-vendor Claude Sonnet); W-09 handoff future-ts guard LANDED `e1af73c`.
 Remaining open from this audit: W-11 (gate secret-scan decoded/entropy) above.
-W-07 (batch --skip-review test coverage) remains open in the Open section.
+W-07 batch --skip-review test coverage LANDED `274672f` (review=accepted,
+cross-vendor Claude Sonnet; test-only +3 lines with RED/GREEN perturbation proof).
 
 ## Parked (needs Human go or a phase flip)
 

@@ -13,6 +13,7 @@ import {
   KNOWN_GAPS,
   REGISTRY,
   checkStateContract,
+  collapseAtomicTempSiblings,
   normalizeInterpolation,
   stripComments,
   sweepArtifacts,
@@ -269,6 +270,86 @@ test('shell defaults expose the real path; bare interpolation collapses to VAR',
   expect(
     normalizeInterpolation('"$HOME/.claude/orchestrator-chat-$CHAT_ID.lock"'),
   ).toContain('orchestrator-chat-VAR.lock');
+});
+
+// An mktemp staging sibling belongs to the artifact it stages for. The point of
+// these three is that absorbing it must not blunt the checker: the parent is
+// still required to be declared, and a dot-prefixed name WITHOUT the mktemp
+// template is still an undeclared artifact.
+test('an mktemp temp sibling is the parent artifact, not a new one', () => {
+  const { root, names } = fixture({
+    // Verbatim shape of orchestrator/watchdog.sh write_lease_state().
+    'orchestrator/watchdog.sh': `LEASE_FILE="\${ORCH_LEASE_FILE:-$RUNTIME_DIR/orchestrator.lease}"
+write_lease_state() {
+  local owner="$1" token="$2" tmp
+  tmp="$(mktemp "$(dirname "$LEASE_FILE")/.orchestrator.lease.XXXXXX")"
+  printf 'owner=%s\\n' "$owner" > "$tmp"
+  mv -f "$tmp" "$LEASE_FILE"
+}`,
+  });
+  try {
+    const found = sweepArtifacts(root, names);
+    expect([...found.keys()]).toEqual(['orchestrator.lease']);
+
+    const fails = checkStateContract(
+      root,
+      names,
+      [
+        {
+          id: 'orchestrator.lease',
+          kind: 'internal',
+          readers: ['orchestrator/watchdog.sh'],
+          writers: ['orchestrator/watchdog.sh'],
+          note: 'fixture',
+        },
+      ],
+      {},
+      trackedAlways,
+    );
+    expect(fails).toEqual([]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('the temp sibling does NOT excuse an undeclared parent', () => {
+  const { root, names } = fixture({
+    'orchestrator/writer.sh': `tmp="$(mktemp "$(dirname "$F")/.brand-new-ledger.json.XXXXXX")"
+mv -f "$tmp" "$F"`,
+  });
+  try {
+    const fails = checkStateContract(root, names, [], {}, trackedAlways);
+    expect(fails).toHaveLength(1);
+    // Reported as the real artifact, so the registry entry that closes it is
+    // the durable one — not the transient.
+    expect(fails[0].id).toBe('brand-new-ledger.json');
+    expect(fails[0].detail).toContain('name its writer');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a dot-prefixed artifact with no mktemp template is still a FAIL', () => {
+  // The escape-hatch guard: "starts with a dot" must never be enough.
+  expect(collapseAtomicTempSiblings('"$dir/.hidden-ledger.json"')).toContain(
+    '.hidden-ledger.json',
+  );
+  // Fewer than three X is not an mktemp template either.
+  expect(collapseAtomicTempSiblings('"$dir/.hidden-ledger.json.XX"')).toContain(
+    '.hidden-ledger.json',
+  );
+
+  const { root, names } = fixture({
+    'daemon/server.ts': `const F = join(dir, '.hidden-ledger.json');`,
+  });
+  try {
+    const fails = checkStateContract(root, names, [], {}, trackedAlways);
+    expect(fails).toHaveLength(1);
+    expect(fails[0].id).toBe('.hidden-ledger.json');
+    expect(fails[0].detail).toContain('undeclared durable state artifact');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('the sweep ignores test files and frozen migration references', () => {

@@ -29,6 +29,35 @@ export type RunningAgentCounter = () => RunningAgents;
 
 export const STATE_FRESHNESS_MS = 10 * 60 * 1000;
 
+export type DaemonHealthDeps = {
+  pid: number;
+  bot: { connected: true; username: string } | { connected: false };
+  claudeConnected: boolean;
+  tmuxSession: string;
+  tmuxAlive: boolean;
+  inMemoryBufferCount: number;
+  inMemoryBufferDroppedCount?: number;
+  processStartedAt: string;
+};
+
+// Build only from observations made for this status read. The buffer and its
+// counters are explicitly scoped to this daemon process lifetime.
+export function buildDaemonHealth(deps: DaemonHealthDeps) {
+  return {
+    daemon: 'running',
+    pid: deps.pid,
+    bot: deps.bot.connected ? deps.bot.username : 'not_connected',
+    claude_connected: deps.claudeConnected,
+    tmux_session: deps.tmuxSession || '(not configured)',
+    tmux_alive: deps.tmuxSession ? deps.tmuxAlive : 'n/a',
+    in_memory_buffer: {
+      count: deps.inMemoryBufferCount,
+      dropped_count: deps.inMemoryBufferDroppedCount ?? 0,
+      process_started_at: deps.processStartedAt,
+    },
+  };
+}
+
 export type ActiveLanes =
   | {
       // Count derived from real ground truth.
@@ -329,7 +358,8 @@ export function buildRuntimeStatus(deps: RuntimeStatusDeps): string[] {
     instanceLine,
     `binding: ${bindingLabel}`,
     `mission: ${mission}`,
-    `last_relay: ${deps.lastRelayResult}`,
+    `last_relay_attempt: ${deps.lastRelayResult}`,
+    'last_relay_attempt_acknowledgement: unknown (no end-to-end ack signal)',
     `last_progress: pane=${deps.lastPaneProgressAt ? new Date(deps.lastPaneProgressAt).toISOString() : 'n/a'}, git=${deps.lastGitProgressAt ? new Date(deps.lastGitProgressAt).toISOString() : 'n/a'}`,
   ];
 }

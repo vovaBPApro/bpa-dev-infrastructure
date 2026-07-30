@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test';
 import {
   buildAgentLines,
+  buildDaemonHealth,
   buildRuntimeStatus,
   countActiveLanes,
   parseWorktreePorcelain,
@@ -8,6 +9,28 @@ import {
   type RuntimeStatusDeps,
   type ShRunner,
 } from './status';
+
+test('REGRESSION: daemon health uses process-local honest field names and epochs', () => {
+  const health = buildDaemonHealth({
+    pid: 42,
+    bot: { connected: false },
+    claudeConnected: false,
+    tmuxSession: '',
+    tmuxAlive: false,
+    inMemoryBufferCount: 3,
+    processStartedAt: '2026-07-30T00:00:00.000Z',
+  });
+  expect(health).toMatchObject({
+    bot: 'not_connected',
+    claude_connected: false,
+    in_memory_buffer: {
+      count: 3,
+      dropped_count: 0,
+      process_started_at: '2026-07-30T00:00:00.000Z',
+    },
+  });
+  expect(health).not.toHaveProperty('buffered_msgs');
+});
 
 // A fake `git worktree list --porcelain` for the canonical infra repo with two
 // live coder lanes plus the canonical checkout itself. This is the shape the new
@@ -131,6 +154,31 @@ test('buildRuntimeStatus reports worktrees separately from running agents', () =
   const lines = buildRuntimeStatus(statusDeps());
   expect(lines).toContain('lane_worktrees: 2 (worktree query ok)');
   expect(lines).toContain('running_agents: unknown (process query unavailable)');
+});
+
+test('REGRESSION: last relay is labeled as an attempt with unknown acknowledgement', () => {
+  const lines = buildRuntimeStatus(
+    statusDeps({ lastRelayResult: 'codex:deliver:sent' }),
+  );
+  expect(lines).toContain('last_relay_attempt: codex:deliver:sent');
+  expect(lines).toContain(
+    'last_relay_attempt_acknowledgement: unknown (no end-to-end ack signal)',
+  );
+  expect(lines.some((line) => line.startsWith('last_relay:'))).toBe(false);
+});
+
+test('REGRESSION: live connectivity observations fail closed when targets are unreachable', () => {
+  const health = buildDaemonHealth({
+    pid: 42,
+    bot: { connected: false },
+    claudeConnected: false,
+    tmuxSession: 'orchestrator',
+    tmuxAlive: false,
+    inMemoryBufferCount: 0,
+    processStartedAt: '2026-07-30T00:00:00.000Z',
+  });
+  expect(health.bot).toBe('not_connected');
+  expect(health.claude_connected).toBe(false);
 });
 
 test('buildRuntimeStatus: missing state files degrade to honest n/a, no throw', () => {

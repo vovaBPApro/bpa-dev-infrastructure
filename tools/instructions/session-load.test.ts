@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,10 +14,30 @@ import {
 
 const temporaryDirectories: string[] = [];
 
+// `durableStateProbe` resolves INFRA_STATE_DB > ORCH_STATE_DB > <root>/runtime/
+// state.db. Run from the operator's own orchestrator process tree this suite
+// inherits ORCH_STATE_DB and reads the LIVE lease database instead of its
+// fixture, so the mission/lane assertions below fail for reasons that have
+// nothing to do with the code under test. Both pointers are cleared for the
+// whole file and restored afterwards.
+const savedStateDbEnv = {
+  infra: process.env.INFRA_STATE_DB,
+  orch: process.env.ORCH_STATE_DB,
+};
+delete process.env.INFRA_STATE_DB;
+delete process.env.ORCH_STATE_DB;
+
 afterEach(() => {
   while (temporaryDirectories.length > 0) {
     rmSync(temporaryDirectories.pop()!, { recursive: true, force: true });
   }
+});
+
+afterAll(() => {
+  if (savedStateDbEnv.infra === undefined) delete process.env.INFRA_STATE_DB;
+  else process.env.INFRA_STATE_DB = savedStateDbEnv.infra;
+  if (savedStateDbEnv.orch === undefined) delete process.env.ORCH_STATE_DB;
+  else process.env.ORCH_STATE_DB = savedStateDbEnv.orch;
 });
 
 // Builds a fixture repo. `docs` maps instructions/<name>.md -> contents;

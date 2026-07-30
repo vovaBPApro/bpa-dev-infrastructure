@@ -13,6 +13,24 @@ import { join } from 'path';
 
 const children: ReturnType<typeof Bun.spawn>[] = [];
 
+// This suite spawns a real daemon. Run from the operator's own orchestrator
+// process tree it inherits that orchestrator's live ORCH_* pointers
+// (ORCH_INSTANCE_LOCK_FILE, ORCH_STATE_DB, ORCH_LEASE_FILE, ORCH_HEARTBEAT_FILE
+// ...), so the fixture daemon aims at live state instead of its scratch
+// directory — the test then fails, and worse, the daemon under test is one
+// wrong branch away from writing to it. Every ORCH_* is dropped here and the
+// suite passes back only what it means to set.
+function isolatedEnv(overrides: Record<string, string>): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key.startsWith('ORCH_')) continue;
+    if (key.startsWith('TELEGRAM_')) continue;
+    if (key.startsWith('INFRA_')) continue;
+    if (value !== undefined) env[key] = value;
+  }
+  return { ...env, ...overrides };
+}
+
 afterEach(() => {
   for (const child of children.splice(0)) child.kill();
 });
@@ -109,8 +127,7 @@ esac
 
   const child = Bun.spawn(['bun', join(import.meta.dir, 'server.ts')], {
     cwd: import.meta.dir,
-    env: {
-      ...process.env,
+    env: isolatedEnv({
       HOME: homeDir,
       PATH: `${binDir}:${process.env.PATH ?? ''}`,
       TELEGRAM_BOT_TOKEN: '123456:test-token',
@@ -123,7 +140,7 @@ esac
       TEST_LEASE_FILE: leaseFile,
       TEST_INSTANCE_LOCK: instanceLock,
       OUTBOX_POLL_MS: '600000',
-    },
+    }),
     stdout: 'ignore',
     stderr: 'inherit',
   });

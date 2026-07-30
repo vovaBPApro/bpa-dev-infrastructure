@@ -731,7 +731,9 @@ export function evaluateStall(inputs: StallInputs): StallEvaluation {
     thresholdMs,
     doneCmdResult,
   } = inputs;
-  if (!hasBinding || !providerKnown || !missionIsActive(mission)) {
+  // No bound provider session at all: there is nothing the operator asked to
+  // be running, so silence is correct.
+  if (!hasBinding || !providerKnown) {
     return {
       state: 'idle',
       shouldAlert: false,
@@ -747,7 +749,13 @@ export function evaluateStall(inputs: StallInputs): StallEvaluation {
       alertKey: null,
     };
   }
-  const keyBase = buildMissionKey(mission!);
+  const missionActive = missionIsActive(mission);
+  // A bound provider session whose tmux is gone is a fault in every case, and
+  // it is the exact case the operator cannot see from Telegram. Requiring an
+  // active mission record here made the alarm fail OPEN: absence of mission
+  // bookkeeping silenced a real death. Death does not need a mission; a stall
+  // does, because "bound, alive and quiet" is legitimate idling.
+  const keyBase = mission ? buildMissionKey(mission) : 'bound-session';
   if (!tmuxAlive) {
     const alertKey = `dead:${keyBase}`;
     return {
@@ -755,6 +763,14 @@ export function evaluateStall(inputs: StallInputs): StallEvaluation {
       shouldAlert: lastAlertKey !== alertKey,
       reason: 'tmux_missing',
       alertKey,
+    };
+  }
+  if (!missionActive) {
+    return {
+      state: 'idle',
+      shouldAlert: false,
+      reason: 'no_active_mission',
+      alertKey: null,
     };
   }
   const lastProgressAt = Math.max(

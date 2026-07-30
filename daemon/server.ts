@@ -60,7 +60,6 @@ import {
   evaluateStall,
   getWatchdogTimeoutConfig,
   isPendingReplyTimedOut,
-  loadMissionRecord,
   maybeReadJson,
   missionIsActive,
   parseCodexApprovalPrompt,
@@ -68,6 +67,7 @@ import {
   parseAssistantChunkAfterTelegramMessage,
   sanitizeChatRegion,
 } from './reliability';
+import { readActiveMission, resolveStateDbPath } from './mission-source';
 import { drainOutbox, resolveOrchestratorLauncher } from './control';
 import { appendInboxLine } from './inbox-mirror';
 import {
@@ -107,7 +107,13 @@ const RUNTIME_DIR = join(STATE_DIR, 'daemon', 'runtime');
 const INSTALL_ROOT = process.env.ORCH_INSTALL_ROOT ?? join(process.cwd(), '..');
 const BINDING_FILE = join(RUNTIME_DIR, 'orchestrator-binding.json');
 const TURN_DELIVERIES_FILE = join(RUNTIME_DIR, 'turn-deliveries.json');
-const MISSIONS_FILE = join(homedir(), '.claude', 'orchestrator-missions.json');
+// Mission input for the liveness watchdog and /status. This used to be
+// `~/.claude/orchestrator-missions.json`, a file NOTHING in this repository
+// ever wrote — the reader migrated here and the writer stayed on the old host,
+// which left the dead-orchestrator alarm permanently disarmed. The durable
+// state DB written by `core/mission-cli.ts` is the only mission writer this
+// repository has, so it is now the only mission reader too.
+const STATE_DB_PATH = resolveStateDbPath(INSTALL_ROOT);
 const TURN_DELIVERIES_TTL_MS = 24 * 60 * 60 * 1000;
 const LAUNCHER_SCRIPT = resolveOrchestratorLauncher(INSTALL_ROOT);
 const NUDGE_OUTBOX_FILE =
@@ -449,7 +455,15 @@ const PHOTO_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp']);
 
 // ── Shared bot state (lives across reconnections) ─────────────────────────────
 
-const bot = new Bot(TOKEN);
+// TELEGRAM_API_ROOT redirects every Bot API call at a different host. It
+// exists so alarm paths can be exercised end to end against a local stub
+// instead of the operator's real chat (see orchestrator/liveness-alarm.test.sh)
+// and it also supports a self-hosted Bot API server. Unset means real Telegram.
+const bot = new Bot(TOKEN, {
+  client: process.env.TELEGRAM_API_ROOT
+    ? { apiRoot: process.env.TELEGRAM_API_ROOT }
+    : undefined,
+});
 let botUsername = '';
 
 // Per-request_id permission details (shared across reconnections so user can
@@ -1868,8 +1882,7 @@ function buildOrchRuntimeStatus(): string[] {
     readJson: readJsonTri,
     statePath,
     lockPath,
-    missionsPath: MISSIONS_FILE,
-    parseMission: (raw) => loadMissionRecord(raw),
+    mission: readActiveMission(STATE_DB_PATH),
     binding: activeBinding
       ? {
           provider: activeBinding.provider,
@@ -3315,10 +3328,13 @@ function missionSummary(mission: MissionRecord): string {
 }
 
 async function gitRefSha(ref: string): Promise<string | null> {
-  if (!GIT_STALL_REPO_PATH || !ref) return null;
-  const { ok, out } = await sh(
-    `git -C '${GIT_STALL_REPO_PATH}' rev-parse '${ref}'`,
-  );
+  // ORCH_GIT_REF alone used to be inert: without ORCH_GIT_REPO_PATH this
+  // returned null and the git-progress half of the stall watchdog stayed dead.
+  // A configured ref now falls back to the canonical repo, which is the repo
+  // the orchestrator actually commits to.
+  const repo = GIT_STALL_REPO_PATH || CANONICAL_REPO;
+  if (!repo || !ref) return null;
+  const { ok, out } = await sh(`git -C '${repo}' rev-parse '${ref}'`);
   return ok ? out.split('\n')[0]?.trim() || null : null;
 }
 
@@ -3357,7 +3373,8 @@ async function evaluateDoneCmd(
 }
 
 async function livenessWatchdogTick(): Promise<void> {
-  const mission = loadMissionRecord(maybeReadJson(MISSIONS_FILE));
+  const missionRead = readActiveMission(STATE_DB_PATH);
+  const mission = missionRead.present ? missionRead.mission : null;
   const binding = activeBinding ?? loadPersistedBinding();
   const providerKnown = Boolean(binding?.provider && binding.session_id);
   const tmuxIsAlive = await tmuxAlive();
@@ -3402,7 +3419,10 @@ async function livenessWatchdogTick(): Promise<void> {
   }
   if (!decision.shouldAlert || !binding) return;
   lastWatchdogAlertKey = decision.alertKey;
-  const text = `orchestrator ${decision.state === 'dead' ? 'died' : 'stalled'} on ${mission ? missionSummary(mission) : 'active mission'} — /restart, /start_claude, or /start_codex to resume`;
+  const subject = mission
+    ? missionSummary(mission)
+    : `the bound ${binding.provider} session (no active mission recorded)`;
+  const text = `orchestrator ${decision.state === 'dead' ? 'died' : 'stalled'} on ${subject} — /restart, /start_claude, or /start_codex to resume`;
   await bot.api.sendMessage(binding.bound_chat_id, text, {
     disable_notification: false,
   });

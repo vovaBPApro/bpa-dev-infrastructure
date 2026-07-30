@@ -8,13 +8,33 @@
 # CLI silently switches to metered billing and the operator finds out on an
 # invoice. So this gate fails CLOSED and names the offending variable.
 #
+# The gate PROVES subscription login; it does not merely fail to find a key.
+# "No credential file" used to pass, which is exactly backwards: an absent or
+# unreadable credential store proves nothing, and unproven is a refusal. The
+# proof is the provider CLI's own non-secret credential record on disk:
+#   * codex:  ~/.codex/auth.json written by `codex login` — subscription login
+#     stores a tokens object (access_token/id_token) and NO populated
+#     OPENAI_API_KEY; the API-key login path stores OPENAI_API_KEY instead.
+#   * claude: ~/.claude/.credentials.json written by the CLI's /login —
+#     subscription OAuth stores a claudeAiOauth object with a non-empty
+#     accessToken; API-key auth writes no such object.
+# Both files are read STRUCTURALLY, with Bun as the trusted parser. Grep on
+# JSON cannot tell a populated key from the literal string appearing elsewhere
+# in the document, so if Bun is unavailable the gate refuses rather than
+# guessing — a missing parser must never become a silent pass. Nothing from
+# either file is ever printed: the check scripts communicate by exit code only,
+# and refusal messages carry paths and variable NAMES, never values.
+#
 # Usage: preflight-cli-auth.sh <claude|codex>
-# Exit:  0 subscription auth intact
-#        1 an API-key/metered-billing signal was found (message names it)
+# Exit:  0 subscription auth affirmatively proven
+#        1 refused: a metered-billing signal was found, or subscription auth
+#          could not be proven (missing/unreadable/unknown-schema credentials,
+#          no trusted parser)
 #        2 unsupported provider argument
 set -euo pipefail
 
 fail() { printf 'refusing API-key auth: %s\n' "$*" >&2; exit 1; }
+refuse() { printf 'refusing unproven subscription auth: %s\n' "$*" >&2; exit 1; }
 
 # ── 1. Banned environment ───────────────────────────────────────────────────
 # Two distinct hazards, both metered:
@@ -60,50 +80,93 @@ case "${1:-}" in
   *) printf 'unsupported provider\n' >&2; exit 2 ;;
 esac
 
-# ── 2. Credential files on disk ─────────────────────────────────────────────
+# ── 2. Trusted parser ───────────────────────────────────────────────────────
+# Resolve Bun without sourcing lib.sh: lib.sh assigns from `command -v bun`,
+# which aborts this script under `set -e` on a box that has no Bun at all.
+# No Bun means the credential files cannot be verified structurally, and an
+# unverifiable credential store is a refusal, not a pass: the old textual
+# fallback returned success for a malformed file it could not read.
+bun_bin="${BUN_BIN:-}"
+if [[ -z "$bun_bin" && -x "$HOME/.bun/bin/bun" ]]; then
+  bun_bin="$HOME/.bun/bin/bun"
+elif [[ -z "$bun_bin" ]]; then
+  bun_bin="$(command -v bun 2>/dev/null || true)"
+fi
+if [[ -z "$bun_bin" || ! -x "$bun_bin" ]]; then
+  refuse "Bun is unavailable, so credential files cannot be verified; install Bun or set BUN_BIN"
+fi
+
+# ── 3. Affirmative credential evidence on disk ──────────────────────────────
 # A clean environment proves nothing on its own: `codex login` with the API-key
 # option writes OPENAI_API_KEY straight into ~/.codex/auth.json, and from then on
-# every codex invocation is metered with no environment variable to catch. This
-# is the check whose absence made the environment scan above cosmetic.
-CODEX_AUTH_FILE="${ORCH_CODEX_AUTH_FILE:-$HOME/.codex/auth.json}"
-if [[ "$PROVIDER" == codex && -f "$CODEX_AUTH_FILE" ]]; then
-  embedded_key_message="$CODEX_AUTH_FILE embeds an OPENAI_API_KEY; run 'codex logout && codex login' and choose ChatGPT login"
-  # Resolve Bun without sourcing lib.sh: lib.sh assigns from `command -v bun`,
-  # which aborts this script under `set -e` on a box that has no Bun at all —
-  # turning a missing interpreter into a failed launch instead of a fallback.
-  bun_bin="${BUN_BIN:-}"
-  if [[ -z "$bun_bin" && -x "$HOME/.bun/bin/bun" ]]; then
-    bun_bin="$HOME/.bun/bin/bun"
-  elif [[ -z "$bun_bin" ]]; then
-    bun_bin="$(command -v bun 2>/dev/null || true)"
-  fi
-
-  if [[ -n "$bun_bin" && -x "$bun_bin" ]]; then
-    # Structural parse. Grep on JSON cannot tell a populated key from the literal
-    # string "OPENAI_API_KEY" appearing anywhere else in the document.
-    parse_status=0
-    "$bun_bin" -e '
+# every codex invocation is metered with no environment variable to catch.
+# Check scripts exit: 0 proven, 1 metered key embedded, 2 unreadable/malformed,
+# 3 unknown schema / logged out. They print NOTHING — token material must never
+# reach a log or a terminal.
+if [[ "$PROVIDER" == codex ]]; then
+  CODEX_AUTH_FILE="${ORCH_CODEX_AUTH_FILE:-$HOME/.codex/auth.json}"
+  [[ -f "$CODEX_AUTH_FILE" ]] ||
+    refuse "$CODEX_AUTH_FILE is missing; run 'codex login' and choose ChatGPT (subscription) login"
+  verdict=0
+  "$bun_bin" -e '
 const path = process.argv[1];
 let parsed;
 try {
   parsed = JSON.parse(await Bun.file(path).text());
 } catch {
-  // Unreadable or malformed: cannot prove the absence of a key. Fail closed.
   process.exit(2);
 }
-const key = parsed?.OPENAI_API_KEY;
-process.exit(typeof key === "string" && key.length > 0 ? 1 : 0);
-' "$CODEX_AUTH_FILE" || parse_status=$?
-    case "$parse_status" in
-      0) ;;
-      1) fail "$embedded_key_message" ;;
-      *) fail "$CODEX_AUTH_FILE could not be parsed, so subscription auth cannot be proven" ;;
-    esac
-  elif grep -Eq '"OPENAI_API_KEY"[[:space:]]*:[[:space:]]*"[^"]+"' "$CODEX_AUTH_FILE"; then
-    # No Bun on this box. The conservative textual check still catches a
-    # populated key; it can only produce a false POSITIVE, never a false green.
-    fail "$embedded_key_message"
-  fi
+if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) process.exit(3);
+const key = parsed.OPENAI_API_KEY;
+if (typeof key === "string" && key.length > 0) process.exit(1);
+const tokens = parsed.tokens;
+const proven =
+  tokens !== null &&
+  typeof tokens === "object" &&
+  !Array.isArray(tokens) &&
+  ["access_token", "id_token"].some(
+    (name) => typeof tokens[name] === "string" && tokens[name].length > 0,
+  );
+process.exit(proven ? 0 : 3);
+' "$CODEX_AUTH_FILE" || verdict=$?
+  case "$verdict" in
+    0) ;;
+    1) fail "$CODEX_AUTH_FILE embeds an OPENAI_API_KEY; run 'codex logout && codex login' and choose ChatGPT login" ;;
+    2) refuse "$CODEX_AUTH_FILE is unreadable or not valid JSON, so subscription auth cannot be proven" ;;
+    3) refuse "$CODEX_AUTH_FILE carries no ChatGPT login tokens (unknown schema or logged out); run 'codex login'" ;;
+    *) refuse "$CODEX_AUTH_FILE verification failed unexpectedly (exit $verdict)" ;;
+  esac
+fi
+
+if [[ "$PROVIDER" == claude ]]; then
+  CLAUDE_CRED_FILE="${ORCH_CLAUDE_CRED_FILE:-$HOME/.claude/.credentials.json}"
+  [[ -f "$CLAUDE_CRED_FILE" ]] ||
+    refuse "$CLAUDE_CRED_FILE is missing; run claude once and /login with the subscription account"
+  verdict=0
+  "$bun_bin" -e '
+const path = process.argv[1];
+let parsed;
+try {
+  parsed = JSON.parse(await Bun.file(path).text());
+} catch {
+  process.exit(2);
+}
+if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) process.exit(3);
+const oauth = parsed.claudeAiOauth;
+const proven =
+  oauth !== null &&
+  typeof oauth === "object" &&
+  !Array.isArray(oauth) &&
+  typeof oauth.accessToken === "string" &&
+  oauth.accessToken.length > 0;
+process.exit(proven ? 0 : 3);
+' "$CLAUDE_CRED_FILE" || verdict=$?
+  case "$verdict" in
+    0) ;;
+    2) refuse "$CLAUDE_CRED_FILE is unreadable or not valid JSON, so subscription auth cannot be proven" ;;
+    3) refuse "$CLAUDE_CRED_FILE carries no subscription OAuth record (unknown schema or logged out); run claude /login" ;;
+    *) refuse "$CLAUDE_CRED_FILE verification failed unexpectedly (exit $verdict)" ;;
+  esac
 fi
 
 exit 0

@@ -3,11 +3,16 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/knobs.sh"
 UNIT_NAME="${ORCH_WATCHDOG_UNIT:-orch-runtime-watchdog}"
 UNIT_DIR="${ORCH_SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
 # Same one knob watchdog.sh resolves, same deprecated alias, same default — the
 # installer and the tick it installs must never disagree about the cadence.
-INTERVAL="${ORCH_WATCHDOG_INTERVAL:-${ORCH_WATCHDOG_INTERVAL_SECONDS:-60}}"
+# `-` rather than `:-` on purpose: a knob SET to the empty string is a
+# misconfiguration the central parser must see and refuse, not a silent
+# fallback to the default.
+INTERVAL="${ORCH_WATCHDOG_INTERVAL-${ORCH_WATCHDOG_INTERVAL_SECONDS-60}}"
 MARKER='# managed by orchestrator/install-watchdog.sh'
 SERVICE="$UNIT_DIR/$UNIT_NAME.service"
 TIMER="$UNIT_DIR/$UNIT_NAME.timer"
@@ -25,6 +30,19 @@ case "${1:-install}" in
   install) ;;
   *) usage >&2; exit 2 ;;
 esac
+# Fail-closed BEFORE any unit file is written. The interval is interpolated
+# into a systemd unit verbatim, so an unvalidated value is both a cadence bug
+# (0 or huge => disabled throttling or a dead watchdog) and an injection vector
+# (an embedded newline appends arbitrary unit directives). knob_check rejects
+# empty, non-numeric (which covers newlines and control characters), and
+# out-of-range values with one shared rule — the same parser watchdog.sh runs
+# at tick time. The reason is printed instead of the raw value so a hostile
+# value cannot reach the terminal either.
+if ! knob_check "$INTERVAL" 10 86400; then
+  printf 'ERROR invalid-watchdog-cadence reason=%s allowed=10..86400 (integer seconds); refusing to write any unit file\n' \
+    "$KNOB_REASON" >&2
+  exit 2
+fi
 mkdir -p "$UNIT_DIR"
 tmp_service="$(mktemp "$UNIT_DIR/.${UNIT_NAME}.service.XXXXXX")"
 tmp_timer="$(mktemp "$UNIT_DIR/.${UNIT_NAME}.timer.XXXXXX")"

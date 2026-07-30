@@ -335,8 +335,15 @@ render_units() {
     [[ -n "$configured_interval" ]] && ORCH_WATCHDOG_INTERVAL="$configured_interval"
   fi
   ORCH_WATCHDOG_INTERVAL="${ORCH_WATCHDOG_INTERVAL:-60}"
-  if ! [[ "$ORCH_WATCHDOG_INTERVAL" =~ ^[1-9][0-9]*$ ]]; then
-    echo "ERROR: ORCH_WATCHDOG_INTERVAL must be a positive integer number of seconds: $ORCH_WATCHDOG_INTERVAL" >&2
+  # Same central bounded parser the tick (watchdog.sh) and the user-timer
+  # installer (install-watchdog.sh) use: the value is rendered into a systemd
+  # unit verbatim, so empty/non-numeric/newline-carrying/out-of-range values
+  # must fail BEFORE any unit file is written. The reason is printed instead of
+  # the raw value so a hostile value cannot reach the terminal.
+  # shellcheck disable=SC1091
+  source "$SOURCE_ROOT/orchestrator/knobs.sh"
+  if ! knob_check "$ORCH_WATCHDOG_INTERVAL" 10 86400; then
+    echo "ERROR: invalid ORCH_WATCHDOG_INTERVAL (reason=$KNOB_REASON, allowed=10..86400 integer seconds); refusing to render units" >&2
     return 1
   fi
   for source in "$SOURCE_ROOT"/bootstrap/units/*.in; do

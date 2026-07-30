@@ -32,6 +32,15 @@ READINESS_WINDOW_MS="${ORCH_READINESS_WINDOW_MS:-3000}"
 READINESS_POLL_SECONDS="${ORCH_READINESS_POLL_SECONDS:-0.15}"
 LEASE_FILE="${ORCH_LEASE_FILE:-$RUNTIME_DIR/orchestrator.lease}"
 HEARTBEAT_FILE="${ORCH_HEARTBEAT_FILE:-$RUNTIME_DIR/orchestrator.heartbeat}"
+# Positive in-turn liveness (see orchestrator-liveness-pulse.sh): the pulse
+# loop is started INSIDE the supervised pane, watching the provider PID, so
+# the signal is owned by the supervised process tree and dies with it. The
+# file path and interval are baked into the pane command rather than passed
+# through the environment, because a pre-existing tmux server hands panes ITS
+# environment, not this launcher's.
+LIVENESS_FILE="${ORCH_LIVENESS_FILE:-$RUNTIME_DIR/orchestrator.liveness}"
+LIVENESS_PULSE="${ORCH_LIVENESS_PULSE:-$SCRIPT_DIR/orchestrator-liveness-pulse.sh}"
+LIVENESS_PULSE_INTERVAL="${ORCH_LIVENESS_PULSE_INTERVAL:-30}"
 CLAUDE_RELAY_SETTINGS="${ORCH_CLAUDE_RELAY_SETTINGS:-$RUNTIME_DIR/claude-relay-settings.json}"
 CLAUDE_MCP_CONFIG="${ORCH_CLAUDE_MCP_CONFIG:-$RUNTIME_DIR/claude-mcp-config.json}"
 # Two-way Telegram channel: the daemon exposes a legacy-SSE MCP endpoint, so the
@@ -336,9 +345,21 @@ start() {
   command -v "$provider_bin" >/dev/null 2>&1 || { printf 'provider not found: %s\n' "$provider_bin" >&2; return 2; }
   startup_file="$RUNTIME_DIR/orchestrator.startup"
   rm -f "$startup_file"
+  # The pulse is backgrounded from the pane shell just before it exec's into
+  # the provider, watching "$$" — which after the exec IS the provider PID. A
+  # missing pulse script degrades to alert-only liveness in the watchdog
+  # (never a kill), but say so loudly at launch time.
+  local pulse_command=""
+  if [[ -x "$LIVENESS_PULSE" ]]; then
+    printf -v pulse_command '%q "$$" %q %q & ' \
+      "$LIVENESS_PULSE" "$LIVENESS_FILE" "$LIVENESS_PULSE_INTERVAL"
+  else
+    printf 'WARN liveness-pulse-missing path=%s; the watchdog cannot distinguish a silent turn from a corpse and will only alert\n' \
+      "$LIVENESS_PULSE" >&2
+  fi
   printf -v singleton_command \
-    'exec 8>%q; flock -n 8 || exit 73; while [ ! -f %q ]; do sleep 0.01; done; . %q; %s' \
-    "$SINGLETON_LOCK_FILE" "$startup_file" "$startup_file" "$command"
+    'exec 8>%q; flock -n 8 || exit 73; while [ ! -f %q ]; do sleep 0.01; done; . %q; %s%s' \
+    "$SINGLETON_LOCK_FILE" "$startup_file" "$startup_file" "$pulse_command" "$command"
   # Do not leak the launch mutex into tmux/the provider process.
   exec 9>&-
   tmux new-session -d -s "$SESSION" -c "$WORK_DIR" "sh -c $(printf '%q' "$singleton_command")" || return 1
@@ -422,8 +443,11 @@ start() {
     printf 'ERROR orchestrator-lease-renew-failed owner=%s\n' "$owner" >&2
     return 1
   fi
-  mkdir -p "$(dirname "$HEARTBEAT_FILE")"
+  mkdir -p "$(dirname "$HEARTBEAT_FILE")" "$(dirname "$LIVENESS_FILE")"
   printf '%s\n' "$(date +%s)" > "$HEARTBEAT_FILE"
+  # Seed the liveness stamp so the very first pulse interval is covered even if
+  # the in-pane loop is slow to start; from here on the pulse owns renewal.
+  printf '%s\n' "$(date +%s)" > "$LIVENESS_FILE"
   if [[ -n "$INSTANCE_LOCK_FILE" ]]; then
     local lock_tmp
     mkdir -p "$(dirname "$INSTANCE_LOCK_FILE")"

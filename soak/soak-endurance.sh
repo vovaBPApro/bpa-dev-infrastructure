@@ -233,6 +233,7 @@ on_exit() {
 trap 'on_signal INT 130' INT
 trap 'on_signal TERM 143' TERM
 trap on_exit EXIT
+trap '' PIPE
 
 deadline=0
 if [ -n "$minutes" ]; then deadline=$(( $(now_ms) + minutes * 60000 )); fi
@@ -257,7 +258,7 @@ while [ "$failure_round" = none ] && within_limit; do
   output="$run_dir/round-$round.output"
   started=$(now_ms)
   last_verdict=started
-  printf 'round %s started\n' "$round"
+  printf 'round %s started\n' "$round" 2>/dev/null || true
   write_report
   set +e
   if [ -n "${SOAK_ROUND_COMMAND:-}" ]; then
@@ -339,11 +340,11 @@ while [ "$failure_round" = none ] && within_limit; do
     rounds_passed=$((rounds_passed + 1))
     last_verdict=PASS
     rm -f -- "$output" "$run_dir/round-$round.report"
-    printf 'round %s PASS\n' "$round"
+    printf 'round %s PASS\n' "$round" 2>/dev/null || true
   else
     rounds_failed=1
     last_verdict="FAIL ($failure_reason)"
-    printf 'round %s FAIL (%s)\n' "$round" "$failure_reason"
+    printf 'round %s FAIL (%s)\n' "$round" "$failure_reason" 2>/dev/null || true
   fi
   write_report
 done
@@ -353,6 +354,6 @@ if [ "$failure_round" = none ]; then overall=PASS; else overall=FAIL; fi
 report_state=complete
 interrupted=none
 write_report
-cat "$report"
+cat "$report" 2>/dev/null || true
 run_complete=true
 [ "$overall" = PASS ]

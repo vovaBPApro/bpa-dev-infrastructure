@@ -266,6 +266,8 @@ export function readInstanceFacts(repo: string): InstanceFacts {
       section = top[1];
       continue;
     }
+    // This intentionally narrow parser accepts only 2-space YAML nesting; arbitrary
+    // indentation and tabs are outside the supported instance/params.yaml shape.
     const nested = line.match(/^\s{2}([A-Za-z][A-Za-z0-9_-]*):\s*(.+?)\s*$/);
     if (nested && section) values.set(`${section}.${nested[1]}`, nested[2].replace(/^["']|["']$/g, ""));
   }

@@ -106,6 +106,9 @@ export function handoffFilename(handoff: Handoff): string {
 export function writeHandoff(repo: string, handoff: Handoff): string {
   const validation = validateHandoff(handoff, Date.parse(handoff.timestamp));
   if (!validation.valid) throw new Error(validation.errors.join("; "));
+  const timestampMs = Date.parse(handoff.timestamp);
+  const nowMs = Date.now();
+  if (timestampMs > nowMs) throw new Error(`handoff timestamp is ${timestampMs - nowMs}ms in the future`);
   const dir = join(repo, HANDOFF_RELATIVE_DIR);
   mkdirSync(dir, { recursive: true });
   const path = join(dir, handoffFilename(handoff));

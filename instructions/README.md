@@ -9,6 +9,7 @@
 - [instruction-layers.md](instruction-layers.md) — The three instruction layers (infra / framework / agent) and the routing rule for updates.
 - [isolated-test-environments.md](isolated-test-environments.md) — Each lane gets an isolated checkout and dependency output; never mutate the canonical tree for a lane test.
 - [landing-and-merge.md](landing-and-merge.md) — Landing is serialized on the canonical tree; worktrees are evidence sources, not the integration tree.
+- [lane-capabilities.md](lane-capabilities.md) — Declare fail-closed capabilities for sandboxed lanes and trusted executors.
 - [lane-lifecycle.md](lane-lifecycle.md) — Mission scope and evidence contract from dispatch through verification, teardown, and reaping.
 - [lang/documentation-philosophy.md](lang/documentation-philosophy.md) — AI-native documentation philosophy for Markdown docs and code comments.
 - [lang/react-rules.md](lang/react-rules.md) — React AI coding guidelines for TSX components and hooks, extending the TypeScript guidelines.
@@ -16,6 +17,7 @@
 - [lessons.md](lessons.md) — Operating lessons distilled from past failures into durable guidance.
 - [multi-project-isolation.md](multi-project-isolation.md) — Give each project an independent state root, secrets, identity, ports, leases, workspaces, logs, and mission store.
 - [operator-feedback.md](operator-feedback.md) — Treat operator input as test evidence and preserve the words that define work.
+- [orchestrator-cold-start.md](orchestrator-cold-start.md) — Exact cold-start path from a durable mission through dispatch, review, gated landing, and the final report.
 - [orchestrator-fallback.md](orchestrator-fallback.md) — Extra binding rules for an orchestrator running on a fallback (non-Anthropic, e.g. GPT) model when Fable/Anthropic quota is exhausted.
 - [orchestrator-playbook.md](orchestrator-playbook.md) — The orchestrator dispatches, verifies, lands, cleans up, and reports; it does not author code, tests, or reviews.
 - [planning-and-specs.md](planning-and-specs.md) — Self-contained, interface-first planning and specifications.

@@ -50,19 +50,15 @@ The CRITICAL/HIGH findings already LANDED: /status honesty (running_agents vs
 lane_worktrees, git timeout) `7fe97222`; gate provenance 7 fixes incl.
 self-review reviewer!=author + partial-identity + NUL-byte `b3a42d14`; dispatch
 marker/override 3 fixes `c1ad0c7e`; flaky lease-race test `d1b64754`. These rows
-are the remaining MEDIUM/LOW.
+were the remaining MEDIUM/LOW.
 
-- **W-11 — gate secret-scan: decoded/entropy detection** (redteam MEDIUM +
-  test-quality): base64-encoded and split-string secret forms still evade the
-  signature grep; secret-shaped path names are now scanned (landed) but content
-  encodings are not. Add a real decoding/entropy pass or document the residual
-  boundary in `instructions/verification-and-locks.md`. Home: `gate/land-lib.sh`.
-W-12 gate reviewer-identity hardening LANDED `1c920ba` and W-13 /status
-process-local honesty relabel LANDED `fa2a974` (both review=accepted,
-cross-vendor Claude Sonnet); W-09 handoff future-ts guard LANDED `e1af73c`.
-Remaining open from this audit: W-11 (gate secret-scan decoded/entropy) above.
-W-07 batch --skip-review test coverage LANDED `274672f` (review=accepted,
-cross-vendor Claude Sonnet; test-only +3 lines with RED/GREEN perturbation proof).
+This audit is now FULLY CLOSED. All residuals landed (all review=accepted,
+cross-vendor Claude Sonnet): W-07 batch --skip-review test coverage `274672f`;
+W-09 handoff future-ts guard `e1af73c`; W-11 gate secret-scan decoded-match
+lock `e172ff6` (base64-decode detection already shipped in `77f3fa9f`; entropy
+excluded as too false-positive-prone; split-string documented as the residual
+boundary); W-12 gate reviewer-identity hardening `1c920ba`; W-13 /status
+process-local honesty relabel `fa2a974`.
 
 ## Parked (needs Human go or a phase flip)
 

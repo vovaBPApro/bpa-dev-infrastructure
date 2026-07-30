@@ -43,9 +43,6 @@ note. Derived-work items live here; Human directives stay in
   39 rule-stating memory entries without `home:` ids; run the sweep live,
   then triage rows into instruction homes or drop. (Sweep tool landed
   05689cdd; daily timer installer exists, not yet installed.)
-- **W-09 — handoff minor findings** (wave2-tools review, 3 LOW): write-time
-  future-ts guard; document absolute-vs-relative path asymmetry in the
-  schema; note the 2-space YAML assumption in readInstanceFacts.
 - **W-10 — install memory-sweep daily timer** on the host once W-08 triage
   is done (orchestrator/install-memory-sweep.sh).
 
@@ -63,21 +60,11 @@ are the remaining MEDIUM/LOW.
   signature grep; secret-shaped path names are now scanned (landed) but content
   encodings are not. Add a real decoding/entropy pass or document the residual
   boundary in `instructions/verification-and-locks.md`. Home: `gate/land-lib.sh`.
-- **W-12 — gate reviewer-identity heuristic hardening** (gate re-review LOW
-  residual + redteam LOW): the reviewer!=author guard is a string heuristic — a
-  multi-token author name reordered with a spoofed email could evade name
-  detection (not reproducible now: this repo's author is single-token). Also
-  normalize CRLF/trailing whitespace in artifact identity fields. Home:
-  `gate/land-lib.sh`.
-- **W-13 — /status process-local fields relabeled as observations** (daemon
-  audit MED): `last_relay`→`last_relay_attempt` (+ ack state), `buffered_msgs`→
-  `in_memory_buffer` (+ dropped count + restart epoch), `bot`/`claude_connected`
-  reflect a live probe not a cached value. The stale-state labeling + PID probe
-  already landed in `7fe97222`; this is the remaining honesty polish. Home:
-  `daemon/status.ts`.
-
-Note: W-07 (batch --skip-review test) and W-09 (handoff write-time future-ts
-guard) already cover the test-quality auditor's other two findings.
+W-12 gate reviewer-identity hardening LANDED `1c920ba` and W-13 /status
+process-local honesty relabel LANDED `fa2a974` (both review=accepted,
+cross-vendor Claude Sonnet); W-09 handoff future-ts guard LANDED `e1af73c`.
+Remaining open from this audit: W-11 (gate secret-scan decoded/entropy) above.
+W-07 (batch --skip-review test coverage) remains open in the Open section.
 
 ## Parked (needs Human go or a phase flip)
 

@@ -9,6 +9,26 @@ summary: Operator runbook for wiping and rebuilding this installation's VM.
 
 # Migration day: VM wipe and re-initialization
 
+## As built (2026-07-30 cutover) — read before following the paths below
+
+This runbook describes the *intended* clean install. The installation actually
+standing today deviates from it, and `instance/params.yaml` records the as-built
+values, not these:
+
+| | runbook says | as built on `bpa-infra` |
+|---|---|---|
+| install root | `/home/bpa-dev-infrastructure` | `/root/bpa-dev-infrastructure` |
+| account | normal operator account | `root` |
+| RAM | 64 GB (sizing floor, msg 11555) | 251 GB |
+| cores | unspecified | 12 |
+| host / IP | — | `bpa-infra` / 144.76.185.238 |
+
+The cutover to this machine was directed by `instance/decisions/HR-11736.md`.
+The `/home/...` paths in the steps below are left as written: they are the
+runbook's target for a *fresh* install, and rewriting them would misrepresent
+what this document is for. When following it on a box that deviates, substitute
+`repos.canonical_root` from `instance/params.yaml`.
+
 This runbook is for a fresh Ubuntu 24.04 VM. Target sizing (Vova, 2026-07-29,
 msg 11555): **64 GB RAM** — lane builds and Playwright stands are memory-bound,
 and upgrading the machine was chosen over throttling test concurrency.

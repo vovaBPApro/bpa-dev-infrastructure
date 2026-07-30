@@ -34,38 +34,45 @@ if (!(await transcript.exists())) {
   throw new Error(`transcript not found: ${stop.transcript_path}`);
 }
 
-let last = null;
-for (const line of (await transcript.text()).split("\n")) {
-  if (!line.trim()) continue;
-  let record;
-  try {
-    record = JSON.parse(line);
-  } catch {
-    continue;
+const STOP_RELAY_WAIT_MS = Number(process.env.STOP_RELAY_WAIT_MS ?? 2000);
+const STOP_RELAY_POLL_MS = Number(process.env.STOP_RELAY_POLL_MS ?? 100);
+const deadline = Date.now() + STOP_RELAY_WAIT_MS;
+let last;
+do {
+  last = null;
+  for (const line of (await Bun.file(stop.transcript_path).text()).split("\n")) {
+    if (!line.trim()) continue;
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (
+      record?.type !== "assistant" ||
+      record?.message?.role !== "assistant" ||
+      !Array.isArray(record.message.content) ||
+      record.sessionId !== stop.session_id ||
+      record.isSidechain === true
+    ) {
+      continue;
+    }
+    const text = record.message.content
+      .filter(
+        (block) =>
+          block?.type === "text" && typeof block.text === "string",
+      )
+      .map((block) => block.text)
+      .join("");
+    if (text && typeof record.uuid === "string") {
+      last = { turn_id: record.uuid, assistant_text: text };
+    }
   }
-  if (
-    record?.type !== "assistant" ||
-    record?.message?.role !== "assistant" ||
-    !Array.isArray(record.message.content) ||
-    record.sessionId !== stop.session_id ||
-    record.isSidechain === true
-  ) {
-    continue;
-  }
-  const text = record.message.content
-    .filter(
-      (block) =>
-        block?.type === "text" && typeof block.text === "string",
-    )
-    .map((block) => block.text)
-    .join("");
-  if (text && typeof record.uuid === "string") {
-    last = { turn_id: record.uuid, assistant_text: text };
-  }
-}
-if (!last) {
-  throw new Error("assistant text not found in transcript");
-}
+  if (last || Date.now() >= deadline) break;
+  await Bun.sleep(STOP_RELAY_POLL_MS);
+} while (true);
+
+if (!last) process.exit(0);
 
 process.stdout.write(
   JSON.stringify({

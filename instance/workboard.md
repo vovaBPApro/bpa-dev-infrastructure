@@ -24,6 +24,18 @@ note. Derived-work items live here; Human directives stay in
   (Sweep tool landed 05689cdd; daily timer installer exists, not yet installed.)
 - **W-10 — install memory-sweep daily timer** on the host once W-08 triage
   is done (orchestrator/install-memory-sweep.sh).
+- **W-11 — confirm the top orchestrator's RESTING model tier with Vova** (low
+  priority; ask on his next natural exchange, do NOT page him for it). The box
+  now runs `claude-fable-5` (`instance/params.yaml: orchestrator.top_model`,
+  pinned in the gitignored `runtime.env` per the old orchestrator's 2026-07-31
+  ruling). That value is recorded **as run**, not as his decision — three
+  positions are on record and they disagree: Vova, 2026-07-30, «верхній
+  оркестратор має бути на Fable … щоб квота мінімально використовувалася»; the
+  old orchestrator's A8, a lean tier at rest with Fable as the *escalation* tier;
+  and `orchestrator/launch.sh`'s source default, `claude-opus-5`, which is what an
+  unpinned launch silently resolved to. When he answers, open a proper
+  `HR-<msg-id>.md` with his wording and point `top_model` at it. Until then the
+  gap is provenance, not configuration — the box is not blocked.
 
 ### Migration-loss restore queue (2026-07-30)
 

@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, readFileSync, readlinkSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 
 const scaffolder = join(import.meta.dir, "scaffold.ts");
 // The L1 repo root is two levels up from tools/instructions/ — the tree that
@@ -33,7 +34,55 @@ function runCheck(repo: string, extra: string[] = []) {
   return spawnSync("bun", [checker, "--repo", repo, ...extra], { encoding: "utf8" });
 }
 
+type L1Pin = {
+  schema: string;
+  source: { repository: string; revision: string; path: string; sha256: string };
+};
+
+// Models a fresh session: start only at the generated repo, discover the
+// conventional manifest, then resolve and authenticate its Git object reference
+// against an available L1 checkout. No scaffold internals or network are used.
+function discoverAndValidateL1Pin(repo: string, l1: string): L1Pin {
+  const manifestPath = join(repo, "instructions", "L1_PIN.json");
+  let pin: L1Pin;
+  try {
+    pin = JSON.parse(readFileSync(manifestPath, "utf8")) as L1Pin;
+  } catch {
+    throw new Error("L1 pin is missing or invalid JSON");
+  }
+  if (pin.schema !== "bpa.l1-bootstrap/v1") throw new Error(`unsupported L1 pin schema '${pin.schema}'`);
+  if (pin.source.repository !== "bpa-dev-infrastructure") throw new Error("unexpected L1 repository");
+  if (!/^[0-9a-f]{40}$/.test(pin.source.revision)) throw new Error("L1 revision is not a full commit SHA");
+  if (pin.source.path !== "instructions/instruction-layers.md") throw new Error("unexpected L1 bootstrap path");
+  if (!/^[0-9a-f]{64}$/.test(pin.source.sha256)) throw new Error("L1 bootstrap digest is invalid");
+
+  const resolved = spawnSync("git", ["-C", l1, "show", `${pin.source.revision}:${pin.source.path}`]);
+  if (resolved.status !== 0) throw new Error("pinned L1 reference does not resolve");
+  const digest = createHash("sha256").update(resolved.stdout).digest("hex");
+  if (digest !== pin.source.sha256) throw new Error("pinned L1 bootstrap digest does not match");
+  return pin;
+}
+
 describe("scaffold.ts", () => {
+  test("fresh session discovers and validates the pinned L1 bootstrap fail-closed", () => {
+    const out = freshOut();
+    const result = runScaffold(["--name", "discoverable", "--layer", "L3", "--mission", "m", "--out", out]);
+    expect(result.status).toBe(0);
+
+    const pin = discoverAndValidateL1Pin(out, L1);
+    expect(pin.schema).toBe("bpa.l1-bootstrap/v1");
+
+    const manifestPath = join(out, "instructions", "L1_PIN.json");
+    const original = readFileSync(manifestPath, "utf8");
+    const tampered = JSON.parse(original) as L1Pin;
+    tampered.source.sha256 = "0".repeat(64);
+    writeFileSync(manifestPath, `${JSON.stringify(tampered, null, 2)}\n`);
+    expect(() => discoverAndValidateL1Pin(out, L1)).toThrow("digest does not match");
+
+    rmSync(manifestPath);
+    expect(() => discoverAndValidateL1Pin(out, L1)).toThrow("missing or invalid JSON");
+  });
+
   test("L3 repo is born checker-clean (check.ts --strict, 0 FAIL)", () => {
     const out = freshOut();
     const result = runScaffold(["--name", "born-agent", "--layer", "L3", "--mission", "A born agent.", "--out", out]);

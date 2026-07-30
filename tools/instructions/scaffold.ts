@@ -32,12 +32,16 @@ import {
 } from "node:fs";
 import { resolve, join, relative, dirname } from "node:path";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { collectDocs } from "./docs.ts";
 import { renderIndex } from "./index.ts";
 import { renderFloor, replaceFloorSection, CLAUDE_FILENAME } from "./floor.ts";
 import { INDEX_FILENAME } from "./docs.ts";
 
 const TEMPLATE_RELATIVE = join("templates", "agent-repo");
+const L1_PIN_FILENAME = "L1_PIN.json";
+const L1_PIN_SCHEMA = "bpa.l1-bootstrap/v1";
+const L1_BOOTSTRAP_PATH = "instructions/instruction-layers.md";
 // Template scaffolding files that are NOT part of the generated output.
 const TEMPLATE_ONLY = new Set(["TEMPLATE.md"]);
 // Files copied only for a given layer.
@@ -196,6 +200,39 @@ function parkedRows(l1: string): string[] {
   return rows;
 }
 
+function gitOutput(l1: string, args: string[], purpose: string): string {
+  const result = spawnSync("git", ["-C", l1, ...args], { encoding: "utf8" });
+  if (result.status !== 0) {
+    fail(`cannot ${purpose} from L1 at '${l1}': ${(result.stderr || result.stdout).trim()}`);
+  }
+  return result.stdout.trim();
+}
+
+// Pin the routing/bootstrap document as a Git object reference, not copied rule
+// text. A consumer can resolve <revision>:<path> from an L1 checkout and verify
+// the bytes against sha256 even when that checkout's working tree has moved on.
+function l1Pin(l1: string): string {
+  const revision = gitOutput(l1, ["rev-parse", "HEAD"], "resolve HEAD");
+  if (!/^[0-9a-f]{40}$/.test(revision)) fail(`L1 HEAD is not a full commit SHA: '${revision}'`);
+  const bootstrap = spawnSync("git", ["-C", l1, "show", `${revision}:${L1_BOOTSTRAP_PATH}`]);
+  if (bootstrap.status !== 0) {
+    fail(`cannot resolve L1 bootstrap '${revision}:${L1_BOOTSTRAP_PATH}'`);
+  }
+  return `${JSON.stringify(
+    {
+      schema: L1_PIN_SCHEMA,
+      source: {
+        repository: "bpa-dev-infrastructure",
+        revision,
+        path: L1_BOOTSTRAP_PATH,
+        sha256: createHash("sha256").update(bootstrap.stdout).digest("hex"),
+      },
+    },
+    null,
+    2,
+  )}\n`;
+}
+
 function scaffold(options: Options): number {
   const templateRoot = join(resolve(options.l1), TEMPLATE_RELATIVE);
   if (!existsSync(templateRoot)) {
@@ -228,10 +265,15 @@ function scaffold(options: Options): number {
   const claudeText = readFileSync(claudePath, "utf8");
   writeFileSync(claudePath, replaceFloorSection(claudeText, renderFloor(docs)));
 
+  // 4. Write the versioned L1 bootstrap pin after index generation so the
+  // generated README remains an index of binding Markdown docs only.
+  writeFileSync(join(instructionsRoot, L1_PIN_FILENAME), l1Pin(resolve(options.l1)));
+
   process.stdout.write(`scaffold: created ${options.layer} repo '${options.name}' at ${outDir}\n`);
   process.stdout.write(`scaffold: AGENTS.md -> ${CLAUDE_FILENAME} (symlink)\n`);
+  process.stdout.write(`scaffold: L1 bootstrap pin -> instructions/${L1_PIN_FILENAME}\n`);
 
-  // 4. L2 promotion TODO: print the parked-manifest rows.
+  // 5. L2 promotion TODO: print the parked-manifest rows.
   if (options.layer === "L2") {
     const rows = parkedRows(options.l1);
     process.stdout.write("\nscaffold: L2 created — parked content is now flagged for promotion (§2.1/§4.3).\n");
@@ -244,7 +286,7 @@ function scaffold(options: Options): number {
     process.stdout.write("See L2_PARKED_PROMOTION.md for the move-and-delete procedure.\n");
   }
 
-  // 5. Run the checker against the new repo and surface its summary. A born repo
+  // 6. Run the checker against the new repo and surface its summary. A born repo
   // that fails --strict is a scaffold bug: exit 1 so callers (and tests) catch it.
   const checker = join(import.meta.dir, "check.ts");
   const check = spawnSync("bun", [checker, "--repo", outDir, "--strict"], { encoding: "utf8" });
@@ -263,5 +305,5 @@ if (import.meta.main) {
   process.exit(scaffold(options));
 }
 
-export { scaffold, parkedRows, templateFiles, substitute, assertScaffoldable };
+export { scaffold, parkedRows, templateFiles, substitute, assertScaffoldable, l1Pin };
 export type { Options as ScaffoldOptions };

@@ -59,7 +59,8 @@ first_lines="$(wc -l < "$IDLE_OUTBOX")"
 assert run_watchdog "$IDLE_DB" "$IDLE_RUNTIME" "$IDLE_OUTBOX"
 [[ "$(wc -l < "$IDLE_OUTBOX")" == "$first_lines" ]] || fail 'mission nudge ignored rate limit'
 
-# A live lease whose key is the open lane ID suppresses a mission nudge.
+# A live lease whose key is the open lane ID reports headcount but does not
+# suppress a nudge when the mission itself is stalled.
 ACTIVE_DB="$SCRATCH/active.db"
 ACTIVE_RUNTIME="$SCRATCH/active-runtime"
 ACTIVE_OUTBOX="$SCRATCH/active.outbox"
@@ -67,7 +68,7 @@ mkdir -p "$ACTIVE_RUNTIME"
 make_open_lane "$ACTIVE_DB" active-fixture
 INFRA_STATE_DB="$ACTIVE_DB" bun "$SCRIPT_DIR/../core/mission-cli.ts" lease acquire worker lane-active-fixture 30000 >/dev/null
 assert run_watchdog "$ACTIVE_DB" "$ACTIVE_RUNTIME" "$ACTIVE_OUTBOX"
-not_exists "$ACTIVE_OUTBOX"
+contains 'NUDGE mission=active-fixture open_lanes=1 active=1 idle_ms=' "$ACTIVE_OUTBOX"
 
 # Disk pressure has a separate rate key and is emitted only at/above threshold.
 DISK_DB="$SCRATCH/disk.db"

@@ -24,6 +24,8 @@ SINGLETON_LOCK_FILE="${ORCH_SINGLETON_LOCK_FILE:-$REPO_DIR/runtime/orchestrator.
 MISSION_CLI="${ORCH_MISSION_CLI:-$REPO_DIR/core/mission-cli.ts}"
 STATE_DB="${ORCH_STATE_DB:-$REPO_DIR/runtime/state.db}"
 LEASE_TTL_MS="${ORCH_LEASE_TTL_MS:-120000}"
+READINESS_WINDOW_MS="${ORCH_READINESS_WINDOW_MS:-3000}"
+READINESS_POLL_SECONDS="${ORCH_READINESS_POLL_SECONDS:-0.15}"
 LEASE_FILE="${ORCH_LEASE_FILE:-$RUNTIME_DIR/orchestrator.lease}"
 HEARTBEAT_FILE="${ORCH_HEARTBEAT_FILE:-$RUNTIME_DIR/orchestrator.heartbeat}"
 CLAUDE_RELAY_SETTINGS="${ORCH_CLAUDE_RELAY_SETTINGS:-$RUNTIME_DIR/claude-relay-settings.json}"
@@ -35,6 +37,12 @@ usage() {
 }
 
 session_exists() { tmux has-session -t "$SESSION" 2>/dev/null; }
+
+now_ms() {
+  local seconds nanos
+  read -r seconds nanos < <(date '+%s %N')
+  printf '%s\n' "$(( seconds * 1000 + 10#$nanos / 1000000 ))"
+}
 
 state_available() { [[ -f "$STATE_DB" ]]; }
 
@@ -139,12 +147,54 @@ start() {
     printf 'session already exists: %s\n' "$SESSION" >&2
     return 1
   fi
+  local status_output="" held_owner=""
   if state_available; then
     mission_cli reap
-    local status_output held_owner lease_output owner token
     status_output="$(mission_cli status)"
     held_owner="$(printf '%s\n' "$status_output" | lease_owner_from_status)"
-    if ! lease_output="$(mission_cli lease acquire "$(hostname):$$" orchestrator "$LEASE_TTL_MS" 2>&1)"; then
+    if [[ -n "$held_owner" ]]; then
+      printf 'ERROR orchestrator-lease-held owner=%s\n' "$held_owner" >&2
+      return 1
+    fi
+  fi
+  if [[ -x "$AUTH_PREFLIGHT" ]]; then
+    if ! "$AUTH_PREFLIGHT" "$PROVIDER"; then
+      return 2
+    fi
+  else
+    printf 'auth preflight missing or not executable: %s\n' "$AUTH_PREFLIGHT" >&2
+    return 2
+  fi
+  local command provider_bin singleton_command startup_file pane_pid
+  command="$(build_command)"
+  provider_bin="${command#exec }"; provider_bin="${provider_bin%% *}"
+  command -v "$provider_bin" >/dev/null 2>&1 || { printf 'provider not found: %s\n' "$provider_bin" >&2; return 2; }
+  startup_file="$RUNTIME_DIR/orchestrator.startup"
+  rm -f "$startup_file"
+  printf -v singleton_command \
+    'exec 8>%q; flock -n 8 || exit 73; while [ ! -f %q ]; do sleep 0.01; done; . %q; %s' \
+    "$SINGLETON_LOCK_FILE" "$startup_file" "$startup_file" "$command"
+  # Do not leak the launch mutex into tmux/the provider process.
+  exec 9>&-
+  tmux new-session -d -s "$SESSION" -c "$WORK_DIR" "sh -c $(printf '%q' "$singleton_command")" || return 1
+  # tmux reports success before the pane command can reject a held flock.
+  # Give that command a bounded window to exit, then fail the launch loudly.
+  sleep 0.1
+  if ! session_exists; then
+    printf 'ERROR orchestrator-singleton-held lock=%s\n' "$SINGLETON_LOCK_FILE" >&2
+    return 1
+  fi
+  pane_pid="$(tmux list-panes -t "$SESSION" -F '#{pane_pid}' | head -n 1)"
+  [[ "$pane_pid" =~ ^[1-9][0-9]*$ ]] || {
+    printf 'ERROR orchestrator-instance-pid-invalid\n' >&2
+    tmux kill-session -t "$SESSION" 2>/dev/null || true
+    return 1
+  }
+  if state_available; then
+    local lease_output owner token
+    owner="$(hostname):$pane_pid"
+    if ! lease_output="$(mission_cli lease acquire "$owner" orchestrator "$LEASE_TTL_MS" 2>&1)"; then
+      tmux kill-session -t "$SESSION" 2>/dev/null || true
       if [[ -n "$held_owner" ]]; then
         printf 'ERROR orchestrator-lease-held owner=%s\n' "$held_owner" >&2
         return 1
@@ -152,54 +202,60 @@ start() {
       printf '%s\n' "$lease_output" >&2
       return 1
     fi
-    owner="$(hostname):$$"
     token="$(sed -nE 's/^LEASE key=orchestrator owner=.* token=([1-9][0-9]*)$/\1/p' <<<"$lease_output")"
-    [[ -n "$token" ]] || { printf 'ERROR orchestrator-lease-invalid\n' >&2; return 1; }
+    [[ -n "$token" ]] || {
+      printf 'ERROR orchestrator-lease-invalid\n' >&2
+      tmux kill-session -t "$SESSION" 2>/dev/null || true
+      return 1
+    }
     write_lease_state "$owner" "$token"
-    export ORCH_FENCING_TOKEN="$token" ORCH_LEASE_OWNER="$owner"
+    printf 'export ORCH_FENCING_TOKEN=%q ORCH_LEASE_OWNER=%q\n' "$token" "$owner" > "$startup_file"
     mission_cli status
   else
     printf 'SKIP state-db-absent path=%s\n' "$STATE_DB" >&2
+    : > "$startup_file"
   fi
-  if [[ -x "$AUTH_PREFLIGHT" ]]; then
-    if ! "$AUTH_PREFLIGHT" "$PROVIDER"; then
-      release_current_lease
-      return 2
-    fi
-  else
-    printf 'auth preflight missing or not executable: %s\n' "$AUTH_PREFLIGHT" >&2
-    return 2
-  fi
-  local command provider_bin singleton_command
-  command="$(build_command)"
-  provider_bin="${command#exec }"; provider_bin="${provider_bin%% *}"
-  command -v "$provider_bin" >/dev/null 2>&1 || { printf 'provider not found: %s\n' "$provider_bin" >&2; release_current_lease; return 2; }
-  printf -v singleton_command 'flock -n %q sh -c %q' "$SINGLETON_LOCK_FILE" "$command"
-  # Do not leak the launch mutex into tmux/the provider process.
-  exec 9>&-
-  if ! tmux new-session -d -s "$SESSION" -c "$WORK_DIR" "$singleton_command"; then
+  if state_available && ! mission_cli lease renew "$owner" orchestrator "$token" >/dev/null 2>&1; then
+    tmux kill-session -t "$SESSION" 2>/dev/null || true
     release_current_lease
+    printf 'ERROR orchestrator-lease-renew-failed owner=%s\n' "$owner" >&2
     return 1
   fi
-  # tmux reports success before the pane command can reject a held flock.
-  # Give that command a bounded window to exit, then fail the launch loudly.
-  sleep 0.1
-  if ! session_exists; then
-    printf 'ERROR orchestrator-singleton-held lock=%s\n' "$SINGLETON_LOCK_FILE" >&2
+  local readiness_deadline
+  readiness_deadline="$(( $(now_ms) + READINESS_WINDOW_MS ))"
+  while (( $(now_ms) < readiness_deadline )); do
+    if ! session_exists || ! kill -0 "$pane_pid" 2>/dev/null; then
+      tmux kill-session -t "$SESSION" 2>/dev/null || true
+      if state_available; then
+        release_current_lease
+      else
+        rm -f "$LEASE_FILE"
+      fi
+      printf 'ERROR orchestrator-provider-exited provider=%s session=%s\n' "$PROVIDER" "$SESSION" >&2
+      return 1
+    fi
+    sleep "$READINESS_POLL_SECONDS"
+  done
+  if ! session_exists || ! kill -0 "$pane_pid" 2>/dev/null; then
+    tmux kill-session -t "$SESSION" 2>/dev/null || true
+    if state_available; then
+      release_current_lease
+    else
+      rm -f "$LEASE_FILE"
+    fi
+    printf 'ERROR orchestrator-provider-exited provider=%s session=%s\n' "$PROVIDER" "$SESSION" >&2
+    return 1
+  fi
+  if state_available && ! mission_cli lease renew "$owner" orchestrator "$token" >/dev/null 2>&1; then
+    tmux kill-session -t "$SESSION" 2>/dev/null || true
     release_current_lease
+    printf 'ERROR orchestrator-lease-renew-failed owner=%s\n' "$owner" >&2
     return 1
   fi
   mkdir -p "$(dirname "$HEARTBEAT_FILE")"
   printf '%s\n' "$(date +%s)" > "$HEARTBEAT_FILE"
   if [[ -n "$INSTANCE_LOCK_FILE" ]]; then
-    local pane_pid lock_tmp
-    pane_pid="$(tmux list-panes -t "$SESSION" -F '#{pane_pid}' | head -n 1)"
-    [[ "$pane_pid" =~ ^[1-9][0-9]*$ ]] || {
-      printf 'ERROR orchestrator-instance-pid-invalid\n' >&2
-      tmux kill-session -t "$SESSION" 2>/dev/null || true
-      release_current_lease
-      return 1
-    }
+    local lock_tmp
     mkdir -p "$(dirname "$INSTANCE_LOCK_FILE")"
     lock_tmp="$(mktemp "$(dirname "$INSTANCE_LOCK_FILE")/.orchestrator-lock.XXXXXX")"
     printf '{"pid":%s,"pid_started_at":"%s"}\n' \

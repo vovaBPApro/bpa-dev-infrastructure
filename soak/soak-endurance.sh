@@ -18,6 +18,8 @@ last_active_leases=0
 owned_pgid=''
 timeout_pid=''
 round_timeout_seconds=${SOAK_ROUND_TIMEOUT_SECONDS:-3600}
+# Require 32 MiB of cumulative loss across the trend window; override for host sizing/tests.
+disk_leak_min_kb=${SOAK_DISK_LEAK_MIN_KB:-32768}
 
 usage() {
   echo 'usage: soak/soak-endurance.sh [--rounds R | --minutes M] [--lanes N] [--report FILE]' >&2
@@ -33,7 +35,7 @@ while [ "$#" -gt 0 ]; do
     *) usage; exit 2 ;;
   esac
 done
-if ! [[ "$lanes" =~ ^[0-9]+$ ]] || [ "$lanes" -lt 3 ] || ! [[ "$round_timeout_seconds" =~ ^[0-9]+$ ]] || [ "$round_timeout_seconds" -lt 1 ] || { [ -n "$minutes" ] && ! [[ "$minutes" =~ ^[0-9]+$ ]]; } || { [ -z "$minutes" ] && { ! [[ "$rounds" =~ ^[0-9]+$ ]] || [ "$rounds" -lt 1 ]; }; } || { [ -n "$minutes" ] && [ "$minutes" -lt 1 ]; }; then
+if ! [[ "$lanes" =~ ^[0-9]+$ ]] || [ "$lanes" -lt 3 ] || ! [[ "$round_timeout_seconds" =~ ^[0-9]+$ ]] || [ "$round_timeout_seconds" -lt 1 ] || ! [[ "$disk_leak_min_kb" =~ ^[0-9]+$ ]] || [ "$disk_leak_min_kb" -lt 1 ] || { [ -n "$minutes" ] && ! [[ "$minutes" =~ ^[0-9]+$ ]]; } || { [ -z "$minutes" ] && { ! [[ "$rounds" =~ ^[0-9]+$ ]] || [ "$rounds" -lt 1 ]; }; } || { [ -n "$minutes" ] && [ "$minutes" -lt 1 ]; }; then
   usage
   exit 2
 fi
@@ -132,6 +134,7 @@ cleanup_labeled_docker() {
 initial_disk=''
 previous_disk=''
 disk_declines=0
+disk_decline_start=''
 first_round_ms=''
 timings=()
 round_details=()
@@ -318,9 +321,20 @@ while [ "$failure_round" = none ] && within_limit; do
     failure_round=$round; failure_reason="round timing degraded (first=${first_round_ms}ms current=${elapsed}ms)"
   fi
   [ -n "$first_round_ms" ] || first_round_ms=$elapsed
-  if [ "$SNAP_DISK_KB" -lt "$previous_disk" ]; then disk_declines=$((disk_declines + 1)); else disk_declines=0; fi
+  if [ "$SNAP_DISK_KB" -lt "$previous_disk" ]; then
+    if [ "$disk_declines" -eq 0 ]; then disk_decline_start=$previous_disk; fi
+    disk_declines=$((disk_declines + 1))
+  else
+    disk_declines=0
+    disk_decline_start=$SNAP_DISK_KB
+  fi
   previous_disk=$SNAP_DISK_KB
-  if [ "$disk_declines" -ge 2 ] && [ "$failure_round" = none ]; then failure_round=$round; failure_reason='disk free space trended down monotonically for two rounds'; fi
+  if [ "$disk_declines" -ge 2 ] && [ $((disk_decline_start - SNAP_DISK_KB)) -ge "$disk_leak_min_kb" ] && [ "$failure_round" = none ]; then
+    disk_decrease_kb=$((disk_decline_start - SNAP_DISK_KB))
+    failure_round=$round
+    failure_reason="disk free space decreased materially for two rounds (decrease_kb=$disk_decrease_kb threshold_kb=$disk_leak_min_kb)"
+    leak_details+=("disk:free_kb=$disk_decline_start->$SNAP_DISK_KB decrease_kb=$disk_decrease_kb threshold_kb=$disk_leak_min_kb")
+  fi
   if [ "$failure_round" = none ]; then
     rounds_passed=$((rounds_passed + 1))
     last_verdict=PASS

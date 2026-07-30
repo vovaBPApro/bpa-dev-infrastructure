@@ -54,6 +54,7 @@ import {
   type TurnDeliveryRecord,
   type TurnEndPayload,
   buildMissionKey,
+  canSendWatchdogNotice,
   codexPasteMarker,
   decideRelay,
   detectCodexPasteDeliveryState,
@@ -61,6 +62,7 @@ import {
   getWatchdogTimeoutConfig,
   isPendingReplyTimedOut,
   loadMissionRecord,
+  markWatchdogNoticeSent,
   maybeReadJson,
   missionIsActive,
   parseCodexApprovalPrompt,
@@ -1677,9 +1679,8 @@ async function maybeSendTmuxDecision(chatId: string): Promise<boolean> {
 async function watchdogTick(): Promise<void> {
   const now = Date.now();
   for (const [chatId, p] of [...pendingReplies.entries()]) {
-    if (p.replied_at != null) continue;
+    if (!canSendWatchdogNotice(p)) continue;
     const binding = currentBinding();
-    if (binding?.provider === 'codex' && p.fallback_sent) continue;
     const timeoutMs =
       binding?.provider === 'codex'
         ? CODEX_FALLBACK_TIMEOUT_MS
@@ -1731,10 +1732,7 @@ async function watchdogTick(): Promise<void> {
         process.stderr.write(
           `${LOG_PREFIX} watchdog auto-relay to chat=${chatId} (${chunk.length} chars, inbound ${ageS}s ago)\n`,
         );
-        p.fallback_sent = true;
-        p.reply_source = 'auto_relay';
-        p.last_relayed_chunk = chunk;
-        p.replied_at = Date.now();
+        markWatchdogNoticeSent(p, 'auto_relay', chunk);
       } catch (err) {
         process.stderr.write(
           `${LOG_PREFIX} watchdog auto-relay to ${chatId} FAILED: ${err}\n`,
@@ -1755,10 +1753,7 @@ async function watchdogTick(): Promise<void> {
         process.stderr.write(
           `${LOG_PREFIX} watchdog placeholder to chat=${chatId} (no visible chunk, inbound ${ageS}s ago)\n`,
         );
-        p.reply_source = 'auto_placeholder';
-        p.fallback_sent = true;
-        p.placeholder_sent = true;
-        p.replied_at = Date.now();
+        markWatchdogNoticeSent(p, 'auto_placeholder');
       } catch (err) {
         process.stderr.write(
           `${LOG_PREFIX} watchdog placeholder to ${chatId} FAILED: ${err}\n`,

@@ -29,12 +29,19 @@ repos:
     - agent-bill
     - agent-mila
   legacy_rescue_branch: rescue/vm-final-20260728   # instructions/repo-layout.md
-  canonical_root: /home/bpa-dev-infrastructure     # instance/migration-day.md (install root)
+  canonical_root: /root/bpa-dev-infrastructure     # AS BUILT on bpa-infra after the 2026-07-30 cutover.
+  # instance/migration-day.md still documents /home/bpa-dev-infrastructure as the runbook's
+  # install root; this installation deviates (it runs as root). The as-built value wins here
+  # because instructions/ cite this parameter by name — see migration-day.md "As built".
   git_remote: git@github.com:vovaBPApro/bpa-dev-infrastructure.git  # instance/migration-day.md (clone step)
 
 vm:
   os: Ubuntu 24.04                 # instance/migration-day.md
-  ram_gb: 64                       # instance/migration-day.md, instructions/repo-layout.md (msg 11555)
+  host: bpa-infra                  # AS BUILT (hostname), 2026-07-30 cutover per instance/decisions/HR-11736.md
+  ip: 144.76.185.238               # AS BUILT, cutover target named in instance/decisions/HR-11736.md
+  cores: 12                        # AS BUILT (nproc)
+  ram_gb: 251                      # AS BUILT (free -g). The 64 GB in migration-day.md / repo-layout.md
+  # (msg 11555) was Vova's sizing FLOOR, not this box; the delivered machine exceeds it.
 
 fleet:
   # Historical width band from the legacy control plane. Currently suspended:
@@ -43,9 +50,20 @@ fleet:
   ceiling: 15                      # historical (legacy CLAUDE.md Rule 24); status: suspended
   status: suspended
 
-# NOTE: no model/vendor map is set here — this repo's docs do not state one.
-# It is deliberately omitted rather than carried over from the legacy control
-# plane. Add it only when a doc in THIS repo establishes it.
+orchestrator:
+  # A doc in THIS repo now states the vendor shape, so the long-standing "no
+  # model/vendor map here" omission is lifted for these keys only.
+  top_provider: claude             # instance/handoff-oldorch-2026-07-30.md §1 (thin Claude top)
+  top_posture: thin                # ibid — routing/decisions/Human contact only, minimal Anthropic quota
+  manager_provider: codex          # ibid — Codex managers between orchestrator and workers
+  coder_provider: codex            # ibid — Codex coders below the managers
+  # Fallback/alternate top orchestrator (instructions/orchestrator-fallback.md,
+  # instance/decisions/HR-11573.md). NOT yet exercised: as of 2026-07-30 no
+  # orchestrator/runtime.env exists, so orchestrator/launch.sh resolves an empty
+  # model and would start codex with no --model at all. Pinning it is open work.
+  fallback_provider: codex
+  fallback_model: gpt-5.6-sol      # /root/.codex/config.toml; verified runnable on this box 2026-07-30
+  fallback_model_status: not-pinned
 
 capture:
   # How Human directives reach the decisions ledger. `manual`: the orchestrator

@@ -18,7 +18,10 @@
 #   .github/scripts/run-suites.sh soak        # soak/*.test.sh (slow, nightly)
 #
 # A suite never silently disappears. It either runs, or it is recorded SKIP with
-# a named unmet requirement, and both counts land in the job summary.
+# a named unmet requirement, and both counts land in the job summary. A SKIP is
+# still a gate that did not execute, so any SKIP fails the run (see skip_gate).
+# SUITES_ALLOW_SKIP=1 waives that exit — for underprovisioned local machines
+# only; ci.yml never sets it, so PR, push and nightly are all fail-closed.
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -76,7 +79,8 @@ UNASSIGNED_OK=(
 # ── Requirements ───────────────────────────────────────────────────────────
 # A suite that cannot run must say so by name. Requirements are evaluated at run
 # time, so the same table yields zero skips on a fully provisioned runner and a
-# loud, counted skip anywhere else.
+# loud, counted skip anywhere else. The skip is honest degradation, not a pass:
+# skip_gate turns any SKIP into a failing run unless SUITES_ALLOW_SKIP=1.
 requirements_for() {
   local suite="$1" reqs=""
   # Suites that drive a real tmux server (each on its own private -L socket).
@@ -198,6 +202,9 @@ run_suite() {
     if ! requirement_met "$req"; then
       record "$suite" SKIP 0 "$(requirement_reason "$req")"
       printf 'SKIP  %-56s %s\n' "$suite" "$(requirement_reason "$req")"
+      # return 0 here is per-suite bookkeeping only: the loop must keep going so
+      # every skip gets named, and skip_gate then fails the whole run on any
+      # SKIP row. This is NOT a green path.
       return 0
     fi
   done
@@ -242,6 +249,26 @@ coverage_guard() {
   fi
   printf 'COVERAGE-GUARD ok: every suite in group "%s" produced a result row\n' "$group"
   return 0
+}
+
+# ── Skip gate ──────────────────────────────────────────────────────────────
+# A SKIP row proves a suite was seen, not that it ran. Green-on-SKIP would let a
+# tracked, assigned suite sit unexecuted forever behind an unmet requirement, so
+# after every group run any SKIP fails the gate. The skips stay named and
+# counted first — the degradation is honest, it just no longer passes.
+# SUITES_ALLOW_SKIP=1 (never set in ci.yml) waives the exit for local machines
+# that legitimately lack tmux/docker/daemon deps.
+skip_gate() {
+  local skips
+  skips=$(awk -F'\t' '$2=="SKIP"' "$RESULTS" | wc -l)
+  (( skips == 0 )) && return 0
+  awk -F'\t' '$2=="SKIP" {printf "SKIP-GATE: %s — %s\n", $1, $4}' "$RESULTS" >&2
+  if [[ "${SUITES_ALLOW_SKIP:-}" == "1" ]]; then
+    printf 'SKIP-GATE waived: %d skip(s) tolerated because SUITES_ALLOW_SKIP=1 (local underprovisioned run only — CI never sets this)\n' "$skips" >&2
+    return 0
+  fi
+  printf 'SKIP-GATE FAIL: %d suite(s) skipped; a skipped suite is an unexecuted gate. Provision the requirement or set SUITES_ALLOW_SKIP=1 for a local run.\n' "$skips" >&2
+  return 1
 }
 
 # ── Partition check ────────────────────────────────────────────────────────
@@ -344,6 +371,7 @@ case "$GROUP" in
     emit_summary checks "$guard_rc"
     (( guard_rc != 0 )) && exit 1
     awk -F'\t' '$2=="FAIL"' "$RESULTS" | grep -q . && exit 1
+    skip_gate || exit 1
     exit 0
     ;;
   bun|shell|soak)
@@ -362,6 +390,7 @@ case "$GROUP" in
     emit_summary "$GROUP" "$guard_rc"
     (( guard_rc != 0 )) && exit 1
     awk -F'\t' '$2=="FAIL"' "$RESULTS" | grep -q . && exit 1
+    skip_gate || exit 1
     exit 0
     ;;
   *)

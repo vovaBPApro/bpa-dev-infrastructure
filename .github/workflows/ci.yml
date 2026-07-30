@@ -37,6 +37,13 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
           bun-version: 1.2.22
+      # tools/state-contract/check.ts matches the daemon-deps requirement, and a
+      # SKIP now fails the job (run-suites.sh skip gate), so this job must be
+      # provisioned like the others. Before the gate existed this checker was
+      # silently skipping here — the exact green-on-SKIP hole the gate closes.
+      - name: Install daemon dependencies
+        working-directory: daemon
+        run: bun install --frozen-lockfile
       - name: State contract and instruction checkers
         run: .github/scripts/run-suites.sh checks
 
@@ -135,7 +142,10 @@ jobs:
       - soak-suites
       - shellcheck
       - secret-scan
-    if: always() && github.event_name == 'schedule' && contains(needs.*.result, 'failure')
+    # `cancelled` counts as red too: a nightly job that was cancelled (runner
+    # reclaimed, concurrency kill, manual stop) also left its suites unexecuted,
+    # and an alarm that only fires on `failure` would sleep through that.
+    if: always() && github.event_name == 'schedule' && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
     permissions:
       contents: read
       issues: write
@@ -167,5 +177,11 @@ jobs:
           if [[ -n "$existing" ]]; then
             gh issue comment "$existing" --body "$body"
           else
-            gh issue create --title "$title" --body "$body" --label ci
+            # The label may not exist in a fresh repo; --force makes this
+            # idempotent when it does. If labeling still fails, the alarm must
+            # land anyway — an unlabeled issue beats a lost one.
+            gh label create ci --color B60205 \
+              --description 'continuous integration health' --force || true
+            gh issue create --title "$title" --body "$body" --label ci \
+              || gh issue create --title "$title" --body "$body"
           fi

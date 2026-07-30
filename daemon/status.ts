@@ -118,9 +118,15 @@ export function countActiveLanes(
   const branchPrefix = opts.branchPrefix ?? LANE_BRANCH_PREFIX;
   const baseRef = opts.baseRef ?? 'origin/main';
 
-  const res = runCmd(
-    `git -C '${canonicalRepo}' worktree list --porcelain 2>/dev/null`,
-  );
+  let res: ReturnType<ShRunner>;
+  try {
+    res = runCmd(
+      `git -C '${canonicalRepo}' worktree list --porcelain 2>/dev/null`,
+    );
+  } catch {
+    // A throwing runner is a failed probe, not a /status crash.
+    return { verified: false, reason: 'git runner threw' };
+  }
   if (res.timedOut) return { verified: false, reason: 'git timeout' };
   if (!res.ok) {
     return {
@@ -134,9 +140,14 @@ export function countActiveLanes(
     const isLanePath = path.startsWith(root);
     const isLaneBranch = branch.startsWith(branchPrefix);
     if (!isLanePath || !isLaneBranch) continue;
-    const aheadRes = runCmd(
-      `git -C '${path}' rev-list --count '${baseRef}'..HEAD 2>/dev/null`,
-    );
+    let aheadRes: ReturnType<ShRunner>;
+    try {
+      aheadRes = runCmd(
+        `git -C '${path}' rev-list --count '${baseRef}'..HEAD 2>/dev/null`,
+      );
+    } catch {
+      return { verified: false, reason: 'git runner threw' };
+    }
     if (aheadRes.timedOut) {
       return { verified: false, reason: 'git timeout' };
     }

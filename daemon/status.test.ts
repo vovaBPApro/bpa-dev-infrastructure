@@ -121,6 +121,24 @@ test('buildAgentLines: git failure -> "unknown", never a fabricated 0', () => {
   expect(lines.join('\n')).not.toContain('0 (verified');
 });
 
+test('ADVERSARIAL: a THROWING runner degrades countActiveLanes to unknown, not a crash', () => {
+  const thrower: ShRunner = () => {
+    throw new Error('spawn EAGAIN');
+  };
+  const lanes = countActiveLanes(CANON, thrower);
+  expect(lanes.verified).toBe(false);
+  if (!lanes.verified) expect(lanes.reason).toContain('threw');
+});
+
+test('ADVERSARIAL: a runner that throws only on the ahead probe still degrades to unknown', () => {
+  const partialThrower: ShRunner = (cmd) => {
+    if (cmd.includes('worktree list')) return { out: PORCELAIN_TWO_LANES, ok: true };
+    throw new Error('spawn EAGAIN');
+  };
+  const lanes = countActiveLanes(CANON, partialThrower);
+  expect(lanes.verified).toBe(false);
+});
+
 test('REGRESSION: git timeout becomes unknown and does not fabricate a zero', () => {
   const timeout: ShRunner = () => ({ out: '', ok: false, timedOut: true });
   const lines = buildAgentLines(CANON, timeout);

@@ -104,8 +104,20 @@ afterEach(() => {
   }
 });
 
+// Ask the OS for a genuinely free port instead of guessing a random number:
+// a blind pick in 20000-45000 overlaps the kernel ephemeral range
+// (32768-60999) and collided under load in cross-vendor review (EADDRINUSE).
+// The tiny close-then-rebind window that remains is orders of magnitude
+// narrower than a blind pick.
 function freePort(): number {
-  return 20_000 + Math.floor(Math.random() * 25_000);
+  const probe = Bun.listen({
+    hostname: '127.0.0.1',
+    port: 0,
+    socket: { data() {} },
+  });
+  const port = probe.port;
+  probe.stop(true);
+  return port;
 }
 
 async function waitFor(

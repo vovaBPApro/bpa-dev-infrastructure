@@ -73,7 +73,18 @@ test('restart after dead tmux reaps stale ownership and fully arms bound instanc
   );
   const bindingFile = join(runtimeDir, 'orchestrator-binding.json');
   const callsFile = join(scratch, 'launcher.calls');
-  const port = 20_000 + Math.floor(Math.random() * 20_000);
+  // OS-assigned free port (blind random picks collided in review — see the
+  // freePort note in watchdog-turnend-a1.test.ts).
+  const port = (() => {
+    const probe = Bun.listen({
+      hostname: '127.0.0.1',
+      port: 0,
+      socket: { data() {} },
+    });
+    const p = probe.port;
+    probe.stop(true);
+    return p;
+  })();
 
   mkdirSync(join(installRoot, 'orchestrator'), { recursive: true });
   mkdirSync(runtimeDir, { recursive: true });

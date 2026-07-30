@@ -134,24 +134,25 @@ test('no-lanes: an empty verified census renders as none, not unknown', () => {
   expect(lines.at(-1)).toBe('Блокери: немає');
 });
 
-test('HONESTY: git-timeout renders lanes and landed as unknown with ONE git blocker', () => {
+test('HONESTY: git-timeout renders lanes and landed as unknown, each with its blocker', () => {
   const deps = healthyDeps();
   deps.lanes = { verified: false, reason: 'git timeout' };
   deps.lastLanded = { verified: false, reason: 'git timeout' };
   const lines = renderHumanStatus(deps);
-  expect(lines).toContain('Зараз в роботі: невідомо (git: git timeout)');
-  expect(lines).toContain('Останнє приземлене: невідомо (git: git timeout)');
+  expect(lines).toContain('Зараз в роботі: невідомо (немає перевірених даних git)');
+  expect(lines).toContain('Останнє приземлене: невідомо (немає перевірених даних git)');
   const blockers = lines.at(-1)!;
-  expect(blockers).toContain('git недоступний (git timeout)');
-  expect(blockers.split('git недоступний').length - 1).toBe(1);
-  expect(blockers).not.toContain('немає');
+  expect(blockers).toContain('стан лейнів невідомий');
+  expect(blockers).toContain('останні приземлені невідомі');
+  expect(blockers).not.toContain('Блокери: немає');
 });
 
-test('HONESTY: missing mission source names its reason instead of faking none', () => {
+test('HONESTY: missing mission source is unknown AND a blocker, reason kept generic', () => {
   const deps = healthyDeps();
   deps.mission = { present: false, reason: 'no state DB at /x/state.db' };
   const lines = renderHumanStatus(deps);
-  expect(lines[1]).toBe('Місія: невідомо (no state DB at /x/state.db)');
+  expect(lines[1]).toBe('Місія: невідомо (джерело місії недоступне)');
+  expect(lines.at(-1)).toContain('стан місії невідомий');
 });
 
 test('stale mission rows are labeled with their age', () => {
@@ -238,6 +239,120 @@ test('HONESTY: readLastLanded degrades on timeout and on failure', () => {
   const res = readLastLanded('/repo', broken);
   expect(res.verified).toBe(false);
   if (!res.verified) expect(res.reason).toContain('git log failed');
+});
+
+// ── adversarial honesty rows ─────────────────────────────────────────────────
+// Every row here injects one degraded/hostile source into an otherwise healthy
+// status and asserts the all-good line «Блокери: немає» is ABSENT. These are
+// the review-rejection cases: absence of evidence must never render as OK.
+
+const ALL_GOOD = 'Блокери: немає';
+
+test('ADVERSARIAL: missing mission source, otherwise healthy → never «Блокери: немає»', () => {
+  const deps = healthyDeps();
+  deps.mission = { present: false, reason: 'no state DB at /x/state.db' };
+  const lines = renderHumanStatus(deps);
+  expect(lines.join('\n')).not.toContain(ALL_GOOD);
+  // The raw reason (a filesystem path) must not leak into the human summary.
+  expect(lines.join('\n')).not.toContain('/x/state.db');
+});
+
+test('ADVERSARIAL: empty git-log output is unknown, not «нічого не знайдено»', () => {
+  const runner: ShRunner = () => ({ out: '', ok: true });
+  const res = readLastLanded('/repo', runner, { now: NOW });
+  expect(res.verified).toBe(false);
+  const deps = healthyDeps();
+  deps.lastLanded = res;
+  const lines = renderHumanStatus(deps);
+  expect(lines.join('\n')).not.toContain(ALL_GOOD);
+  expect(lines.join('\n')).not.toContain('нічого не знайдено');
+});
+
+test('ADVERSARIAL: malformed git-log output is unknown, never verified-empty', () => {
+  const runner: ShRunner = () => ({
+    out: 'garbage without tab\nmore garbage',
+    ok: true,
+  });
+  const res = readLastLanded('/repo', runner, { now: NOW });
+  expect(res.verified).toBe(false);
+  const deps = healthyDeps();
+  deps.lastLanded = res;
+  const lines = renderHumanStatus(deps);
+  expect(lines.join('\n')).not.toContain(ALL_GOOD);
+});
+
+test('ADVERSARIAL: a THROWING runner degrades to unknown, not a crash', () => {
+  const thrower: ShRunner = () => {
+    throw new Error('spawn EAGAIN');
+  };
+  const res = readLastLanded('/repo', thrower, { now: NOW });
+  expect(res.verified).toBe(false);
+  const deps = healthyDeps();
+  deps.lastLanded = res;
+  const lines = renderHumanStatus(deps);
+  expect(lines.join('\n')).not.toContain(ALL_GOOD);
+});
+
+test('ADVERSARIAL: heartbeat +1s in the future is INVALID and blocks — no grace', () => {
+  const plus1s = parseHeartbeat(String(Math.floor(NOW / 1000) + 1), NOW);
+  expect(plus1s.status).toBe('invalid');
+  const deps = healthyDeps();
+  deps.heartbeat = plus1s;
+  const lines = renderHumanStatus(deps);
+  expect(lines.join('\n')).not.toContain(ALL_GOOD);
+  expect(lines[0]).not.toContain('живий');
+});
+
+test('ADVERSARIAL: future commit timestamp makes last-landed unknown, no clamp', () => {
+  const runner: ShRunner = () => ({
+    out: `[ORCH] time traveler\t${Math.floor(NOW / 1000) + 60}`,
+    ok: true,
+  });
+  const res = readLastLanded('/repo', runner, { now: NOW });
+  expect(res.verified).toBe(false);
+  const deps = healthyDeps();
+  deps.lastLanded = res;
+  const lines = renderHumanStatus(deps);
+  expect(lines.join('\n')).not.toContain(ALL_GOOD);
+  expect(lines.join('\n')).not.toContain('щойно)');
+});
+
+test('ADVERSARIAL: unknown lane ahead-state is a blocker, not a silent shrug', () => {
+  const deps = healthyDeps();
+  deps.lanes = {
+    verified: true,
+    count: 1,
+    lanes: [{ path: '/x/l0', branch: 'ag-l0', ahead: -1 }],
+  };
+  const lines = renderHumanStatus(deps);
+  expect(lines.join('\n')).not.toContain(ALL_GOOD);
+});
+
+test('SANITIZE: control chars and ANSI in source text never reach the summary', () => {
+  const deps = healthyDeps();
+  deps.lastLanded = {
+    verified: true,
+    entries: [{ subject: '[ORCH] ok\u001b[31m evil\u0007\nX', ageMs: 60_000 }],
+  };
+  deps.mission = {
+    present: true,
+    mission: { status: 'running', desc: 'W-14\u0000\u202e tricky' },
+    updatedAt: NOW,
+  };
+  const lines = renderHumanStatus(deps);
+  const joined = lines.join('|');
+  expect(joined).not.toMatch(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069]/);
+});
+
+test('SANITIZE: over-long source text is capped in the summary', () => {
+  const deps = healthyDeps();
+  deps.lastLanded = {
+    verified: true,
+    entries: [{ subject: `[ORCH] ${'x'.repeat(500)}`, ageMs: 60_000 }],
+  };
+  const lines = renderHumanStatus(deps);
+  const landed = lines.find((l) => l.includes('[ORCH]'))!;
+  expect(landed.length).toBeLessThan(120);
 });
 
 // ── helpers ──────────────────────────────────────────────────────────────────

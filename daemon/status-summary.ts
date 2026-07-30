@@ -6,12 +6,24 @@
 // states, what landed last, is anything blocked.
 //
 // HONESTY RULES (binding, from W-13 and Hard Rule 10):
-//   - every source is optional; a missing/failed source renders as an honest
-//     «невідомо» with the reason, never as a crash and never as an OK;
+//   - every source is optional; a missing/failed/empty/invalid source renders
+//     as an honest «невідомо» AND appends an observability blocker — never a
+//     crash, never an OK, never a silent skip;
+//   - «Блокери: немає» therefore requires explicit verified evidence from
+//     EVERY source above it; absence of evidence can never render as "all
+//     good";
+//   - any heartbeat or commit timestamp in the future is INVALID evidence
+//     (broken clock), with no grace window and no clamping to "fresh";
 //   - anything derived from a state file is labeled with its age when stale;
-//   - «Блокери: немає» is only ever printed when every probe actually
-//     succeeded and observed no problem — a failed probe IS a listed blocker,
-//     so absence of evidence can never render as "all good".
+//   - a throwing runner degrades to «невідомо», it does not crash /status.
+//
+// LEAK RULES (human summary only; /status raw keeps full detail):
+//   - source-derived failure reasons are NOT interpolated into the summary —
+//     the UA template uses short generic reasons; the detail (paths, repo
+//     locations, git stderr) stays in the raw view;
+//   - source-derived free text that must be shown (commit subjects, mission
+//     text, branch names, model label) is sanitized: control/ANSI/bidi chars
+//     stripped, unexpected charsets replaced with '?', length-capped.
 //
 // All shell access goes through the injected ShRunner, which the caller
 // (daemon/server.ts) builds with a hard timeout — the W-13 git-timeout
@@ -38,23 +50,27 @@ export const UA = {
   modelUnknown: ', модель: невідома)',
   missionLabel: 'Місія',
   missionNone: 'не задана',
-  missionUnknown: (reason: string) => `невідомо (${reason})`,
+  // Generic on purpose: the source-derived reason (paths etc.) stays in raw.
+  missionUnknown: 'невідомо (джерело місії недоступне)',
   workLabel: 'Зараз в роботі',
   workNone: 'лейнів немає',
-  workUnknown: (reason: string) => `невідомо (git: ${reason})`,
+  workUnknown: 'невідомо (немає перевірених даних git)',
   laneNoCommits: 'ще без комітів',
   laneStateUnknown: 'стан невідомий',
   laneMore: (n: number) => `  • … і ще ${n}`,
   landedLabel: 'Останнє приземлене',
-  landedNone: 'нічого не знайдено',
-  landedUnknown: (reason: string) => `невідомо (git: ${reason})`,
+  landedUnknown: 'невідомо (немає перевірених даних git)',
   blockersLabel: 'Блокери',
   blockersNone: 'немає',
   blockerOrchDead: 'оркестратор не запущений',
   blockerOrchUnknown: 'стан оркестратора невідомий',
   blockerStaleHb: (hb: string) => `серцебиття оркестратора застаріле (${hb})`,
   blockerNoHb: 'серцебиття оркестратора відсутнє',
-  blockerGit: (reason: string) => `git недоступний (${reason}) — стан лейнів невідомий`,
+  blockerBadHb: 'серцебиття оркестратора невалідне',
+  blockerMissionUnknown: 'стан місії невідомий (джерело недоступне)',
+  blockerLanesUnknown: 'стан лейнів невідомий (git-перевірка не вдалася)',
+  blockerLaneAheadUnknown: 'стан частини лейнів невідомий',
+  blockerLandedUnknown: 'останні приземлені невідомі (git-перевірка не вдалася)',
   justNow: 'щойно',
   minAgo: (n: number) => `${n} хв тому`,
   hourAgo: (n: number) => `${n} год тому`,
@@ -71,6 +87,31 @@ export function uaAge(ms: number): string {
   const hours = Math.floor(min / 60);
   if (hours < 48) return UA.hourAgo(hours);
   return UA.dayAgo(Math.floor(hours / 24));
+}
+
+// ── Sanitization ─────────────────────────────────────────────────────────────
+// Source-derived free text (commit subjects, mission text, branch names, model
+// labels) is rendered into a chat message a human reads. Bound it: strip
+// control chars (incl. ANSI ESC), C1, zero-width and bidi-override characters;
+// replace anything outside the expected charset (Latin/Cyrillic letters,
+// digits, common punctuation) with '?' so hostile payloads are visible but
+// inert; collapse whitespace; cap the length. Failure REASONS are never passed
+// through here — they simply are not rendered in the human summary at all.
+export const MAX_HUMAN_TEXT = 96;
+
+export function sanitizeForHuman(input: string, maxLen = MAX_HUMAN_TEXT): string {
+  const cleaned = input
+    .replace(
+      /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g,
+      ' ',
+    )
+    .replace(
+      /[^\p{Script=Latin}\p{Script=Cyrillic}\p{Nd} .,:;!?'()\[\]\/+#%&*_@=«»’“”—–-]/gu,
+      '?',
+    )
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned.length > maxLen ? `${cleaned.slice(0, maxLen - 1)}…` : cleaned;
 }
 
 // Ukrainian plural picker: one/few(2-4)/many.
@@ -100,10 +141,11 @@ export function parseHeartbeat(raw: string | null, now: number): HeartbeatReadin
   const t = raw.trim();
   if (!/^\d+$/.test(t)) return { status: 'invalid' };
   const seconds = parseInt(t, 10);
-  // A value in the future or absurdly old is a broken clock, not evidence.
+  // ANY future value is a broken clock, not liveness evidence — no grace
+  // window and no clamping to "fresh" (review finding, HR-150 fixup).
   const ageMs = now - seconds * 1000;
-  if (ageMs < -60_000) return { status: 'invalid' };
-  return { status: 'ok', ageMs: Math.max(0, ageMs) };
+  if (ageMs < 0) return { status: 'invalid' };
+  return { status: 'ok', ageMs };
 }
 
 export function readHeartbeatFile(path: string, now: number): HeartbeatReading {
@@ -132,19 +174,41 @@ export function readLastLanded(
   const ref = opts.ref ?? 'origin/main';
   const limit = opts.limit ?? 3;
   const now = opts.now ?? Date.now();
-  const res = runCmd(
-    `git -C '${repo}' log '${ref}' -${limit} --format='%s%x09%ct' 2>/dev/null`,
-  );
+  let res: ReturnType<ShRunner>;
+  try {
+    res = runCmd(
+      `git -C '${repo}' log '${ref}' -${limit} --format='%s%x09%ct' 2>/dev/null`,
+    );
+  } catch {
+    // A throwing runner is a failed probe, not a /status crash.
+    return { verified: false, reason: 'git runner threw' };
+  }
   if (res.timedOut) return { verified: false, reason: 'git timeout' };
   if (!res.ok) return { verified: false, reason: `git log failed on ${repo}` };
+  // Fail-closed parsing (review finding, HR-150 fixup): a malformed row means
+  // the probe did NOT verify history — no silent skipping. Empty output for an
+  // existing ref is equally unverified: `git log` on a real ref always prints
+  // at least one commit, so "nothing" is evidence of a broken probe, not of an
+  // empty history.
   const entries: LandedEntry[] = [];
   for (const line of res.out.split('\n')) {
+    if (line.trim() === '') continue; // trailing newline noise only
     const tab = line.lastIndexOf('\t');
-    if (tab < 0) continue;
+    if (tab < 0) return { verified: false, reason: 'git log output malformed' };
     const subject = line.slice(0, tab).trim();
     const ct = line.slice(tab + 1).trim();
-    if (!subject || !/^\d+$/.test(ct)) continue;
-    entries.push({ subject, ageMs: Math.max(0, now - parseInt(ct, 10) * 1000) });
+    if (!subject || !/^\d+$/.test(ct)) {
+      return { verified: false, reason: 'git log output malformed' };
+    }
+    const commitMs = parseInt(ct, 10) * 1000;
+    // ANY future commit timestamp is invalid evidence — no clamp to "just now".
+    if (commitMs > now) {
+      return { verified: false, reason: 'commit timestamp in the future' };
+    }
+    entries.push({ subject, ageMs: now - commitMs });
+  }
+  if (entries.length === 0) {
+    return { verified: false, reason: 'git log returned no commits' };
   }
   return { verified: true, entries };
 }
@@ -185,7 +249,9 @@ export function renderHumanStatus(deps: StatusSummaryDeps): string[] {
   // Оркестратор — only from live probes (tmux + heartbeat file age).
   const o = deps.orchestrator;
   const hb = deps.heartbeat;
-  const modelSuffix = o.model ? UA.model(o.model) : UA.modelUnknown;
+  const modelSuffix = o.model
+    ? UA.model(sanitizeForHuman(o.model, 40))
+    : UA.modelUnknown;
   if (!o.tmuxConfigured) {
     lines.push(`${UA.orchLabel}: ${UA.orchNoTmuxConfig}`);
     blockers.push(UA.blockerOrchUnknown);
@@ -205,12 +271,15 @@ export function renderHumanStatus(deps: StatusSummaryDeps): string[] {
     blockers.push(UA.blockerNoHb);
   } else {
     lines.push(`${UA.orchLabel}: ${UA.orchBadHb}`);
-    blockers.push(UA.blockerNoHb);
+    blockers.push(UA.blockerBadHb);
   }
 
-  // Місія — from the durable state DB, age-labeled when stale.
+  // Місія — from the durable state DB, age-labeled when stale. An absent or
+  // unreadable mission source is an observability blocker, never a shrug; the
+  // raw reason (which may contain paths) stays out of the human summary.
   if (!deps.mission.present) {
-    lines.push(`${UA.missionLabel}: ${UA.missionUnknown(deps.mission.reason)}`);
+    lines.push(`${UA.missionLabel}: ${UA.missionUnknown}`);
+    blockers.push(UA.blockerMissionUnknown);
   } else if (!deps.mission.mission) {
     lines.push(`${UA.missionLabel}: ${UA.missionNone}`);
   } else {
@@ -219,13 +288,16 @@ export function renderHumanStatus(deps: StatusSummaryDeps): string[] {
     const ageMs = updatedAt == null ? null : Math.max(0, now - updatedAt);
     const stale =
       ageMs !== null && ageMs > HEARTBEAT_FRESH_MS ? UA.updated(uaAge(ageMs)) : '';
-    lines.push(`${UA.missionLabel}: ${m.desc} [${m.status}]${stale}`);
+    lines.push(
+      `${UA.missionLabel}: ${sanitizeForHuman(m.desc)} [${sanitizeForHuman(m.status, 24)}]${stale}`,
+    );
   }
 
-  // Зараз в роботі — lane worktree census (already timeout-guarded).
+  // Зараз в роботі — lane worktree census (timeout- and throw-guarded at the
+  // source). Unverified census AND unverified per-lane state both block.
   if (!deps.lanes.verified) {
-    lines.push(`${UA.workLabel}: ${UA.workUnknown(deps.lanes.reason)}`);
-    blockers.push(UA.blockerGit(deps.lanes.reason));
+    lines.push(`${UA.workLabel}: ${UA.workUnknown}`);
+    blockers.push(UA.blockerLanesUnknown);
   } else if (deps.lanes.count === 0) {
     lines.push(`${UA.workLabel}: ${UA.workNone}`);
   } else {
@@ -238,31 +310,32 @@ export function renderHumanStatus(deps: StatusSummaryDeps): string[] {
           : lane.ahead === 0
             ? UA.laneNoCommits
             : UA.laneStateUnknown;
-      lines.push(`  • ${lane.branch} — ${state}`);
+      lines.push(`  • ${sanitizeForHuman(lane.branch, 48)} — ${state}`);
     }
     if (deps.lanes.lanes.length > MAX_LANES_SHOWN) {
       lines.push(UA.laneMore(deps.lanes.lanes.length - MAX_LANES_SHOWN));
     }
+    if (deps.lanes.lanes.some((l) => l.ahead < 0)) {
+      blockers.push(UA.blockerLaneAheadUnknown);
+    }
   }
 
-  // Останнє приземлене — subjects with relative dates.
-  if (!deps.lastLanded.verified) {
-    lines.push(`${UA.landedLabel}: ${UA.landedUnknown(deps.lastLanded.reason)}`);
-    if (deps.lanes.verified) {
-      // git failed only here; still a real observability blocker.
-      blockers.push(UA.blockerGit(deps.lastLanded.reason));
-    }
-  } else if (deps.lastLanded.entries.length === 0) {
-    lines.push(`${UA.landedLabel}: ${UA.landedNone}`);
+  // Останнє приземлене — subjects with relative dates. `verified: true` with
+  // zero entries carries no affirmative evidence either (readLastLanded never
+  // produces it), so it renders as unknown and blocks — fail-closed.
+  if (!deps.lastLanded.verified || deps.lastLanded.entries.length === 0) {
+    lines.push(`${UA.landedLabel}: ${UA.landedUnknown}`);
+    blockers.push(UA.blockerLandedUnknown);
   } else {
     lines.push(`${UA.landedLabel}:`);
     for (const e of deps.lastLanded.entries.slice(0, MAX_LANDED_SHOWN)) {
-      lines.push(`  • ${e.subject} (${uaAge(e.ageMs)})`);
+      lines.push(`  • ${sanitizeForHuman(e.subject, 80)} (${uaAge(e.ageMs)})`);
     }
   }
 
-  // Блокери — «немає» is itself an observation, printable only when every
-  // probe above succeeded (any failed probe pushed a blocker already).
+  // Блокери — «немає» is itself an observation, printable only when EVERY
+  // probe above produced explicit verified evidence (any absent/failed/empty/
+  // invalid source pushed a blocker already).
   lines.push(
     blockers.length === 0
       ? `${UA.blockersLabel}: ${UA.blockersNone}`

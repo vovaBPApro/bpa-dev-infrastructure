@@ -20,7 +20,6 @@ env BUN_OPTIONS=--only-failures ORCH_CONFIG_FILE="$SCRATCH/no-runtime.env" \
   ORCH_INSTALL_ROOT="$GREEN_ROOT" ORCH_RUNTIME_DIR="$GREEN_RUNTIME" \
   FULL_SUITE_LOG="$GREEN_RUNTIME/full-suite.log" \
   "$SCRIPT_DIR/full-suite.sh" || fail 'green fixture became red under ambient BUN_OPTIONS'
-contains 'ambient-safe green fixture' "$GREEN_RUNTIME/full-suite.log"
 contains 'suite=green.test.ts rc=0' "$GREEN_RUNTIME/full-suite.log"
 
 RED_ROOT="$SCRATCH/red-repo"

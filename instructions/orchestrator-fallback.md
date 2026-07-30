@@ -15,11 +15,20 @@ a non-Anthropic model (for example GPT). That session runs a different harness
 than the Claude one, so several defaults no longer hold. These rules add to
 `orchestrator-playbook`; they never relax it.
 
-## Session start — no Claude hook fires
+## Session start — verify the load happened, never assume it
 
-A fallback harness does not fire the Claude `SessionStart` hook, so nothing
-auto-loads the instruction context. Follow this deterministic sequence — do not
-stop on a missing tool:
+A fallback session started by `orchestrator/launch.sh` DOES get the standing
+context: the launcher declares the shared `SessionStart` hook on the codex
+command line (`--config hooks.SessionStart=…` plus
+`--dangerously-bypass-hook-trust`, which is required — without it the hook is
+dropped and nobody can answer the trust prompt in a detached pane). The hook is
+the same script the Claude harness runs, so the load is identical. It arrives
+with the first turn, and the session shows `SessionStart hook (completed)`.
+
+A fallback session started any other way — by hand, or on a harness whose hooks
+are not wired — auto-loads nothing. If the confirmation above is not visible,
+treat the load as not done and follow this deterministic sequence — do not stop
+on a missing tool:
 
 1. First try `bun tools/instructions/session-load.ts`.
 2. If that file is missing or exits non-zero, do not stop: manually read, before

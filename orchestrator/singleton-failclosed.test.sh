@@ -38,6 +38,10 @@ export PATH="$SHIM:$PATH"
 export ORCH_TEST_TMUX_SOCKET="$TMUX_SOCKET"
 export ORCH_CONFIG_FILE="$SCRATCH/no-runtime.env"
 export ORCH_STATE_DB="$SCRATCH/absent/state.db"
+# launch.sh derives the live-instance lock from the ambient chat id and
+# deletes it on `stop`. Unisolated, this suite removes the operator's real
+# orchestrator lock whenever it runs inside an orchestrator-spawned shell.
+export ORCH_INSTANCE_LOCK_FILE="$SCRATCH/instance.lock"
 export ORCH_SINGLETON_LOCK_FILE="$SINGLETON_LOCK"
 export ORCH_PROVIDER=codex
 export ORCH_AUTH_PREFLIGHT="$SCRATCH/preflight.sh"

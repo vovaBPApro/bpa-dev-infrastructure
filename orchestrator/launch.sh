@@ -53,6 +53,15 @@ CODEX_MODEL="${ORCH_CODEX_MODEL:-${MODEL:-gpt-5.6-sol}}"
 # codex-cli defaults this box to `reasoning effort: none`, which is not adequate
 # for the judgement this role does (routing, evidence verdicts, landing calls).
 CODEX_REASONING_EFFORT="${ORCH_CODEX_REASONING_EFFORT:-high}"
+# Standing-context load at session start. Codex fires SessionStart hooks with
+# the same wire format as the Claude harness — same stdin envelope, same
+# {"hookSpecificOutput":{"additionalContext":…}} reply — so both providers share
+# ONE hook script rather than forking the loader per vendor. Declared inline via
+# --config instead of a hooks.json file: a repo-local $CODEX_HOME would be
+# written into by codex (tui.model_availability_nux counters), leaving the tree
+# dirty and every session load reporting `startup: degraded`, and the real
+# $CODEX_HOME is shared with every other codex process on the box.
+CODEX_SESSION_HOOK="${ORCH_CODEX_SESSION_HOOK:-$REPO_DIR/.claude/hooks/session-load.sh}"
 BOUND_CHAT_ID="${TELEGRAM_BOUND_CHAT_ID:-${TELEGRAM_CHAT_ID:-}}"
 INSTANCE_LOCK_FILE="${ORCH_INSTANCE_LOCK_FILE:-${BOUND_CHAT_ID:+$HOME/.claude/orchestrator-chat-$BOUND_CHAT_ID.lock}}"
 
@@ -160,6 +169,39 @@ try {
   return 0
 }
 
+# Codex has the same failure mode as Claude, keyed differently: an unaccepted
+# work dir stops the TUI on "Do you trust the contents of this directory?" —
+# observed live, and neither --dangerously-bypass-approvals-and-sandbox nor a
+# `-c projects."<dir>".trust_level` override suppresses it (the check reads the
+# persisted config, not overrides). In a detached pane nobody answers, so the
+# session sits at a prompt while the launcher reports success. Same contract as
+# claude_trust_preflight: fail only on a positive "untrusted" verdict.
+codex_trust_preflight() {
+  local config="${CODEX_HOME:-$HOME/.codex}/config.toml"
+  [[ "${ORCH_SKIP_TRUST_CHECK:-0}" == "1" ]] && return 0
+  [[ -r "$config" ]] || return 0
+  local work_dir_real
+  work_dir_real="$(cd "$WORK_DIR" 2>/dev/null && pwd -P)" || return 0
+  local verdict
+  verdict="$(awk -v a="$WORK_DIR" -v b="$work_dir_real" '
+    /^[[:space:]]*\[/ {
+      section = $0
+      sub(/[[:space:]]+$/, "", section)
+      target = (section == "[projects.\"" a "\"]" || section == "[projects.\"" b "\"]")
+      next
+    }
+    target && /^[[:space:]]*trust_level[[:space:]]*=[[:space:]]*"trusted"[[:space:]]*$/ { found = 1 }
+    END { print (found ? "trusted" : "untrusted") }
+  ' "$config" 2>/dev/null)" || return 0
+  if [[ "$verdict" == "untrusted" ]]; then
+    printf 'ERROR orchestrator-workdir-untrusted dir=%s config=%s\n' \
+      "$WORK_DIR" "$config" >&2
+    printf 'hint: codex would stall on the directory trust prompt in a detached pane; run codex once in that directory and accept, or set ORCH_SKIP_TRUST_CHECK=1\n' >&2
+    return 1
+  fi
+  return 0
+}
+
 build_command() {
   case "$PROVIDER" in
     claude)
@@ -202,15 +244,23 @@ process.stdout.write(JSON.stringify({
       ;;
     codex)
       local relay="${ORCH_TURNEND_RELAY:-$SCRIPT_DIR/orchestrator-turnend-relay.sh}"
-      local notify="" effort=""
+      local notify="" effort="" hooks=""
       if [[ -x "$relay" ]]; then
         printf -v notify ' --config notify=%q' "[\"$relay\"]"
       fi
       if [[ -n "$CODEX_REASONING_EFFORT" ]]; then
         printf -v effort ' --config model_reasoning_effort=%q' "\"$CODEX_REASONING_EFFORT\""
       fi
-      printf 'exec codex --model %q --dangerously-bypass-approvals-and-sandbox%s%s' \
-        "$CODEX_MODEL" "$effort" "$notify"
+      if [[ -x "$CODEX_SESSION_HOOK" ]]; then
+        # --dangerously-bypass-hook-trust is REQUIRED, not decorative: without
+        # persisted trust codex drops the hook, and a headless tmux pane has no
+        # way to answer the trust prompt, so the load fails silently and the
+        # orchestrator boots blind. The hook source is this repository.
+        printf -v hooks ' --dangerously-bypass-hook-trust --config hooks.SessionStart=%q' \
+          "[{hooks=[{type=\"command\",command=\"$CODEX_SESSION_HOOK\"}]}]"
+      fi
+      printf 'exec codex --model %q --dangerously-bypass-approvals-and-sandbox%s%s%s' \
+        "$CODEX_MODEL" "$effort" "$notify" "$hooks"
       ;;
     *) printf 'unsupported provider: %s\n' "$PROVIDER" >&2; return 2 ;;
   esac
@@ -249,6 +299,9 @@ start() {
     return 2
   fi
   if [[ "$PROVIDER" == claude ]] && ! claude_trust_preflight; then
+    return 2
+  fi
+  if [[ "$PROVIDER" == codex ]] && ! codex_trust_preflight; then
     return 2
   fi
   local command provider_bin singleton_command startup_file pane_pid

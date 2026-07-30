@@ -49,6 +49,28 @@ export ORCH_CONFIG_FILE="$SCRATCH/no-runtime.env"
 export ORCH_RUNTIME_DIR="$SCRATCH/runtime"
 export ORCH_SINGLETON_LOCK_FILE="$SCRATCH/orchestrator.singleton.lock"
 export ORCH_STATE_DB="$SCRATCH/absent-state.db"
+# ── Live-state isolation ────────────────────────────────────────────────────
+# A coder lane runs inside the orchestrator's own process tree and inherits its
+# environment, and every one of these paths is env-derived inside launch.sh, so
+# an unset here resolves to the operator's REAL file. `stop` deletes the
+# instance lock and the lease file; the turn-end path writes the heartbeat.
+# Measured against decoys before this block existed: instance lock DELETED,
+# lease file DELETED, heartbeat overwritten with a fresh timestamp — the last
+# being the worst of the three, since a forged heartbeat tells the watchdog a
+# dead orchestrator is alive. ORCH_RUNTIME_DIR alone does not cover them: each
+# has its own override that wins over the runtime dir.
+export ORCH_INSTANCE_LOCK_FILE="$SCRATCH/instance.lock"
+export ORCH_LEASE_FILE="$SCRATCH/orchestrator.lease"
+export ORCH_HEARTBEAT_FILE="$SCRATCH/runtime/orchestrator.heartbeat"
+export ORCH_LOCK_FILE="$SCRATCH/launch.lock"
+export ORCH_CLAUDE_RELAY_SETTINGS="$SCRATCH/claude-relay-settings.json"
+export ORCH_CLAUDE_MCP_CONFIG="$SCRATCH/claude-mcp-config.json"
+# The assertions below are about the launcher's OWN defaults (the fresh-clone
+# path). An ambient value for any of these would quietly rewrite what is being
+# tested, so they are cleared rather than trusted.
+unset ORCH_MODEL ORCH_CODEX_MODEL ORCH_CODEX_REASONING_EFFORT
+unset ORCH_CODEX_SESSION_HOOK ORCH_TURNEND_RELAY ORCH_SKIP_TRUST_CHECK
+unset TELEGRAM_BOUND_CHAT_ID TELEGRAM_CHAT_ID
 export ORCH_AUTH_PREFLIGHT="$SCRATCH/preflight.sh"
 export ORCH_PROVIDER=codex
 export ORCH_SESSION="codex-notify-wiring-test"

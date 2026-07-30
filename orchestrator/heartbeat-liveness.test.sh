@@ -40,12 +40,26 @@ export ORCH_TEST_ACTIONS="$ACTION_FILE"
 export ORCH_LAUNCH_SCRIPT="$SCRATCH/launch.sh"
 export ORCH_HEARTBEAT_MAX_AGE=10
 export PATH="$SHIM:$PATH"
+# Live-state isolation. Both the turn-end hook and watchdog.sh resolve these
+# from the environment, and each override wins over ORCH_RUNTIME_DIR, so a lane
+# inheriting the orchestrator's environment would write the operator's real
+# heartbeat (masking a dead orchestrator), delete the real lease file, and
+# append to the real nudge outbox — which the daemon forwards to Telegram.
+export ORCH_HEARTBEAT_FILE="$RUNTIME_DIR/orchestrator.heartbeat"
+export ORCH_HEARTBEAT_MISSING_SINCE_FILE="$RUNTIME_DIR/heartbeat-missing-since"
+export ORCH_LEASE_FILE="$RUNTIME_DIR/orchestrator.lease"
+export ORCH_INSTANCE_LOCK_FILE="$SCRATCH/instance.lock"
+export NUDGE_OUTBOX_FILE="$RUNTIME_DIR/nudges.outbox"
+export NUDGE_RATE_FILE="$RUNTIME_DIR/nudge-rate.tsv"
 # Standalone-runtime branch: with no relay entry and no ORCH_RELAY_URL the hook
 # delivers nothing and only advances liveness, which is all this suite is about.
 # It also keeps the suite hermetic — a real delivery would POST to whatever
 # daemon happens to be listening on this box and relay a fabricated turn to
 # Telegram. (The payload contract itself is locked by turnend-relay.test.sh.)
 export ORCH_RELAY_ENTRY="$SCRATCH/absent-relay.ts"
+# An inherited ORCH_RELAY_URL would take the curl branch instead, so the suite
+# would both leave this box and fail on an unrelated network error.
+unset ORCH_RELAY_URL
 
 # This used to pass '{}', which daemon/relay.ts rejects as an unsupported hook
 # payload; the hook exited non-zero and `set -e` killed the suite before its

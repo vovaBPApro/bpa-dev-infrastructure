@@ -36,7 +36,16 @@ export ORCH_TEST_REAL_BUN="$REAL_BUN"
 export ORCH_TEST_NORMALIZED="$SCRATCH/normalized.json"
 export BUN_BIN="$SCRATCH/bun-capture"
 export ORCH_RUNTIME_DIR="$SCRATCH/runtime"
-unset ORCH_RELAY_URL
+# ORCH_HEARTBEAT_FILE wins over ORCH_RUNTIME_DIR inside the hook, and a coder
+# lane inherits the orchestrator's environment. Left unset, this suite writes a
+# fresh timestamp into whatever heartbeat the ambient environment names — which
+# would tell the watchdog that a dead orchestrator is alive. Measured against a
+# decoy: it was overwritten before this line existed.
+export ORCH_HEARTBEAT_FILE="$SCRATCH/runtime/orchestrator.heartbeat"
+# Delivery must stay inside this test: an inherited relay URL would POST a
+# fabricated turn to whatever daemon is listening, and an inherited relay entry
+# would run a different program than the one under test.
+unset ORCH_RELAY_URL ORCH_RELAY_ENTRY
 
 "$SCRIPT_DIR/orchestrator-turnend-relay.sh" "$PAYLOAD"
 
@@ -110,7 +119,9 @@ done
 STALE_RUNTIME="$SCRATCH/stale"
 mkdir -p "$STALE_RUNTIME"
 printf '1\n' > "$STALE_RUNTIME/orchestrator.heartbeat"
-if ORCH_RUNTIME_DIR="$STALE_RUNTIME" ORCH_RELAY_URL='http://127.0.0.1:1/notify' \
+if ORCH_RUNTIME_DIR="$STALE_RUNTIME" \
+  ORCH_HEARTBEAT_FILE="$STALE_RUNTIME/orchestrator.heartbeat" \
+  ORCH_RELAY_URL='http://127.0.0.1:1/notify' \
   "$SCRIPT_DIR/orchestrator-turnend-relay.sh" "$PAYLOAD" 2>/dev/null; then
   printf 'a rejected delivery must still surface as a non-zero exit\n' >&2
   exit 1

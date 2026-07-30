@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Launch an isolated tmux-hosted orchestrator.  The systemd scope prevents a
-# Telegram daemon restart from taking the CLI session down with its cgroup.
+# Launch an isolated tmux-hosted orchestrator. A detached tmux server owns the
+# CLI lifecycle independently of the Telegram daemon and needs no user D-Bus.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -150,16 +150,14 @@ start() {
     printf 'auth preflight missing or not executable: %s\n' "$AUTH_PREFLIGHT" >&2
     return 2
   fi
-  local command provider_bin singleton_command unit
+  local command provider_bin singleton_command
   command="$(build_command)"
   provider_bin="${command#exec }"; provider_bin="${provider_bin%% *}"
   command -v "$provider_bin" >/dev/null 2>&1 || { printf 'provider not found: %s\n' "$provider_bin" >&2; release_current_lease; return 2; }
   printf -v singleton_command 'flock -n %q sh -c %q' "$SINGLETON_LOCK_FILE" "$command"
-  unit="orch-${SESSION//[^a-zA-Z0-9_.-]/-}"
   # Do not leak the launch mutex into tmux/the provider process.
   exec 9>&-
-  if ! systemd-run --user --scope --quiet --unit="$unit" \
-    tmux new-session -d -s "$SESSION" -c "$WORK_DIR" "$singleton_command"; then
+  if ! tmux new-session -d -s "$SESSION" -c "$WORK_DIR" "$singleton_command"; then
     release_current_lease
     return 1
   fi

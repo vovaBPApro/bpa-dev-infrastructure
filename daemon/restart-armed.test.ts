@@ -1,0 +1,158 @@
+import { afterEach, expect, test } from 'bun:test';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+
+const children: ReturnType<typeof Bun.spawn>[] = [];
+
+afterEach(() => {
+  for (const child of children.splice(0)) child.kill();
+});
+
+test('bound chat restart passes chat id to the launcher', () => {
+  const source = readFileSync(join(import.meta.dir, 'server.ts'), 'utf8');
+  const restartBranch = source.match(
+    /if \(cmd === '\/restart'\) \{([\s\S]*?)\n  \}\n\n  return false;/,
+  )?.[1];
+  expect(restartBranch).toBeDefined();
+  expect(restartBranch).toContain('await stopOrchestratorSession();');
+  expect(restartBranch).toContain('launchProvider(provider, chat_id)');
+});
+
+async function waitForHttp(port: number): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/health`);
+      if (response.ok) return;
+    } catch {}
+    await Bun.sleep(25);
+  }
+  throw new Error('daemon HTTP server did not start');
+}
+
+test('restart after dead tmux reaps stale ownership and fully arms bound instance', async () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'restart-armed-'));
+  const stateDir = join(scratch, 'state');
+  const runtimeDir = join(stateDir, 'daemon', 'runtime');
+  const installRoot = join(scratch, 'install');
+  const binDir = join(scratch, 'bin');
+  const homeDir = join(scratch, 'home');
+  const sessionFile = join(scratch, 'tmux-alive');
+  const leaseFile = join(scratch, 'orchestrator.lease');
+  const chatId = '424242';
+  const instanceLock = join(
+    homeDir,
+    '.claude',
+    `orchestrator-chat-${chatId}.lock`,
+  );
+  const bindingFile = join(runtimeDir, 'orchestrator-binding.json');
+  const callsFile = join(scratch, 'launcher.calls');
+  const port = 20_000 + Math.floor(Math.random() * 20_000);
+
+  mkdirSync(join(installRoot, 'orchestrator'), { recursive: true });
+  mkdirSync(runtimeDir, { recursive: true });
+  mkdirSync(binDir, { recursive: true });
+  mkdirSync(join(homeDir, '.claude'), { recursive: true });
+  writeFileSync(
+    bindingFile,
+    JSON.stringify({
+      provider: 'codex',
+      session_id: 'old-session',
+      bound_chat_id: chatId,
+      tmux_session: 'bound-orchestrator',
+      bound_at: '2026-07-30T00:00:00.000Z',
+      updated_at: '2026-07-30T00:00:00.000Z',
+      state_version: 1,
+    }),
+  );
+  writeFileSync(leaseFile, 'owner=dead-owner\ntoken=7\n');
+  writeFileSync(instanceLock, '{"pid":999999,"pid_started_at":"stale"}\n');
+
+  const launcher = join(installRoot, 'orchestrator', 'launch.sh');
+  writeFileSync(
+    launcher,
+    `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$1 lock=\${ORCH_INSTANCE_LOCK_FILE:-}" >> "\${TEST_CALLS_FILE:?}"
+case "$1" in
+  stop)
+    rm -f "\${TEST_SESSION_FILE:?}" "\${TEST_LEASE_FILE:?}" "\${TEST_INSTANCE_LOCK:?}"
+    ;;
+  start)
+    [[ ! -e "\${TEST_LEASE_FILE:?}" && ! -e "\${TEST_INSTANCE_LOCK:?}" ]] || exit 73
+    [[ "\${ORCH_INSTANCE_LOCK_FILE:-}" == "\${TEST_INSTANCE_LOCK:?}" ]] || exit 74
+    printf 'owner=new-owner\\ntoken=8\\n' > "\${TEST_LEASE_FILE:?}"
+    printf '{"pid":12345,"pid_started_at":"fresh"}\\n' > "\${ORCH_INSTANCE_LOCK_FILE}"
+    : > "\${TEST_SESSION_FILE:?}"
+    ;;
+esac
+`,
+  );
+  chmodSync(launcher, 0o755);
+
+  const tmux = join(binDir, 'tmux');
+  writeFileSync(
+    tmux,
+    `#!/usr/bin/env bash
+[[ "$1" == has-session && -e "\${TEST_SESSION_FILE:?}" ]]
+`,
+  );
+  chmodSync(tmux, 0o755);
+
+  const child = Bun.spawn(['bun', join(import.meta.dir, 'server.ts')], {
+    cwd: import.meta.dir,
+    env: {
+      ...process.env,
+      HOME: homeDir,
+      PATH: `${binDir}:${process.env.PATH ?? ''}`,
+      TELEGRAM_BOT_TOKEN: '123456:test-token',
+      TELEGRAM_STATE_DIR: stateDir,
+      TELEGRAM_DAEMON_PORT: String(port),
+      ORCH_INSTALL_ROOT: installRoot,
+      ORCH_SESSION: 'bound-orchestrator',
+      TEST_CALLS_FILE: callsFile,
+      TEST_SESSION_FILE: sessionFile,
+      TEST_LEASE_FILE: leaseFile,
+      TEST_INSTANCE_LOCK: instanceLock,
+      OUTBOX_POLL_MS: '600000',
+    },
+    stdout: 'ignore',
+    stderr: 'inherit',
+  });
+  children.push(child);
+
+  try {
+    await waitForHttp(port);
+    const response = await fetch(
+      `http://127.0.0.1:${port}/orchestrator/restart`,
+      { method: 'POST' },
+    );
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('restarted');
+    expect(readFileSync(callsFile, 'utf8').split('\n').slice(0, 2)).toEqual([
+      'stop lock=',
+      `start lock=${instanceLock}`,
+    ]);
+    expect(existsSync(instanceLock)).toBe(true);
+    expect(readFileSync(instanceLock, 'utf8')).toContain('"pid":12345');
+    expect(readFileSync(leaseFile, 'utf8')).toBe(
+      'owner=new-owner\ntoken=8\n',
+    );
+    const binding = JSON.parse(readFileSync(bindingFile, 'utf8'));
+    expect(binding.bound_chat_id).toBe(chatId);
+    expect(binding.provider).toBe('codex');
+    expect(binding.tmux_session).toBe('bound-orchestrator');
+  } finally {
+    child.kill();
+    await child.exited;
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});

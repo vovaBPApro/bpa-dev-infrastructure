@@ -1958,18 +1958,18 @@ async function launchProvider(
 }
 
 async function stopOrchestratorSession(): Promise<void> {
-  if (!(await tmuxAlive())) {
-    persistBinding(null);
-    return;
+  if (await tmuxAlive()) {
+    await sh(`tmux send-keys -t '${TMUX_SESSION}' C-c`);
+    await new Promise((r) => setTimeout(r, 300));
+    await sh(`tmux send-keys -t '${TMUX_SESSION}' C-u`);
+    await new Promise((r) => setTimeout(r, 200));
+    await sh(`tmux send-keys -t '${TMUX_SESSION}' '/exit' Enter`);
+    await new Promise((r) => setTimeout(r, 1000));
   }
-  await sh(`tmux send-keys -t '${TMUX_SESSION}' C-c`);
-  await new Promise((r) => setTimeout(r, 300));
-  await sh(`tmux send-keys -t '${TMUX_SESSION}' C-u`);
-  await new Promise((r) => setTimeout(r, 200));
-  await sh(`tmux send-keys -t '${TMUX_SESSION}' '/exit' Enter`);
-  await new Promise((r) => setTimeout(r, 1000));
   // Use the launcher teardown so the durable lease and live-instance lock are
-  // released even when the provider exits before the tmux kill reaches it.
+  // released even when the provider/tmux died before restart was requested.
+  // launch.sh only releases the recorded owner/token and never steals a live
+  // lease owned by another instance.
   await sh(`'${LAUNCHER_SCRIPT}' stop`);
   persistBinding(null);
 }
@@ -1987,7 +1987,7 @@ async function restartOrchestrator(): Promise<{ ok: boolean; out: string }> {
   const provider =
     activeBinding?.provider ?? loadPersistedBinding()?.provider ?? 'codex';
   const chat = notifyChatId();
-  if (await tmuxAlive()) await stopOrchestratorSession();
+  await stopOrchestratorSession();
   const { ok, out } = await launchProvider(provider, chat);
   if (ok && chat) {
     persistBinding(buildBinding(provider, '', chat));
@@ -2246,8 +2246,8 @@ async function handleSessionCommand(
 
   if (cmd === '/restart') {
     const provider = activeBinding?.provider ?? 'claude';
-    if (alive) await stopOrchestratorSession();
-    const { ok, out } = await launchProvider(provider);
+    await stopOrchestratorSession();
+    const { ok, out } = await launchProvider(provider, chat_id);
     if (!ok) {
       await bot.api.sendMessage(chat_id, `❌ restart failed:\n${out}`);
       return true;

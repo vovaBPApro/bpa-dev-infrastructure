@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 # Lane-dispatch entry point (INSTRUCTIONS_CONSILIUM_FINAL.md §2.3).
 #
-# The repo has no lane launcher yet (launch.sh hosts the interactive
-# orchestrator, not per-lane prompts). This is the minimal, checked front door
-# for launching a lane from a rendered prompt file: it REFUSES any prompt that
-# lacks the compose.ts pack marker, so a hand-assembled prompt can never reach a
-# lane. The actual launch is intentionally out of scope here — the guarantee this
-# script adds is "no marker, no dispatch". Wire a real launcher in after the
+# This is the checked front door for launching a lane from a rendered prompt
+# file: it REFUSES any prompt that lacks the compose.ts pack marker, so a
+# hand-assembled prompt can never reach a lane. For Codex coder lanes, the
+# supported tail is `launch-codex-lane.sh --lane <id>` after the
 # `dispatch-check.ts` gate.
 #
 # Break-glass: DISPATCH_OVERRIDE=<reason> is honored by dispatch-check.ts (see

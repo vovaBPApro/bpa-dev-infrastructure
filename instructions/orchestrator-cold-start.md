@@ -46,6 +46,8 @@ LANE_DIR="/absolute/path/to/lanes/$LANE_ID"
 EVIDENCE_DIR="/absolute/path/to/evidence"
 PROMPT_FILE="$EVIDENCE_DIR/$LANE_ID.prompt.md"
 REPORT_FILE="$EVIDENCE_DIR/$BRANCH.report.md"
+EXIT_FILE="$EVIDENCE_DIR/$BRANCH.exit"
+LANE_TIMEOUT_SEC=3600
 mkdir -p "$EVIDENCE_DIR"
 ```
 
@@ -68,11 +70,11 @@ rollup owner as required by `instructions/lane-lifecycle.md`.
 
 ## 2. Prepare and dispatch the coder lane
 
-Create one branch and worktree from current `origin/main`:
+Refresh the local `origin/main` ref immediately before composing. The launcher
+creates the branch and worktree from that local ref:
 
 ```sh
 git -C "$REPO" fetch origin
-git -C "$REPO" worktree add -b "$BRANCH" "$LANE_DIR" origin/main
 ```
 
 Render the coder baseline and requested instruction tags, then append the
@@ -86,25 +88,29 @@ bun "$REPO/tools/instructions/compose.ts" \
 printf '\n%s\n' 'Append the verbatim mission requirement and lane-local scope here.' >> "$PROMPT_FILE"
 ```
 
-Validate before launch:
+Validate and dispatch through the supported Codex coder-lane tail:
 
 ```sh
-"$REPO/orchestrator/dispatch-lane.sh" "$PROMPT_FILE"
+ORCH_EVIDENCE_DIR="$EVIDENCE_DIR" \
+ORCH_LANES_DIR="$(dirname "$LANE_DIR")" \
+"$REPO/orchestrator/dispatch-lane.sh" "$PROMPT_FILE" -- \
+  "$REPO/orchestrator/launch-codex-lane.sh" --lane "$LANE_ID" \
+  --timeout-sec "$LANE_TIMEOUT_SEC"
 ```
 
-`dispatch-lane.sh` is currently gate-only unless an external launcher is
-supplied. When one is configured, dispatch through the supported tail; the
-script runs `exec <launcher> [launcher-args...] "$PROMPT_FILE"`, so the
-launcher receives its own arguments first and the prompt file path as its final
-positional argument:
+`dispatch-lane.sh` runs the marker and full-pack gate before the launcher. It
+then appends `"$PROMPT_FILE"` as the launcher's final positional argument. Poll
+the durable report file until it is shape-valid or the bounded lane fails:
 
 ```sh
-"$REPO/orchestrator/dispatch-lane.sh" "$PROMPT_FILE" -- /absolute/path/to/launcher --launcher-option
+"$REPO/orchestrator/wait-lane-report.sh" \
+  --report "$REPORT_FILE" \
+  --exit-file "$EXIT_FILE" \
+  --deadline-sec "$((LANE_TIMEOUT_SEC + 120))"
 ```
 
-Do not replace `/absolute/path/to/launcher` with a guessed command. Record the
-actual configured launcher and transition the lane with the real CLI as its
-state changes:
+Record the dispatched launcher metadata and transition the lane with the real
+CLI as its state changes:
 
 ```sh
 INFRA_STATE_DB="$REPO/runtime/state.db" bun "$REPO/core/mission-cli.ts" lane transition "$LANE_ID" running

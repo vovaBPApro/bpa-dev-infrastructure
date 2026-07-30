@@ -16,11 +16,6 @@ note. Derived-work items live here; Human directives stay in
 
 ## Open
 
-- **W-01 — teardown/startup overlap zero-count lock** (history sweep A3,
-  `migration-prep/HISTORY_SWEEP_MISSED_COMPLAINTS_2026-07-29.md`): acceptance
-  test that fleet width never reads 0 while the workboard is non-empty during
-  lane teardown/startup overlap. Home when built: orchestrator/ + daemon
-  status source of truth. Source complaint: Vova msg 9557.
 - **W-02 — watchdog chases task progress, not headcount** (history sweep A4):
   verify/extend the watchdog so ping/escalation targets a stalled mission's
   completion, not raw agent count; recovery/replay test. Source: Vova msg 5196.

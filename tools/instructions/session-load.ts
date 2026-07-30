@@ -31,8 +31,10 @@
 //
 // Usage: bun tools/instructions/session-load.ts [--repo <path>]
 
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { Database } from "bun:sqlite";
 import { collectDocs, type InstructionDoc } from "./docs.ts";
 import { admitsAudience } from "./compose.ts";
 import { latestHandoffPath } from "./handoff.ts";
@@ -64,6 +66,71 @@ function readIfExists(path: string): string | undefined {
 
 function trimTrailing(text: string): string[] {
   return text.replace(/\s+$/, "").split(/\r?\n/);
+}
+
+type Probe = { lines: string[]; degradedReason?: string };
+
+function gitProbe(root: string): Probe {
+  try {
+    const options = { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] } as const;
+    const sha = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], options).trim();
+    const dirty = execFileSync("git", ["-C", root, "status", "--porcelain"], options).trim() !== "";
+    return {
+      lines: [
+        `repo_sha: ${sha}`,
+        dirty ? "WARNING: working tree dirty at session load" : "working_tree: clean",
+      ],
+      degradedReason: dirty ? "working tree dirty" : undefined,
+    };
+  } catch {
+    return {
+      lines: ["repo_sha: unknown", "working_tree: unknown (git probe failed)"],
+      degradedReason: "git state unknown",
+    };
+  }
+}
+
+function durableStateProbe(root: string): Probe {
+  const path = process.env.INFRA_STATE_DB ?? process.env.ORCH_STATE_DB ?? join(root, "runtime", "state.db");
+  if (!existsSync(path)) {
+    return {
+      lines: ["missions: unknown", "lanes: unknown", "leases: unknown"],
+      degradedReason: "durable state unknown (state DB absent)",
+    };
+  }
+
+  let db: Database | undefined;
+  try {
+    db = new Database(path, { readonly: true, strict: true });
+    const now = Date.now();
+    const missions = db.query(
+      "SELECT id, correlation_id AS correlationId, state FROM missions WHERE state != 'succeeded' ORDER BY id",
+    ).all();
+    const lanes = db.query(
+      "SELECT id, mission_id AS missionId, state FROM lanes WHERE state != 'succeeded' ORDER BY id",
+    ).all();
+    const leases = db.query(
+      "SELECT lease_key AS key, owner, fencing_token AS fencingToken, expires_at AS expiresAt FROM leases WHERE released_at IS NULL AND expires_at > ? ORDER BY lease_key, fencing_token",
+    ).all(now);
+    return [
+      ["missions", missions],
+      ["lanes", lanes],
+      ["leases", leases],
+    ].reduce<Probe>(
+      (probe, [label, rows]) => {
+        probe.lines.push(`${label}: ${JSON.stringify(rows)}`);
+        return probe;
+      },
+      { lines: [] },
+    );
+  } catch {
+    return {
+      lines: ["missions: unknown", "lanes: unknown", "leases: unknown"],
+      degradedReason: "durable state unknown (state DB unreadable)",
+    };
+  } finally {
+    db?.close();
+  }
 }
 
 // Minimal flat frontmatter scalar lookup (same subset the rest of this tooling
@@ -160,6 +227,13 @@ export function collectSessionLoad(repo: string): SessionLoad {
   const instructionsRoot = join(root, "instructions");
 
   const sections: SessionSection[] = [];
+  const degradedReasons: string[] = [];
+
+  // Repository identity is observed at load time. A failed probe or dirty tree
+  // is explicit and degrades the startup verdict.
+  const repository = gitProbe(root);
+  sections.push({ title: "Repository state", lines: repository.lines });
+  if (repository.degradedReason) degradedReasons.push(repository.degradedReason);
 
   // 1. params.yaml
   const params = readIfExists(join(root, "instance", "params.yaml"));
@@ -198,8 +272,16 @@ export function collectSessionLoad(repo: string): SessionLoad {
       ? [`<!-- ${handoffPath.slice(root.length + 1)} -->`, ...trimTrailing(readFileSync(handoffPath, "utf8"))]
       : ["WARNING: no handoff found — degraded start"],
   });
+  if (!handoffPath) degradedReasons.push("no handoff found");
 
-  // 4. Orchestrator-audience binding docs, as one-line summaries (id + summary
+  // 4. Durable mission/lane/lease truth, projected from the same SQLite source
+  // as `core/mission-cli.ts status`. Missing or unreadable state is unknown,
+  // never an invented empty set.
+  const durableState = durableStateProbe(root);
+  sections.push({ title: "Durable mission / lane / lease state", lines: durableState.lines });
+  if (durableState.degradedReason) degradedReasons.push(durableState.degradedReason);
+
+  // 5. Orchestrator-audience binding docs, as one-line summaries (id + summary
   // + path). Full bodies are delivered on demand by compose; this is the
   // always-on standing index, kept small by construction.
   const docs = existsSync(instructionsRoot) ? collectDocs(instructionsRoot) : [];
@@ -213,6 +295,14 @@ export function collectSessionLoad(repo: string): SessionLoad {
     }
   }
   sections.push({ title: "Orchestrator binding instructions (index)", lines: docLines });
+  sections.push({
+    title: "Startup verdict",
+    lines: [
+      degradedReasons.length === 0
+        ? "startup: ready"
+        : `startup: degraded (${degradedReasons.join("; ")})`,
+    ],
+  });
 
   const text = renderText(sections);
   return { sections, text, lineCount: text.split("\n").length };
@@ -266,7 +356,7 @@ export function runSessionLoadCheck(repo: string): SessionLoadFinding {
   const failAt = envInt("SESSION_LOAD_FAIL_LINES", SESSION_LOAD_FAIL_LINES);
   const warnAt = envInt("SESSION_LOAD_WARN_LINES", SESSION_LOAD_WARN_LINES);
   const { lineCount } = collectSessionLoad(repo);
-  const where = "instance/params.yaml + ledger + latest handoff + orchestrator binding docs";
+  const where = "repo + instance/params.yaml + ledger + latest handoff + durable state + orchestrator binding docs + verdict";
   if (lineCount > failAt) {
     return {
       level: "FAIL",

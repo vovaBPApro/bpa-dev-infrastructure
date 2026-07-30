@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Database } from "bun:sqlite";
 import {
   SESSION_LOAD_FAIL_LINES,
   SESSION_LOAD_WARN_LINES,
@@ -28,6 +30,7 @@ function repo(opts: {
   inbox?: string;
   triage?: string;
   handoffs?: Record<string, string>;
+  state?: boolean;
 }): string {
   const root = mkdtempSync(join(tmpdir(), "session-"));
   temporaryDirectories.push(root);
@@ -49,7 +52,32 @@ function repo(opts: {
     mkdirSync(dir, { recursive: true });
     for (const [name, contents] of Object.entries(opts.handoffs)) writeFileSync(join(dir, name), contents);
   }
+  if (opts.state) seedState(root);
   return root;
+}
+
+function initializeGit(root: string): string {
+  execFileSync("git", ["init", "-q", root]);
+  execFileSync("git", ["-C", root, "config", "user.email", "session-load@test.invalid"]);
+  execFileSync("git", ["-C", root, "config", "user.name", "Session Load Test"]);
+  writeFileSync(join(root, "tracked.txt"), "clean\n");
+  execFileSync("git", ["-C", root, "add", "."]);
+  execFileSync("git", ["-C", root, "commit", "-qm", "fixture"]);
+  return execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+}
+
+function seedState(root: string): void {
+  mkdirSync(join(root, "runtime"), { recursive: true });
+  const db = new Database(join(root, "runtime", "state.db"));
+  db.exec(`
+    CREATE TABLE missions (id TEXT, correlation_id TEXT, state TEXT);
+    CREATE TABLE lanes (id TEXT, mission_id TEXT, state TEXT);
+    CREATE TABLE leases (lease_key TEXT, owner TEXT, fencing_token INTEGER, expires_at INTEGER, released_at INTEGER);
+  `);
+  db.query("INSERT INTO missions VALUES (?, ?, ?)").run("mission-live", "corr-live", "running");
+  db.query("INSERT INTO lanes VALUES (?, ?, ?)").run("lane-live", "mission-live", "running");
+  db.query("INSERT INTO leases VALUES (?, ?, ?, ?, NULL)").run("lane-live", "coder-a", 7, Date.now() + 60_000);
+  db.close();
 }
 
 function doc(fm: Record<string, string>, body = "Body line.\n"): string {
@@ -58,6 +86,40 @@ function doc(fm: Record<string, string>, body = "Body line.\n"): string {
 }
 
 describe("collectSessionLoad — composition", () => {
+  test("repo SHA is present and the dirty warning appears iff dirty", () => {
+    const root = repo({});
+    const sha = initializeGit(root);
+    expect(collectSessionLoad(root).text).toContain(`repo_sha: ${sha}`);
+    expect(collectSessionLoad(root).text).not.toContain("WARNING: working tree dirty at session load");
+
+    writeFileSync(join(root, "tracked.txt"), "dirty\n");
+    expect(collectSessionLoad(root).text).toContain("WARNING: working tree dirty at session load");
+  });
+
+  test("renders live durable mission, lane, and lease state", () => {
+    const root = repo({ state: true });
+    const text = collectSessionLoad(root).text;
+    expect(text).toContain('missions: [{"id":"mission-live","correlationId":"corr-live","state":"running"}]');
+    expect(text).toContain('lanes: [{"id":"lane-live","missionId":"mission-live","state":"running"}]');
+    expect(text).toContain('leases: [{"key":"lane-live","owner":"coder-a","fencingToken":7');
+  });
+
+  test("startup verdict is ready on a clean healthy load", () => {
+    const root = repo({
+      state: true,
+      handoffs: { "2026-07-30T00-00-00.000Z-a-to-b.json": "{}\n" },
+    });
+    initializeGit(root);
+    expect(collectSessionLoad(root).text).toContain("startup: ready");
+  });
+
+  test("startup verdict is degraded with a reason on a seeded probe fault", () => {
+    const root = repo({});
+    const text = collectSessionLoad(root).text;
+    expect(text).toContain("missions: unknown");
+    expect(text).toContain("startup: degraded (git state unknown; no handoff found; durable state unknown (state DB absent))");
+  });
+
   test("includes params.yaml verbatim", () => {
     const root = repo({ params: "operator:\n  language: uk\n" });
     const load = collectSessionLoad(root);

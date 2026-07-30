@@ -164,9 +164,9 @@ write_report() {
   fi
   if [ "${#timings[@]}" -gt 0 ]; then
     sorted=$(printf '%s\n' "${timings[@]}" | sort -n)
-    timing_min=$(printf '%s\n' "$sorted" | head -n 1)
-    timing_max=$(printf '%s\n' "$sorted" | tail -n 1)
-    timing_median=$(printf '%s\n' "$sorted" | awk '{a[NR]=$1} END {if(NR%2) print a[(NR+1)/2]; else print int((a[NR/2]+a[NR/2+1])/2)}')
+    timing_min=${sorted%%$'\n'*}
+    timing_max=${sorted##*$'\n'}
+    timing_median=$(awk '{a[NR]=$1} END {if(NR%2) print a[(NR+1)/2]; else print int((a[NR/2]+a[NR/2+1])/2)}' <<<"$sorted")
     timing_last=${timings[$(( ${#timings[@]} - 1 ))]}
   else
     timing_min=0; timing_median=0; timing_max=0; timing_last=0

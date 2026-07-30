@@ -84,9 +84,12 @@ export const REGISTRY: Artifact[] = [
   {
     id: 'orchestrator.lease',
     kind: 'internal',
-    writers: ['orchestrator/launch.sh'],
+    writers: ['orchestrator/launch.sh', 'orchestrator/watchdog.sh'],
     readers: ['orchestrator/watchdog.sh'],
-    note: 'Singleton lease mirror for the watchdog.',
+    note:
+      'Singleton lease mirror. launch.sh publishes it at start; the watchdog ' +
+      'both reads it (lease_state) and rewrites it on renew (write_lease_state, ' +
+      'via a .orchestrator.lease.XXXXXX temp sibling).',
   },
   {
     id: 'orchestrator.heartbeat',
@@ -178,25 +181,11 @@ export const REGISTRY: Artifact[] = [
     note: 'flock guard serializing writes to nudges.outbox.',
   },
   {
-    id: '.nudges.outbox',
-    kind: 'internal',
-    writers: ['orchestrator/full-suite.sh', 'orchestrator/watchdog.sh'],
-    readers: [],
-    note: 'Temp file for the atomic replace of nudges.outbox.',
-  },
-  {
     id: 'morning.outbox',
     kind: 'internal',
     writers: ['orchestrator/morning.sh'],
     readers: ['daemon/server.ts'],
     note: 'Morning readiness digest drained by the daemon.',
-  },
-  {
-    id: '.morning.outbox',
-    kind: 'internal',
-    writers: ['orchestrator/morning.sh'],
-    readers: [],
-    note: 'Temp file for the atomic replace of morning.outbox.',
   },
   {
     id: 'morning.watermark',
@@ -329,6 +318,31 @@ export function normalizeInterpolation(source: string): string {
     .replace(/\$[A-Za-z_][A-Za-z0-9_]*/g, 'VAR');
 }
 
+// An atomic write stages into a hidden sibling and renames over the target:
+//
+//   tmp="$(mktemp "$(dirname "$LEASE_FILE")/.orchestrator.lease.XXXXXX")"
+//   ... > "$tmp"; mv -f "$tmp" "$LEASE_FILE"
+//
+// The staging path is created, written and renamed away inside one function. It
+// is never read, never durable, and never outlives the call — it is part of how
+// the parent artifact is written, not a second artifact. Left alone, the sweep
+// reports it as an undeclared `.orchestrator.lease`, and the error message's
+// advice (declare it, name its writer) would put a transient in the registry
+// asserting a reader/writer contract that does not exist — blunting the one
+// tool this repository has against the reader-with-no-writer defect.
+//
+// So a temp sibling is rewritten to the artifact it stages for, and the parent
+// still has to be declared. This is deliberately keyed on the mktemp template
+// (three or more trailing X, dot-prefixed, sibling of the parent) rather than
+// on the leading dot: `'.claude.json'` or a genuinely new `.ledger.json` has no
+// X-template and is still swept, still undeclared, still a FAIL. Widening this
+// to "ignore dot-prefixed names" would be an escape hatch, not a fix.
+const ATOMIC_TEMP_SIBLING = /\/\.([A-Za-z0-9_.-]+)\.X{3,}(?![A-Za-z0-9])/g;
+
+export function collapseAtomicTempSiblings(source: string): string {
+  return source.replace(ATOMIC_TEMP_SIBLING, '/$1');
+}
+
 export function sweepArtifacts(
   root: string,
   files: string[],
@@ -339,8 +353,8 @@ export function sweepArtifacts(
     if (isTest(rel)) continue;
     const abs = join(root, rel);
     if (!existsSync(abs)) continue;
-    const source = normalizeInterpolation(
-      stripComments(readFileSync(abs, 'utf8'), rel),
+    const source = collapseAtomicTempSiblings(
+      normalizeInterpolation(stripComments(readFileSync(abs, 'utf8'), rel)),
     );
     for (const re of [WITH_EXT, EXTENSIONLESS]) {
       re.lastIndex = 0;

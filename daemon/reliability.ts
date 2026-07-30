@@ -40,6 +40,40 @@ export function canSendWatchdogNotice(pending: PendingReply): boolean {
   return pending.replied_at == null && !pending.fallback_sent;
 }
 
+/**
+ * Take the single watchdog-notice slot for this pending inbound BEFORE the
+ * awaited send, and hand back a release for the failure path.
+ *
+ * `canSendWatchdogNotice` is evaluated at the top of the tick loop, but the
+ * loop then awaits (pane capture, then `sendMessage`) before anything writes
+ * `fallback_sent`. `watchdogTick` is driven by a bare `setInterval`, so ticks
+ * are not serialised: while the first `sendMessage` is in flight every
+ * subsequent tick still sees `fallback_sent` unset, passes the guard, and posts
+ * its own copy. Latent at the 300s production timeout, reproducible the moment
+ * the Telegram API is slower than one tick.
+ *
+ * `fallback_sent` — not `replied_at` — is the guard, because `replied_at` must
+ * stay null for the authoritative turn-end to still be delivered (A1). So the
+ * claim is what closes the window, and a genuine send failure must undo it
+ * exactly, or one failed notice would silence the watchdog for that inbound
+ * forever.
+ */
+export function claimWatchdogNotice(pending: PendingReply): () => void {
+  const prior = {
+    fallback_sent: pending.fallback_sent,
+    reply_source: pending.reply_source,
+    last_relayed_chunk: pending.last_relayed_chunk,
+    placeholder_sent: pending.placeholder_sent,
+  };
+  pending.fallback_sent = true;
+  return () => {
+    pending.fallback_sent = prior.fallback_sent;
+    pending.reply_source = prior.reply_source;
+    pending.last_relayed_chunk = prior.last_relayed_chunk;
+    pending.placeholder_sent = prior.placeholder_sent;
+  };
+}
+
 export function markWatchdogNoticeSent(
   pending: PendingReply,
   source: 'auto_relay' | 'auto_placeholder',

@@ -55,6 +55,7 @@ import {
   type TurnEndPayload,
   buildMissionKey,
   canSendWatchdogNotice,
+  claimWatchdogNotice,
   codexPasteMarker,
   decideRelay,
   detectCodexPasteDeliveryState,
@@ -1745,6 +1746,11 @@ async function watchdogTick(): Promise<void> {
         binding.provider === 'codex'
           ? body
           : `📤 [auto-relay] ${binding.provider} responded in TUI without calling reply(). Last visible chunk:\n\n${body}`;
+      // Claim the notice slot BEFORE the await: sendMessage is the only thing
+      // between the canSendWatchdogNotice guard and the flag that closes it, and
+      // overlapping ticks would otherwise both post. Released on failure so a
+      // real send error retries next tick. (See claimWatchdogNotice.)
+      const release = claimWatchdogNotice(p);
       try {
         await bot.api.sendMessage(chatId, note, {
           disable_notification: true,
@@ -1757,31 +1763,30 @@ async function watchdogTick(): Promise<void> {
         );
         markWatchdogNoticeSent(p, 'auto_relay', chunk);
       } catch (err) {
+        release();
         process.stderr.write(
           `${LOG_PREFIX} watchdog auto-relay to ${chatId} FAILED: ${err}\n`,
         );
       }
     } else {
-      try {
-        await bot.api.sendMessage(
-          chatId,
-          `📭 [auto-relay] Still working on your last message (${ageS}s). I'll send the reply as soon as it's ready.`,
-          {
-            disable_notification: true,
-            ...(p.messageId
-              ? { reply_parameters: { message_id: p.messageId } }
-              : {}),
-          },
-        );
-        process.stderr.write(
-          `${LOG_PREFIX} watchdog placeholder to chat=${chatId} (no visible chunk, inbound ${ageS}s ago)\n`,
-        );
-        markWatchdogNoticeSent(p, 'auto_placeholder');
-      } catch (err) {
-        process.stderr.write(
-          `${LOG_PREFIX} watchdog placeholder to ${chatId} FAILED: ${err}\n`,
-        );
-      }
+      // Human asked NOT to see the "📭 No reply forwarded …" placeholder — it
+      // is pure noise during long heads-down turns (the orchestrator is busy,
+      // not stuck). Log it internally instead of messaging the chat, and mark
+      // the entry handled so it does not re-fire every tick.
+      //
+      // No claimWatchdogNotice here on purpose: with the send gone this branch
+      // has no await between the guard and the mark, so overlapping ticks can
+      // at worst repeat one idempotent stderr line and one idempotent flag
+      // write. A claim would be pure ceremony, and its release path would be
+      // dead code nothing could exercise.
+      //
+      // markWatchdogNoticeSent — NOT replied_at. Suppressing the placeholder
+      // must not re-close the turn: the authoritative turn-end still has to
+      // reach the operator for claude (A1).
+      process.stderr.write(
+        `${LOG_PREFIX} watchdog placeholder SUPPRESSED for chat=${chatId} (no visible chunk, inbound ${ageS}s ago) — not notifying user\n`,
+      );
+      markWatchdogNoticeSent(p, 'auto_placeholder');
     }
   }
 }

@@ -1,8 +1,12 @@
 # Runtime state and logs live on the host, never in git (the predecessor repo
 # died from committed secrets/state). Subtrees that also carry runtime state keep
 # their own .gitignore (daemon/, instance/decisions/); this root list covers the
-# orchestrator runtime dir the ops journal and lane state live in.
+# orchestrator runtime dir the ops journal and lane state live in, plus the
+# repo-root runtime dir the tmux launcher puts the singleton lock and state.db in
+# (unignored it left the tree permanently dirty, so every session load reported
+# `startup: degraded` and the real signal was lost).
 orchestrator/runtime/
+/runtime/
 
 node_modules/
 *.log

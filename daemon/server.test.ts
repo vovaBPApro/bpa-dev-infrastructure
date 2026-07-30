@@ -5,6 +5,8 @@ import {
   decideRelay,
   detectCodexPasteDeliveryState,
   evaluateStall,
+  getWatchdogTimeoutConfig,
+  isPendingReplyTimedOut,
   parseCodexApprovalPrompt,
   parseCodexDecisionPrompt,
   parseAssistantChunk,
@@ -12,6 +14,50 @@ import {
   type PendingReply,
   type PersistedBinding,
 } from './reliability';
+
+test('pending reply watchdog defaults to five minutes', () => {
+  expect(getWatchdogTimeoutConfig({})).toEqual({
+    pendingReplyTimeoutMs: 300_000,
+    codexFallbackTimeoutMs: 90_000,
+    watchdogTickMs: 15_000,
+  });
+});
+
+test('pending reply watchdog honors an env timeout override', () => {
+  const tiny = getWatchdogTimeoutConfig({
+    ORCH_PENDING_REPLY_TIMEOUT_MS: '25',
+    ORCH_CODEX_FALLBACK_TIMEOUT_MS: '35',
+    ORCH_WATCHDOG_TICK_MS: '5',
+  });
+  const large = getWatchdogTimeoutConfig({
+    ORCH_PENDING_REPLY_TIMEOUT_MS: '10000',
+  });
+
+  expect(isPendingReplyTimedOut(1_000, 1_026, tiny.pendingReplyTimeoutMs)).toBe(
+    true,
+  );
+  expect(tiny.codexFallbackTimeoutMs).toBe(35);
+  expect(tiny.watchdogTickMs).toBe(5);
+  expect(isPendingReplyTimedOut(1_000, 1_026, large.pendingReplyTimeoutMs)).toBe(
+    false,
+  );
+});
+
+test('pending reply watchdog rejects invalid env timeout values', () => {
+  for (const value of ['not-a-number', '0', '-1', 'Infinity']) {
+    expect(
+      getWatchdogTimeoutConfig({
+        ORCH_PENDING_REPLY_TIMEOUT_MS: value,
+        ORCH_CODEX_FALLBACK_TIMEOUT_MS: value,
+        ORCH_WATCHDOG_TICK_MS: value,
+      }),
+    ).toEqual({
+      pendingReplyTimeoutMs: 300_000,
+      codexFallbackTimeoutMs: 90_000,
+      watchdogTickMs: 15_000,
+    });
+  }
+});
 
 const binding: PersistedBinding = {
   provider: 'codex',

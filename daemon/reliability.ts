@@ -777,3 +777,44 @@ export function evaluateStall(inputs: StallInputs): StallEvaluation {
     alertKey,
   };
 }
+
+export type WatchdogTimeoutConfig = {
+  pendingReplyTimeoutMs: number;
+  codexFallbackTimeoutMs: number;
+  watchdogTickMs: number;
+};
+
+function positiveNumberOrDefault(
+  value: string | undefined,
+  fallback: number,
+): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+export function getWatchdogTimeoutConfig(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): WatchdogTimeoutConfig {
+  return {
+    pendingReplyTimeoutMs: positiveNumberOrDefault(
+      env.ORCH_PENDING_REPLY_TIMEOUT_MS,
+      300_000,
+    ),
+    codexFallbackTimeoutMs: positiveNumberOrDefault(
+      env.ORCH_CODEX_FALLBACK_TIMEOUT_MS,
+      90_000,
+    ),
+    watchdogTickMs: positiveNumberOrDefault(
+      env.ORCH_WATCHDOG_TICK_MS,
+      15_000,
+    ),
+  };
+}
+
+export function isPendingReplyTimedOut(
+  openedAt: number,
+  now: number,
+  timeoutMs: number,
+): boolean {
+  return now - openedAt >= timeoutMs;
+}

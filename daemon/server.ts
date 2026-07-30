@@ -58,6 +58,8 @@ import {
   decideRelay,
   detectCodexPasteDeliveryState,
   evaluateStall,
+  getWatchdogTimeoutConfig,
+  isPendingReplyTimedOut,
   loadMissionRecord,
   maybeReadJson,
   missionIsActive,
@@ -534,14 +536,14 @@ let lastGitProgressAt = 0;
 let lastGitSha = '';
 let lastWatchdogAlertKey: string | null = null;
 const missionGitBaselines = new Map<string, string>();
-// 120s gives the orchestrator a realistic window to call reply() before the
-// daemon takes over.
-const PENDING_REPLY_TIMEOUT_MS = 120_000;
-// Codex delivers via its notify turn-end relay; that delivery sets replied_at so
-// the watchdog skips it. This long window means the pane-scrape fallback fires
-// ONLY when notify genuinely missed (no dups in the normal case).
-const CODEX_FALLBACK_TIMEOUT_MS = 90_000;
-const WATCHDOG_TICK_MS = 15_000;
+// Watchdog timing knobs: ORCH_PENDING_REPLY_TIMEOUT_MS (default 300000),
+// ORCH_CODEX_FALLBACK_TIMEOUT_MS (default 90000), and
+// ORCH_WATCHDOG_TICK_MS (default 15000). Invalid/non-positive values use defaults.
+const {
+  pendingReplyTimeoutMs: PENDING_REPLY_TIMEOUT_MS,
+  codexFallbackTimeoutMs: CODEX_FALLBACK_TIMEOUT_MS,
+  watchdogTickMs: WATCHDOG_TICK_MS,
+} = getWatchdogTimeoutConfig();
 const AUTO_RELAY_MAX_BODY = 3500;
 
 function markPendingInbound(
@@ -1682,7 +1684,7 @@ async function watchdogTick(): Promise<void> {
       binding?.provider === 'codex'
         ? CODEX_FALLBACK_TIMEOUT_MS
         : PENDING_REPLY_TIMEOUT_MS;
-    if (now - p.opened_at < timeoutMs) continue;
+    if (!isPendingReplyTimedOut(p.opened_at, now, timeoutMs)) continue;
     if (!binding?.provider) continue;
     if (binding.provider === 'codex' && (await maybeSendTmuxApproval(chatId))) {
       continue;
@@ -1742,7 +1744,7 @@ async function watchdogTick(): Promise<void> {
       try {
         await bot.api.sendMessage(
           chatId,
-          `📭 [auto-relay] No reply forwarded for ${ageS}s and no assistant text visible in TUI. ${binding.provider} may be busy — repeat the request or open tmux to check directly.`,
+          `📭 [auto-relay] Still working on your last message (${ageS}s). I'll send the reply as soon as it's ready.`,
           {
             disable_notification: true,
             ...(p.messageId

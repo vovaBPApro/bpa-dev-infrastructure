@@ -71,12 +71,28 @@ export const RELOGIN_WARNING = 'сесія протермінована — тр
 // recovered constant; callers override it.
 export const VENDOR_SNAPSHOT_FRESHNESS_MS = 30 * 60 * 1000;
 
+// How far into the future an observation timestamp may sit before it stops
+// being clock skew and becomes an implausible reading. Producer and consumer
+// run on the same host today, so this only has to absorb small NTP drift; a
+// genuinely future-dated record (the review's 2099 probe) is not evidence and
+// must degrade to `unknown`, never authenticate.
+export const VENDOR_TIMESTAMP_SKEW_MS = 2 * 60 * 1000;
+
 export type VendorId = 'codex' | 'claude';
 
 // The two vendor payload shapes, from vendor-quota-scraper.ts. `loginState` is
 // intentionally widened to `unknown` on read: the file is written by another
 // program and its field may be absent, truncated, or renamed.
+//
+// `complete` records whether the raw object carried every key the producer
+// writes (values may be null — the scraper writes nulls for fields it could
+// not read, but it always writes the keys). A record missing keys is a
+// truncated or foreign write, and its "authenticated" is not accepted; see
+// readVendorLogin. The alarm direction is exempt on purpose: an explicit
+// relogin-needed still warns even from a partial record, because suppressing
+// a true warning is the original failure this module exists to prevent.
 export type CodexVendorQuota = {
+  complete: boolean;
   creditsLabel: string | null;
   fetchedAt: string | null;
   loginState: VendorLoginState;
@@ -87,6 +103,7 @@ export type CodexVendorQuota = {
 };
 
 export type ClaudeVendorQuota = {
+  complete: boolean;
   creditsLabel: string | null;
   fableUsedPercent: number | null;
   fetchedAt: string | null;
@@ -160,10 +177,40 @@ function normalizeLoginState(value: unknown): VendorLoginState {
   return 'unknown';
 }
 
+// Every key the producer writes for each vendor record, from
+// vendor-quota-scraper.ts. Key presence (not value truthiness) is the
+// completeness test: the scraper writes null values, never absent keys.
+const CODEX_RECORD_KEYS = [
+  'creditsLabel',
+  'fetchedAt',
+  'loginState',
+  'primaryUsedPercent',
+  'secondaryUsedPercent',
+  'sparkPrimaryUsedPercent',
+  'sparkSecondaryUsedPercent',
+] as const;
+
+const CLAUDE_RECORD_KEYS = [
+  'creditsLabel',
+  'fableUsedPercent',
+  'fetchedAt',
+  'loginState',
+  'sessionUsedPercent',
+  'weeklyUsedPercent',
+] as const;
+
+function hasAllKeys(
+  o: Record<string, unknown>,
+  keys: readonly string[],
+): boolean {
+  return keys.every((key) => key in o);
+}
+
 export function normalizeCodexQuota(raw: unknown): CodexVendorQuota | null {
   if (!raw || typeof raw !== 'object') return null;
   const o = raw as Record<string, unknown>;
   return {
+    complete: hasAllKeys(o, CODEX_RECORD_KEYS),
     creditsLabel: normalizeText(o.creditsLabel),
     fetchedAt: normalizeText(o.fetchedAt),
     loginState: normalizeLoginState(o.loginState),
@@ -178,6 +225,7 @@ export function normalizeClaudeQuota(raw: unknown): ClaudeVendorQuota | null {
   if (!raw || typeof raw !== 'object') return null;
   const o = raw as Record<string, unknown>;
   return {
+    complete: hasAllKeys(o, CLAUDE_RECORD_KEYS),
     creditsLabel: normalizeText(o.creditsLabel),
     fableUsedPercent: normalizeNumber(o.fableUsedPercent),
     fetchedAt: normalizeText(o.fetchedAt),
@@ -190,6 +238,12 @@ export function normalizeClaudeQuota(raw: unknown): ClaudeVendorQuota | null {
 // Ported from status-collector.ts:1725. The file is append-only, so the last
 // parseable vendor_quota_snapshot line is the current reading; malformed tail
 // lines (a torn append) are skipped rather than failing the whole read.
+//
+// Both type discriminators are required (Tier-A review): the producer writes
+// `type: 'event_msg'` on the envelope and `type: 'vendor_quota_snapshot'` on
+// the payload. A line of some other event kind that happens to carry a
+// vendor_quotas-shaped blob is not a vendor quota snapshot and is skipped —
+// presence of the blob alone is not a claim about login state.
 export function parseLatestVendorQuotaSnapshot(
   contents: string,
 ): VendorQuotaSnapshot | null {
@@ -208,14 +262,19 @@ export function parseLatestVendorQuotaSnapshot(
     if (!parsed || typeof parsed !== 'object') continue;
 
     const event = parsed as {
+      type?: unknown;
       timestamp?: unknown;
       payload?: {
+        type?: unknown;
         rate_limits?: CodexRateLimits;
         vendor_quotas?: { claude?: unknown; codex?: unknown };
       };
     };
+    if (event.type !== 'event_msg') continue;
+    if (event.payload?.type !== 'vendor_quota_snapshot') continue;
     const quotas = event.payload?.vendor_quotas;
-    if (!quotas || typeof event.timestamp !== 'string') continue;
+    if (!quotas || typeof quotas !== 'object') continue;
+    if (typeof event.timestamp !== 'string') continue;
 
     const capturedAtMs = Date.parse(event.timestamp);
     if (Number.isNaN(capturedAtMs)) continue;
@@ -290,26 +349,65 @@ export function readVendorLogin(
     return unknown(`snapshot carries no recognisable ${vendor} loginState`);
   }
 
-  // Prefer the vendor's own fetch time; fall back to the event timestamp.
-  const observedAt = quota.fetchedAt ?? snapshot.capturedAt;
-  const observedMs = Date.parse(observedAt);
-  const ageMs = Math.max(
-    0,
-    now - (Number.isNaN(observedMs) ? snapshot.capturedAtMs : observedMs),
-  );
-
-  const staleByAge = ageMs > freshnessMs;
   // rate_limits describes the Codex plan windows only, so this signal is not
   // evidence about Claude.
   const staleByWindow =
     vendor === 'codex' && hasExpiredRateLimitWindow(snapshot, now);
-  const stale = staleByAge || staleByWindow;
 
   if (quota.loginState === 'relogin-needed') {
-    // An expired login does not heal itself while nobody is watching, so a
-    // stale warning still warns — it just says how old it is.
+    // The alarm direction stays lenient on purpose: an explicit
+    // relogin-needed warns even from a partial or oddly-dated record, and an
+    // expired login does not heal itself while nobody is watching, so a stale
+    // warning still warns — it just says how old it is. Dating may fall back
+    // to the envelope timestamp here; a mis-dated warning is still a warning.
+    const observedAt = quota.fetchedAt ?? snapshot.capturedAt;
+    const parsedMs = Date.parse(observedAt);
+    const ageMs = Math.max(
+      0,
+      now - (Number.isNaN(parsedMs) ? snapshot.capturedAtMs : parsedMs),
+    );
+    const stale = ageMs > freshnessMs || staleByWindow;
     return { vendor, state: 'relogin-needed', observedAt, ageMs, stale };
   }
+
+  // From here loginState is 'authenticated' — the trusted-OK direction, and
+  // the fail-closed one (Tier-A review). Before accepting it the record must
+  // prove itself: a complete producer write, dated by the vendor's own
+  // observation time, and that time must plausibly be in the past. Anything
+  // less degrades to `unknown` with the reason.
+
+  if (!quota.complete) {
+    return unknown(
+      `${vendor} record is missing producer fields — a partial or truncated write cannot prove "authenticated"`,
+    );
+  }
+
+  // The vendor's own fetch time is the trust anchor. No silent fallback to
+  // the envelope timestamp: an "authenticated" that cannot be dated by its
+  // own observation cannot be aged, so it cannot be trusted.
+  if (!quota.fetchedAt) {
+    return unknown(
+      `${vendor} record carries no fetchedAt — an undatable "authenticated" is not evidence`,
+    );
+  }
+  const observedMs = Date.parse(quota.fetchedAt);
+  if (Number.isNaN(observedMs)) {
+    return unknown(
+      `${vendor} record's fetchedAt is unparseable — an undatable "authenticated" is not evidence`,
+    );
+  }
+
+  // A future observation is not clock skew past this bound; it is an
+  // implausible reading (or a forged one) and must never authenticate.
+  if (observedMs > now + VENDOR_TIMESTAMP_SKEW_MS) {
+    return unknown(
+      `${vendor} record is timestamped in the future (${quota.fetchedAt}) — refusing to trust it`,
+    );
+  }
+
+  const observedAt = quota.fetchedAt;
+  const ageMs = Math.max(0, now - observedMs);
+  const stale = ageMs > freshnessMs || staleByWindow;
 
   if (stale) {
     // "You were logged in half a day ago" is not "you are logged in".

@@ -318,7 +318,143 @@ test('the operator-facing warning token is byte-identical to the live one', () =
 });
 
 // ---------------------------------------------------------------------------
-// 5. No environment surface.
+// 5. Trust boundary: adversarial snapshots never authenticate.
+//
+// quota-latest.jsonl is written by another program (currently: by nothing —
+// see the writer gap). Everything read from it is untrusted input, and the
+// Tier-A review proved the original port would return a confident
+// "authenticated" from three inputs no complete, honest producer emits:
+// a partial vendor record, an unrelated event type, and a future-dated
+// snapshot. Each of these must degrade to `unknown` with a reason.
+// ---------------------------------------------------------------------------
+
+// Probe 1: a partial vendor record. A bare {loginState:"authenticated"} is a
+// truncated or forged write, not a producer snapshot; it must not authenticate.
+for (const vendor of ['codex', 'claude'] as VendorId[]) {
+  test(`${vendor}: a partial vendor record — bare {loginState:"authenticated"} — is unknown, never authenticated`, () => {
+    const line = JSON.stringify({
+      type: 'event_msg',
+      timestamp: '2026-07-30T11:55:00.000Z',
+      payload: {
+        type: 'vendor_quota_snapshot',
+        vendor_quotas: { [vendor]: { loginState: 'authenticated' } },
+      },
+    });
+    const verdict = readVendorLogin(vendor, source(line), { now: NOW });
+
+    expect(verdict.state).toBe('unknown');
+    // The rendered line carries the reason, not a confident value.
+    expect(formatVendorLoginLine(verdict)).toContain('unknown (');
+  });
+}
+
+// Probe 2: the event/payload type discriminators. A line of some other event
+// kind that happens to carry a vendor_quotas-shaped blob is not a vendor quota
+// snapshot, and neither is a payload without its own discriminator.
+test('an unrelated or undiscriminated event type never authenticates, even if it smuggles vendor_quotas', () => {
+  const timestamp = '2026-07-30T11:55:00.000Z';
+  const impostors = [
+    // unrelated event kind, well-formed vendor blob inside
+    {
+      type: 'lease_heartbeat',
+      timestamp,
+      payload: {
+        type: 'lease_heartbeat',
+        vendor_quotas: { codex: authedCodex() },
+      },
+    },
+    // right envelope, payload discriminator missing
+    {
+      type: 'event_msg',
+      timestamp,
+      payload: { vendor_quotas: { codex: authedCodex() } },
+    },
+    // right payload discriminator, envelope discriminator missing
+    {
+      timestamp,
+      payload: {
+        type: 'vendor_quota_snapshot',
+        vendor_quotas: { codex: authedCodex() },
+      },
+    },
+  ];
+
+  for (const impostor of impostors) {
+    const verdict = readVendorLogin(
+      'codex',
+      source(JSON.stringify(impostor)),
+      { now: NOW },
+    );
+    expect(verdict.state).toBe('unknown');
+    expect(formatVendorLoginLine(verdict)).toContain('unknown (');
+  }
+});
+
+// Probe 3: a future-dated snapshot. "Observed at 2099" is not evidence about
+// now; clamping its negative age to zero and authenticating from it was the
+// reviewer's sharpest counterexample.
+test('a future-dated snapshot is unknown with a reason — a 2099 timestamp never authenticates', () => {
+  const future = '2099-01-01T00:00:00.000Z';
+  const verdict = readVendorLogin(
+    'codex',
+    source(
+      snapshotLine({
+        timestamp: future,
+        codex: authedCodex({ fetchedAt: future }),
+      }),
+    ),
+    { now: NOW },
+  );
+
+  expect(verdict.state).toBe('unknown');
+  expect(formatVendorLoginLine(verdict)).toContain('unknown (');
+  expect(formatVendorLoginLine(verdict)).toContain('future');
+});
+
+// Probe 3b: the vendor's own observation time is the trust anchor for
+// "authenticated". A record without one must not silently borrow the envelope
+// timestamp and authenticate from it.
+test('an authenticated record with no vendor fetchedAt is unknown — no silent envelope-timestamp fallback', () => {
+  for (const missing of [null, '   ', 'not-a-date']) {
+    const verdict = readVendorLogin(
+      'codex',
+      source(snapshotLine({ codex: authedCodex({ fetchedAt: missing }) })),
+      { now: NOW },
+    );
+    expect(verdict.state).toBe('unknown');
+    expect(formatVendorLoginLine(verdict)).toContain('unknown (');
+  }
+});
+
+// The gates above are about trusting "authenticated". They must NOT suppress
+// the alarm direction: an explicit relogin-needed in a partial or oddly-dated
+// record still warns, because losing a true warning is the original failure
+// this module exists to prevent.
+test('a partial or future-dated record with an explicit relogin-needed still warns', () => {
+  const partial = JSON.stringify({
+    type: 'event_msg',
+    timestamp: '2026-07-30T11:55:00.000Z',
+    payload: {
+      type: 'vendor_quota_snapshot',
+      vendor_quotas: { claude: { loginState: 'relogin-needed' } },
+    },
+  });
+  expect(
+    readVendorLogin('claude', source(partial), { now: NOW }).state,
+  ).toBe('relogin-needed');
+
+  const future = '2099-01-01T00:00:00.000Z';
+  const futureLine = snapshotLine({
+    timestamp: future,
+    claude: authedClaude({ loginState: 'relogin-needed', fetchedAt: future }),
+  });
+  expect(
+    readVendorLogin('claude', source(futureLine), { now: NOW }).state,
+  ).toBe('relogin-needed');
+});
+
+// ---------------------------------------------------------------------------
+// 6. No environment surface.
 // ---------------------------------------------------------------------------
 
 test('verdicts are identical under a fully scrubbed ORCH_/TELEGRAM_/INFRA_ env', async () => {

@@ -37,8 +37,17 @@ encoded_secret="$(printf '%s%s' 'gh' 'p_')$(printf 'f%.0s' {1..36})"
 printf '%s' "$encoded_secret" | base64 > "$tmp/repo/encoded.txt"
 git -C "$tmp/repo" add encoded.txt
 git -C "$tmp/repo" commit -qm encoded-secret-fixture
-if land_secret_scan "$tmp/repo" ag-encoded-secret; then
+encoded_output="$tmp/encoded-output.txt"
+if land_secret_scan "$tmp/repo" ag-encoded-secret 2>"$encoded_output"; then
   echo "FAIL secret scan accepted a base64-encoded token shape"
+  exit 1
+fi
+if ! grep -Fqx 'LAND secret-scan decoded-match file=encoded.txt lines=1' "$encoded_output"; then
+  echo "FAIL secret scan omitted the decoded-match diagnostic"
+  exit 1
+fi
+if grep -Fq "$encoded_secret" "$encoded_output"; then
+  echo "FAIL secret scan disclosed the decoded token shape"
   exit 1
 fi
 echo "PASS secret scan rejects a base64-encoded token shape"

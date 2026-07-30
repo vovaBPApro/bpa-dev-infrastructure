@@ -28,6 +28,22 @@ brand loyalty or round-robin.
   rows, risk tier, verification commands, and stop condition. Do not silently
   widen a lane because another route is busy.
 
+## Review-diversity priority (roles over vendors)
+
+When choosing review shape, ROLE/PERSONA diversity outranks vendor diversity
+(instance ruling: `instance/decisions/HR-212.md`):
+
+- The default review for gated work is a consilium of reviewers with DIFFERENT
+  roles/optimization targets (e.g. correctness/QA lens, security lens,
+  delivery lens) running on the provider with headroom. Different targets
+  catch different defect classes; identical reviewers on two vendors mostly
+  catch the same ones twice.
+- Cross-vendor review remains a SUPPLEMENT for the highest-risk gates when it
+  is cheaply available — it is no longer the thing a review waits for.
+- Session independence between coder and every reviewer is mandatory and
+  unchanged; a consilium seat is a separate session, not a second opinion from
+  the coder's own context.
+
 ## Provider-economy default (quota-asymmetric routing)
 
 When the Human has directed load off one provider (see `instance/params.yaml:

@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 # Install the one-shot watchdog as a user timer. Safe to rerun.
+# INSTALLATION is inert: `install` only renders the unit files and reloads
+# systemd — it never enables or starts the timer. ARMING is a separate,
+# explicit operator act (`arm`), per the standing deploy ruling that the
+# watchdog timer stays unarmed until deliberately armed.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,9 +21,32 @@ MARKER='# managed by orchestrator/install-watchdog.sh'
 SERVICE="$UNIT_DIR/$UNIT_NAME.service"
 TIMER="$UNIT_DIR/$UNIT_NAME.timer"
 
-usage() { printf '%s\n' 'Usage: install-watchdog.sh [install|uninstall|--help]'; }
+usage() {
+  printf '%s\n' \
+    'Usage: install-watchdog.sh [install|arm|disarm|uninstall|--help]' \
+    '  install    render the unit files INERT (no enable, no start) — the default' \
+    '  arm        explicitly enable --now the timer; the ONLY arming path' \
+    '  disarm     disable --now the timer, keeping the unit files' \
+    '  uninstall  disarm and remove the unit files'
+}
 case "${1:-install}" in
   -h|--help|help) usage; exit 0 ;;
+  arm)
+    # Arming must never be an install side effect. Refuse to arm what was
+    # never installed, so a typo cannot enable a dangling unit reference.
+    if [[ ! -f "$SERVICE" || ! -f "$TIMER" ]]; then
+      printf 'ERROR not-installed unit=%s; run install-watchdog.sh install first\n' "$UNIT_NAME" >&2
+      exit 2
+    fi
+    systemctl --user enable --now "$UNIT_NAME.timer"
+    printf 'armed: %s\n' "$UNIT_NAME"
+    exit 0
+    ;;
+  disarm)
+    systemctl --user disable --now "$UNIT_NAME.timer"
+    printf 'disarmed: %s\n' "$UNIT_NAME"
+    exit 0
+    ;;
   uninstall)
     systemctl --user disable --now "$UNIT_NAME.timer" 2>/dev/null || true
     rm -f "$SERVICE" "$TIMER"
@@ -56,5 +83,5 @@ trap 'rm -f "$tmp_service" "$tmp_timer"' EXIT
 mv "$tmp_service" "$SERVICE"
 mv "$tmp_timer" "$TIMER"
 systemctl --user daemon-reload
-systemctl --user enable --now "$UNIT_NAME.timer"
-printf 'installed: %s (every %ss)\n' "$UNIT_NAME" "$INTERVAL"
+printf 'installed: %s (every %ss) INERT; arm explicitly with: install-watchdog.sh arm\n' \
+  "$UNIT_NAME" "$INTERVAL"

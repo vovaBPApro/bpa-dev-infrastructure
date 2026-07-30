@@ -168,6 +168,70 @@ linger_warning="$(PATH="$verify_fixture/bin:$PATH" \
 grep -Fq 'WARNING: user lingering is disabled' <<<"$linger_warning"
 grep -Fq "loginctl enable-linger $USER" <<<"$linger_warning"
 
+# ── Bare install on a token-configured host must NOT arm the watchdog ───────
+# Standing deploy ruling: the watchdog timer stays unarmed. At 17ec3e0a
+# activate_units treated a configured token as a watchdog opt-in and ran
+# `systemctl --user enable --now bpa-orchestrator-watchdog.timer` on every
+# rerun of the installer — the exact deploy path. The full install flow runs
+# here against a shimmed host: systemctl is a recorder, so nothing on this
+# machine is enabled, started, or reloaded for real.
+arming_fixture="$(mktemp -d)"
+trap 'rm -rf "$verify_fixture" "$arming_fixture"' EXIT
+install -d -m 700 \
+  "$arming_fixture/root/.git" \
+  "$arming_fixture/root/daemon" \
+  "$arming_fixture/root/core" \
+  "$arming_fixture/root/gate" \
+  "$arming_fixture/root/workspace" \
+  "$arming_fixture/root/hygiene" \
+  "$arming_fixture/root/runtime" \
+  "$arming_fixture/config" \
+  "$arming_fixture/bin"
+printf '%s\n' 'TELEGRAM_BOT_TOKEN=fixture-token' > "$arming_fixture/root/.env"
+chmod 600 "$arming_fixture/root/.env"
+for command_name in git curl tmux unzip xz crontab bun; do
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$arming_fixture/bin/$command_name"
+done
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "Linger=yes"' > "$arming_fixture/bin/loginctl"
+# shellcheck disable=SC2016 # the recorder shim must expand $* at CALL time
+printf '%s\n' '#!/usr/bin/env bash' \
+  'printf "%s\n" "$*" >> "${BOOTSTRAP_TEST_SYSTEMCTL_CALLS:?}"' \
+  'exit 0' > "$arming_fixture/bin/systemctl"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$arming_fixture/root/workspace/workspace.test.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$arming_fixture/root/hygiene/install-cron.sh"
+chmod 700 "$arming_fixture/bin"/* "$arming_fixture/root/hygiene/install-cron.sh"
+
+arming_calls="$arming_fixture/systemctl.calls"
+run_full_install() { # <extra installer args...>
+  : > "$arming_calls"
+  PATH="$arming_fixture/bin:$PATH" \
+    INSTALL_ROOT="$arming_fixture/root" \
+    ENV_FILE="$arming_fixture/root/.env" \
+    XDG_CONFIG_HOME="$arming_fixture/config" \
+    BUN_BIN="$arming_fixture/bin/bun" \
+    RUNTIME_DIR="$arming_fixture/root/runtime" \
+    BOOTSTRAP_TEST_SYSTEMCTL_CALLS="$arming_calls" \
+    "$INSTALLER" "$@"
+}
+
+bare_install_output="$(run_full_install)"
+if grep -F 'bpa-orchestrator-watchdog.timer' "$arming_calls" | grep -E 'enable|--now|start'; then
+  echo 'ERROR: a bare install on a token-configured host armed the watchdog timer' >&2
+  exit 1
+fi
+printf 'FAIL-BEFORE 17ec3e0a bare install recorded: --user enable --now bpa-orchestrator-watchdog.timer\n'
+# The rest of the stack still activates: inertness is watchdog-specific.
+grep -Fxq -- '--user enable --now bpa-telegram-daemon.service' "$arming_calls"
+grep -Fxq -- '--user enable --now bpa-full-suite.timer' "$arming_calls"
+grep -Fxq -- '--user enable --now orch-morning-report.timer' "$arming_calls"
+grep -Fxq -- '--user daemon-reload' "$arming_calls"
+test -f "$arming_fixture/config/systemd/user/bpa-orchestrator-watchdog.timer"
+grep -Fq 'Watchdog timer installed INERT' <<<"$bare_install_output"
+
+# Only the explicit watchdog-specific opt-in arms it.
+run_full_install --arm-watchdog >/dev/null
+grep -Fxq -- '--user enable --now bpa-orchestrator-watchdog.timer' "$arming_calls"
+
 # Render deployable unit inputs without requiring host envsubst. Temporary test
 # fixtures are intentionally outside this sweep; bootstrap inputs may never
 # retain the retired host root.

@@ -99,6 +99,46 @@ try_install 123
 grep -qx 'OnUnitActiveSec=123' "$UNITS/bounds-fixture.timer" ||
   fail 'valid cadence was not rendered into the timer'
 
+# ── Installation is INERT; arming is a separate explicit act ────────────────
+# Standing deploy ruling: the watchdog timer stays unarmed. At 17ec3e0a the
+# default `install` action ran `systemctl --user enable --now` as a side
+# effect, so merely installing armed the watchdog. Install now renders the unit
+# files and reloads user systemd ONLY; the enable call lives solely behind the
+# dedicated `arm` subcommand, and `disarm` reverses it without removing units.
+if grep -E -- 'enable|--now|(^| )start( |$)' "$ORCH_TEST_SYSTEMCTL_CALLS"; then
+  fail 'default install armed the watchdog timer (enable/--now/start recorded)'
+fi
+grep -q 'daemon-reload' "$ORCH_TEST_SYSTEMCTL_CALLS" ||
+  fail 'install no longer reloads user systemd after rendering units'
+
+watchdog_action() { # <subcommand> — against the last try_install unit dir
+  env PATH="$SHIM:$PATH" ORCH_SYSTEMD_USER_DIR="$UNITS" ORCH_WATCHDOG_UNIT=bounds-fixture \
+    "$SCRIPT_DIR/install-watchdog.sh" "$1"
+}
+
+: > "$ORCH_TEST_SYSTEMCTL_CALLS"
+watchdog_action arm >/dev/null
+grep -qx 'systemctl --user enable --now bounds-fixture.timer' "$ORCH_TEST_SYSTEMCTL_CALLS" ||
+  fail 'the explicit arm subcommand did not enable the timer'
+
+: > "$ORCH_TEST_SYSTEMCTL_CALLS"
+watchdog_action disarm >/dev/null
+grep -qx 'systemctl --user disable --now bounds-fixture.timer' "$ORCH_TEST_SYSTEMCTL_CALLS" ||
+  fail 'the disarm subcommand did not disable the timer'
+[[ -f "$UNITS/bounds-fixture.service" && -f "$UNITS/bounds-fixture.timer" ]] ||
+  fail 'disarm removed the unit files; that is uninstall, not disarm'
+
+# Arming what was never installed is a refusal, and systemd is never touched.
+EMPTY_UNITS="$SCRATCH/units-never-installed"
+mkdir -p "$EMPTY_UNITS"
+: > "$ORCH_TEST_SYSTEMCTL_CALLS"
+ARM_STATUS=0
+env PATH="$SHIM:$PATH" ORCH_SYSTEMD_USER_DIR="$EMPTY_UNITS" ORCH_WATCHDOG_UNIT=bounds-fixture \
+  "$SCRIPT_DIR/install-watchdog.sh" arm >/dev/null 2>&1 || ARM_STATUS=$?
+(( ARM_STATUS == 2 )) || fail "arm without installed units exited $ARM_STATUS, expected refusal 2"
+[[ ! -s "$ORCH_TEST_SYSTEMCTL_CALLS" ]] ||
+  fail 'arm touched systemctl although no unit files were installed'
+
 # ── Tick path: invalid knobs mean the documented default, never a storm ─────
 cat > "$SHIM/tmux" <<'EOF'
 #!/usr/bin/env bash

@@ -16,12 +16,6 @@ note. Derived-work items live here; Human directives stay in
 
 ## Open
 
-- **W-03 — session-load v2** (sol verdict finding 2 residue): add to the
-  startup bundle: repo SHA + dirty-state warning, durable mission/lane/lease
-  state, explicit startup verdict line. (Handoff freshness landed 8c0de918.)
-- **W-05 — orchestrator cold-start doc** (consilium wave 3, sol F5):
-  copy-pasteable command walkthrough for mission/dispatch/review/land/report
-  on either harness; becomes an orchestrator-baseline doc.
 - **W-06 — sandboxed-lane capability contract** (consilium wave 3, terra F7):
   declare trusted-executor vs sandboxed-lane capabilities; `NO-GO
   capability=<…>` evidence instead of stalls.

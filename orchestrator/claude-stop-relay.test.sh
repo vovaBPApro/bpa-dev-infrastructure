@@ -17,6 +17,8 @@ cat > "$TRANSCRIPT" <<'EOF'
 {"type":"user","uuid":"user-1","message":{"role":"user","content":"question"}}
 {"type":"assistant","uuid":"turn-old","sessionId":"session-test","message":{"role":"assistant","content":[{"type":"text","text":"older answer"}]}}
 {"type":"assistant","uuid":"turn-final","sessionId":"session-test","message":{"role":"assistant","content":[{"type":"thinking","thinking":"hidden"},{"type":"text","text":"known final "},{"type":"text","text":"assistant message"}]}}
+{"type":"assistant","uuid":"turn-foreign","sessionId":"session-other","message":{"role":"assistant","content":[{"type":"text","text":"foreign session answer"}]}}
+{"type":"assistant","uuid":"turn-sessionless","message":{"role":"assistant","content":[{"type":"text","text":"sessionless answer"}]}}
 EOF
 
 cat > "$SCRATCH/relay-stub.sh" <<'EOF'

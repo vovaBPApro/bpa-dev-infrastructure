@@ -47,8 +47,7 @@ for (const line of (await transcript.text()).split("\n")) {
     record?.type !== "assistant" ||
     record?.message?.role !== "assistant" ||
     !Array.isArray(record.message.content) ||
-    (typeof record.sessionId === "string" &&
-      record.sessionId !== stop.session_id) ||
+    record.sessionId !== stop.session_id ||
     record.isSidechain === true
   ) {
     continue;

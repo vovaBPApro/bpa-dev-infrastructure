@@ -16,6 +16,8 @@ run_token="bpa-endurance-$$-$(date +%s)"
 docker_root_initial=''
 last_active_leases=0
 owned_pgid=''
+timeout_pid=''
+round_timeout_seconds=${SOAK_ROUND_TIMEOUT_SECONDS:-3600}
 
 usage() {
   echo 'usage: soak/soak-endurance.sh [--rounds R | --minutes M] [--lanes N] [--report FILE]' >&2
@@ -31,7 +33,7 @@ while [ "$#" -gt 0 ]; do
     *) usage; exit 2 ;;
   esac
 done
-if ! [[ "$lanes" =~ ^[0-9]+$ ]] || [ "$lanes" -lt 3 ] || { [ -n "$minutes" ] && ! [[ "$minutes" =~ ^[0-9]+$ ]]; } || { [ -z "$minutes" ] && { ! [[ "$rounds" =~ ^[0-9]+$ ]] || [ "$rounds" -lt 1 ]; }; } || { [ -n "$minutes" ] && [ "$minutes" -lt 1 ]; }; then
+if ! [[ "$lanes" =~ ^[0-9]+$ ]] || [ "$lanes" -lt 3 ] || ! [[ "$round_timeout_seconds" =~ ^[0-9]+$ ]] || [ "$round_timeout_seconds" -lt 1 ] || { [ -n "$minutes" ] && ! [[ "$minutes" =~ ^[0-9]+$ ]]; } || { [ -z "$minutes" ] && { ! [[ "$rounds" =~ ^[0-9]+$ ]] || [ "$rounds" -lt 1 ]; }; } || { [ -n "$minutes" ] && [ "$minutes" -lt 1 ]; }; then
   usage
   exit 2
 fi
@@ -126,7 +128,6 @@ cleanup_labeled_docker() {
   docker network ls -q --filter "label=bpa.soak.run=$run_token" | xargs -r docker network rm >/dev/null 2>&1 || true
   docker image ls -q --filter "label=bpa.soak.run=$run_token" | xargs -r docker image rm >/dev/null 2>&1 || true
 }
-trap cleanup_labeled_docker EXIT
 
 initial_disk=''
 previous_disk=''
@@ -140,6 +141,96 @@ failure_reason=''
 rounds_run=0
 rounds_passed=0
 rounds_failed=0
+last_verdict=initializing
+report_state=incomplete
+interrupted=none
+run_complete=false
+SNAP_DISK_KB=unavailable
+SNAP_PROCS=0
+SNAP_RSS_KB=0
+SNAP_SANDBOX=''
+initial_snapshot='not captured'
+if [ -n "$minutes" ]; then requested="minutes=$minutes"; else requested="rounds=$rounds"; fi
+
+write_report() {
+  local overall timing_min timing_median timing_max timing_last sorted report_tmp
+  if [ "$failure_round" = none ]; then
+    if [ "$report_state" = complete ]; then overall=PASS; else overall=INCOMPLETE; fi
+  else
+    overall=FAIL
+  fi
+  if [ "${#timings[@]}" -gt 0 ]; then
+    sorted=$(printf '%s\n' "${timings[@]}" | sort -n)
+    timing_min=$(printf '%s\n' "$sorted" | head -n 1)
+    timing_max=$(printf '%s\n' "$sorted" | tail -n 1)
+    timing_median=$(printf '%s\n' "$sorted" | awk '{a[NR]=$1} END {if(NR%2) print a[(NR+1)/2]; else print int((a[NR/2]+a[NR/2+1])/2)}')
+    timing_last=${timings[$(( ${#timings[@]} - 1 ))]}
+  else
+    timing_min=0; timing_median=0; timing_max=0; timing_last=0
+  fi
+  report_tmp=$(mktemp "$(dirname -- "$report")/.soak-endurance-report.XXXXXX")
+  {
+    echo '# Endurance soak aggregate evidence report'; echo
+    echo "state: $report_state"
+    echo "interrupted: $interrupted"
+    echo "last-verdict: $last_verdict"
+    echo "requested: $requested lanes=$lanes"
+    echo "round-timeout-seconds: $round_timeout_seconds"
+    echo "rounds: run=$rounds_run passed=$rounds_passed failed=$rounds_failed"
+    echo "first-failure: $failure_round${failure_reason:+ ($failure_reason)}"
+    echo "timing-ms: min=$timing_min median=$timing_median max=$timing_max last=$timing_last"
+    echo "initial: $initial_snapshot"
+    printf '%s\n' "${round_details[@]}"
+    printf 'leak: %s\n' "${leak_details[@]}"
+    echo "resource-delta: disk_free_kb=$initial_disk->$SNAP_DISK_KB docker_root_fs=$docker_root_initial->$(docker_root_kb) worktrees=0 branches=0 processes=$SNAP_PROCS rss_kb=$SNAP_RSS_KB tmp_dirs=$(printf '%s\n' "$SNAP_SANDBOX" | awk 'NF {n++} END {print n+0}') active_leases=$last_active_leases"
+    echo "overall: $overall"
+  } >"$report_tmp"
+  mv -f -- "$report_tmp" "$report"
+}
+
+terminate_owned_group() {
+  if [ -n "$timeout_pid" ]; then
+    kill "$timeout_pid" 2>/dev/null || true
+    wait "$timeout_pid" 2>/dev/null || true
+    timeout_pid=''
+  fi
+  if [ -n "$owned_pgid" ]; then
+    kill -TERM -- "-$owned_pgid" 2>/dev/null || true
+    sleep 0.2
+    kill -KILL -- "-$owned_pgid" 2>/dev/null || true
+  fi
+}
+
+on_signal() {
+  local signal=$1 status=$2
+  trap - INT TERM EXIT
+  interrupted=$signal
+  report_state=incomplete
+  last_verdict="interrupted ($signal)"
+  terminate_owned_group
+  write_report
+  cleanup_labeled_docker
+  exit "$status"
+}
+
+on_exit() {
+  local status=$?
+  trap - INT TERM EXIT
+  if [ "$run_complete" != true ]; then
+    interrupted=EXIT
+    report_state=incomplete
+    last_verdict="interrupted (EXIT)"
+    terminate_owned_group
+    write_report
+  fi
+  cleanup_labeled_docker
+  exit "$status"
+}
+
+trap 'on_signal INT 130' INT
+trap 'on_signal TERM 143' TERM
+trap on_exit EXIT
+
 deadline=0
 if [ -n "$minutes" ]; then deadline=$(( $(now_ms) + minutes * 60000 )); fi
 within_limit() { if [ -n "$minutes" ]; then [ "$(now_ms)" -lt "$deadline" ]; else [ "$rounds_run" -lt "$rounds" ]; fi; }
@@ -153,6 +244,7 @@ if [ -z "${SOAK_DOCKER_PROBE:-}" ] && [ "$docker_root_initial" = unavailable ]; 
   failure_round=0
   failure_reason='Docker probe unavailable'
 fi
+write_report
 
 while [ "$failure_round" = none ] && within_limit; do
   round=$((rounds_run + 1))
@@ -161,6 +253,9 @@ while [ "$failure_round" = none ] && within_limit; do
   before_line=$(snapshot_line "$round" before 0)
   output="$run_dir/round-$round.output"
   started=$(now_ms)
+  last_verdict=started
+  printf 'round %s started\n' "$round"
+  write_report
   set +e
   if [ -n "${SOAK_ROUND_COMMAND:-}" ]; then
     setsid env SOAK_RUN_TOKEN="$run_token" SOAK_SANDBOX_ROOT="$sandbox_root" HOME="$sandbox_root/home" TMPDIR="$tmp_root" \
@@ -174,10 +269,27 @@ while [ "$failure_round" = none ] && within_limit; do
   fi
   round_pid=$!
   owned_pgid=$round_pid
+  timeout_marker="$run_dir/round-$round.timeout"
+  (
+    sleep "$round_timeout_seconds"
+    if kill -0 "$round_pid" 2>/dev/null; then
+      : >"$timeout_marker"
+      kill -TERM -- "-$owned_pgid" 2>/dev/null || true
+      sleep 0.2
+      kill -KILL -- "-$owned_pgid" 2>/dev/null || true
+    fi
+  ) &
+  timeout_pid=$!
   wait "$round_pid"; soak_status=$?
+  kill "$timeout_pid" 2>/dev/null || true
+  wait "$timeout_pid" 2>/dev/null || true
+  timeout_pid=''
   set -e
+  owned_pgid=''
   ended=$(now_ms); elapsed=$((ended - started))
   timings+=("$elapsed"); rounds_run=$round
+  round_timed_out=false
+  if [ -f "$timeout_marker" ]; then round_timed_out=true; fi
   fixture=$(sed -n 's/^fixture: //p' "$output" | tail -n 1)
   active_leases_probe_failed=false
   if ! last_active_leases=$(active_leases_probe "$fixture"); then last_active_leases=unavailable; active_leases_probe_failed=true; fi
@@ -194,7 +306,8 @@ while [ "$failure_round" = none ] && within_limit; do
   )
   round_details+=("$before_line" "$after_line" "round $round timing_ms=$elapsed soak_exit=$soak_status")
   leak_details+=("${found_leaks[@]}")
-  if [ "$round_overall_pass" != true ]; then failure_round=$round; failure_reason='round did not reach overall PASS'
+  if [ "$round_timed_out" = true ]; then failure_round=$round; failure_reason='round timeout'
+  elif [ "$round_overall_pass" != true ]; then failure_round=$round; failure_reason='round did not reach overall PASS'
   elif [ "$active_leases_probe_failed" = true ]; then failure_round=$round; failure_reason='could not inspect active leases in disposable state DB'
   elif [ "$last_active_leases" != 0 ]; then failure_round=$round; failure_reason='active leases remained in disposable state DB'
   elif [ "${#found_leaks[@]}" -gt 0 ]; then failure_round=$round; failure_reason='owned resource IDs were added'
@@ -208,29 +321,24 @@ while [ "$failure_round" = none ] && within_limit; do
   if [ "$SNAP_DISK_KB" -lt "$previous_disk" ]; then disk_declines=$((disk_declines + 1)); else disk_declines=0; fi
   previous_disk=$SNAP_DISK_KB
   if [ "$disk_declines" -ge 2 ] && [ "$failure_round" = none ]; then failure_round=$round; failure_reason='disk free space trended down monotonically for two rounds'; fi
-  if [ "$failure_round" = none ]; then rounds_passed=$((rounds_passed + 1)); rm -f -- "$output" "$run_dir/round-$round.report"; else rounds_failed=1; fi
+  if [ "$failure_round" = none ]; then
+    rounds_passed=$((rounds_passed + 1))
+    last_verdict=PASS
+    rm -f -- "$output" "$run_dir/round-$round.report"
+    printf 'round %s PASS\n' "$round"
+  else
+    rounds_failed=1
+    last_verdict="FAIL ($failure_reason)"
+    printf 'round %s FAIL (%s)\n' "$round" "$failure_reason"
+  fi
+  write_report
 done
 
 if [ "$failure_round" != none ] && [ "$rounds_failed" -eq 0 ]; then rounds_failed=1; fi
-if [ -n "$minutes" ]; then requested="minutes=$minutes"; else requested="rounds=$rounds"; fi
 if [ "$failure_round" = none ]; then overall=PASS; else overall=FAIL; fi
-if [ "${#timings[@]}" -gt 0 ]; then
-  sorted=$(printf '%s\n' "${timings[@]}" | sort -n)
-  timing_min=$(printf '%s\n' "$sorted" | head -n 1); timing_max=$(printf '%s\n' "$sorted" | tail -n 1)
-  timing_median=$(printf '%s\n' "$sorted" | awk '{a[NR]=$1} END {if(NR%2) print a[(NR+1)/2]; else print int((a[NR/2]+a[NR/2+1])/2)}')
-  timing_last=${timings[$(( ${#timings[@]} - 1 ))]}
-else timing_min=0; timing_median=0; timing_max=0; timing_last=0; fi
-
-{
-  echo '# Endurance soak aggregate evidence report'; echo
-  echo "requested: $requested lanes=$lanes"
-  echo "rounds: run=$rounds_run passed=$rounds_passed failed=$rounds_failed"
-  echo "first-failure: $failure_round${failure_reason:+ ($failure_reason)}"
-  echo "timing-ms: min=$timing_min median=$timing_median max=$timing_max last=$timing_last"
-  echo "initial: $initial_snapshot"
-  printf '%s\n' "${round_details[@]}"
-  printf 'leak: %s\n' "${leak_details[@]}"
-  echo "resource-delta: disk_free_kb=$initial_disk->$SNAP_DISK_KB docker_root_fs=$docker_root_initial->$(docker_root_kb) worktrees=0 branches=0 processes=$SNAP_PROCS rss_kb=$SNAP_RSS_KB tmp_dirs=$(printf '%s\n' "$SNAP_SANDBOX" | awk 'NF {n++} END {print n+0}') active_leases=$last_active_leases"
-  echo "overall: $overall"
-} | tee "$report"
+report_state=complete
+interrupted=none
+write_report
+cat "$report"
+run_complete=true
 [ "$overall" = PASS ]

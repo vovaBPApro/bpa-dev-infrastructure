@@ -19,17 +19,57 @@ say() { printf '%s\n' "$*" | tee -a "$report_file"; }
 has() { grep -Fq -- "$2" "$1"; }
 assert() { "$@" || return 1; }
 
+# Names the predicate that failed so a FAIL line says which invariant broke
+# instead of a bare assertion-failed that the next reader has to re-derive.
+check() {
+  local label=$1
+  shift
+  "$@" && return 0
+  [ -n "${CHAOS_FAIL_REASON:-}" ] || CHAOS_FAIL_REASON=$label
+  return 1
+}
+
+# Runs a command that a scenario deliberately SIGKILLs (the injected
+# `verify: kill -9 "$PPID"`). The inner shell reaps the signal, so this shell
+# never emits bash's bare "<pid> Killed" job notice -- which reads like an OOM
+# or a supervisor kill and has already cost one investigation. The deliberate
+# kill is reported as such, and an unexpected signal is reported plainly too.
+crash_injected() {
+  local label=$1 log=$2 status=0
+  shift 2
+  # The trailing `exit` keeps bash from exec-optimizing itself away, so the
+  # inner shell survives to reap the signal and report it as a normal status.
+  # $0 carries the log path so only the victim is redirected, not our report.
+  # `exec 2>/dev/null` drops the inner shell's own job-status notice -- the
+  # victim's stderr still reaches the log through its explicit `2>&1`.
+  bash -c 'set -u; exec 2>/dev/null; "$@" >"$0" 2>&1; exit $?' "$log" "$@" || status=$?
+  if [ "$status" -gt 128 ]; then
+    say "CHAOS inject=$label signal=$((status - 128)) note=deliberate-crash-injection"
+  else
+    say "CHAOS inject=$label status=$status note=verifier-exited-without-crashing"
+  fi
+  return 0
+}
+
 want() { [ "$selected" = all ] || [[ ",$selected," == *",$1,"* ]]; }
 run() {
-  local name=$1 detail
+  local name=$1 detail status=0
   want "$name" || return 0
   total=$((total + 1))
-  if "$name"; then
+  CHAOS_FAIL_REASON=''
+  "$name" || status=$?
+  if [ "$status" -eq 0 ]; then
     detail=${CHAOS_DETAIL:-reaction-asserted}
     say "CHAOS scenario=$name verdict=PASS detail=$detail"
     pass=$((pass + 1))
   else
-    detail=${CHAOS_DETAIL:-assertion-failed}
+    # A scenario body that itself died on a signal must say so; signal deaths
+    # are not assertion failures and must not be reported as if they were.
+    if [ "$status" -gt 128 ]; then
+      detail=${CHAOS_DETAIL:-killed-by-signal-$((status - 128))}
+    else
+      detail=${CHAOS_DETAIL:-${CHAOS_FAIL_REASON:-assertion-failed}}
+    fi
     say "CHAOS scenario=$name verdict=FAIL detail=$detail"
     fail=$((fail + 1))
   fi
@@ -61,6 +101,7 @@ lane() {
 }
 report() { printf 'commit: %s fixture\nverify: true\nresult: clean\nsecret-scan: clean\nremaining: none\n' "$2" > "$1"; }
 origin_main() { git --git-dir="$(dirname -- "$1")/$(basename -- "$1")-origin.git" rev-parse main; }
+no_merge_head() { ! git -C "$1" rev-parse --verify --quiet MERGE_HEAD >/dev/null; }
 poll_reap() {
   local db=$1 deadline=$(( $(now_ms) + 3000 )) out
   while [ "$(now_ms)" -lt "$deadline" ]; do
@@ -90,14 +131,13 @@ dead-lane-no-report() {
 }
 
 crash-mid-landing() {
-  local repo sha before after origin before_origin pid
+  local repo sha before after origin before_origin
   repo=$(make_repo crash); sha=$(lane "$repo" ag-crash lanes/crash.txt crash); report "$fixture/crash.md" "$sha"
   # The verify shell kills its parent (land.sh) after merge and before push/reap.
   # shellcheck disable=SC2016 # PPID belongs to the disposable verifier shell.
   printf 'commit: %s fixture\nverify: kill -9 "$PPID"\nresult: clean\nsecret-scan: clean\nremaining: none\n' "$sha" > "$fixture/crash.md"
   before_origin=$(origin_main "$repo")
-  "$root/gate/land.sh" --branch ag-crash --report "$fixture/crash.md" --repo "$repo" --no-push --run-verify >"$fixture/logs/crash-land" 2>&1 & pid=$!
-  wait "$pid" || true
+  crash_injected crash-mid-landing "$fixture/logs/crash-land" "$root/gate/land.sh" --branch ag-crash --report "$fixture/crash.md" --repo "$repo" --no-push --run-verify
   after=$(git -C "$repo" rev-parse main); origin=$(origin_main "$repo")
   git -C "$repo" rev-parse --verify --quiet MERGE_HEAD >/dev/null && return 1
   # Recovery is allowed to complete or to make an honest guard refusal; no half merge reached origin.
@@ -163,7 +203,7 @@ lease-fencing-under-restart() {
 }
 
 ten-wide-with-mixed-fate() {
-  local repo db mission i sha landed=0 origin_before origin_after token branches=0 worktrees=0
+  local repo db mission i sha landed=0 origin_before origin_after token branches=0 worktrees=0 fate
   repo=$(make_repo ten); db="$fixture/ten.db"; mission=$(cli "$db" mission create ten-wide | sed -n 's/^MISSION id=\([^ ]*\).*/\1/p'); cli "$db" mission transition "$mission" running >/dev/null
   for i in $(seq 1 10); do
     sha=$(lane "$repo" "ag-ten-$i" "lanes/$i.txt" "$i")
@@ -182,7 +222,7 @@ ten-wide-with-mixed-fate() {
   printf 'commit: %s fixture\nverify: kill -9 "$PPID"\nresult: clean\nsecret-scan: clean\nremaining: none\n' "$(git -C "$repo" rev-parse ag-ten-10)" > "$fixture/ten-10.md"
   # The crash-injected no-push land must not publish its half-completed merge.
   origin_before=$(origin_main "$repo")
-  "$root/gate/land.sh" --branch ag-ten-10 --report "$fixture/ten-10.md" --repo "$repo" --no-push --run-verify >"$fixture/logs/ten-10" 2>&1 & wait "$!" || true
+  crash_injected ten-wide-lane-10 "$fixture/logs/ten-10" "$root/gate/land.sh" --branch ag-ten-10 --report "$fixture/ten-10.md" --repo "$repo" --no-push --run-verify
   git -C "$repo" merge --abort >/dev/null 2>&1 || true; git -C "$repo" worktree prune
   origin_after=$(origin_main "$repo")
   for i in $(seq 1 6); do cli "$db" lane transition "ten-$i" succeeded >/dev/null; done
@@ -191,7 +231,23 @@ ten-wide-with-mixed-fate() {
   for i in $(seq 1 10); do git -C "$repo" branch -D "ag-ten-$i" >/dev/null 2>&1 || true; done
   branches=$(git -C "$repo" for-each-ref --format='%(refname)' 'refs/heads/ag-ten-*' | wc -l | tr -d ' ')
   worktrees=$(git -C "$repo" worktree list --porcelain | grep -c '^worktree ' || true)
-  [ "$landed" -eq 6 ] && [ "$origin_before" = "$origin_after" ] && has "$fixture/logs/ten-7" 'completion-guard' && has "$fixture/logs/ten-8" 'secret-scan' && has "$fixture/logs/ten-9" 'LAND step=merge status=fail' && ! git -C "$repo" rev-parse --verify --quiet MERGE_HEAD >/dev/null && [ "$branches" -eq 0 ] && [ "$worktrees" -eq 1 ] && [ "$(cli "$db" status | bun -e 'const x=JSON.parse(await Bun.stdin.text()); console.log(x.lanes.length + x.leases.length)')" -eq 0 ]
+  # `status` deliberately hides only `succeeded` (core/mission-cli.ts), because a
+  # failed lane must survive a restart in view -- fenced by "status exposes
+  # persisted failures after restart" in core/mission-cli.test.ts. So the six
+  # clean lanes are proven terminal by their absence and the four refused ones by
+  # their presence in `failed`. Pinning the exact split is strictly stronger than
+  # the old bare `lanes+leases == 0` count: a lane stranded in `running` and a
+  # lane wrongly recorded `succeeded` both fail here and neither did before.
+  fate=$(cli "$db" status | bun -e 'const s = JSON.parse(await Bun.stdin.text()); const visible = s.lanes.map((l) => `${l.id}:${l.state}`).sort().join(","); console.log(`leases=${s.leases.length} lanes=${visible}`)')
+  check landed-count [ "$landed" -eq 6 ] &&
+    check origin-advanced-under-crash [ "$origin_before" = "$origin_after" ] &&
+    check lane-7-not-guarded has "$fixture/logs/ten-7" 'completion-guard' &&
+    check lane-8-secret-not-caught has "$fixture/logs/ten-8" 'secret-scan' &&
+    check lane-9-conflict-not-refused has "$fixture/logs/ten-9" 'LAND step=merge status=fail' &&
+    check merge-head-left-behind no_merge_head "$repo" &&
+    check lane-branches-leaked [ "$branches" -eq 0 ] &&
+    check worktrees-leaked [ "$worktrees" -eq 1 ] &&
+    check mixed-fate-not-recorded [ "$fate" = 'leases=0 lanes=ten-10:failed,ten-7:failed,ten-8:failed,ten-9:failed' ]
 }
 
 : > "$report_file"

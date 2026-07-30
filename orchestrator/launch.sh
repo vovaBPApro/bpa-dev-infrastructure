@@ -35,7 +35,13 @@ CLAUDE_MCP_CONFIG="${ORCH_CLAUDE_MCP_CONFIG:-$RUNTIME_DIR/claude-mcp-config.json
 # the one-way Stop-hook relay. Host-local URL only — never a token.
 DAEMON_PORT="${TELEGRAM_DAEMON_PORT:-4822}"
 CLAUDE_MCP_URL="${ORCH_CLAUDE_MCP_URL:-http://127.0.0.1:$DAEMON_PORT/sse}"
-CLAUDE_MCP_SERVER_NAME="${ORCH_CLAUDE_MCP_SERVER_NAME:-telegram}"
+# MUST match the reply-routing hint the daemon appends to every inbound message
+# (daemon/server.ts: ` [reply via mcp__telegram-daemon__reply chat_id=...]`).
+# The MCP server name becomes the mcp__<name>__<tool> prefix Claude resolves, so
+# a mismatch here makes the hint point at a tool that does not exist and the
+# channel silently degrades to the one-way Stop-hook relay.
+# claude-mcp-channel.test.sh locks the two together.
+CLAUDE_MCP_SERVER_NAME="${ORCH_CLAUDE_MCP_SERVER_NAME:-telegram-daemon}"
 BOUND_CHAT_ID="${TELEGRAM_BOUND_CHAT_ID:-${TELEGRAM_CHAT_ID:-}}"
 INSTANCE_LOCK_FILE="${ORCH_INSTANCE_LOCK_FILE:-${BOUND_CHAT_ID:+$HOME/.claude/orchestrator-chat-$BOUND_CHAT_ID.lock}}"
 
@@ -102,6 +108,45 @@ stop() {
   fi
   rm -f "$LEASE_FILE"
   [[ -z "$INSTANCE_LOCK_FILE" ]] || rm -f "$INSTANCE_LOCK_FILE"
+}
+
+# Claude blocks on an interactive "Is this a project you trust?" prompt before it
+# connects any MCP server. In a detached tmux pane nobody answers it, so the
+# launch looks healthy while the Telegram channel never comes up. Fail loudly on
+# a positive "not trusted" determination; stay quiet when we cannot tell.
+claude_trust_preflight() {
+  local config="${CLAUDE_CONFIG_FILE:-$HOME/.claude.json}"
+  [[ "${ORCH_SKIP_TRUST_CHECK:-0}" == "1" ]] && return 0
+  [[ -r "$config" ]] || return 0
+  # Claude keys trust by resolved cwd; WORK_DIR may arrive unnormalized
+  # ("$SCRIPT_DIR/..") or symlinked. Accept a hit on any spelling — a false
+  # "untrusted" would block launches that would actually have worked.
+  local work_dir_real
+  work_dir_real="$(cd "$WORK_DIR" 2>/dev/null && pwd -P)" || return 0
+  local verdict
+  verdict="$("$BUN_BIN" -e '
+const [configPath, ...candidates] = process.argv.slice(1);
+try {
+  const config = JSON.parse(await Bun.file(configPath).text());
+  if (!config || typeof config.projects !== "object" || config.projects === null) {
+    process.stdout.write("unknown");
+  } else {
+    const trusted = candidates.some(
+      (dir) => config.projects[dir]?.hasTrustDialogAccepted === true,
+    );
+    process.stdout.write(trusted ? "trusted" : "untrusted");
+  }
+} catch {
+  process.stdout.write("unknown");
+}
+' "$config" "$WORK_DIR" "$work_dir_real" 2>/dev/null)" || return 0
+  if [[ "$verdict" == "untrusted" ]]; then
+    printf 'ERROR orchestrator-workdir-untrusted dir=%s config=%s\n' \
+      "$WORK_DIR" "$config" >&2
+    printf 'hint: claude would stall on the trust prompt and never connect MCP; run claude once in that directory and accept, or set ORCH_SKIP_TRUST_CHECK=1\n' >&2
+    return 1
+  fi
+  return 0
 }
 
 build_command() {
@@ -186,6 +231,9 @@ start() {
     fi
   else
     printf 'auth preflight missing or not executable: %s\n' "$AUTH_PREFLIGHT" >&2
+    return 2
+  fi
+  if [[ "$PROVIDER" == claude ]] && ! claude_trust_preflight; then
     return 2
   fi
   local command provider_bin singleton_command startup_file pane_pid

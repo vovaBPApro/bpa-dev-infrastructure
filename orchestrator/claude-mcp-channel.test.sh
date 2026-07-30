@@ -44,6 +44,29 @@ export ORCH_PROVIDER=claude
 export ORCH_SESSION="claude-mcp-channel-test"
 export ORCH_WORK_DIR="$SCRIPT_DIR/.."
 
+# ── The load-bearing invariant ──────────────────────────────────────────────
+# The daemon appends a reply-routing hint naming a concrete MCP tool to every
+# inbound Telegram message. Claude resolves tools as mcp__<server-name>__<tool>,
+# so the MCP server name the launcher registers MUST equal the name baked into
+# that hint. If they drift, the orchestrator is told on every inbound to call a
+# tool that does not exist and silently degrades to the one-way Stop-hook relay
+# — landed-looking but inert. Derive the expected name from the daemon rather
+# than hardcoding it, so either side moving fails here.
+DAEMON_SRC="$SCRIPT_DIR/../daemon/server.ts"
+mapfile -t hint_tools < <(grep -oE 'mcp__[A-Za-z0-9_-]+__reply' "$DAEMON_SRC" | sort -u)
+if (( ${#hint_tools[@]} != 1 )); then
+  printf 'daemon reply-hint tool name is absent or ambiguous: %s\n' "${hint_tools[*]:-<none>}" >&2
+  exit 1
+fi
+hint_tool="${hint_tools[0]}"
+expected_server="${hint_tool#mcp__}"
+expected_server="${expected_server%__reply}"
+# Pin the current value too, so a rename shows up as a deliberate two-sided edit.
+[[ "$expected_server" == 'telegram-daemon' ]] || {
+  printf 'daemon hint server name changed: %s\n' "$expected_server" >&2
+  exit 1
+}
+
 # ── Default port ────────────────────────────────────────────────────────────
 "$SCRIPT_DIR/launch.sh" start
 mcp_path="$(sed -n '/^--mcp-config$/{n;p;q;}' "$ORCH_TEST_CLAUDE_ARGS")"
@@ -54,13 +77,14 @@ grep -Fxq -- '--dangerously-skip-permissions' "$ORCH_TEST_CLAUDE_ARGS"
 "$BUN_BIN" -e '
 const config = await Bun.file(process.argv[1]).json();
 const expectedUrl = process.argv[2];
+const expectedServer = process.argv[3];
 const servers = config?.mcpServers;
 const names = Object.keys(servers ?? {});
-if (names.length !== 1 || names[0] !== "telegram") {
-  console.error("expected exactly one server named telegram", config);
+if (names.length !== 1 || names[0] !== expectedServer) {
+  console.error(`expected exactly one server named ${expectedServer}`, config);
   process.exit(1);
 }
-const telegram = servers.telegram;
+const telegram = servers[expectedServer];
 // Legacy SSE transport: daemon/server.ts serves GET /sse + POST /message.
 if (telegram.type !== "sse" || telegram.url !== expectedUrl) {
   console.error({ actual: telegram, expectedUrl });
@@ -76,7 +100,7 @@ if (/token|secret|authorization|headers|bearer|api[_-]?key/i.test(serialized)) {
   console.error("config must carry no credentials", serialized);
   process.exit(1);
 }
-' "$mcp_path" 'http://127.0.0.1:4822/sse'
+' "$mcp_path" 'http://127.0.0.1:4822/sse' "$expected_server"
 "$SCRIPT_DIR/launch.sh" stop
 
 # ── Port override stays wired ───────────────────────────────────────────────
@@ -85,11 +109,30 @@ TELEGRAM_DAEMON_PORT=18482 "$SCRIPT_DIR/launch.sh" start
 mcp_path="$(sed -n '/^--mcp-config$/{n;p;q;}' "$ORCH_TEST_CLAUDE_ARGS")"
 "$BUN_BIN" -e '
 const config = await Bun.file(process.argv[1]).json();
-if (config?.mcpServers?.telegram?.url !== "http://127.0.0.1:18482/sse") {
+if (config?.mcpServers?.[process.argv[2]]?.url !== "http://127.0.0.1:18482/sse") {
   console.error(config);
   process.exit(1);
 }
-' "$mcp_path"
+' "$mcp_path" "$expected_server"
+"$SCRIPT_DIR/launch.sh" stop
+
+# ── Untrusted work dir must fail loudly, not stall on the trust prompt ──────
+rm -f "$ORCH_TEST_CLAUDE_ARGS"
+printf '{"projects":{}}\n' > "$SCRATCH/untrusted-claude.json"
+trust_out="$(CLAUDE_CONFIG_FILE="$SCRATCH/untrusted-claude.json" \
+  "$SCRIPT_DIR/launch.sh" start 2>&1 || true)"
+grep -q 'orchestrator-workdir-untrusted' <<<"$trust_out" || {
+  printf 'expected untrusted-workdir failure, got: %s\n' "$trust_out" >&2
+  exit 1
+}
+[[ ! -f "$ORCH_TEST_CLAUDE_ARGS" ]] || {
+  printf 'claude must not be launched into a trust prompt\n' >&2
+  exit 1
+}
+# Escape hatch stays open if the harness ever changes its config format.
+CLAUDE_CONFIG_FILE="$SCRATCH/untrusted-claude.json" ORCH_SKIP_TRUST_CHECK=1 \
+  "$SCRIPT_DIR/launch.sh" start >/dev/null
+[[ -f "$ORCH_TEST_CLAUDE_ARGS" ]]
 "$SCRIPT_DIR/launch.sh" stop
 
 printf 'claude mcp channel regression: PASS\n'

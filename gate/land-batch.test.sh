@@ -160,6 +160,39 @@ if "$batch" --branches ag-payload,ag-payload-plain --reports "$fixture_root/payl
 assert_output_has "$payload_output" 'LAND step=payload-guard status=fail detail=mode-120000'
 assert test "$(git -C "$repo" rev-parse main)" = "$(git -C "$repo" rev-parse origin/main)"
 
+# Reap pass requires origin refs to be gone: a lane pushed to origin is
+# deleted there and confirmed absent; a local-only lane passes explicitly.
+make_fixture remote-reap
+remote_one_sha=$(make_lane "$repo" ag-remote-one remote-one.txt one)
+remote_two_sha=$(make_lane "$repo" ag-remote-two remote-two.txt two)
+git -C "$repo" push origin ag-remote-one >/dev/null 2>&1
+report "$fixture_root/remote-one.md" "$remote_one_sha"; report "$fixture_root/remote-two.md" "$remote_two_sha"
+remote_reap_output="$fixture_root/remote-reap.out"
+"$batch" --branches ag-remote-one,ag-remote-two --reports "$fixture_root/remote-one.md,$fixture_root/remote-two.md" --repo "$repo" >"$remote_reap_output" 2>&1
+assert_output_has "$remote_reap_output" 'BATCH reap remote=deleted branch=ag-remote-one'
+assert_output_has "$remote_reap_output" 'BATCH reap remote=absent branch=ag-remote-two detail=never-on-origin-nothing-to-delete'
+assert_output_has "$remote_reap_output" 'BATCH step=reap status=pass'
+assert_output_has "$remote_reap_output" 'BATCH verdict=landed sha='
+assert_not git --git-dir="$bare" show-ref --verify --quiet refs/heads/ag-remote-one
+
+# False-green direction: origin refuses branch deletion, so the lane is still
+# on origin after landing. Reap must report local-only, never pass.
+make_fixture remote-blocked
+blocked_one_sha=$(make_lane "$repo" ag-blocked-one blocked-one.txt one)
+blocked_two_sha=$(make_lane "$repo" ag-blocked-two blocked-two.txt two)
+git -C "$repo" push origin ag-blocked-one >/dev/null 2>&1
+report "$fixture_root/blocked-one.md" "$blocked_one_sha"; report "$fixture_root/blocked-two.md" "$blocked_two_sha"
+printf '#!/usr/bin/env bash\nzero=0000000000000000000000000000000000000000\nwhile read -r _old new _ref; do\n  if [ "$new" = "$zero" ]; then exit 1; fi\ndone\nexit 0\n' > "$bare/hooks/pre-receive"
+chmod +x "$bare/hooks/pre-receive"
+remote_blocked_output="$fixture_root/remote-blocked.out"
+if "$batch" --branches ag-blocked-one,ag-blocked-two --reports "$fixture_root/blocked-one.md,$fixture_root/blocked-two.md" --repo "$repo" >"$remote_blocked_output" 2>&1; then exit 1; fi
+assert_output_has "$remote_blocked_output" 'BATCH reap remote=present branch=ag-blocked-one detail=push-delete-failed'
+assert_output_has "$remote_blocked_output" 'BATCH step=reap status=local-only'
+assert_output_has "$remote_blocked_output" 'BATCH verdict=landed-reap-failed sha='
+assert_not grep -Fq 'BATCH step=reap status=pass' "$remote_blocked_output"
+assert_not grep -Fq 'BATCH verdict=landed sha=' "$remote_blocked_output"
+assert git --git-dir="$bare" show-ref --verify --quiet refs/heads/ag-blocked-one
+
 make_fixture push-rollback
 rollback_one_sha=$(make_lane "$repo" ag-rollback-one one.txt one)
 rollback_two_sha=$(make_lane "$repo" ag-rollback-two two.txt two)

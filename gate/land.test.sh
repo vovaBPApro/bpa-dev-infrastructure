@@ -321,7 +321,10 @@ assert git -C "$fixture_root/review-skipped-repo" merge-base --is-ancestor "$rev
 make_fixture good
 good_sha=$(make_lane "$fixture_root/good-repo" ag-good)
 report "$fixture_root/good-report.md" "$good_sha"
-"$land" --branch ag-good --report "$fixture_root/good-report.md" --repo "$fixture_root/good-repo" --run-verify
+good_output="$fixture_root/good-output.txt"
+"$land" --branch ag-good --report "$fixture_root/good-report.md" --repo "$fixture_root/good-repo" --run-verify >"$good_output" 2>&1
+assert_output_has "$good_output" 'LAND reap remote=absent branch=ag-good detail=never-on-origin-nothing-to-delete'
+assert_output_has "$good_output" 'LAND step=reap status=pass'
 assert git -C "$fixture_root/good-repo" merge-base --is-ancestor "$good_sha" HEAD
 assert test "$(git -C "$fixture_root/good-repo" rev-list --parents -n 1 HEAD | wc -w)" -eq 3
 assert_not git -C "$fixture_root/good-repo" show-ref --verify --quiet refs/heads/ag-good
@@ -509,6 +512,52 @@ assert_output_has "$no_push_reap_fail_output" 'LAND verdict=landed-local-reap-fa
 assert_not grep -Fq 'LAND verdict=aborted' "$no_push_reap_fail_output"
 assert git -C "$fixture_root/no-push-reap-fail-repo" merge-base --is-ancestor "$no_push_reap_fail_sha" HEAD
 assert test "$(git --git-dir="$fixture_root/no-push-reap-fail-origin.git" rev-parse main)" = "$origin_before"
+
+# Reap pass requires the origin ref to be gone: lane exists on origin, gets
+# deleted, and ls-remote confirms absence before status=pass.
+make_fixture remote-reap
+remote_reap_sha=$(make_lane "$fixture_root/remote-reap-repo" ag-remote-reap)
+git -C "$fixture_root/remote-reap-repo" push origin ag-remote-reap >/dev/null 2>&1
+report "$fixture_root/remote-reap-report.md" "$remote_reap_sha"
+remote_reap_output="$fixture_root/remote-reap-output.txt"
+"$land" --branch ag-remote-reap --report "$fixture_root/remote-reap-report.md" --repo "$fixture_root/remote-reap-repo" >"$remote_reap_output" 2>&1
+assert_output_has "$remote_reap_output" 'LAND reap remote=deleted branch=ag-remote-reap'
+assert_output_has "$remote_reap_output" 'LAND step=reap status=pass'
+assert_output_has "$remote_reap_output" 'LAND verdict=landed sha='
+assert_not git --git-dir="$fixture_root/remote-reap-origin.git" show-ref --verify --quiet refs/heads/ag-remote-reap
+assert test "$(git --git-dir="$fixture_root/remote-reap-origin.git" rev-parse main)" = "$(git -C "$fixture_root/remote-reap-repo" rev-parse HEAD)"
+
+# False-green direction: origin refuses the branch deletion, so the branch is
+# still on origin after landing. Reap must report local-only, never pass.
+make_fixture remote-reap-blocked
+remote_reap_blocked_sha=$(make_lane "$fixture_root/remote-reap-blocked-repo" ag-remote-reap-blocked)
+git -C "$fixture_root/remote-reap-blocked-repo" push origin ag-remote-reap-blocked >/dev/null 2>&1
+report "$fixture_root/remote-reap-blocked-report.md" "$remote_reap_blocked_sha"
+printf '#!/usr/bin/env bash\nzero=0000000000000000000000000000000000000000\nwhile read -r _old new _ref; do\n  if [ "$new" = "$zero" ]; then exit 1; fi\ndone\nexit 0\n' > "$fixture_root/remote-reap-blocked-origin.git/hooks/pre-receive"
+chmod +x "$fixture_root/remote-reap-blocked-origin.git/hooks/pre-receive"
+remote_reap_blocked_output="$fixture_root/remote-reap-blocked-output.txt"
+if "$land" --branch ag-remote-reap-blocked --report "$fixture_root/remote-reap-blocked-report.md" --repo "$fixture_root/remote-reap-blocked-repo" >"$remote_reap_blocked_output" 2>&1; then exit 1; fi
+assert_output_has "$remote_reap_blocked_output" 'LAND reap remote=present branch=ag-remote-reap-blocked detail=push-delete-failed'
+assert_output_has "$remote_reap_blocked_output" 'LAND step=reap status=local-only'
+assert_output_has "$remote_reap_blocked_output" 'LAND verdict=landed-reap-failed sha='
+assert_output_lacks "$remote_reap_blocked_output" 'LAND step=reap status=pass'
+assert_output_lacks "$remote_reap_blocked_output" 'LAND verdict=landed sha='
+assert git --git-dir="$fixture_root/remote-reap-blocked-origin.git" show-ref --verify --quiet refs/heads/ag-remote-reap-blocked
+assert test "$(git --git-dir="$fixture_root/remote-reap-blocked-origin.git" rev-parse main)" = "$(git -C "$fixture_root/remote-reap-blocked-repo" rev-parse HEAD)"
+
+# --no-push must not delete a present origin ref (origin/main lacks the merge),
+# and therefore must not claim a full reap either.
+make_fixture no-push-remote-retained
+no_push_remote_retained_sha=$(make_lane "$fixture_root/no-push-remote-retained-repo" ag-no-push-remote-retained)
+git -C "$fixture_root/no-push-remote-retained-repo" push origin ag-no-push-remote-retained >/dev/null 2>&1
+report "$fixture_root/no-push-remote-retained-report.md" "$no_push_remote_retained_sha"
+no_push_remote_retained_output="$fixture_root/no-push-remote-retained-output.txt"
+if "$land" --branch ag-no-push-remote-retained --report "$fixture_root/no-push-remote-retained-report.md" --repo "$fixture_root/no-push-remote-retained-repo" --no-push >"$no_push_remote_retained_output" 2>&1; then exit 1; fi
+assert_output_has "$no_push_remote_retained_output" 'LAND reap remote=present branch=ag-no-push-remote-retained detail=no-push-remote-delete-refused'
+assert_output_has "$no_push_remote_retained_output" 'LAND step=reap status=local-only'
+assert_output_has "$no_push_remote_retained_output" 'LAND verdict=landed-local-reap-failed sha='
+assert_output_lacks "$no_push_remote_retained_output" 'LAND step=reap status=pass'
+assert git --git-dir="$fixture_root/no-push-remote-retained-origin.git" show-ref --verify --quiet refs/heads/ag-no-push-remote-retained
 
 make_fixture stale-main
 stale_main_sha=$(make_lane "$fixture_root/stale-main-repo" ag-stale-main)

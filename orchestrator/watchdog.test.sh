@@ -39,8 +39,13 @@ create_mission() {
 run_watchdog() {
   local db="$1" runtime="$2" outbox="$3" now="$4"
   mkdir -p "$runtime"
+  # ORCH_DONE_SENTINEL and ORCH_DAEMON_HEALTH_URL are NOT covered by
+  # ORCH_RUNTIME_DIR: the rest sentinel lives under the daemon's state dir, and
+  # the health probe defaults to the live daemon's URL. Ambient, a real /done
+  # would make this whole suite pass without the watchdog doing anything.
   env PATH="$SHIM:$PATH" ORCH_CONFIG_FILE="$SCRATCH/no-config" ORCH_STATE_DB="$db" \
     ORCH_RUNTIME_DIR="$runtime" ORCH_WATCHDOG_LOG="$runtime/watchdog.log" \
+    ORCH_DONE_SENTINEL="$SCRATCH/no-done-sentinel" ORCH_DAEMON_HEALTH_URL="" \
     NUDGE_OUTBOX_FILE="$outbox" ORCH_INSTALL_ROOT="$SCRATCH" DISK_ALERT_PCT=99 \
     FLEET_IDLE_NUDGE_MS=1000 FLEET_NUDGE_REPEAT_MS=3600000 ORCH_WATCHDOG_NOW_MS="$now" \
     "$SCRIPT_DIR/watchdog.sh"

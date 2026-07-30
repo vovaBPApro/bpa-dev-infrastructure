@@ -41,7 +41,7 @@ bun core/mission-cli.ts mission transition <id> <state>
 bun core/mission-cli.ts lane create <mission-id> <lane-id>
 bun core/mission-cli.ts lane transition <lane-id> <state>
 bun core/mission-cli.ts lease acquire <owner> <key> <ttl-ms>
-bun core/mission-cli.ts lease renew <owner> <key> <token>
+bun core/mission-cli.ts lease renew <owner> <key> <token> [ttl-ms]
 bun core/mission-cli.ts lease release <owner> <key> <token>
 bun core/mission-cli.ts reap
 bun core/mission-cli.ts status
@@ -51,5 +51,9 @@ Successful mutations print a single machine-readable record. `status` prints a
 single JSON object containing non-terminal missions and lanes plus unexpired,
 unreleased leases; this is the truth an orchestrator uses after restart.
 Failures print one `ERROR` line and exit non-zero. A live lease acquisition
-prints `ERROR LEASE-HELD`. Lease renewals use a fixed 30-second TTL because the
-compact renew command intentionally has no TTL argument.
+prints `ERROR LEASE-HELD`. `lease renew` takes an optional TTL and falls back to
+30 seconds without one. Any caller that renews on a timer must pass its own TTL:
+a renewal shorter than the gap between renewals leaves the lease already expired
+at the next attempt, which reads as a lost lease rather than a live one. The
+orchestrator passes `ORCH_LEASE_TTL_MS`, which `watchdog.sh` also checks against
+its own tick interval.

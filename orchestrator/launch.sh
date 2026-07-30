@@ -11,6 +11,8 @@ if [[ -f "$CONFIG_FILE" ]]; then
 fi
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib.sh"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/proc-identity.sh"
 
 SESSION="${ORCH_SESSION:-orchestrator}"
 WORK_DIR="${ORCH_WORK_DIR:-$PWD}"
@@ -448,6 +450,12 @@ start() {
   # Seed the liveness stamp so the very first pulse interval is covered even if
   # the in-pane loop is slow to start; from here on the pulse owns renewal.
   printf '%s\n' "$(date +%s)" > "$LIVENESS_FILE"
+  # Seed the provider identity beside the stamp: pid= plus the reuse-safe
+  # starttime= (/proc/<pid>/stat field 22; fixed at fork, survives the pane
+  # shell's exec into the provider). The watchdog may kill on a stale stamp
+  # ONLY against affirmative proof that THIS identity is gone — so the fence
+  # holds even if the in-pane pulse crashes before writing its own record.
+  printf 'pid=%s\nstarttime=%s\n' "$pane_pid" "$(proc_starttime "$pane_pid")" > "$LIVENESS_FILE.identity"
   if [[ -n "$INSTANCE_LOCK_FILE" ]]; then
     local lock_tmp
     mkdir -p "$(dirname "$INSTANCE_LOCK_FILE")"

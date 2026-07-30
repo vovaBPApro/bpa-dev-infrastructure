@@ -105,9 +105,21 @@ heartbeat="$STATE/heartbeat"
 touch "$heartbeat"
 export ORCH_HEARTBEAT_FILE="$heartbeat" ORCH_HEARTBEAT_MAX_AGE=10 ORCH_WATCHDOG_NOW=1000
 touch -d '@1' "$heartbeat"
-# Positive death evidence: a liveness pulse that WAS renewing and went stale.
-# Stale heartbeat alone is ambiguity now and would only alert.
+# Positive death evidence: a liveness pulse that WAS renewing and went stale,
+# PLUS a recorded provider identity that is verifiably gone. A stale stamp
+# alone only proves the pulse HELPER stopped (heartbeat-liveness.test.sh owns
+# that verdict table), so this corpse fixture kills its provider first and
+# checks the corpse before expecting recovery.
 printf '%s\n' 1 > "$STATE/liveness"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/proc-identity.sh"
+sleep 300 & corpse_pid=$!
+corpse_starttime="$(proc_starttime "$corpse_pid")"
+[[ -n "$corpse_starttime" ]] || fail 'could not read a fixture starttime from /proc'
+kill "$corpse_pid" 2>/dev/null || true
+wait "$corpse_pid" 2>/dev/null || true
+! kill -0 "$corpse_pid" 2>/dev/null || fail 'fixture corpse refused to die'
+printf 'pid=%s\nstarttime=%s\n' "$corpse_pid" "$corpse_starttime" > "$STATE/liveness.identity"
 rm -f "$ORCH_RESTART_STATE_FILE"
 assert "$SCRIPT_DIR/watchdog.sh"
 [[ "$(calls 'tmux kill-session')" == 1 ]] || fail 'stale heartbeat did not kill zombie'

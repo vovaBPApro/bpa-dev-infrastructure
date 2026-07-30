@@ -12,6 +12,8 @@ fi
 source "$SCRIPT_DIR/lib.sh"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/knobs.sh"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/proc-identity.sh"
 SESSION="${ORCH_SESSION:-orchestrator}"
 RUNTIME_DIR="${ORCH_RUNTIME_DIR:-$SCRIPT_DIR/runtime}"
 LOG_FILE="${ORCH_WATCHDOG_LOG:-$RUNTIME_DIR/watchdog.log}"
@@ -22,10 +24,18 @@ HEARTBEAT_MISSING_SINCE_FILE="${ORCH_HEARTBEAT_MISSING_SINCE_FILE:-$RUNTIME_DIR/
 # orchestrator-liveness-pulse.sh (started by launch.sh inside the supervised
 # pane) re-stamps this file every ORCH_LIVENESS_PULSE_INTERVAL seconds for as
 # long as the provider process exists — turns in flight included. It is the
-# only signal that can PROVE a silent long turn is alive, and its going stale
-# is the only evidence strong enough to justify a kill; see the stale-heartbeat
-# branch below for the full verdict table.
+# only signal that can PROVE a silent long turn is alive. Its going stale is
+# necessary but NOT sufficient for a kill: the pulse loop is a helper process,
+# so a stale stamp proves only that the HELPER stopped — the kill additionally
+# requires the identity fence below; see the stale-heartbeat branch for the
+# full verdict table.
 LIVENESS_FILE="${ORCH_LIVENESS_FILE:-$RUNTIME_DIR/orchestrator.liveness}"
+# Identity sidecar: WHICH provider the stamp vouches for (pid= plus the
+# kernel's reuse-safe starttime=, /proc/<pid>/stat field 22), written by
+# launch.sh at start and by the pulse loop at its own startup. Derived from
+# LIVENESS_FILE rather than a separate knob so the identity can never point at
+# a different file than the stamp it fences.
+LIVENESS_IDENTITY_FILE="$LIVENESS_FILE.identity"
 LIVENESS_MAX_AGE="${ORCH_LIVENESS_MAX_AGE:-120}"
 LAUNCH_SCRIPT="${ORCH_LAUNCH_SCRIPT:-$SCRIPT_DIR/launch.sh}"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -375,6 +385,67 @@ liveness_pulse_age() {
   printf '%s\n' "$age"
 }
 
+# ── Provider identity: the fence in front of every stale-pulse kill ─────────
+# The pulse loop is a HELPER — a separate process from the provider it vouches
+# for. If the helper alone dies (crash, OOM kill, stray kill) the stamp goes
+# stale while the provider lives and may be silently mid-turn — and a stale
+# stamp alone used to be read as "the renewer died with its owner", killing a
+# live provider: the A1 false restart, one hop removed. So staleness is never
+# kill evidence by itself. This resolves the recorded identity against /proc:
+#
+#   alive        -> same pid AND same starttime exist: the provider lives.
+#   gone         -> the recorded pid is absent, or a DIFFERENT process
+#                   (starttime mismatch) now occupies it: affirmative proof
+#                   that THAT exact provider is dead.
+#   unrecorded   -> no usable pid= in the sidecar: nothing to verify against.
+#   unverifiable -> /proc cannot answer (unreadable, raced away mid-check,
+#                   recorded starttime unparseable while the pid exists).
+#
+# Only `gone` may kill. Sets PROVIDER_VERDICT plus PROVIDER_PID /
+# PROVIDER_STARTTIME for the logs — variables, not stdout, because a command
+# substitution would run this in a subshell and drop the pid/starttime the
+# log lines need.
+provider_identity_verdict() {
+  local current
+  PROVIDER_PID=""
+  PROVIDER_STARTTIME=""
+  PROVIDER_VERDICT=unrecorded
+  if [[ -f "$LIVENESS_IDENTITY_FILE" ]]; then
+    # `|| true`: under pipefail a sidecar deleted mid-read must degrade to
+    # `unrecorded`, not abort the whole tick.
+    PROVIDER_PID="$(sed -n 's/^pid=//p' "$LIVENESS_IDENTITY_FILE" 2>/dev/null | head -n 1 || true)"
+    PROVIDER_STARTTIME="$(sed -n 's/^starttime=//p' "$LIVENESS_IDENTITY_FILE" 2>/dev/null | head -n 1 || true)"
+  fi
+  if [[ ! "$PROVIDER_PID" =~ ^[1-9][0-9]*$ ]]; then
+    PROVIDER_VERDICT=unrecorded
+    return 0
+  fi
+  # Without a working /proc, the absence of /proc/<pid> proves nothing.
+  if [[ ! -r /proc/self/stat ]]; then
+    PROVIDER_VERDICT=unverifiable
+    return 0
+  fi
+  if [[ ! -e "/proc/$PROVIDER_PID" ]]; then
+    PROVIDER_VERDICT=gone
+    return 0
+  fi
+  current="$(proc_starttime "$PROVIDER_PID")"
+  if [[ -z "$current" ]]; then
+    # Vanished between the existence check and the stat read — check again.
+    if [[ -e "/proc/$PROVIDER_PID" ]]; then PROVIDER_VERDICT=unverifiable; else PROVIDER_VERDICT=gone; fi
+    return 0
+  fi
+  if [[ ! "$PROVIDER_STARTTIME" =~ ^[0-9]+$ ]]; then
+    PROVIDER_VERDICT=unverifiable
+    return 0
+  fi
+  if [[ "$current" == "$PROVIDER_STARTTIME" ]]; then
+    PROVIDER_VERDICT=alive
+  else
+    PROVIDER_VERDICT=gone
+  fi
+}
+
 # Watchdog nudge updates are written to a same-directory temporary file then
 # renamed, so a Telegram reader observes either the old complete file or the
 # new complete file. full-suite.sh follows the same outbox pattern.
@@ -663,8 +734,14 @@ if heartbeat_stale; then
   #
   #   pulse fresh                 -> alive mid-turn: NO-GO, log+nudge, no kill
   #   pane output fresh           -> alive and printing: NO-GO, log+nudge
-  #   pulse present but stale     -> the in-pane renewer died with its owner:
-  #                                  the ONLY positive death evidence — recover
+  #   pulse stale + provider GONE -> the ONLY positive death evidence — recover
+  #                                  (gone = recorded pid absent, or occupied
+  #                                  by a different starttime: pid reuse)
+  #   pulse stale + provider LIVE -> the pulse HELPER died alone: DEGRADED
+  #                                  liveness — NO-GO, log+nudge, never kill,
+  #                                  never adopt/restart the helper from here
+  #   pulse stale, identity
+  #   unrecorded/unverifiable     -> ambiguity: NO-GO, alert, never stop
   #   pulse absent/unreadable     -> ambiguity (wrapper never ran, knob points
   #                                  elsewhere): NO-GO, alert, never stop
   watchdog_now="${ORCH_WATCHDOG_NOW:-$(date +%s)}"
@@ -692,16 +769,50 @@ if heartbeat_stale; then
       record_nudge heartbeat-stale-active "$SESSION" "$now_ms"
     fi
   elif [[ -n "$pulse_age" ]]; then
-    # The pulse loop stamped this file while the supervised process lived and
-    # stopped when it died. Stale pulse + stale heartbeat + no recent output is
-    # the positive death evidence, the one combination allowed to kill.
-    if [[ -f "$HEARTBEAT_FILE" ]]; then
-      log "zombie session=$SESSION pulse_age_s=$pulse_age activity_age_s=${activity_age:-unavailable} action=kill-relaunch"
-      supervise_restart zombie 1
-    else
-      log "heartbeat-missing session=$SESSION pulse_age_s=$pulse_age activity_age_s=${activity_age:-unavailable} action=kill-relaunch"
-      supervise_restart heartbeat-missing 1
-    fi
+    # The pulse loop stamped this file and stopped renewing. But the loop is a
+    # HELPER — a separate process — so a stale stamp proves only that the
+    # HELPER stopped, never which of the two died. Resolve the recorded
+    # provider identity before the verdict: only affirmative proof that THAT
+    # provider (same pid, same starttime) is gone may kill.
+    provider_identity_verdict
+    case "$PROVIDER_VERDICT" in
+      gone)
+        # Stale pulse + stale heartbeat + no recent output + the recorded
+        # provider verifiably gone: positive death evidence, the one
+        # combination allowed to kill.
+        if [[ -f "$HEARTBEAT_FILE" ]]; then
+          log "zombie session=$SESSION pulse_age_s=$pulse_age activity_age_s=${activity_age:-unavailable} provider_pid=$PROVIDER_PID provider=gone action=kill-relaunch"
+          supervise_restart zombie 1
+        else
+          log "heartbeat-missing session=$SESSION pulse_age_s=$pulse_age activity_age_s=${activity_age:-unavailable} provider_pid=$PROVIDER_PID provider=gone action=kill-relaunch"
+          supervise_restart heartbeat-missing 1
+        fi
+        ;;
+      alive)
+        # The provider exists under the recorded start time: the pulse helper
+        # died ALONE. That is DEGRADED liveness, not death — tell the operator
+        # the positive signal is gone, never kill, and never restart the
+        # helper from here: the watchdog is a verdict engine, not a process
+        # manager, and adopting the helper would put a watchdog-owned writer
+        # on the very file the watchdog judges.
+        log "WATCHDOG NO-GO reason=liveness-pulse-degraded session=$SESSION pulse_age_s=$pulse_age provider_pid=$PROVIDER_PID provider_starttime=$PROVIDER_STARTTIME action=no-kill"
+        if nudge_due liveness-degraded "$SESSION" "$now_ms"; then
+          append_nudge "NUDGE liveness-pulse-degraded session=$SESSION provider_pid=$PROVIDER_PID pulse_age_s=$pulse_age needs=check-liveness-pulse"
+          record_nudge liveness-degraded "$SESSION" "$now_ms"
+        fi
+        ;;
+      *)
+        # unrecorded / unverifiable: no affirmative evidence in either
+        # direction — the same fail-closed rule as an absent pulse file.
+        # Alert, never kill. A genuinely dead PROCESS still recovers through
+        # the dead-session path above (its pane dies with it).
+        log "WATCHDOG NO-GO reason=provider-identity-$PROVIDER_VERDICT session=$SESSION pulse_age_s=$pulse_age identity_file=$LIVENESS_IDENTITY_FILE action=no-kill"
+        if nudge_due provider-identity "$SESSION" "$now_ms"; then
+          append_nudge "NUDGE provider-identity-$PROVIDER_VERDICT session=$SESSION liveness_file=$LIVENESS_FILE needs=check-liveness-pulse"
+          record_nudge provider-identity "$SESSION" "$now_ms"
+        fi
+        ;;
+    esac
   else
     # No usable pulse file. Stale-heartbeat + stale-output cannot distinguish a
     # silent live turn from a corpse, so this is ambiguity: alert the operator

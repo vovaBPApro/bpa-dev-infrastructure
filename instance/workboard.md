@@ -37,6 +37,12 @@ note. Derived-work items live here; Human directives stay in
   `HR-<msg-id>.md` with his wording and point `top_model` at it. Until then the
   gap is provenance, not configuration — the box is not blocked.
 
+- **W-14 — make /status human-useful** (`instance/decisions/HR-150.md`): the
+  command currently prints raw daemon JSON + `plan: n/a`; Vova gets zero value
+  from it. It should answer, in a few plain lines: what is being worked on, how
+  many lanes and their states, last landed thing, anything blocked. Daemon
+  runtime code → coder lane; keep the honest-fields work (W-13 relabel) intact.
+
 ### Migration-loss restore queue (2026-07-30)
 
 Source: parity audit against the **live** old daemon at
@@ -118,11 +124,22 @@ the governance row below.
 ### New-infra queue (post-cutover, from the Human 2026-07-30)
 
 Build on the NEW orchestrator, planned WITH the Human there. Verbatim seed:
-`instance/decisions/HR-11736.md`.
-- **NI-1 — team personas**: give "characters"/personas to the whole 10-agent team.
-- **NI-2 — Google Drive debug access**: proper GDrive file access for debugging.
-- **NI-3 — local Whisper voice transcription**: local Whisper model to transcribe
-  Telegram voice messages; needs testing + RAM measurement (251 GB headroom).
+`instance/decisions/HR-11736.md`; expanded verbatim detail (2026-07-30 evening
+brainstorm): `instance/decisions/HR-146.md`. A further brainstorm exists as a
+ChatGPT share link (msg 144/59); Vova will send it as PDF — study on arrival.
+- **NI-1 — team personas**: give "characters"/personas to the whole 10-agent
+  team — per-persona role + strengths, and a rule for which personas join which
+  discussion level (consilium composition). Detail: HR-146 §NI-1.
+- **NI-2 — Google Drive debug access**: service account so the orchestrator and
+  any agent can read/verify Drive contents for debugging (e.g. QuickBooks/Gmail
+  import testing) without Vova screenshotting. He can do the one-time connect
+  himself. Detail: HR-146 §NI-2.
+- **NI-3 — local Whisper voice transcription**: local Whisper (STT only) on this
+  server; multi-language (uk first, en required, possibly pl); consumed BOTH by
+  the orchestrator (Telegram voice messages) and by the product's chat (voice
+  record button in the framework) — ONE model, TWO consumers, but product and
+  development stay separated things (HR-146 §147). Needs testing + RAM
+  measurement (251 GB headroom). Detail: HR-146 §NI-3.
 
 ## Deep consilium residuals (2026-07-29)
 

@@ -82,6 +82,7 @@ import {
   upsertEnvAssignment,
 } from './model-registry';
 import { appendInboxLine } from './inbox-mirror';
+import { resolveWhisperConfig, transcribeAudio } from './transcribe';
 import {
   buildAgentLines,
   buildDaemonHealth,
@@ -476,6 +477,12 @@ const bot = new Bot(TOKEN, {
     ? { apiRoot: process.env.TELEGRAM_API_ROOT }
     : undefined,
 });
+
+// File downloads must follow the same root as Bot API calls. Before this
+// constant existed, getFile downloads hardcoded api.telegram.org, so a stubbed
+// or self-hosted Bot API could serve updates but never files — which made the
+// attachment pipeline untestable end to end (part of how W-15 shipped blind).
+const FILE_API_ROOT = process.env.TELEGRAM_API_ROOT ?? 'https://api.telegram.org';
 let botUsername = '';
 
 // Per-request_id permission details (shared across reconnections so user can
@@ -753,7 +760,7 @@ const MCP_CAPABILITIES = {
     '',
     'Heuristics: stream everything via reply / status_update (SILENT — no ping). PING the user ONLY on: (a) work stopped / blocker / final completion → complete(); (b) you need their decision to continue → request_decision(). Never spam loud notifications.',
     '',
-    'Inbound messages arrive as <channel source="telegram" chat_id="..." message_id="..." user="..." ts="...">. If the tag has an image_path attribute, Read that file. If it has attachment_file_id, call download_attachment to fetch then Read. Use reply_to (set to message_id) only for an earlier message; omit for normal responses.',
+    'Inbound messages arrive as <channel source="telegram" chat_id="..." message_id="..." user="..." ts="...">. If the tag has an image_path or attachment_path attribute, Read that local file directly. If it only has attachment_file_id, call download_attachment to fetch then Read. Voice/audio messages arrive already transcribed by the local Whisper: the tag body IS the transcript and carries voice_transcribed="whisper-local"; if transcription failed the tag instead carries transcription_failed="<reason>" and you can still download_attachment the audio. Use reply_to (set to message_id) only for an earlier message; omit for normal responses.',
     '',
     'When the user uses Telegram\'s native "Reply" feature on a previous message, the inbound <channel> tag carries reply_to_message_id="<num>", reply_to_from="<username|bot>", and reply_to_text="<truncated original, ≤280 chars>" (or reply_to_kind="photo|document|video|voice|audio|sticker" if the original was non-text media). Use these to resolve what the user is pointing at — they often reply to your own earlier message to anchor a follow-up.',
     '',
@@ -1156,7 +1163,7 @@ function createMcpServer(): Server {
             throw new Error(
               'Telegram returned no file_path — file may have expired',
             );
-          const url = `https://api.telegram.org/file/bot${TOKEN}/${file.file_path}`;
+          const url = `${FILE_API_ROOT}/file/bot${TOKEN}/${file.file_path}`;
           const res = await fetch(url);
           if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
           const buf = Buffer.from(await res.arrayBuffer());
@@ -3127,6 +3134,45 @@ function safeName(s: string | undefined): string | undefined {
   return s?.replace(/[<>\[\]\r\n;]/g, '_');
 }
 
+// Best-effort spool download of an inbound attachment into INBOX_DIR (the same
+// state-dir spool the photo path and the download_attachment tool already use).
+// Returns the local path, or undefined on any failure — the caller must still
+// surface the message either way; the Telegram file_id in the tag and in the
+// inbox mirror keeps the content recoverable via download_attachment.
+async function downloadAttachmentToInbox(
+  att: AttachmentMeta,
+): Promise<string | undefined> {
+  if (att.size != null && att.size > MAX_ATTACHMENT_BYTES) {
+    process.stderr.write(
+      `${LOG_PREFIX} attachment ${att.kind} too large for auto-download (${att.size} bytes) — leaving as file_id only\n`,
+    );
+    return undefined;
+  }
+  try {
+    const file = await bot.api.getFile(att.file_id);
+    if (!file.file_path) return undefined;
+    const url = `${FILE_API_ROOT}/file/bot${TOKEN}/${file.file_path}`;
+    const res = await fetch(url);
+    if (!res.ok) return undefined;
+    const buf = Buffer.from(await res.arrayBuffer());
+    const rawExt = file.file_path.includes('.')
+      ? file.file_path.split('.').pop()!
+      : 'bin';
+    const ext = rawExt.replace(/[^a-zA-Z0-9]/g, '') || 'bin';
+    const uniqueId =
+      (file.file_unique_id ?? '').replace(/[^a-zA-Z0-9_-]/g, '') || 'dl';
+    const path = join(INBOX_DIR, `${Date.now()}-${uniqueId}.${ext}`);
+    mkdirSync(INBOX_DIR, { recursive: true });
+    writeFileSync(path, buf);
+    return path;
+  } catch (err) {
+    process.stderr.write(
+      `${LOG_PREFIX} attachment auto-download failed (${att.kind}): ${err}\n`,
+    );
+    return undefined;
+  }
+}
+
 async function handleInbound(
   ctx: Context,
   text: string,
@@ -3182,6 +3228,54 @@ async function handleInbound(
     // Unknown slash command — fall through to Claude
   }
 
+  // ── Inbound attachment processing (W-15 fix + HR-146 §NI-3) ────────────────
+  // Runs BEFORE the mission-inbox log and the inbox mirror so both — and the
+  // channel tag below — carry the outcome: the spooled local path, and for
+  // voice/audio the local Whisper transcript or an honest failure reason.
+  let attachmentPath: string | undefined;
+  let transcript: string | undefined;
+  let transcriptError: string | undefined;
+  if (attachment) {
+    if (attachment.kind === 'voice' || attachment.kind === 'audio') {
+      // Voice → text via local whisper.cpp (HR-146 §NI-3: Ukrainian first,
+      // English required, Polish possible; language auto-detected). Fail-closed:
+      // every failure keeps the message flowing with a concrete
+      // transcription-failed reason — never a silent drop (the W-15 disease).
+      void bot.api.sendChatAction(chat_id, 'typing').catch(() => {});
+      attachmentPath = await downloadAttachmentToInbox(attachment);
+      if (!attachmentPath) {
+        transcriptError = 'audio download failed (file_id kept for retry)';
+      } else {
+        const result = await transcribeAudio(
+          attachmentPath,
+          resolveWhisperConfig(),
+        );
+        if (result.ok) {
+          transcript = result.text;
+          process.stderr.write(
+            `${LOG_PREFIX} voice transcribed in ${result.durationMs}ms (${transcript.length} chars)\n`,
+          );
+        } else {
+          transcriptError = result.reason;
+          process.stderr.write(
+            `${LOG_PREFIX} voice transcription FAILED: ${result.reason}\n`,
+          );
+        }
+      }
+      if (transcript) {
+        // The transcript becomes the message text, so the orchestrator (and
+        // the watchdog's mission-inbox log) processes the voice message
+        // exactly like a typed one. A real caption (audio files) is kept.
+        const isPlaceholder = /^\((voice message|audio)/.test(text.trim());
+        text = isPlaceholder ? transcript : `${text}\n${transcript}`;
+      }
+    } else if (attachment.kind === 'document') {
+      // Auto-spool documents into INBOX_DIR (same spool the photo path and
+      // download_attachment already use) so the tag carries a ready local path.
+      attachmentPath = await downloadAttachmentToInbox(attachment);
+    }
+  }
+
   // Ground truth for the external watchdog: log every Human directive that goes
   // to the orchestrator. This lets the watchdog know a task is OPEN (so it keeps
   // the orchestrator busy and the quota used) and reminds it of the latest ask —
@@ -3212,13 +3306,30 @@ async function handleInbound(
     // raw inbound Human message to instance/decisions/inbox.jsonl so capture is
     // mechanical at the source and survives an OOM-kill before the next session.
     // Append-only, runtime artifact (kept out of git); best-effort so a mirror
-    // failure never blocks delivery. Only {msg_id, chat_id, ts, text} — no token.
+    // failure never blocks delivery. Only whitelisted fields — no token. The
+    // attachment identity (W-15) makes a lost delivery recoverable later via
+    // download_attachment; the transcript row keeps the voice content itself.
     try {
       appendInboxLine(INSTALL_ROOT, {
         msg_id: msgId ?? '',
         chat_id,
         ts: new Date((ctx.message?.date ?? 0) * 1000).toISOString(),
         text,
+        ...(attachment
+          ? {
+              attachment_kind: attachment.kind,
+              attachment_file_id: attachment.file_id,
+              ...(attachment.name ? { attachment_name: attachment.name } : {}),
+              ...(attachment.mime ? { attachment_mime: attachment.mime } : {}),
+              ...(attachment.size != null
+                ? { attachment_size: attachment.size }
+                : {}),
+            }
+          : {}),
+        ...(transcript !== undefined ? { transcript } : {}),
+        ...(transcriptError !== undefined
+          ? { transcript_error: transcriptError }
+          : {}),
       });
     } catch {
       /* best-effort; never block delivery on mirroring */
@@ -3284,16 +3395,30 @@ async function handleInbound(
           ...(attachment.name ? { attachment_name: attachment.name } : {}),
         }
       : {}),
+    ...(attachmentPath ? { attachment_path: attachmentPath } : {}),
+    ...(transcript ? { voice_transcribed: 'whisper-local' } : {}),
+    ...(transcriptError
+      ? { transcription_failed: transcriptError.slice(0, 200) }
+      : {}),
   };
 
-  // Plain text routing rule: if there's no attachment AND tmux session is alive,
-  // paste the text into Claude's terminal wrapped in a <channel source="telegram">
-  // tag so the model sees chat_id and routes replies via mcp__telegram-daemon__reply
-  // instead of only writing to the local terminal.
-  // Attachments still go via MCP channel notification (terminal can't render them).
-  const hasAttachment = imagePath || attachment;
+  // Routing rule: while the tmux session is alive, EVERY inbound — text or
+  // attachment — is pasted into the orchestrator terminal wrapped in a
+  // <channel source="telegram"> tag; the meta attributes carry image_path /
+  // attachment_file_id / attachment_path / the voice transcript per the
+  // existing contract (the model Reads the local path or calls
+  // download_attachment with the file_id).
+  //
+  // W-15 root cause: attachment-bearing messages used to skip this branch
+  // (`!hasAttachment`) and go ONLY via the MCP SSE channel notification. That
+  // channel cycles (primary session disconnected/connected every few minutes),
+  // a notification written into a dying socket raises no error, and Claude Code
+  // surfaces server-initiated notifications far less reliably than terminal
+  // input — so documents/photos never reached the session while plain text
+  // (this tmux path) flowed fine. The tmux paste path is the reliable one;
+  // attachments now take it too, with MCP delivery as the fallback below.
   const tmuxLive = TMUX_SESSION ? await tmuxAlive() : false;
-  if (!hasAttachment && tmuxLive && text.trim()) {
+  if (tmuxLive && text.trim()) {
     // Compact reply-routing hint — small, plain-language nudge appended to
     // the channel tag rather than a fake harness-level <system-reminder>
     // (Codex R1 CORRECTNESS#6, QUALITY#7+#10). When Claude has an active MCP
@@ -3351,13 +3476,13 @@ bot.on('message:text', async (ctx) => {
 });
 bot.on('message:photo', async (ctx) => {
   const caption = ctx.message.caption ?? '(photo)';
-  await handleInbound(ctx, caption, async () => {
-    const photos = ctx.message.photo;
-    const best = photos[photos.length - 1];
+  const photos = ctx.message.photo;
+  const best = photos[photos.length - 1];
+  const download = async () => {
     try {
       const file = await ctx.api.getFile(best.file_id);
       if (!file.file_path) return undefined;
-      const url = `https://api.telegram.org/file/bot${TOKEN}/${file.file_path}`;
+      const url = `${FILE_API_ROOT}/file/bot${TOKEN}/${file.file_path}`;
       const res = await fetch(url);
       const buf = Buffer.from(await res.arrayBuffer());
       const ext = file.file_path.split('.').pop() ?? 'jpg';
@@ -3372,6 +3497,13 @@ bot.on('message:photo', async (ctx) => {
       process.stderr.write(`${LOG_PREFIX} photo download failed: ${err}\n`);
       return undefined;
     }
+  };
+  // Pass the photo's file identity too (W-15): even if the local download
+  // fails, the file_id in the tag and the inbox mirror keeps it recoverable.
+  await handleInbound(ctx, caption, download, {
+    kind: 'photo',
+    file_id: best.file_id,
+    size: best.file_size,
   });
 });
 bot.on('message:document', async (ctx) => {
@@ -3400,6 +3532,24 @@ bot.on('message:voice', async (ctx) => {
       file_id: ctx.message.voice.file_id,
       size: ctx.message.voice.file_size,
       mime: ctx.message.voice.mime_type,
+    },
+  );
+});
+bot.on('message:audio', async (ctx) => {
+  // Audio files (forwarded voice notes, music, recordings) take the same
+  // local-Whisper path as voice messages (HR-146 §NI-3).
+  const audio = ctx.message.audio;
+  const name = safeName(audio.file_name);
+  await handleInbound(
+    ctx,
+    ctx.message.caption ?? `(audio: ${name ?? 'file'})`,
+    undefined,
+    {
+      kind: 'audio',
+      file_id: audio.file_id,
+      size: audio.file_size,
+      mime: audio.mime_type,
+      name,
     },
   );
 });

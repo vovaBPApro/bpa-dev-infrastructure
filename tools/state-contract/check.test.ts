@@ -244,7 +244,16 @@ test('a known gap that has been fixed must be removed, not left to rot', () => {
 // contract in KNOWN_GAPS requires editing this assertion too, which is a
 // review event rather than a silent waiver.
 test('KNOWN_GAPS is exactly the frozen set', () => {
-  expect(Object.keys(KNOWN_GAPS).sort()).toEqual(['orchestrator-state.json']);
+  // quota-latest.jsonl and triage.jsonl were added when the sweep was widened
+  // to .jsonl (see the EXT note in check.ts). Neither is a new breakage: both
+  // readers already existed and the extension was simply invisible to the
+  // regex. quota-latest.jsonl is declared by the lane that restored its reader
+  // (daemon/vendor-login.ts); triage.jsonl was uncovered by the same widening.
+  expect(Object.keys(KNOWN_GAPS).sort()).toEqual([
+    'orchestrator-state.json',
+    'quota-latest.jsonl',
+    'triage.jsonl',
+  ]);
   for (const reason of Object.values(KNOWN_GAPS)) {
     expect(reason.length).toBeGreaterThan(80);
   }

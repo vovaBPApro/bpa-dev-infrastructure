@@ -61,6 +61,22 @@ export const KNOWN_GAPS: Record<string, string> = {
     'orchestrator-state.json)" forever. Same defect as orchestrator-missions.json, ' +
     'not fixed here: it needs an owner for what orchestrator state should now be ' +
     'derived from, which is a separate decision from the mission path.',
+  'quota-latest.jsonl':
+    'Read by daemon/vendor-login.ts, the restored vendor re-login detector. The ' +
+    'writer was headless-Playwright vendor dashboard scraping, deliberately NOT ' +
+    'migrated: it needs a logged-in browser profile, and the operator\'s standing ' +
+    'rule is subscriptions-only with no API keys. Declared rather than hidden, and ' +
+    'the reader is built for it — with no producer every verdict degrades to ' +
+    '"unknown" with a reason, never to a confident "logged in". Closing it needs a ' +
+    'credential decision about a browser profile, which is the Human\'s call.',
+  'triage.jsonl':
+    'Read by tools/instructions/ledger.ts (triage-verdict lookup for inbox aging) ' +
+    'and tools/instructions/session-load.ts, written by nothing in this repository ' +
+    '— triage verdicts are appended by hand during orchestrator triage. Surfaced ' +
+    'by widening the sweep to .jsonl for quota-latest.jsonl; it was invisible ' +
+    'before, not absent. Not fixed here because it belongs to the instructions ' +
+    'ledger, not to this lane: it needs a triage-writing path or an explicit ' +
+    'decision that hand-appended rows are the contract.',
 };
 
 export const REGISTRY: Artifact[] = [
@@ -100,6 +116,26 @@ export const REGISTRY: Artifact[] = [
     ],
     readers: ['orchestrator/watchdog.sh'],
     note: 'Turn-end liveness signal. A forged write here hides a dead session.',
+  },
+  {
+    // Pre-existing FAIL at e087bac6, introduced with the lease fence in
+    // e415cdd0 and surfaced from the `mktemp .orchestrator.lease.XXXXXX`
+    // template. Same shape as .nudges.outbox / .morning.outbox below.
+    id: '.orchestrator.lease',
+    kind: 'internal',
+    writers: ['orchestrator/watchdog.sh'],
+    readers: [],
+    note: 'Temp file for the atomic replace of orchestrator.lease on renewal.',
+  },
+  {
+    id: 'inbox.jsonl',
+    kind: 'internal',
+    writers: ['daemon/inbox-mirror.ts', 'tools/instructions/memory-sweep.ts'],
+    readers: ['tools/instructions/ledger.ts', 'tools/instructions/session-load.ts'],
+    note:
+      'Append-only capture of inbound Human directives (the B276 fix) plus filed ' +
+      'memory-sweep defects. Contract is closed: the daemon writes it, the ' +
+      'instructions ledger ages it.',
   },
   {
     id: 'orchestrator.singleton.lock',
@@ -265,7 +301,13 @@ export const REGISTRY: Artifact[] = [
 
 // Basenames carrying these extensions are durable state by convention, plus the
 // extensionless `orchestrator-*` runtime flags.
-const EXT = 'json|db|lock|lease|heartbeat|outbox|watermark|tsv|pid';
+// `jsonl` must be listed separately even though `json` is here: the alternation
+// is anchored by (?![A-Za-z0-9]), so `quota-latest.jsonl` matched neither arm
+// and append-only ledgers were invisible to the sweep entirely. That blind spot
+// hid three durable artifacts — inbox.jsonl, triage.jsonl and quota-latest.jsonl
+// — one of which (triage.jsonl) is a live instance of the very defect this
+// checker exists to catch.
+const EXT = 'jsonl|json|db|lock|lease|heartbeat|outbox|watermark|tsv|pid';
 const WITH_EXT = new RegExp(
   `['"\`/](\\.?[A-Za-z0-9_.-]+\\.(?:${EXT}))(?![A-Za-z0-9])`,
   'g',

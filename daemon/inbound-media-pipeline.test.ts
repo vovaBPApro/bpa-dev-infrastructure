@@ -563,6 +563,131 @@ test(
   30_000,
 );
 
+// ── A2. W-15 completion: caption-matching-command/permission attachments ────
+// Review blocker (cross-vendor R2 #1): an attachment whose CAPTION matches a
+// session command or a permission reply used to take the early-return branch
+// in handleInbound — the caption was handled, but the ATTACHMENT was dropped
+// entirely (no tmux tag, no spool, no mirror row; only SSE-cycle-losable side
+// effects). The fixed contract: the caption handling still runs, AND the
+// attachment context always rides the reliable tmux-tag path.
+
+test(
+  'W-15: a document whose caption is a handled session command still surfaces via tmux',
+  async () => {
+    const h = await startDaemon();
+    const docBytes = new TextEncoder().encode('%PDF-1.4 attached to /status');
+    h.registerFile('DOC-CMD-1', {
+      path: 'documents/file_21.pdf',
+      bytes: docBytes,
+    });
+    h.pushDocument({
+      messageId: 401,
+      caption: '/status',
+      fileId: 'DOC-CMD-1',
+      fileName: 'evidence.pdf',
+      mime: 'application/pdf',
+      size: docBytes.length,
+    });
+
+    // The command itself must still be answered by the daemon.
+    await waitFor('/status command answered', () =>
+      h.sent.some(
+        (m) => m.chat_id === h.chatId && m.text.includes('📊 Статус'),
+      ),
+    );
+
+    // Pre-fix: handleSessionCommand returns true → early return → the
+    // attachment is NEVER pasted and this times out (FAIL-BEFORE evidence).
+    await waitFor('command-caption document pasted to tmux', () =>
+      h.pastes().includes('attachment_file_id="DOC-CMD-1"'),
+    );
+    const pastes = h.pastes();
+    expect(pastes).toContain('<channel source="telegram"');
+    expect(pastes).toContain('message_id="401"');
+    expect(pastes).toContain('attachment_kind="document"');
+    expect(pastes).toContain('attachment_name="evidence.pdf"');
+    // The tag tells the model the daemon already executed the caption.
+    expect(pastes).toContain('caption_handled="command"');
+    const pathMatch = /attachment_path="([^"]+)"/.exec(pastes);
+    expect(pathMatch).not.toBeNull();
+    expect(readFileSync(pathMatch![1]!, 'utf8')).toBe(
+      '%PDF-1.4 attached to /status',
+    );
+
+    // Recoverable mirror row with the attachment identity.
+    const row = h.inboxRows().find((r) => r.msg_id === 401);
+    expect(row).toBeDefined();
+    expect(row!.attachment_file_id).toBe('DOC-CMD-1');
+
+    // The consumed command caption is NOT a Human directive — it must not
+    // enter the watchdog's mission-inbox log.
+    let missionLog = '';
+    try {
+      missionLog = readFileSync(
+        join(h.scratch, 'state', 'daemon', 'runtime', 'mission-inbox.log'),
+        'utf8',
+      );
+    } catch {
+      /* absent is fine */
+    }
+    expect(missionLog).not.toContain('/status');
+  },
+  30_000,
+);
+
+test(
+  'W-15: a document whose caption is a permission reply still surfaces via tmux',
+  async () => {
+    const h = await startDaemon();
+    const docBytes = new TextEncoder().encode('%PDF-1.4 attached to perm reply');
+    h.registerFile('DOC-PERM-1', {
+      path: 'documents/file_22.pdf',
+      bytes: docBytes,
+    });
+    h.pushDocument({
+      messageId: 402,
+      caption: 'yes abcde',
+      fileId: 'DOC-PERM-1',
+      fileName: 'context.pdf',
+      mime: 'application/pdf',
+      size: docBytes.length,
+    });
+
+    // Pre-fix: the permission-reply intercept returns unconditionally → the
+    // attachment is NEVER pasted and this times out (FAIL-BEFORE evidence).
+    await waitFor('permission-caption document pasted to tmux', () =>
+      h.pastes().includes('attachment_file_id="DOC-PERM-1"'),
+    );
+    const pastes = h.pastes();
+    expect(pastes).toContain('<channel source="telegram"');
+    expect(pastes).toContain('message_id="402"');
+    expect(pastes).toContain('attachment_kind="document"');
+    expect(pastes).toContain('caption_handled="permission-reply"');
+    const pathMatch2 = /attachment_path="([^"]+)"/.exec(pastes);
+    expect(pathMatch2).not.toBeNull();
+    expect(readFileSync(pathMatch2![1]!, 'utf8')).toBe(
+      '%PDF-1.4 attached to perm reply',
+    );
+
+    const row = h.inboxRows().find((r) => r.msg_id === 402);
+    expect(row).toBeDefined();
+    expect(row!.attachment_file_id).toBe('DOC-PERM-1');
+
+    // A permission reply is not a Human directive either.
+    let missionLog = '';
+    try {
+      missionLog = readFileSync(
+        join(h.scratch, 'state', 'daemon', 'runtime', 'mission-inbox.log'),
+        'utf8',
+      );
+    } catch {
+      /* absent is fine */
+    }
+    expect(missionLog).not.toContain('yes abcde');
+  },
+  30_000,
+);
+
 // ── B. NI-3: voice → local whisper → text in the tag and the mirror ─────────
 
 test(

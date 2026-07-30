@@ -18,6 +18,8 @@
 # Env overrides:
 #   WHISPER_PREFIX      install root            (default /opt/whisper.cpp)
 #   WHISPER_VERSION     whisper.cpp git tag     (default v1.9.1)
+#   WHISPER_COMMIT      pinned source commit    (default: the v1.9.1 SHA below;
+#                       REQUIRED when WHISPER_VERSION is overridden)
 #   WHISPER_BUILD_JOBS  parallel build jobs     (default nproc)
 #   WHISPER_SKIP_MEDIUM set to 1 to skip the fallback model download
 #   WHISPER_NO_APT      set to 1 to never run apt-get (fail instead)
@@ -25,6 +27,32 @@ set -euo pipefail
 
 PREFIX="${WHISPER_PREFIX:-/opt/whisper.cpp}"
 VERSION="${WHISPER_VERSION:-v1.9.1}"
+# Supply-chain pin: the exact commit the v1.9.1 release tag pointed at when
+# this installer was written. Provenance (verified 2026-07-30, three ways):
+#   (a) `git ls-remote https://github.com/ggml-org/whisper.cpp refs/tags/v1.9.1
+#       'refs/tags/v1.9.1^{}'` → f049fff95a089aa9969deb009cdd4892b3e74916
+#       (lightweight tag — the ref points straight at the commit);
+#   (b) a fresh `git fetch origin <that SHA>` checks out a tree whose
+#       CMakeLists.txt declares `project("whisper.cpp" VERSION 1.9.1)`;
+#   (c) the whisper-cli binary built from that tree embeds "1.9.1" and
+#       "f049fff" in its build info.
+# The source below is fetched BY THIS SHA, not by the tag — git content
+# addressing makes the SHA the identity of the code. A moved or deleted tag
+# cannot substitute different code: it trips the moved-tag check and the
+# post-checkout rev-parse check, and the install refuses to build.
+DEFAULT_COMMIT="f049fff95a089aa9969deb009cdd4892b3e74916"
+COMMIT="${WHISPER_COMMIT:-}"
+if [[ -z "$COMMIT" ]]; then
+  [[ "$VERSION" == "v1.9.1" ]] || {
+    printf '[whisper-install] FAIL: WHISPER_VERSION=%s overridden without WHISPER_COMMIT — refusing to build an unpinned ref\n' "$VERSION" >&2
+    exit 1
+  }
+  COMMIT="$DEFAULT_COMMIT"
+fi
+[[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
+  printf '[whisper-install] FAIL: WHISPER_COMMIT must be a full 40-hex commit SHA (got: %s)\n' "$COMMIT" >&2
+  exit 1
+}
 JOBS="${WHISPER_BUILD_JOBS:-$(nproc)}"
 REPO_URL="https://github.com/ggml-org/whisper.cpp"
 HF_BASE="https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
@@ -63,16 +91,40 @@ fi
 # ── 2. Build whisper-cli (skipped when the pinned version is already there) ──
 mkdir -p "$PREFIX/bin" "$PREFIX/models"
 
+# The marker records tag AND commit: changing the pin (same tag) must trigger
+# a rebuild, never a silent skip. Pre-pin installs recorded only "v1.9.1" and
+# will rebuild once on the next run — the installed binary is then provably
+# from the pinned commit.
+MARKER="$VERSION@$COMMIT"
 if [[ -x "$PREFIX/bin/whisper-cli" ]] \
   && [[ -f "$PREFIX/.version" ]] \
-  && [[ "$(cat "$PREFIX/.version")" == "$VERSION" ]]; then
-  log "whisper-cli $VERSION already installed at $PREFIX/bin/whisper-cli — skipping build"
+  && [[ "$(cat "$PREFIX/.version")" == "$MARKER" ]]; then
+  log "whisper-cli $MARKER already installed at $PREFIX/bin/whisper-cli — skipping build"
 else
   build_dir="$(mktemp -d /tmp/whisper-build.XXXXXX)"
   trap 'rm -rf "$build_dir"' EXIT
-  log "cloning $REPO_URL @ $VERSION"
-  git clone --depth 1 --branch "$VERSION" "$REPO_URL" "$build_dir/src" \
-    || die "git clone failed"
+
+  # Moved-tag tripwire: if the release tag no longer points at the pinned
+  # commit, upstream history was rewritten or the tag was re-pointed. That is
+  # a hard failure — never silently build different code than the pin.
+  tag_sha="$(git ls-remote "$REPO_URL" "refs/tags/$VERSION" "refs/tags/$VERSION^{}" | awk 'END{print $1}')"
+  [[ -n "$tag_sha" ]] || die "cannot resolve tag $VERSION on $REPO_URL"
+  [[ "$tag_sha" == "$COMMIT" ]] \
+    || die "tag $VERSION moved: remote says $tag_sha, pinned $COMMIT — refusing to build"
+
+  # Fetch BY the pinned SHA (not the tag) and verify the checkout matches it.
+  log "fetching $REPO_URL @ pinned commit $COMMIT (tag $VERSION)"
+  git init -q "$build_dir/src" || die "git init failed"
+  git -C "$build_dir/src" remote add origin "$REPO_URL"
+  git -C "$build_dir/src" fetch -q --depth 1 origin "$COMMIT" \
+    || die "git fetch of pinned commit $COMMIT failed"
+  git -C "$build_dir/src" checkout -q "$COMMIT" \
+    || die "checkout of pinned commit $COMMIT failed"
+  actual_sha="$(git -C "$build_dir/src" rev-parse HEAD)"
+  [[ "$actual_sha" == "$COMMIT" ]] \
+    || die "checked-out source is $actual_sha, pinned $COMMIT — refusing to build"
+  log "source verified at pinned commit $COMMIT"
+
   log "building whisper-cli ($JOBS jobs, static, Release)"
   cmake -S "$build_dir/src" -B "$build_dir/build" \
     -DCMAKE_BUILD_TYPE=Release \
@@ -82,10 +134,10 @@ else
   cmake --build "$build_dir/build" -j "$JOBS" --target whisper-cli \
     || die "build failed"
   install -m 0755 "$build_dir/build/bin/whisper-cli" "$PREFIX/bin/whisper-cli"
-  printf '%s\n' "$VERSION" >"$PREFIX/.version"
+  printf '%s\n' "$MARKER" >"$PREFIX/.version"
   rm -rf "$build_dir"
   trap - EXIT
-  log "installed $PREFIX/bin/whisper-cli ($VERSION)"
+  log "installed $PREFIX/bin/whisper-cli ($MARKER)"
 fi
 
 # ── 3. Models (checksum-verified, idempotent) ────────────────────────────────

@@ -3196,6 +3196,17 @@ async function handleInbound(
   const msgId = ctx.message?.message_id;
   currentBinding();
 
+  // W-15 completion: an attachment-bearing inbound must NEVER be droppable.
+  // When the CAPTION matches a permission reply or a session command, the
+  // caption handling below still runs — but it only consumes the text, not
+  // the file. Instead of early-returning (which used to drop the attachment
+  // entirely, leaving only SSE-cycle-losable side effects), we fall through
+  // so the attachment context rides the reliable tmux-tag path like every
+  // other attachment. `captionHandled` marks the tag for the model and keeps
+  // the consumed caption out of the mission-inbox directive log.
+  const hasAttachment = attachment != null || downloadImage != null;
+  let captionHandled: 'permission-reply' | 'command' | undefined;
+
   // Permission reply intercept
   const permMatch = PERMISSION_REPLY_RE.exec(text);
   if (permMatch) {
@@ -3218,13 +3229,15 @@ async function handleInbound(
         ])
         .catch(() => {});
     }
-    return;
-  }
-
-  // Session control commands (/screen, /compact, /restart, /kill, /send, /status, /help)
-  if (text.trim().startsWith('/') && !PERMISSION_REPLY_RE.test(text)) {
+    if (!hasAttachment) return;
+    captionHandled = 'permission-reply';
+  } else if (text.trim().startsWith('/')) {
+    // Session control commands (/screen, /compact, /restart, /kill, /send, /status, /help)
     const handled = await handleSessionCommand(text, chat_id);
-    if (handled) return;
+    if (handled) {
+      if (!hasAttachment) return;
+      captionHandled = 'command';
+    }
     // Unknown slash command — fall through to Claude
   }
 
@@ -3280,7 +3293,10 @@ async function handleInbound(
   // to the orchestrator. This lets the watchdog know a task is OPEN (so it keeps
   // the orchestrator busy and the quota used) and reminds it of the latest ask —
   // independent of whether the orchestrator records the mission itself.
-  if (text.trim()) {
+  if (text.trim() && !captionHandled) {
+    // A caption the daemon already consumed (permission reply / session
+    // command) is not a Human directive — it must not enter the watchdog's
+    // mission log or lift the /done rest sentinel.
     try {
       const inbox = join(RUNTIME_DIR, 'mission-inbox.log');
       const entry = `${new Date().toISOString()} ${text
@@ -3301,7 +3317,9 @@ async function handleInbound(
     } catch {
       /* best-effort; never block delivery on logging */
     }
+  }
 
+  if (text.trim()) {
     // Daemon-side auto-mirror (INSTRUCTIONS_CONSILIUM_FINAL.md §2.4): append the
     // raw inbound Human message to instance/decisions/inbox.jsonl so capture is
     // mechanical at the source and survives an OOM-kill before the next session.
@@ -3338,7 +3356,13 @@ async function handleInbound(
 
   void bot.api.sendChatAction(chat_id, 'typing').catch(() => {});
 
-  if (access.ackReaction && msgId != null) {
+  // A permission-reply caption already got its ✅/❌ ack reaction above —
+  // don't overwrite it with the generic ack/👀 reactions.
+  if (
+    access.ackReaction &&
+    msgId != null &&
+    captionHandled !== 'permission-reply'
+  ) {
     void bot.api
       .setMessageReaction(chat_id, msgId, [
         {
@@ -3396,6 +3420,7 @@ async function handleInbound(
         }
       : {}),
     ...(attachmentPath ? { attachment_path: attachmentPath } : {}),
+    ...(captionHandled ? { caption_handled: captionHandled } : {}),
     ...(transcript ? { voice_transcribed: 'whisper-local' } : {}),
     ...(transcriptError
       ? { transcription_failed: transcriptError.slice(0, 200) }
@@ -3448,7 +3473,7 @@ async function handleInbound(
       // Silent ack via reaction so user knows it landed — and whether codex is
       // busy (✍️ = queued, will answer when free) or idle (👀 = answering now).
       // (⏳ is not in Telegram's allowed reaction set; ✍️ is.)
-      if (msgId != null) {
+      if (msgId != null && captionHandled !== 'permission-reply') {
         let emoji: ReactionTypeEmoji['emoji'] = '👀';
         if (currentBinding()?.provider === 'codex') {
           const p = await tmuxCapture(6);

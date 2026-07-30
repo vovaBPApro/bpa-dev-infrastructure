@@ -119,8 +119,11 @@ export const REGISTRY: Artifact[] = [
       'orchestrator/launch.sh',
       'orchestrator/orchestrator-turnend-relay.sh',
     ],
-    readers: ['orchestrator/watchdog.sh'],
-    note: 'Turn-end liveness signal. A forged write here hides a dead session.',
+    readers: ['daemon/server.ts', 'orchestrator/watchdog.sh'],
+    note:
+      'Turn-end liveness signal. A forged write here hides a dead session. ' +
+      'The daemon reads its age for the human /status summary (HR-150), ' +
+      'labeling stale/absent as unknown rather than alive.',
   },
   {
     id: 'inbox.jsonl',

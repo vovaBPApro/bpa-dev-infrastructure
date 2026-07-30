@@ -90,6 +90,7 @@ import {
   type JsonReader,
   type JsonReadResult,
 } from './status';
+import { buildHumanStatus } from './status-summary';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -2118,6 +2119,31 @@ async function handleSessionCommand(
   // Commands that don't need tmux
   if (cmd === '/session' || cmd === '/status') {
     const alive = await tmuxAlive();
+    const arg = text.trim().split(/\s+/)[1]?.toLowerCase();
+    // /status → human summary (HR-150); /status raw and /session keep the
+    // full technical dump for debugging.
+    if (cmd === '/status' && arg !== 'raw') {
+      const lines = buildHumanStatus({
+        canonicalRepo: CANONICAL_REPO,
+        runCmd: shSync,
+        heartbeatPath:
+          process.env.ORCH_HEARTBEAT_FILE ??
+          join(INSTALL_ROOT, 'orchestrator', 'runtime', 'orchestrator.heartbeat'),
+        orchestrator: {
+          tmuxConfigured: Boolean(TMUX_SESSION),
+          tmuxAlive: alive,
+          model: activeBinding
+            ? activeBinding.provider === 'codex'
+              ? ORCHESTRATOR_CODEX_LABEL
+              : ORCHESTRATOR_CLAUDE_LABEL
+            : null,
+        },
+        mission: readActiveMission(STATE_DB_PATH),
+        baseRef: GIT_STALL_REF || 'origin/main',
+      });
+      await sendLong(chat_id, `📊 ${lines.join('\n')}`);
+      return true;
+    }
     const botProbe = await bot.api
       .getMe()
       .then((info) => ({ connected: true as const, username: info.username }))
@@ -2208,7 +2234,7 @@ async function handleSessionCommand(
     await bot.api.sendMessage(
       chat_id,
       `Команди керування сесією:\n\n` +
-        `/status — daemon + orchestrator статус\n` +
+        `/status — короткий стан робіт; /status raw — технічний дамп\n` +
         `/model — показати модель; /model <${MODEL_CATALOG.map(
           (c) => c.name,
         ).join('|')}> — закріпити (діє з наступного старту)\n` +

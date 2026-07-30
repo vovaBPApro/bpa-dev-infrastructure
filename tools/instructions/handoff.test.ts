@@ -112,4 +112,11 @@ describe("handoff write/validate", () => {
     writeHandoff(root, handoff);
     expect(() => writeHandoff(root, handoff)).toThrow();
   });
+
+  test("future timestamp is rejected before the handoff is written", () => {
+    const root = repo();
+    const handoff = buildHandoff(root, join(root, "reports"), values("2999-01-01T00:00:00.000Z"));
+    expect(() => writeHandoff(root, handoff)).toThrow(/future/);
+    expect(latestHandoffPath(root)).toBeUndefined();
+  });
 });

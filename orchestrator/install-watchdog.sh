@@ -5,7 +5,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UNIT_NAME="${ORCH_WATCHDOG_UNIT:-orch-runtime-watchdog}"
 UNIT_DIR="${ORCH_SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
-INTERVAL="${ORCH_WATCHDOG_INTERVAL:-60}"
+# Same one knob watchdog.sh resolves, same deprecated alias, same default — the
+# installer and the tick it installs must never disagree about the cadence.
+INTERVAL="${ORCH_WATCHDOG_INTERVAL:-${ORCH_WATCHDOG_INTERVAL_SECONDS:-60}}"
 MARKER='# managed by orchestrator/install-watchdog.sh'
 SERVICE="$UNIT_DIR/$UNIT_NAME.service"
 TIMER="$UNIT_DIR/$UNIT_NAME.timer"

@@ -24,13 +24,42 @@ LEASE_FILE="${ORCH_LEASE_FILE:-$RUNTIME_DIR/orchestrator.lease}"
 # The watchdog is the ONLY thing that renews the orchestrator lease, so the TTL
 # it renews with has to outlive its own tick interval — see the lease fence
 # below. Same knob launch.sh acquires with, so there is one number, not two.
-LEASE_TTL_MS="${ORCH_LEASE_TTL_MS:-120000}"
-WATCHDOG_INTERVAL_S="${ORCH_WATCHDOG_INTERVAL:-60}"
+# 180000 is three ticks at the 60s default interval: two ticks of headroom (the
+# fence's minimum) plus one tick of margin. It was 120000, which sat EXACTLY on
+# the fence boundary — see the strictness note there.
+LEASE_TTL_MS="${ORCH_LEASE_TTL_MS:-180000}"
+# ── Tick cadence: ONE knob ──────────────────────────────────────────────────
+# `ORCH_WATCHDOG_INTERVAL` is the name. `ORCH_WATCHDOG_INTERVAL_SECONDS` is a
+# deprecated alias, honoured only because bootstrap/env.template shipped that
+# spelling: every installed .env on disk carries it, and nothing read it, so the
+# documented cadence silently never applied. Dropping the name outright would
+# have changed those hosts' behaviour a second time, in silence, so it resolves
+# here instead — and cadence-knob.test.sh fails if the template, this reader,
+# install-watchdog.sh and the rendered timer ever disagree again.
+WATCHDOG_INTERVAL_S="${ORCH_WATCHDOG_INTERVAL:-${ORCH_WATCHDOG_INTERVAL_SECONDS:-60}}"
 INSTALL_ROOT="${ORCH_INSTALL_ROOT:-${INSTALL_ROOT:-$REPO_DIR}}"
 NUDGE_OUTBOX_FILE="${NUDGE_OUTBOX_FILE:-$RUNTIME_DIR/nudges.outbox}"
 FLEET_IDLE_NUDGE_MS="${FLEET_IDLE_NUDGE_MS:-900000}"
 FLEET_NUDGE_REPEAT_MS="${FLEET_NUDGE_REPEAT_MS:-3600000}"
 DISK_ALERT_PCT="${DISK_ALERT_PCT:-80}"
+# ── Disk remediation thresholds ─────────────────────────────────────────────
+# At DISK_ALERT_PCT the tick reclaims Docker space and re-measures; only if the
+# filesystem is STILL at or above DISK_CRITICAL_PCT does the operator get told.
+# Written after a real ENOSPC outage: a full disk truncates files mid-write, so
+# detecting-and-alerting without reclaiming leaves the box to corrupt itself
+# until a human wakes up.
+DISK_CRITICAL_PCT="${DISK_CRITICAL_PCT:-88}"
+# Set 0 to disable reclamation and keep the previous alert-only behaviour.
+DOCKER_PRUNE_ENABLED="${DOCKER_PRUNE_ENABLED:-1}"
+# Opt-in sweep of DISPOSABLE TAGGED images, which are not dangling and so are
+# never reclaimed by `image prune`. Deliberately EMPTY by default: the reference
+# implementation hard-coded the old project's tag vocabulary
+# (rollback|release|pre-|night|batch|…), and shipping that verbatim here would
+# either match nothing or, worse, match a tag this repo gives a different
+# meaning. An operator who has such a convention names it; nobody else can be
+# surprised by it. Never matches running containers' images — see the sweep.
+DOCKER_STALE_TAG_PATTERN="${DOCKER_STALE_TAG_PATTERN:-}"
+DOCKER_STALE_TAG_KEEP="${DOCKER_STALE_TAG_KEEP:-3}"
 NUDGE_RATE_FILE="${NUDGE_RATE_FILE:-$RUNTIME_DIR/nudge-rate.tsv}"
 # `/done` rest sentinel. The daemon writes this file on /done and /mission_done
 # and deletes it on the next inbound Human directive (daemon/server.ts), and it
@@ -73,8 +102,10 @@ validate_numeric_knob FLEET_IDLE_NUDGE_MS 900000
 validate_numeric_knob FLEET_NUDGE_REPEAT_MS 3600000
 validate_numeric_knob DISK_ALERT_PCT 80
 validate_numeric_knob HEARTBEAT_MAX_AGE 1200
-validate_numeric_knob LEASE_TTL_MS 120000
+validate_numeric_knob LEASE_TTL_MS 180000
 validate_numeric_knob WATCHDOG_INTERVAL_S 60
+validate_numeric_knob DISK_CRITICAL_PCT 88
+validate_numeric_knob DOCKER_STALE_TAG_KEEP 3
 validate_numeric_knob RESTART_COOLDOWN_S 1800
 
 # ── `/done` rest ────────────────────────────────────────────────────────────
@@ -237,6 +268,43 @@ heartbeat_stale() {
   (( now - heartbeat > HEARTBEAT_MAX_AGE ))
 }
 
+# ── Second liveness signal: is the pane still producing output? ─────────────
+# The heartbeat above has exactly ONE ongoing writer — the turn-end hook
+# (orchestrator-turnend-relay.sh, which Codex's notify and Claude's Stop hook
+# both funnel into). It therefore says "a turn ENDED", never "a turn is running".
+# A single turn longer than HEARTBEAT_MAX_AGE is completely ordinary for this
+# role (a long dispatch, a slow build, a big review) and used to be indistinguish-
+# able from a corpse: the tick went straight to kill-and-relaunch and shot a
+# session that was alive and mid-work, losing the turn and burning quota.
+#
+# tmux knows better, because it sees the bytes. This is the newest-signal-wins
+# rule from the reference watchdog, with one deliberate substitution:
+#
+#   the reference used `#{session_activity}`; MEASURED on tmux 3.4, that field
+#   does NOT advance for a DETACHED session — which is the only shape an
+#   orchestrator ever has. It stays frozen at session creation, so restoring it
+#   verbatim would read "dead" for every healthy session and change nothing.
+#   `#{window_activity}` does track pane output: ~0s for a busy pane, growing
+#   with wall-clock for a wedged or SIGSTOPped one. That is the property this
+#   guard needs, so that is the field used.
+#
+# Windows are max()'d rather than taking the session's current window, so a
+# multi-window session is judged by its newest output anywhere.
+# Prints the age in seconds of the newest pane output, or nothing at all when
+# tmux cannot answer — absence of a signal is never evidence of death here.
+session_activity_age() {
+  local now="$1" newest age
+  newest="$(tmux list-windows -t "$SESSION" -F '#{window_activity}' 2>/dev/null |
+    grep -oE '^[0-9]+' | sort -n | tail -n 1)" || true
+  [[ "$newest" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]] || return 0
+  # Some tmux builds report milliseconds.
+  (( ${#newest} >= 13 )) && newest=$(( newest / 1000 ))
+  age=$(( now - newest ))
+  # A future timestamp means clock skew, not staleness. Clamp to fresh.
+  (( age < 0 )) && age=0
+  printf '%s\n' "$age"
+}
+
 # Watchdog nudge updates are written to a same-directory temporary file then
 # renamed, so a Telegram reader observes either the old complete file or the
 # new complete file. full-suite.sh follows the same outbox pattern.
@@ -272,17 +340,99 @@ record_nudge() {
   mv -f "$tmp" "$NUDGE_RATE_FILE"
 }
 
+disk_pct() {
+  df -P "$INSTALL_ROOT" 2>/dev/null | awk 'NR == 2 { value=$5; sub(/%$/, "", value); print value }'
+}
+
+# ── Docker reclamation ──────────────────────────────────────────────────────
+# Conservative by construction. It touches exactly three things, all of which
+# are rebuildable caches:
+#   1. build cache   (`builder prune -f`)
+#   2. DANGLING images only (`image prune -f` — never `-a`, which would delete
+#      every image without a running container, including ones the operator
+#      pulled deliberately)
+#   3. disposable TAGGED images, and only when the operator has declared a tag
+#      pattern for them (DOCKER_STALE_TAG_PATTERN, empty by default).
+# It never touches volumes (`volume prune` is not called and never should be —
+# that is operator data), never touches networks, and never stops or removes a
+# container. Images in use by ANY container, running or not, are protected by
+# `docker rmi` itself: it refuses with "image is being used", which is caught
+# and logged rather than forced. There is no `-f` on the rmi for that reason.
+docker_reclaim() {
+  local before_pct="$1" output images image kept
+  command -v docker >/dev/null 2>&1 || { log "SKIP reason=docker-unavailable"; return 0; }
+  if ! docker info >/dev/null 2>&1; then
+    log "SKIP reason=docker-daemon-unreachable"
+    return 0
+  fi
+
+  if output="$(docker builder prune -f 2>&1)"; then
+    log "DISK reclaim step=builder-prune $(printf '%s' "$output" | grep -i 'reclaimed' | tail -n 1)"
+  else
+    log "DISK reclaim step=builder-prune result=failed detail=$(printf '%s' "$output" | tr '\n' ' ' | cut -c1-200)"
+  fi
+
+  if output="$(docker image prune -f 2>&1)"; then
+    log "DISK reclaim step=image-prune-dangling $(printf '%s' "$output" | grep -i 'reclaimed' | tail -n 1)"
+  else
+    log "DISK reclaim step=image-prune-dangling result=failed detail=$(printf '%s' "$output" | tr '\n' ' ' | cut -c1-200)"
+  fi
+
+  if [[ -z "$DOCKER_STALE_TAG_PATTERN" ]]; then
+    log "DISK reclaim step=stale-tag-sweep result=disabled reason=no-pattern-configured"
+  else
+    # Newest-first, keep DOCKER_STALE_TAG_KEEP per repository so a recent
+    # rollback target stays usable, drop the rest.
+    images="$(docker images --format '{{.CreatedAt}}\t{{.Repository}}:{{.Tag}}' 2>/dev/null |
+      grep -E -- "$DOCKER_STALE_TAG_PATTERN" |
+      sort -r |
+      awk -F '\t' -v keep="$DOCKER_STALE_TAG_KEEP" \
+        '{ repo = $2; sub(/:.*/, "", repo); seen[repo]++; if (seen[repo] > keep) print $2 }')" || true
+    kept=0
+    while IFS= read -r image; do
+      [[ -n "$image" ]] || continue
+      if output="$(docker rmi "$image" 2>&1)"; then
+        log "DISK reclaim step=stale-tag-sweep removed=$image"
+      else
+        kept=$(( kept + 1 ))
+        log "DISK reclaim step=stale-tag-sweep retained=$image reason=$(printf '%s' "$output" | tr '\n' ' ' | cut -c1-120)"
+      fi
+    done <<< "$images"
+    (( kept > 0 )) && log "DISK reclaim step=stale-tag-sweep retained_count=$kept reason=in-use-or-refused"
+  fi
+
+  log "DISK reclaim before_pct=$before_pct after_pct=$(disk_pct) root=$INSTALL_ROOT"
+  return 0
+}
+
 check_disk_pressure() {
-  local pct now
-  pct="$(df -P "$INSTALL_ROOT" 2>/dev/null | awk 'NR == 2 { value=$5; sub(/%$/, "", value); print value }')"
+  local pct now after
+  pct="$(disk_pct)"
   [[ "$pct" =~ ^[0-9]+$ ]] || { log "SKIP reason=disk-stat-unavailable root=$INSTALL_ROOT"; return; }
-  if (( pct >= DISK_ALERT_PCT )); then
-    log "WATCHDOG disk-pressure pct=$pct root=$INSTALL_ROOT"
-    now="${ORCH_WATCHDOG_NOW_MS:-$(( $(date +%s) * 1000 ))}"
+  (( pct >= DISK_ALERT_PCT )) || return
+  log "WATCHDOG disk-pressure pct=$pct root=$INSTALL_ROOT"
+
+  after="$pct"
+  if (( DOCKER_PRUNE_ENABLED == 1 )); then
+    docker_reclaim "$pct" || log "WATCHDOG NO-GO reason=docker-reclaim-failed root=$INSTALL_ROOT action=alert-only"
+    after="$(disk_pct)"
+    [[ "$after" =~ ^[0-9]+$ ]] || after="$pct"
+  else
+    log "SKIP reason=docker-prune-disabled root=$INSTALL_ROOT"
+  fi
+
+  now="${ORCH_WATCHDOG_NOW_MS:-$(( $(date +%s) * 1000 ))}"
+  # The operator is told when the disk is still critically full AFTER
+  # reclamation — that is the state a human has to act on. Reclamation that
+  # brought it back under DISK_CRITICAL_PCT is a log line, not an interruption.
+  if (( after >= DISK_CRITICAL_PCT )); then
+    log "WATCHDOG disk-critical pct=$after was_pct=$pct root=$INSTALL_ROOT"
     if nudge_due disk "$INSTALL_ROOT" "$now"; then
-      append_nudge "NUDGE disk-pressure pct=$pct root=$INSTALL_ROOT"
+      append_nudge "NUDGE disk-pressure pct=$after was_pct=$pct root=$INSTALL_ROOT needs=manual-cleanup"
       record_nudge disk "$INSTALL_ROOT" "$now"
     fi
+  elif (( after < pct )); then
+    log "WATCHDOG disk-recovered pct=$after was_pct=$pct root=$INSTALL_ROOT"
   fi
 }
 
@@ -399,8 +549,16 @@ if state_available; then
   # A renewal that does not survive until the next tick is not a renewal: the
   # lease is guaranteed dead when this same script comes back to renew it. Two
   # ticks of headroom is the minimum that tolerates one skipped or slow tick.
-  if (( LEASE_TTL_MS < WATCHDOG_INTERVAL_S * 2000 )); then
-    log "WATCHDOG NO-GO reason=lease-ttl-under-tick ttl_ms=$LEASE_TTL_MS interval_s=$WATCHDOG_INTERVAL_S needs_ms=$(( WATCHDOG_INTERVAL_S * 2000 )) action=no-kill"
+  #
+  # The comparison is `<=`, not `<`. At TTL == exactly two ticks the lease
+  # expires at the very instant the second tick is due, so ANY jitter puts
+  # expiry first — and systemd timers jitter by a minute at the default
+  # AccuracySec. Zero margin is inside the trap this fence exists to catch, not
+  # outside it. Strict `<` never fired at that boundary, and the shipped default
+  # pair (60s / 120000ms) sat precisely on it, so the fence was silent in exactly
+  # the configuration it was written for. The default TTL is now 180000.
+  if (( LEASE_TTL_MS <= WATCHDOG_INTERVAL_S * 2000 )); then
+    log "WATCHDOG NO-GO reason=lease-ttl-under-tick ttl_ms=$LEASE_TTL_MS interval_s=$WATCHDOG_INTERVAL_S needs_over_ms=$(( WATCHDOG_INTERVAL_S * 2000 )) action=no-kill"
   fi
   if ! lease_state; then
     log "SKIP reason=lease-state-missing"
@@ -416,11 +574,27 @@ if ! session_healthy; then
   supervise_restart dead 0
 fi
 if heartbeat_stale; then
-  if [[ -f "$HEARTBEAT_FILE" ]]; then
-    log "zombie session=$SESSION action=kill-relaunch"
+  # A stale heartbeat is a QUESTION, not a verdict. Ask the second signal before
+  # killing anything: a busy session must never read as dead.
+  watchdog_now="${ORCH_WATCHDOG_NOW:-$(date +%s)}"
+  activity_age="$(session_activity_age "$watchdog_now")"
+  if [[ -n "$activity_age" ]] && (( activity_age <= HEARTBEAT_MAX_AGE )); then
+    # Alive and working, but the heartbeat writer has gone quiet for longer than
+    # a turn should take. Never kill on this — but never swallow it either: the
+    # most likely cause is that the turn-end relay itself broke, and a silently
+    # tolerated broken relay is how the orchestrator's only liveness signal dies
+    # unnoticed. Log every tick, nudge the operator on the usual throttle.
+    log "WATCHDOG NO-GO reason=heartbeat-stale-session-active session=$SESSION activity_age_s=$activity_age max_age_s=$HEARTBEAT_MAX_AGE action=no-kill"
+    now_ms="${ORCH_WATCHDOG_NOW_MS:-$(( watchdog_now * 1000 ))}"
+    if nudge_due heartbeat-stale-active "$SESSION" "$now_ms"; then
+      append_nudge "NUDGE heartbeat-stale-session-active session=$SESSION activity_age_s=$activity_age max_age_s=$HEARTBEAT_MAX_AGE"
+      record_nudge heartbeat-stale-active "$SESSION" "$now_ms"
+    fi
+  elif [[ -f "$HEARTBEAT_FILE" ]]; then
+    log "zombie session=$SESSION activity_age_s=${activity_age:-unavailable} action=kill-relaunch"
     supervise_restart zombie 1
   else
-    log "heartbeat-missing session=$SESSION action=kill-relaunch"
+    log "heartbeat-missing session=$SESSION activity_age_s=${activity_age:-unavailable} action=kill-relaunch"
     supervise_restart heartbeat-missing 1
   fi
 fi

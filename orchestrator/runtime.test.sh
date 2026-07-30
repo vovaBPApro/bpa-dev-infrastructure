@@ -64,6 +64,10 @@ export ORCH_LEASE_FILE="$STATE/orchestrator.lease"
 # to the live daemon's URL.
 export ORCH_DONE_SENTINEL="$STATE/no-done-sentinel"
 export ORCH_DAEMON_HEALTH_URL=""
+# Same class again, for the disk guard: this suite runs the tick against the
+# REAL df, so on a host above DISK_ALERT_PCT it would reclaim that host's Docker
+# build cache and dangling images while asserting relaunch behaviour.
+export DOCKER_PRUNE_ENABLED=0
 export ORCH_RESTART_STATE_FILE="$STATE/watchdog-restart-state"
 # This suite asserts the recovery ACTIONS (relaunch, kill-relaunch) back to
 # back, which the production restart cooldown would legitimately suppress on the

@@ -55,6 +55,9 @@ COMMON_ENV=(
   # defaults to the live daemon's URL. Left ambient, a real /done would make
   # the watchdog writer exit before it ever touches the outbox.
   "ORCH_DONE_SENTINEL=$SCRATCH/no-done-sentinel"
+  # Real df: without this a host above DISK_ALERT_PCT would have its Docker
+  # cache reclaimed by an outbox-concurrency assertion.
+  "DOCKER_PRUNE_ENABLED=0"
   "ORCH_DAEMON_HEALTH_URL="
   "NUDGE_OUTBOX_FILE=$OUTBOX"
   "OUTBOX_TEST_FILE=$OUTBOX"

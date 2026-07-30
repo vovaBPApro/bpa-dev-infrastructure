@@ -285,6 +285,18 @@ export const REGISTRY: Artifact[] = [
       'trusted before starting a pane nobody can answer a trust prompt in.',
   },
   {
+    id: 'auth.json',
+    kind: 'external',
+    owner: 'Codex CLI',
+    writers: [],
+    readers: ['orchestrator/preflight-cli-auth.sh'],
+    note:
+      'Codex CLI\'s credential file (~/.codex/auth.json), written by `codex ' +
+      'login`. The auth preflight only READS it, to refuse launch when an ' +
+      'OPENAI_API_KEY is embedded there — i.e. when the CLI would silently ' +
+      'bill metered instead of the subscription. This repo must never write it.',
+  },
+  {
     id: 'package.json',
     kind: 'repo-file',
     trackedPath: 'daemon/package.json',

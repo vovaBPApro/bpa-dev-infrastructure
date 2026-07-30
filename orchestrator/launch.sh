@@ -23,7 +23,11 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 SINGLETON_LOCK_FILE="${ORCH_SINGLETON_LOCK_FILE:-$REPO_DIR/runtime/orchestrator.singleton.lock}"
 MISSION_CLI="${ORCH_MISSION_CLI:-$REPO_DIR/core/mission-cli.ts}"
 STATE_DB="${ORCH_STATE_DB:-$REPO_DIR/runtime/state.db}"
-LEASE_TTL_MS="${ORCH_LEASE_TTL_MS:-120000}"
+# One number, shared with watchdog.sh, which is the only renewer. 180000 is
+# three ticks at the 60s default watchdog interval; watchdog.sh explains why two
+# ticks EXACTLY is not enough. Keep the two defaults identical — cadence-knob.test.sh
+# fails if they drift.
+LEASE_TTL_MS="${ORCH_LEASE_TTL_MS:-180000}"
 READINESS_WINDOW_MS="${ORCH_READINESS_WINDOW_MS:-3000}"
 READINESS_POLL_SECONDS="${ORCH_READINESS_POLL_SECONDS:-0.15}"
 LEASE_FILE="${ORCH_LEASE_FILE:-$RUNTIME_DIR/orchestrator.lease}"

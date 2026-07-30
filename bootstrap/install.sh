@@ -316,15 +316,34 @@ run_install_test_gate() {
 
 render_units() {
   install -d -m 700 "$SYSTEMD_USER_DIR"
-  local source destination configured_calendar
+  local source destination configured_calendar configured_interval
   if [[ -z "$FULL_SUITE_ON_CALENDAR" && -f "$ENV_FILE" ]]; then
     configured_calendar="$(sed -n 's/^FULL_SUITE_ON_CALENDAR=//p' "$ENV_FILE" | tail -n 1)"
     [[ -n "$configured_calendar" ]] && FULL_SUITE_ON_CALENDAR="$configured_calendar"
   fi
   FULL_SUITE_ON_CALENDAR="${FULL_SUITE_ON_CALENDAR:-*-*-* 03:30:00}"
+  # The watchdog cadence has to come from the SAME knob watchdog.sh reads, or the
+  # installed timer and the tick's own lease-fence arithmetic describe different
+  # intervals. Before this, the timer carried a hard-coded 10min while .env
+  # carried a name nothing read and watchdog.sh assumed 60s — three numbers, no
+  # agreement. The deprecated ORCH_WATCHDOG_INTERVAL_SECONDS spelling is still
+  # honoured here so an .env written by the old template keeps working.
+  if [[ -z "${ORCH_WATCHDOG_INTERVAL:-}" && -f "$ENV_FILE" ]]; then
+    configured_interval="$(sed -n 's/^ORCH_WATCHDOG_INTERVAL=//p' "$ENV_FILE" | tail -n 1)"
+    [[ -z "$configured_interval" ]] &&
+      configured_interval="$(sed -n 's/^ORCH_WATCHDOG_INTERVAL_SECONDS=//p' "$ENV_FILE" | tail -n 1)"
+    [[ -n "$configured_interval" ]] && ORCH_WATCHDOG_INTERVAL="$configured_interval"
+  fi
+  ORCH_WATCHDOG_INTERVAL="${ORCH_WATCHDOG_INTERVAL:-60}"
+  if ! [[ "$ORCH_WATCHDOG_INTERVAL" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: ORCH_WATCHDOG_INTERVAL must be a positive integer number of seconds: $ORCH_WATCHDOG_INTERVAL" >&2
+    return 1
+  fi
   for source in "$SOURCE_ROOT"/bootstrap/units/*.in; do
     destination="$SYSTEMD_USER_DIR/$(basename "${source%.in}")"
-    INSTALL_ROOT="$INSTALL_ROOT" ENV_FILE="$ENV_FILE" BUN_BIN="$BUN_BIN" FULL_SUITE_ON_CALENDAR="$FULL_SUITE_ON_CALENDAR" envsubst < "$source" > "$destination"
+    INSTALL_ROOT="$INSTALL_ROOT" ENV_FILE="$ENV_FILE" BUN_BIN="$BUN_BIN" \
+      FULL_SUITE_ON_CALENDAR="$FULL_SUITE_ON_CALENDAR" ORCH_WATCHDOG_INTERVAL="$ORCH_WATCHDOG_INTERVAL" \
+      envsubst < "$source" > "$destination"
     chmod 600 "$destination"
   done
   if systemd_user_available; then

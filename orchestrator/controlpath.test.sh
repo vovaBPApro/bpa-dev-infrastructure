@@ -38,6 +38,7 @@ env -i PATH=/usr/bin:/bin HOME="$TEST_HOME" BUN_MARKER="$SCRATCH/bun-used" \
   ORCH_STATE_DB="$SCRATCH/missing.db" ORCH_RUNTIME_DIR="$SCRATCH/runtime" \
   ORCH_WATCHDOG_LOG="$SCRATCH/runtime/watchdog.log" ORCH_LEASE_FILE="$SCRATCH/runtime/orchestrator.lease" \
   ORCH_DONE_SENTINEL="$SCRATCH/no-done-sentinel" ORCH_DAEMON_HEALTH_URL="" \
+  DOCKER_PRUNE_ENABLED=0 \
   "$SCRIPT_DIR/watchdog.sh"
 [[ -s "$SCRATCH/bun-used" ]] || fail 'watchdog did not execute Bun through resolved BUN_BIN'
 

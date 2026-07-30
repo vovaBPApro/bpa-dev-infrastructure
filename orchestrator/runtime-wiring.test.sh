@@ -53,6 +53,11 @@ export ORCH_AUTH_PREFLIGHT="$SCRATCH/preflight.sh" ORCH_WATCHDOG_LOG="$LOG_FILE"
 # Not covered by ORCH_RUNTIME_DIR: the `/done` rest sentinel lives under the
 # daemon's state dir and the health probe defaults to the live daemon's URL.
 export ORCH_DONE_SENTINEL="$SCRATCH/no-done-sentinel" ORCH_DAEMON_HEALTH_URL=""
+# This suite runs the tick against the REAL df, so on a host that happens to sit
+# above DISK_ALERT_PCT it would reclaim that host's Docker cache as a side effect
+# of an unrelated assertion. Reclamation is covered by docker-remediation.test.sh
+# with a shimmed docker; here it is simply off.
+export DOCKER_PRUNE_ENABLED=0
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert() { "$@" || fail "$*"; }

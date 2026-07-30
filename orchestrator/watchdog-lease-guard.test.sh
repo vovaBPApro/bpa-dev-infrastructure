@@ -259,7 +259,10 @@ export ORCH_MISSION_CLI="$REPO_DIR/core/mission-cli.ts"
 # does not reach the next tick is not a renewal.
 new_case renewal-outlives-tick
 export ORCH_WATCHDOG_INTERVAL=60
-export ORCH_LEASE_TTL_MS=120000
+# Was 120000, which is EXACTLY two ticks — the boundary the fence now rejects
+# (see the `<=` note in watchdog.sh). Renewal mechanics are what this case is
+# about, so it uses a TTL the fence approves rather than one it flags.
+export ORCH_LEASE_TTL_MS=180000
 live_token="$(cli "$ORCH_STATE_DB" lease acquire "$SELF_OWNER" orchestrator 1000 | token_of)"
 write_lease_file "$SELF_OWNER" "$live_token"
 before_ms="$(( $(date +%s) * 1000 ))"

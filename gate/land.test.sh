@@ -192,6 +192,25 @@ if "$land" --branch ag-review-self-author-email --report "$fixture_root/review-s
 assert_output_has "$review_self_author_email_output" 'ERROR review-required self-authored-review'
 assert_output_lacks "$review_self_author_email_output" 'LAND step=merge status=pass'
 
+make_fixture review-self-author-reordered
+git -C "$fixture_root/review-self-author-reordered-repo" config user.name 'First Last'
+review_self_author_reordered_sha=$(make_policy_lane "$fixture_root/review-self-author-reordered-repo" ag-review-self-author-reordered)
+report "$fixture_root/review-self-author-reordered-report.md" "$review_self_author_reordered_sha"
+review "$fixture_root/ag-review-self-author-reordered.review.md" ACCEPT 'Last First <spoofed@example.test>' "$review_self_author_reordered_sha" separate-session
+review_self_author_reordered_output="$fixture_root/review-self-author-reordered-output.txt"
+if "$land" --branch ag-review-self-author-reordered --report "$fixture_root/review-self-author-reordered-report.md" --repo "$fixture_root/review-self-author-reordered-repo" >"$review_self_author_reordered_output" 2>&1; then exit 1; fi
+assert_output_has "$review_self_author_reordered_output" 'ERROR review-required self-authored-review'
+assert_output_lacks "$review_self_author_reordered_output" 'LAND step=merge status=pass'
+
+make_fixture review-self-author-crlf
+review_self_author_crlf_sha=$(make_policy_lane "$fixture_root/review-self-author-crlf-repo" ag-review-self-author-crlf)
+report "$fixture_root/review-self-author-crlf-report.md" "$review_self_author_crlf_sha"
+printf 'verdict: ACCEPT\r\nreviewer: Land\r\nreviewed-sha: %s\r\nindependence: separate-session\r\n' "$review_self_author_crlf_sha" > "$fixture_root/ag-review-self-author-crlf.review.md"
+review_self_author_crlf_output="$fixture_root/review-self-author-crlf-output.txt"
+if "$land" --branch ag-review-self-author-crlf --report "$fixture_root/review-self-author-crlf-report.md" --repo "$fixture_root/review-self-author-crlf-repo" >"$review_self_author_crlf_output" 2>&1; then exit 1; fi
+assert_output_has "$review_self_author_crlf_output" 'ERROR review-required self-authored-review'
+assert_output_lacks "$review_self_author_crlf_output" 'LAND step=merge status=pass'
+
 make_fixture review-nul-artifact
 review_nul_artifact_sha=$(make_policy_lane "$fixture_root/review-nul-artifact-repo" ag-review-nul-artifact)
 report "$fixture_root/review-nul-artifact-report.md" "$review_nul_artifact_sha"

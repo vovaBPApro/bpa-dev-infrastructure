@@ -47,6 +47,16 @@ chmod +x "$SHIM/tmux" "$SHIM/systemd-run" "$SHIM/codex"
 export PATH="$SHIM:$PATH" MOCK_STATE="$STATE" MOCK_PANE_PID="$$"
 export ORCH_RUNTIME_DIR="$STATE/runtime" ORCH_SESSION="test-orch" ORCH_PROVIDER=codex
 export ORCH_AUTH_PREFLIGHT="$SCRIPT_DIR/preflight-cli-auth.sh"
+# Hermetic state. tmux/systemd-run/codex are already shimmed, but the durable
+# paths were not: ORCH_STATE_DB fell back to the caller's env or the repo's real
+# runtime/state.db, so this suite reaped and acquired leases under the shared
+# `orchestrator` key and overwrote the live instance lock with a mock pane pid.
+# Pointing at absent scratch paths reproduces the clean-checkout condition these
+# assertions were written against (state_available=false -> lease logic skipped).
+export ORCH_STATE_DB="$STATE/state.db"
+export ORCH_INSTANCE_LOCK_FILE="$STATE/instance.lock"
+export ORCH_SINGLETON_LOCK_FILE="$STATE/singleton.lock"
+export ORCH_LEASE_FILE="$STATE/orchestrator.lease"
 unset DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }

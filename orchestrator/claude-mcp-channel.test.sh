@@ -39,6 +39,10 @@ export ORCH_CONFIG_FILE="$SCRATCH/no-runtime.env"
 export ORCH_RUNTIME_DIR="$SCRATCH/runtime"
 export ORCH_SINGLETON_LOCK_FILE="$SCRATCH/orchestrator.singleton.lock"
 export ORCH_STATE_DB="$SCRATCH/absent-state.db"
+# launch.sh derives the live-instance lock from the ambient chat id and
+# deletes it on `stop`. Unisolated, this suite removes the operator's real
+# orchestrator lock whenever it runs inside an orchestrator-spawned shell.
+export ORCH_INSTANCE_LOCK_FILE="$SCRATCH/instance.lock"
 export ORCH_AUTH_PREFLIGHT="$SCRATCH/preflight.sh"
 export ORCH_PROVIDER=claude
 export ORCH_SESSION="claude-mcp-channel-test"
@@ -74,6 +78,7 @@ mcp_path="$(sed -n '/^--mcp-config$/{n;p;q;}' "$ORCH_TEST_CLAUDE_ARGS")"
 # The Stop-hook relay must survive alongside the MCP channel.
 grep -Fxq -- '--settings' "$ORCH_TEST_CLAUDE_ARGS"
 grep -Fxq -- '--dangerously-skip-permissions' "$ORCH_TEST_CLAUDE_ARGS"
+# shellcheck disable=SC2016
 "$BUN_BIN" -e '
 const config = await Bun.file(process.argv[1]).json();
 const expectedUrl = process.argv[2];

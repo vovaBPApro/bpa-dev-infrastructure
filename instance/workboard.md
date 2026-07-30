@@ -43,6 +43,18 @@ note. Derived-work items live here; Human directives stay in
   many lanes and their states, last landed thing, anything blocked. Daemon
   runtime code → coder lane; keep the honest-fields work (W-13 relabel) intact.
 
+- **W-15 — attachment-bearing Telegram messages are lost to the orchestrator**
+  (found 2026-07-30 ~21:02Z): Vova sent 4 photo documents + BPA_ROLES_AND_REVIEW.md
+  (inbox.jsonl msgs 156-160 record the filenames), but the `<channel>` tags with
+  `attachment_file_id` never surfaced in the orchestrator session — text
+  messages around them arrived fine. The file_ids are not recoverable from
+  inbox.jsonl (it stores no file_id), so the content was unretrievable and the
+  Human had to be asked to re-send. Two fixes to scope: (a) daemon-side — mirror
+  attachment file_ids (and ideally auto-download to a spool dir) into a durable
+  record the orchestrator can query later; (b) find and fix why the channel
+  delivery dropped them (concurrent-turn buffering?). Daemon runtime code →
+  coder lane; reproduce first with a test document before fixing.
+
 ### Migration-loss restore queue (2026-07-30)
 
 Source: parity audit against the **live** old daemon at
@@ -129,7 +141,13 @@ brainstorm): `instance/decisions/HR-146.md`. A further brainstorm exists as a
 ChatGPT share link (msg 144/59); Vova will send it as PDF — study on arrival.
 - **NI-1 — team personas**: give "characters"/personas to the whole 10-agent
   team — per-persona role + strengths, and a rule for which personas join which
-  discussion level (consilium composition). Detail: HR-146 §NI-1.
+  discussion level (consilium composition). Detail: HR-146 §NI-1. EXPANDED by
+  the 2026-07-30 evening brainstorm (HR-161: adaptive user model, RPG matrix,
+  mutual agent models — explicitly BRAINSTORM not a decision per his msg 167;
+  an RFC + chat history + BPA_ROLES_AND_REVIEW.md are incoming; orchestrator
+  phased opinion given in reply 169: static personas as compose-pack profiles
+  first, adaptive modeling as a separate metrics-backed RFC; finalize
+  three-way before implementation).
 - **NI-2 — Google Drive debug access**: service account so the orchestrator and
   any agent can read/verify Drive contents for debugging (e.g. QuickBooks/Gmail
   import testing) without Vova screenshotting. He can do the one-time connect

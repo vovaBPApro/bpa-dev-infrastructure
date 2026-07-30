@@ -7,6 +7,12 @@
 # `startup: degraded` and the real signal was lost).
 orchestrator/runtime/
 /runtime/
+# Per-host launcher configuration (ports, chat binding, provider/model choice for
+# THIS box). It is sourced by orchestrator/*.sh and overrides the environment, so
+# it is host state by definition and a natural place for someone to paste a chat
+# id or token. The tracked contract is runtime.env.example; defaults that must
+# survive a fresh clone belong in launch.sh, not here.
+orchestrator/runtime.env
 
 node_modules/
 *.log

@@ -58,12 +58,14 @@ orchestrator:
   manager_provider: codex          # ibid — Codex managers between orchestrator and workers
   coder_provider: codex            # ibid — Codex coders below the managers
   # Fallback/alternate top orchestrator (instructions/orchestrator-fallback.md,
-  # instance/decisions/HR-11573.md). NOT yet exercised: as of 2026-07-30 no
-  # orchestrator/runtime.env exists, so orchestrator/launch.sh resolves an empty
-  # model and would start codex with no --model at all. Pinning it is open work.
+  # instance/decisions/HR-11573.md). The model is now pinned in source
+  # (orchestrator/launch.sh CODEX_MODEL) rather than left to the account default,
+  # so a fresh clone with no runtime.env still starts codex on this model;
+  # ORCH_CODEX_MODEL in runtime.env overrides it per host.
   fallback_provider: codex
   fallback_model: gpt-5.6-sol      # /root/.codex/config.toml; verified runnable on this box 2026-07-30
-  fallback_model_status: not-pinned
+  fallback_model_status: pinned    # orchestrator/codex-notify-wiring.test.sh locks the emitted --model
+  fallback_reasoning_effort: high  # codex-cli defaults to `none`, inadequate for orchestrator judgement
 
 capture:
   # How Human directives reach the decisions ledger. `manual`: the orchestrator

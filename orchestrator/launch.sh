@@ -42,6 +42,17 @@ CLAUDE_MCP_URL="${ORCH_CLAUDE_MCP_URL:-http://127.0.0.1:$DAEMON_PORT/sse}"
 # channel silently degrades to the one-way Stop-hook relay.
 # claude-mcp-channel.test.sh locks the two together.
 CLAUDE_MCP_SERVER_NAME="${ORCH_CLAUDE_MCP_SERVER_NAME:-telegram-daemon}"
+# ── Fallback (Codex) top orchestrator ───────────────────────────────────────
+# The model is PINNED in source, not left to the account default. With no
+# runtime.env on the box, ORCH_MODEL resolved empty and codex launched with no
+# --model at all — whatever the account happened to default to would silently
+# become the orchestrator. The instance fact lives in instance/params.yaml
+# (orchestrator.fallback_model); this is the value that survives a fresh clone.
+# Precedence: ORCH_CODEX_MODEL > ORCH_MODEL (legacy, provider-agnostic) > pin.
+CODEX_MODEL="${ORCH_CODEX_MODEL:-${MODEL:-gpt-5.6-sol}}"
+# codex-cli defaults this box to `reasoning effort: none`, which is not adequate
+# for the judgement this role does (routing, evidence verdicts, landing calls).
+CODEX_REASONING_EFFORT="${ORCH_CODEX_REASONING_EFFORT:-high}"
 BOUND_CHAT_ID="${TELEGRAM_BOUND_CHAT_ID:-${TELEGRAM_CHAT_ID:-}}"
 INSTANCE_LOCK_FILE="${ORCH_INSTANCE_LOCK_FILE:-${BOUND_CHAT_ID:+$HOME/.claude/orchestrator-chat-$BOUND_CHAT_ID.lock}}"
 
@@ -191,11 +202,15 @@ process.stdout.write(JSON.stringify({
       ;;
     codex)
       local relay="${ORCH_TURNEND_RELAY:-$SCRIPT_DIR/orchestrator-turnend-relay.sh}"
-      local notify=""
+      local notify="" effort=""
       if [[ -x "$relay" ]]; then
         printf -v notify ' --config notify=%q' "[\"$relay\"]"
       fi
-      [[ -n "$MODEL" ]] && printf 'exec codex --model %q --dangerously-bypass-approvals-and-sandbox%s' "$MODEL" "$notify" || printf 'exec codex --dangerously-bypass-approvals-and-sandbox%s' "$notify"
+      if [[ -n "$CODEX_REASONING_EFFORT" ]]; then
+        printf -v effort ' --config model_reasoning_effort=%q' "\"$CODEX_REASONING_EFFORT\""
+      fi
+      printf 'exec codex --model %q --dangerously-bypass-approvals-and-sandbox%s%s' \
+        "$CODEX_MODEL" "$effort" "$notify"
       ;;
     *) printf 'unsupported provider: %s\n' "$PROVIDER" >&2; return 2 ;;
   esac

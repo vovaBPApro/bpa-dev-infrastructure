@@ -26,6 +26,7 @@ STATE_DB="${ORCH_STATE_DB:-$REPO_DIR/runtime/state.db}"
 LEASE_TTL_MS="${ORCH_LEASE_TTL_MS:-120000}"
 LEASE_FILE="${ORCH_LEASE_FILE:-$RUNTIME_DIR/orchestrator.lease}"
 HEARTBEAT_FILE="${ORCH_HEARTBEAT_FILE:-$RUNTIME_DIR/orchestrator.heartbeat}"
+CLAUDE_RELAY_SETTINGS="${ORCH_CLAUDE_RELAY_SETTINGS:-$RUNTIME_DIR/claude-relay-settings.json}"
 BOUND_CHAT_ID="${TELEGRAM_BOUND_CHAT_ID:-${TELEGRAM_CHAT_ID:-}}"
 INSTANCE_LOCK_FILE="${ORCH_INSTANCE_LOCK_FILE:-${BOUND_CHAT_ID:+$HOME/.claude/orchestrator-chat-$BOUND_CHAT_ID.lock}}"
 
@@ -91,7 +92,26 @@ stop() {
 build_command() {
   case "$PROVIDER" in
     claude)
-      [[ -n "$MODEL" ]] && printf 'exec claude --model %q --dangerously-skip-permissions' "$MODEL" || printf '%s' 'exec claude --dangerously-skip-permissions'
+      local relay="${ORCH_CLAUDE_STOP_RELAY:-$SCRIPT_DIR/orchestrator-claude-stop-relay.sh}"
+      local settings=""
+      if [[ -x "$relay" ]]; then
+        local settings_tmp
+        mkdir -p "$(dirname "$CLAUDE_RELAY_SETTINGS")"
+        settings_tmp="$(mktemp "$(dirname "$CLAUDE_RELAY_SETTINGS")/.claude-relay-settings.XXXXXX")"
+        "$BUN_BIN" -e '
+const relay = process.argv[1];
+process.stdout.write(JSON.stringify({
+  hooks: {
+    Stop: [{
+      hooks: [{ type: "command", command: relay }],
+    }],
+  },
+}, null, 2) + "\n");
+' "$relay" > "$settings_tmp"
+        mv -f "$settings_tmp" "$CLAUDE_RELAY_SETTINGS"
+        printf -v settings ' --settings %q' "$CLAUDE_RELAY_SETTINGS"
+      fi
+      [[ -n "$MODEL" ]] && printf 'exec claude --model %q --dangerously-skip-permissions%s' "$MODEL" "$settings" || printf 'exec claude --dangerously-skip-permissions%s' "$settings"
       ;;
     codex)
       local relay="${ORCH_TURNEND_RELAY:-$SCRIPT_DIR/orchestrator-turnend-relay.sh}"

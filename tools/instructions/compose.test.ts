@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { admitsAudience, PACK_MARKER_PREFIX } from "./compose.ts";
+import { PERSONA_HEADER, PERSONA_SECTIONS } from "./personas.ts";
 
 const composer = join(import.meta.dir, "compose.ts");
 const checker = join(import.meta.dir, "check.ts");
@@ -23,6 +24,7 @@ function repoWith(spec: {
   tags: string;
   packs: string;
   decisions?: Record<string, string>;
+  personas?: Record<string, string>;
   params?: string;
 }): string {
   const repo = mkdtempSync(join(tmpdir(), "compose-"));
@@ -48,6 +50,13 @@ function repoWith(spec: {
     mkdirSync(decRoot, { recursive: true });
     for (const [name, contents] of Object.entries(spec.decisions)) {
       writeFileSync(join(decRoot, name), contents);
+    }
+  }
+  if (spec.personas) {
+    const personaRoot = join(instanceRoot, "personas");
+    mkdirSync(personaRoot, { recursive: true });
+    for (const [name, contents] of Object.entries(spec.personas)) {
+      writeFileSync(join(personaRoot, name), contents);
     }
   }
   return repo;
@@ -281,6 +290,100 @@ describe("compose.ts", () => {
     expect(result.stderr).toContain("resolves to no doc");
   });
 
+  const PERSONA_BODY =
+    `${PERSONA_HEADER}\n\n# Denys — coder lane, simplicity-first\n\n` +
+    PERSONA_SECTIONS.map((section) => `${section}\n\nThe smallest correct change.\n`).join("\n");
+  const PERSONA_OK =
+    "---\npersona: denys\nrole: coder\nrole-mapping: real\n" +
+    "status: draft-for-discussion\nsummary: Simplicity-first coder.\n---\n\n" +
+    PERSONA_BODY;
+
+  test("without --persona the output is byte-identical whether or not a persona registry exists", () => {
+    const bare = repoWith({ docs: DOCS, tags: TAGS, packs: PACKS });
+    const withRegistry = repoWith({
+      docs: DOCS,
+      tags: TAGS,
+      packs: PACKS,
+      personas: { "denys.md": PERSONA_OK },
+    });
+    const a = runCompose(bare, ["--role", "coder"]);
+    const b = runCompose(withRegistry, ["--role", "coder"]);
+    expect(a.status).toBe(0);
+    expect(b.status).toBe(0);
+    expect(b.stdout).toBe(a.stdout); // byte-identical: no-persona path never changes
+    expect(b.stdout).not.toContain("PERSONA");
+  });
+
+  test("--persona injects the delimited profile section plus a manifest row", () => {
+    const repo = repoWith({
+      docs: DOCS,
+      tags: TAGS,
+      packs: PACKS,
+      personas: { "denys.md": PERSONA_OK },
+    });
+    const result = runCompose(repo, ["--role", "coder", "--persona", "denys"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("## PERSONA (behavior only)");
+    expect(result.stdout).toContain("- denys  sha256:");
+    expect(result.stdout).toContain("(persona)");
+    expect(result.stdout).toMatch(
+      /<!-- persona name=denys sha256:[0-9a-f]{12} source=instance\/personas\/denys\.md -->/,
+    );
+    // Full profile materialized, header line included.
+    expect(result.stdout).toContain(PERSONA_HEADER);
+    expect(result.stdout).toContain("The smallest correct change.");
+    // Baseline floor untouched.
+    expect(result.stdout).toContain("lane-lifecycle  sha256:");
+  });
+
+  test("unknown persona is a hard error, non-zero exit", () => {
+    const repo = repoWith({
+      docs: DOCS,
+      tags: TAGS,
+      packs: PACKS,
+      personas: { "denys.md": PERSONA_OK },
+    });
+    const result = runCompose(repo, ["--role", "coder", "--persona", "nobody"]);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("unknown persona 'nobody'");
+  });
+
+  test("a profile missing the mandatory header is a hard error via --persona", () => {
+    const broken =
+      "---\npersona: denys\nrole: coder\nrole-mapping: real\n" +
+      "status: draft-for-discussion\nsummary: Broken.\n---\n\n# No header first\n\n" +
+      PERSONA_SECTIONS.map((section) => `${section}\n\nText.\n`).join("\n");
+    const repo = repoWith({
+      docs: DOCS,
+      tags: TAGS,
+      packs: PACKS,
+      personas: { "denys.md": broken },
+    });
+    const result = runCompose(repo, ["--role", "coder", "--persona", "denys"]);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("mandatory BEHAVIOR ONLY header");
+  });
+
+  test("--out with a persona writes the profile and records it in manifest.json", () => {
+    const repo = repoWith({
+      docs: DOCS,
+      tags: TAGS,
+      packs: PACKS,
+      personas: { "denys.md": PERSONA_OK },
+    });
+    const out = join(repo, "out");
+    const result = runCompose(repo, ["--role", "coder", "--persona", "denys", "--out", out]);
+    expect(result.status).toBe(0);
+    expect(existsSync(join(out, "context", "persona-denys.md"))).toBe(true);
+    const manifest = JSON.parse(readFileSync(join(out, "manifest.json"), "utf8"));
+    expect(manifest.persona.name).toBe("denys");
+    // Without a persona the manifest has no persona key at all (byte-stability).
+    const outBare = join(repo, "out-bare");
+    runCompose(repo, ["--role", "coder", "--out", outBare]);
+    const bareManifest = JSON.parse(readFileSync(join(outBare, "manifest.json"), "utf8"));
+    expect("persona" in bareManifest).toBe(false);
+  });
+
   test("manager receives orchestrator-audience docs", () => {
     const orchDoc = doc(
       { id: "orch-playbook", layer: "L1", status: "binding", audience: "orchestrator", tags: "[playbook]", summary: "P." },
@@ -403,6 +506,13 @@ describe("compose.ts against the real repo", () => {
       // Record the size for the report.
       console.log(`real-repo pack: role=${role} lines=${lines}`);
     }
+  });
+
+  test("real repo: --persona denys attaches the roster profile", () => {
+    const result = runCompose(repoRoot, ["--role", "coder", "--persona", "denys"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("## PERSONA (behavior only)");
+    expect(result.stdout).toContain(PERSONA_HEADER);
   });
 
   test("real repo check --strict is clean (0 FAIL)", () => {

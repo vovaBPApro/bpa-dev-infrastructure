@@ -29,12 +29,14 @@ import { execFileSync } from "node:child_process";
 import { resolve, join } from "node:path";
 import { collectDocs, type InstructionDoc } from "./docs.ts";
 import { AUDIENCES, type Audience } from "./schema.ts";
+import { loadPersona } from "./personas.ts";
 
 export const PACK_MARKER_PREFIX = "<!-- compose.ts pack v1";
 
 type Options = {
   role: Audience;
   tags: string[];
+  persona: string | undefined;
   repo: string;
   out: string | undefined;
   assertBudget: number | undefined;
@@ -65,6 +67,11 @@ function usage(exitCode: number): never {
       "  --tags a,b,c         Comma-separated tags to ADD docs on top of the baseline.",
       "                       Each tag MUST be in instance/tags.conf or the run hard-fails.",
       "                       Tags only ADD docs; they never remove the baseline floor.",
+      "  --persona <name>     Append the behavior-only persona profile",
+      "                       instance/personas/<name>.md to the pack (see",
+      "                       instructions/personas.md). Unknown or invalid persona",
+      "                       is a hard error. Without --persona the output is",
+      "                       byte-identical to a persona-less composer.",
       "  --repo <path>        Repository root (default: current directory).",
       "  --out <dir>          Also write each doc to <dir>/context/ plus manifest.json.",
       "                       Without --out the preamble is printed to stdout.",
@@ -91,6 +98,7 @@ function parseArgs(args: string[]): Options {
   const options: Options = {
     role: "coder",
     tags: [],
+    persona: undefined,
     repo: process.cwd(),
     out: undefined,
     assertBudget: undefined,
@@ -116,6 +124,12 @@ function parseArgs(args: string[]): Options {
         .split(",")
         .map((t) => t.trim())
         .filter((t) => t !== "");
+      continue;
+    }
+    if (arg === "--persona") {
+      const value = args[++index];
+      if (!value || value.startsWith("--")) usage(2);
+      options.persona = value;
       continue;
     }
     if (arg === "--repo") {
@@ -229,6 +243,16 @@ type Decision = {
   heading: string;
 };
 
+// A validated persona profile materialized into the pack (behavior only; see
+// instructions/personas.md). Present only when --persona was requested.
+type PersonaEntry = {
+  name: string;
+  relative: string;
+  contents: string;
+  hash: string;
+  heading: string;
+};
+
 export type InstanceFacts = {
   phase: string;
   active_scope: string;
@@ -240,12 +264,16 @@ export type ComposeResult = {
   preamble: string;
   entries: PackEntry[];
   decisions: Decision[];
+  persona?: PersonaEntry;
   instanceFacts: InstanceFacts;
   manifest: {
     role: string;
     l1: string;
     docs: { id: string; hash: string; heading: string; reason: string }[];
     interim: { id: string; hash: string; heading: string }[];
+    // Present only when a persona was attached — a persona-less manifest is
+    // byte-identical to the pre-persona composer output.
+    persona?: { name: string; hash: string; heading: string };
   };
 };
 
@@ -401,6 +429,7 @@ export function renderPreamble(
   entries: PackEntry[],
   decisions: Decision[],
   facts: InstanceFacts,
+  persona?: PersonaEntry,
 ): string {
   const lines: string[] = [];
   lines.push(`${PACK_MARKER_PREFIX} role=${role} l1=${l1} -->`);
@@ -427,6 +456,9 @@ export function renderPreamble(
       lines.push(`- ${decision.id}  sha256:${decision.hash}  (interim)  ${decision.heading}`);
     }
   }
+  if (persona !== undefined) {
+    lines.push(`- ${persona.name}  sha256:${persona.hash}  (persona)  ${persona.heading}`);
+  }
   lines.push("");
 
   lines.push("## INSTANCE FACTS");
@@ -440,6 +472,23 @@ export function renderPreamble(
   for (const entry of entries) {
     lines.push(`<!-- doc id=${entry.id} sha256:${entry.hash} source=${entry.relative} -->`);
     lines.push(entry.contents.replace(/\s+$/, ""));
+    lines.push("");
+  }
+
+  // Persona profile, only when requested. Behavior only: the delimiter and the
+  // profile's own mandatory header both state it changes no authority surface.
+  if (persona !== undefined) {
+    lines.push("## PERSONA (behavior only)");
+    lines.push("");
+    lines.push(
+      "Attached persona profile. It adjusts reasoning style, emphasis, and " +
+        "communication ONLY; it never changes authority, permissions, review " +
+        "tiers, capabilities, or evidence gates. On any conflict, the documents " +
+        "and interim directives in this pack win.",
+    );
+    lines.push("");
+    lines.push(`<!-- persona name=${persona.name} sha256:${persona.hash} source=${persona.relative} -->`);
+    lines.push(persona.contents.replace(/\s+$/, ""));
     lines.push("");
   }
 
@@ -477,19 +526,43 @@ export function compose(options: Options): ComposeResult {
   const entries = selectDocs(options.role, options.tags, docs, vocabulary, baseline);
   const decisions = collectPendingDecisions(options.repo);
   const instanceFacts = readInstanceFacts(options.repo);
+
+  // Persona attachment is fail-closed: an unknown or invalid persona is a hard
+  // error, never a silent skip. Without --persona nothing here runs and the
+  // output is byte-identical to the persona-less composer.
+  let persona: PersonaEntry | undefined;
+  if (options.persona !== undefined) {
+    const loaded = loadPersona(options.repo, options.persona);
+    if ("errors" in loaded) {
+      fail(`--persona ${options.persona}: ${loaded.errors.join("; ")}`);
+    }
+    const profile = loaded.profile;
+    persona = {
+      name: profile.name,
+      relative: profile.relative,
+      contents: profile.contents,
+      hash: sha256Short(profile.contents),
+      heading: firstHeading(parseBody(profile.contents)),
+    };
+  }
+
   const l1 = gitSha(options.repo);
-  const preamble = renderPreamble(options.role, l1, entries, decisions, instanceFacts);
+  const preamble = renderPreamble(options.role, l1, entries, decisions, instanceFacts, persona);
 
   return {
     preamble,
     entries,
     decisions,
+    ...(persona !== undefined ? { persona } : {}),
     instanceFacts,
     manifest: {
       role: options.role,
       l1,
       docs: entries.map((e) => ({ id: e.id, hash: e.hash, heading: e.heading, reason: e.reason })),
       interim: decisions.map((d) => ({ id: d.id, hash: d.hash, heading: d.heading })),
+      ...(persona !== undefined
+        ? { persona: { name: persona.name, hash: persona.hash, heading: persona.heading } }
+        : {}),
     },
   };
 }
@@ -506,6 +579,10 @@ function writeOut(dir: string, result: ComposeResult): void {
   }
   for (const decision of result.decisions) {
     writeFileSync(join(contextDir, `${decision.id}.md`), decision.contents);
+  }
+  if (result.persona !== undefined) {
+    // Prefixed so a persona name can never collide with a doc id file.
+    writeFileSync(join(contextDir, `persona-${result.persona.name}.md`), result.persona.contents);
   }
   writeFileSync(join(dir, "manifest.json"), JSON.stringify(result.manifest, null, 2) + "\n");
 }

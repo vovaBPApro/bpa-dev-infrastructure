@@ -1945,9 +1945,14 @@ async function flushBufferedMessagesToTmux(): Promise<number> {
 
 async function launchProvider(
   provider: Provider,
+  boundChatId?: string | null,
 ): Promise<{ ok: boolean; out: string }> {
+  const instanceLock =
+    boundChatId && /^-?\d+$/.test(boundChatId)
+      ? join(homedir(), `.claude/orchestrator-chat-${boundChatId}.lock`)
+      : '';
   const { out, ok } = await sh(
-    `ORCH_PROVIDER='${provider}' ORCH_SESSION='${TMUX_SESSION}' '${LAUNCHER_SCRIPT}' start`,
+    `ORCH_PROVIDER='${provider}' ORCH_SESSION='${TMUX_SESSION}' ORCH_INSTANCE_LOCK_FILE='${instanceLock}' '${LAUNCHER_SCRIPT}' start`,
   );
   return { ok, out };
 }
@@ -1963,7 +1968,9 @@ async function stopOrchestratorSession(): Promise<void> {
   await new Promise((r) => setTimeout(r, 200));
   await sh(`tmux send-keys -t '${TMUX_SESSION}' '/exit' Enter`);
   await new Promise((r) => setTimeout(r, 1000));
-  await sh(`tmux kill-session -t '${TMUX_SESSION}'`);
+  // Use the launcher teardown so the durable lease and live-instance lock are
+  // released even when the provider exits before the tmux kill reaches it.
+  await sh(`'${LAUNCHER_SCRIPT}' stop`);
   persistBinding(null);
 }
 
@@ -1981,7 +1988,7 @@ async function restartOrchestrator(): Promise<{ ok: boolean; out: string }> {
     activeBinding?.provider ?? loadPersistedBinding()?.provider ?? 'codex';
   const chat = notifyChatId();
   if (await tmuxAlive()) await stopOrchestratorSession();
-  const { ok, out } = await launchProvider(provider);
+  const { ok, out } = await launchProvider(provider, chat);
   if (ok && chat) {
     persistBinding(buildBinding(provider, '', chat));
     if (provider === 'codex') await flushBufferedMessagesToTmux();
@@ -2121,7 +2128,7 @@ async function handleSessionCommand(
       return true;
     }
     const provider = providerFromStartCmd(cmd);
-    const { ok, out } = await launchProvider(provider);
+    const { ok, out } = await launchProvider(provider, chat_id);
     if (!ok) {
       await bot.api
         .sendMessage(

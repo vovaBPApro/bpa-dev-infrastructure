@@ -42,6 +42,8 @@ chmod +x "$SHIM/tmux" "$SHIM/systemd-run" "$SHIM/codex" "$SCRATCH/preflight.sh"
 export PATH="$SHIM:$PATH"
 export ORCH_TEST_TMUX_SOCKET="$TMUX_SOCKET" ORCH_TEST_TOKENS="$SCRATCH/provider-tokens"
 export ORCH_CONFIG_FILE="$SCRATCH/no-runtime.env" ORCH_RUNTIME_DIR="$RUNTIME_DIR"
+export ORCH_SINGLETON_LOCK_FILE="$SCRATCH/orchestrator.singleton.lock"
+export ORCH_INSTANCE_LOCK_FILE="$SCRATCH/orchestrator-instance.lock"
 export ORCH_STATE_DB="$STATE_DB" ORCH_LEASE_TTL_MS=1000 ORCH_PROVIDER=codex
 export ORCH_AUTH_PREFLIGHT="$SCRATCH/preflight.sh" ORCH_WATCHDOG_LOG="$LOG_FILE"
 
@@ -67,6 +69,8 @@ first_token="$(token)"
 [[ "$first_token" == 1 ]] || fail "first token was $first_token"
 sleep 0.1
 grep -qx "$first_token" "$ORCH_TEST_TOKENS" || fail 'provider did not receive fencing token'
+grep -Eq '^\{"pid":[1-9][0-9]*,"pid_started_at":"[^"]+"\}$' "$ORCH_INSTANCE_LOCK_FILE" ||
+  fail 'launch did not write a valid live-instance lock'
 
 export ORCH_SESSION=lease-second
 second_output="$SCRATCH/second-launch.out"
@@ -78,7 +82,10 @@ set -e
 grep -Eq '^ERROR orchestrator-lease-held owner=.+:[0-9]+$' "$second_output" || { cat "$second_output" >&2; fail 'live lease did not refuse second launch'; }
 
 tmux -L "$TMUX_SOCKET" kill-session -t lease-first
-sleep 1.2
+# REGRESSION: a provider that exited before stop must not strand its lease.
+assert "$SCRIPT_DIR/launch.sh" stop
+mission_status="$(env INFRA_STATE_DB="$STATE_DB" bun "$SCRIPT_DIR/../core/mission-cli.ts" status)"
+[[ "$mission_status" == *'"leases":[]'* ]] || fail 'stop left a lease after provider exit'
 assert "$SCRIPT_DIR/launch.sh" start
 second_token="$(token)"
 (( second_token > first_token )) || fail 'relaunch token did not increase'

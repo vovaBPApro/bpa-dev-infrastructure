@@ -26,6 +26,8 @@ STATE_DB="${ORCH_STATE_DB:-$REPO_DIR/runtime/state.db}"
 LEASE_TTL_MS="${ORCH_LEASE_TTL_MS:-120000}"
 LEASE_FILE="${ORCH_LEASE_FILE:-$RUNTIME_DIR/orchestrator.lease}"
 HEARTBEAT_FILE="${ORCH_HEARTBEAT_FILE:-$RUNTIME_DIR/orchestrator.heartbeat}"
+BOUND_CHAT_ID="${TELEGRAM_BOUND_CHAT_ID:-${TELEGRAM_CHAT_ID:-}}"
+INSTANCE_LOCK_FILE="${ORCH_INSTANCE_LOCK_FILE:-${BOUND_CHAT_ID:+$HOME/.claude/orchestrator-chat-$BOUND_CHAT_ID.lock}}"
 
 usage() {
   printf '%s\n' 'Usage: launch.sh [start|stop|status|--help]'
@@ -73,14 +75,17 @@ status() {
 stop() {
   if session_exists; then
     tmux kill-session -t "$SESSION"
-    if state_available && lease_state; then
-      mission_cli lease release "$LEASE_OWNER" orchestrator "$LEASE_TOKEN" >/dev/null 2>&1 || true
-    fi
-    rm -f "$LEASE_FILE"
     printf 'stopped: %s\n' "$SESSION"
   else
     printf 'already stopped: %s\n' "$SESSION"
   fi
+  # The provider can exit before the launcher is asked to stop. Its durable
+  # lease must still be released or the next daemon-bound start is fenced out.
+  if state_available && lease_state; then
+    mission_cli lease release "$LEASE_OWNER" orchestrator "$LEASE_TOKEN" >/dev/null 2>&1 || true
+  fi
+  rm -f "$LEASE_FILE"
+  [[ -z "$INSTANCE_LOCK_FILE" ]] || rm -f "$INSTANCE_LOCK_FILE"
 }
 
 build_command() {
@@ -168,6 +173,21 @@ start() {
   fi
   mkdir -p "$(dirname "$HEARTBEAT_FILE")"
   printf '%s\n' "$(date +%s)" > "$HEARTBEAT_FILE"
+  if [[ -n "$INSTANCE_LOCK_FILE" ]]; then
+    local pane_pid lock_tmp
+    pane_pid="$(tmux list-panes -t "$SESSION" -F '#{pane_pid}' | head -n 1)"
+    [[ "$pane_pid" =~ ^[1-9][0-9]*$ ]] || {
+      printf 'ERROR orchestrator-instance-pid-invalid\n' >&2
+      tmux kill-session -t "$SESSION" 2>/dev/null || true
+      release_current_lease
+      return 1
+    }
+    mkdir -p "$(dirname "$INSTANCE_LOCK_FILE")"
+    lock_tmp="$(mktemp "$(dirname "$INSTANCE_LOCK_FILE")/.orchestrator-lock.XXXXXX")"
+    printf '{"pid":%s,"pid_started_at":"%s"}\n' \
+      "$pane_pid" "$(date --iso-8601=seconds)" > "$lock_tmp"
+    mv -f "$lock_tmp" "$INSTANCE_LOCK_FILE"
+  fi
   printf 'started: %s (%s)\n' "$SESSION" "$PROVIDER"
 }
 

@@ -16,15 +16,23 @@ note. Derived-work items live here; Human directives stay in
 
 ## Open
 
-- **W-06 — sandboxed-lane capability contract** (consilium wave 3, terra F7):
-  declare trusted-executor vs sandboxed-lane capabilities; `NO-GO
-  capability=<…>` evidence instead of stalls.
-- **W-08 — memory-sweep defect triage**: first real (non-dry) sweep filed
-  39 rule-stating memory entries without `home:` ids; run the sweep live,
-  then triage rows into instruction homes or drop. (Sweep tool landed
-  05689cdd; daily timer installer exists, not yet installed.)
+- **W-08 — memory-sweep defect triage**: live sweep + triage DONE (proposal at
+  `.cache/infra-lanes/diag/ag-memory-sweep-triage.report.md`: 38 memory entries
+  + 3 oversized `.mdc` rules files). APPLICATION pending — adding `home:` anchors
+  / demoting rules bodies is deliberate judgment work (several entries concern
+  dead bpa-master rails); to be done by the NEW orchestrator post-cutover.
+  (Sweep tool landed 05689cdd; daily timer installer exists, not yet installed.)
 - **W-10 — install memory-sweep daily timer** on the host once W-08 triage
   is done (orchestrator/install-memory-sweep.sh).
+
+### New-infra queue (post-cutover, from the Human 2026-07-30)
+
+Build on the NEW orchestrator, planned WITH the Human there. Verbatim seed:
+`instance/decisions/HR-11736.md`.
+- **NI-1 — team personas**: give "characters"/personas to the whole 10-agent team.
+- **NI-2 — Google Drive debug access**: proper GDrive file access for debugging.
+- **NI-3 — local Whisper voice transcription**: local Whisper model to transcribe
+  Telegram voice messages; needs testing + RAM measurement (251 GB headroom).
 
 ## Deep consilium residuals (2026-07-29)
 

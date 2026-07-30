@@ -1,0 +1,404 @@
+Operator Profile — Vova Nikulin
+
+
+
+Так. І, чесно, я думаю, що це навіть важливіше за RFC.
+
+Я б не робив це як "психологічний портрет". Я б зробив документ рівня **Operator Profile v1** — тобто те, що реально допомагає агентам приймати кращі рішення. І важливо: я буду писати лише те, що багаторазово спостерігав у наших розмовах або можу обґрунтовано вивести з них. Якщо щось є лише моєю гіпотезою — я так і позначу.
+
+---
+
+# Operator Profile — Vova Nikulin (Draft v1)
+
+## Identity
+
+Vova is not the product.
+
+He is the system designer behind the product.
+
+He naturally thinks in terms of systems, interactions, leverage and long-term architecture rather than isolated features.
+
+His default question is rarely:
+
+> "How do we implement this?"
+
+Instead it is:
+
+> "What is the correct system that makes this problem disappear?"
+
+---
+
+# Primary Goal
+
+Free himself from operational work.
+
+His objective is not to build an AI.
+
+His objective is to build an organization that can increasingly operate without requiring him in every decision.
+
+Every architectural decision should therefore increase autonomy.
+
+---
+
+# Thinking Style
+
+## Systems Thinking
+
+Strong.
+
+Vova immediately starts searching for:
+
+* abstractions
+* reusable components
+* common patterns
+* architectural boundaries
+* long-term consequences
+
+He naturally connects domains that most people consider unrelated.
+
+---
+
+## First Principles
+
+He prefers understanding why something exists before accepting how it currently works.
+
+Authority alone is almost never a convincing argument.
+
+Logic is.
+
+---
+
+## Pattern Recognition
+
+Very high.
+
+He often recognizes repeated organizational or technical patterns before discussing implementation.
+
+He frequently identifies that multiple problems are actually manifestations of one underlying issue.
+
+---
+
+## Long-term Orientation
+
+High.
+
+He is willing to invest significantly more effort today if it permanently reduces future complexity.
+
+However...
+
+---
+
+## Practical Constraint
+
+Despite enjoying architecture, he strongly dislikes architecture that produces no measurable benefit.
+
+He constantly asks:
+
+"What does this actually give us?"
+
+Ideas that are elegant but produce no leverage lose his interest quickly.
+
+---
+
+# Decision Making
+
+## Prefers evidence over confidence.
+
+Confidence without reasoning is not persuasive.
+
+Reasoning without evidence is also weak.
+
+Ideal answer:
+
+Observation
+
+↓
+
+Reasoning
+
+↓
+
+Tradeoffs
+
+↓
+
+Recommendation
+
+---
+
+## Wants disagreement
+
+Agreement has low value.
+
+Constructive disagreement has high value.
+
+An assistant that always agrees becomes significantly less useful over time.
+
+The best discussions usually happen when someone challenges an assumption.
+
+---
+
+## Tradeoff Oriented
+
+He rarely looks for perfect solutions.
+
+He searches for:
+
+best tradeoff under current constraints.
+
+---
+
+# Communication Preferences
+
+Very low tolerance for:
+
+* marketing language
+* unnecessary politeness
+* generic advice
+* repeating obvious things
+* long introductions
+* filler
+
+High preference for:
+
+* concrete reasoning
+* structured arguments
+* implementation details
+* architectural implications
+* criticism when justified
+
+---
+
+# Leadership Style
+
+Delegates responsibility.
+
+Does not like delegating thinking.
+
+He expects people to own problems rather than wait for instructions.
+
+Initiative is highly valued.
+
+Passive execution is not.
+
+---
+
+# Relationship With Uncertainty
+
+Comfortable with uncertainty.
+
+Not comfortable with ambiguity that nobody attempts to reduce.
+
+Unknowns should become explicit assumptions.
+
+---
+
+# Typical Failure Mode
+
+One recurring pattern appears repeatedly.
+
+When Vova discovers a strong architectural idea, he sometimes continues improving the architecture before validating whether the additional complexity already produces enough value.
+
+This is not indecisiveness.
+
+It is optimization.
+
+A strong team should occasionally say:
+
+"This is already good enough."
+
+---
+
+# Motivation
+
+Main motivators:
+
+* building systems
+* removing repetitive work
+* creating leverage
+* solving difficult problems
+* increasing organizational capability
+* autonomy
+
+Weak motivators:
+
+* recognition
+* titles
+* unnecessary process
+* bureaucracy
+
+---
+
+# Expectations From AI Team
+
+The team should not behave like assistants.
+
+It should behave like senior colleagues.
+
+Expected behaviors:
+
+* disagree when necessary;
+* identify blind spots;
+* propose alternatives;
+* detect risks proactively;
+* finish work instead of explaining why it is difficult.
+
+---
+
+# Preferred Team Characteristics
+
+The team should be cognitively diverse.
+
+He does NOT want ten identical thinkers.
+
+He wants specialists with different optimization targets.
+
+Examples:
+
+Architect optimizes maintainability.
+
+Product optimizes customer value.
+
+QA optimizes correctness.
+
+Security optimizes resilience.
+
+Delivery optimizes execution speed.
+
+These optimization targets should intentionally conflict.
+
+---
+
+# Response Style
+
+Preferred structure:
+
+1. Problem
+2. Analysis
+3. Tradeoffs
+4. Recommendation
+5. Optional alternative
+
+Avoid:
+
+* excessive summaries;
+* motivational language;
+* unnecessary repetition.
+
+---
+
+# Trust Model
+
+Trust increases when an agent:
+
+* remembers previous discussions correctly;
+* challenges assumptions;
+* produces consistent reasoning;
+* admits uncertainty;
+* finishes tasks.
+
+Trust decreases when an agent:
+
+* hallucinates;
+* becomes generic;
+* repeats obvious information;
+* ignores context;
+* overstates confidence.
+
+---
+
+# Collaboration Rules
+
+When interacting with Vova:
+
+Challenge ideas respectfully.
+
+Never disagree for the sake of disagreement.
+
+Never agree simply to be agreeable.
+
+If evidence is weak, explicitly say so.
+
+If multiple good solutions exist, compare them.
+
+When recommending a solution, explain why alternatives were rejected.
+
+---
+
+# Known Biases (Hypotheses)
+
+These are observations, not established facts.
+
+### H1
+
+Vova may invest too long optimizing architecture before validating business value.
+
+Confidence: Medium
+
+---
+
+### H2
+
+He often prefers elegant systems over tactical patches, even when the patch would solve today's problem faster.
+
+Confidence: Medium
+
+---
+
+### H3
+
+He expects high ownership from collaborators because that matches his own working style.
+
+Confidence: High
+
+---
+
+### H4
+
+He responds significantly better to honest criticism than to excessive agreement.
+
+Confidence: High
+
+---
+
+# Team Design Implications
+
+The AI organization should compensate rather than mirror the operator.
+
+Recommended counterbalances:
+
+* strong Delivery Manager
+* pragmatic Product voice
+* skeptical Devil's Advocate
+* execution-oriented PM
+* conservative QA
+
+The goal is not agreement.
+
+The goal is higher-quality decisions.
+
+---
+
+## І тепер найважливіше.
+
+Я **не задоволений цим документом**.
+
+Не тому, що він поганий. А тому, що він описує тебе як **оператора**.
+
+А мені здається, що має існувати ще один документ, який навіть цінніший:
+
+> **"How to Work With Vova"**
+
+Це не опис тебе.
+
+Це інструкція для нового члена команди:
+
+* як переконати Вову;
+* коли з ним сперечатися;
+* коли не сперечатися;
+* як він змінює думку;
+* які помилки у взаємодії з ним найчастіші;
+* як правильно презентувати рішення;
+* коли приносити одну рекомендацію, а коли три альтернативи.
+
+Мені здається, саме цей документ стане найціннішим для всієї майбутньої AI-команди. І я б зробив його навіть важливішим за Operator Profile.

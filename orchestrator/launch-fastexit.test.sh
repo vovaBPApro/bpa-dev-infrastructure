@@ -61,4 +61,35 @@ status_output="$(env INFRA_STATE_DB="$ORCH_STATE_DB" bun "$SCRIPT_DIR/../core/mi
 [[ "$status_output" != *'"key":"orchestrator"'* ]] ||
   fail "fast-exit provider left a durable lease: $status_output"
 
-printf 'launch fast-exit regression: PASS\n'
+printf 'launch immediate-exit regression: PASS\n'
+
+cat > "$SCRATCH/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+sleep 2.9
+exit 42
+EOF
+chmod +x "$SCRATCH/bin/claude"
+
+export ORCH_SESSION=claude-boundary-exit
+export ORCH_READINESS_WINDOW_MS=3000
+export ORCH_READINESS_POLL_SECONDS=1
+printf 'existing-binding\n' > "$INSTANCE_LOCK"
+
+set +e
+launch_output="$("$SCRIPT_DIR/launch.sh" start 2>&1)"
+launch_rc=$?
+set -e
+[[ "$launch_rc" -ne 0 ]] || fail "boundary-exit provider launch returned rc=0: $launch_output"
+[[ ! -e "$ORCH_RUNTIME_DIR/orchestrator.heartbeat" ]] ||
+  fail 'boundary-exit provider wrote heartbeat'
+[[ "$(cat "$INSTANCE_LOCK")" == existing-binding ]] ||
+  fail 'boundary-exit provider replaced instance binding'
+tmux -L "$TMUX_SOCKET" has-session -t "$ORCH_SESSION" 2>/dev/null &&
+  fail 'boundary-exit provider left a live tmux session'
+[[ ! -e "$ORCH_RUNTIME_DIR/orchestrator.lease" ]] ||
+  fail 'boundary-exit provider left a lease file'
+status_output="$(env INFRA_STATE_DB="$ORCH_STATE_DB" bun "$SCRIPT_DIR/../core/mission-cli.ts" status)"
+[[ "$status_output" != *'"key":"orchestrator"'* ]] ||
+  fail "boundary-exit provider left a durable lease: $status_output"
+
+printf 'launch boundary-exit regression: PASS\n'

@@ -236,6 +236,16 @@ start() {
     fi
     sleep "$READINESS_POLL_SECONDS"
   done
+  if ! session_exists || ! kill -0 "$pane_pid" 2>/dev/null; then
+    tmux kill-session -t "$SESSION" 2>/dev/null || true
+    if state_available; then
+      release_current_lease
+    else
+      rm -f "$LEASE_FILE"
+    fi
+    printf 'ERROR orchestrator-provider-exited provider=%s session=%s\n' "$PROVIDER" "$SESSION" >&2
+    return 1
+  fi
   if state_available && ! mission_cli lease renew "$owner" orchestrator "$token" >/dev/null 2>&1; then
     tmux kill-session -t "$SESSION" 2>/dev/null || true
     release_current_lease

@@ -14,5 +14,11 @@ orchestrator/runtime/
 # survive a fresh clone belong in launch.sh, not here.
 orchestrator/runtime.env
 
+# Harness-created git worktrees for isolated agent lanes. They hold checkouts of
+# this same repo, so leaving them untracked made `git status` dirty for the whole
+# session and buried the real signal — the same failure mode as the repo-root
+# runtime dir above.
+.claude/worktrees/
+
 node_modules/
 *.log

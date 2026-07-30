@@ -76,7 +76,12 @@ export const KNOWN_GAPS: Record<string, string> = {
     'by widening the sweep to .jsonl for quota-latest.jsonl; it was invisible ' +
     'before, not absent. Not fixed here because it belongs to the instructions ' +
     'ledger, not to this lane: it needs a triage-writing path or an explicit ' +
-    'decision that hand-appended rows are the contract.',
+    'decision that hand-appended rows are the contract. THE MISSING WRITER IS A ' +
+    'HUMAN — triage verdicts are appended by the orchestrator during triage, so ' +
+    'unlike the missions ledger and orchestrator-state.json this is very likely ' +
+    'hand-maintained BY DESIGN rather than a writer that failed to migrate. Do ' +
+    'not spend an hour hunting for the lost writer; the open question is only ' +
+    'whether hand-appending should stay the contract or be given a tool.',
 };
 
 export const REGISTRY: Artifact[] = [
@@ -116,16 +121,6 @@ export const REGISTRY: Artifact[] = [
     ],
     readers: ['orchestrator/watchdog.sh'],
     note: 'Turn-end liveness signal. A forged write here hides a dead session.',
-  },
-  {
-    // Pre-existing FAIL at e087bac6, introduced with the lease fence in
-    // e415cdd0 and surfaced from the `mktemp .orchestrator.lease.XXXXXX`
-    // template. Same shape as .nudges.outbox / .morning.outbox below.
-    id: '.orchestrator.lease',
-    kind: 'internal',
-    writers: ['orchestrator/watchdog.sh'],
-    readers: [],
-    note: 'Temp file for the atomic replace of orchestrator.lease on renewal.',
   },
   {
     id: 'inbox.jsonl',

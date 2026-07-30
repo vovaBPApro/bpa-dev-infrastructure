@@ -94,7 +94,9 @@ Validate before launch:
 
 `dispatch-lane.sh` is currently gate-only unless an external launcher is
 supplied. When one is configured, dispatch through the supported tail; the
-script passes the prompt path as the launcher's first argument:
+script runs `exec <launcher> [launcher-args...] "$PROMPT_FILE"`, so the
+launcher receives its own arguments first and the prompt file path as its final
+positional argument:
 
 ```sh
 "$REPO/orchestrator/dispatch-lane.sh" "$PROMPT_FILE" -- /absolute/path/to/launcher --launcher-option

@@ -140,6 +140,17 @@ ffe05409:tools/claude-telegram-daemon/` carries `alarm-router.test.ts`,
 That snapshot's `server.ts` differs from the live copy by only 32 lines. Start
 every restore lane at `ffe05409`; most drop a cost tier.
 
+**But port with judgement, not verbatim.** The old code ran on a different host
+under different conditions, so a faithful restore can import a signal that is
+simply false here. Measured example: live's watchdog took tmux
+`#{session_activity}` as its primary liveness signal for Codex. On this box, tmux
+3.4, that field does **not** advance for a *detached* session — and detached is
+the only shape an orchestrator ever has. On the live orchestrator session it read
+13521s stale while the pane was producing output that same second;
+`#{window_activity}` read 0s. A verbatim restore would therefore have judged every
+healthy session dead and killed it — turning a fidelity win into a
+kill-everything watchdog. Restore the intent, verify the mechanism.
+
 ## What stops the next one
 
 `tools/state-contract/check.ts` fails the build when a durable artifact is read

@@ -50,6 +50,12 @@ COMMON_ENV=(
   "PATH=$BIN:$PATH"
   "ORCH_CONFIG_FILE=$SCRATCH/no-config"
   "ORCH_RUNTIME_DIR=$SCRATCH/runtime"
+  # Neither of these is derived from ORCH_RUNTIME_DIR: the `/done` rest
+  # sentinel sits under the daemon's state dir, and the daemon health probe
+  # defaults to the live daemon's URL. Left ambient, a real /done would make
+  # the watchdog writer exit before it ever touches the outbox.
+  "ORCH_DONE_SENTINEL=$SCRATCH/no-done-sentinel"
+  "ORCH_DAEMON_HEALTH_URL="
   "NUDGE_OUTBOX_FILE=$OUTBOX"
   "OUTBOX_TEST_FILE=$OUTBOX"
   "OUTBOX_TEST_BARRIER=$BARRIER"

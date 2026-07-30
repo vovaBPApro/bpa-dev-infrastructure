@@ -2,7 +2,12 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { LeaseHeldError, StateStore } from "./state";
 
-const renewalTtlMs = 30_000;
+// Default only. A caller that renews on a timer MUST pass its own TTL: a
+// renewal shorter than the interval between renewals guarantees the lease is
+// already dead at the next one. Live consequence when it was fixed at 30s and
+// the sole renewer ticked every 60s — the orchestrator lease expired ~34s after
+// every launch and the watchdog read that self-expiry as a hostile takeover.
+const defaultRenewalTtlMs = 30_000;
 const hiddenMissionStates = new Set(["succeeded"]);
 const hiddenLaneStates = new Set(["succeeded"]);
 
@@ -12,7 +17,7 @@ function databasePath(): string {
 }
 
 function usage(): never {
-  throw new Error("usage: mission create <correlation-id> | mission transition <id> <state> | lane create <mission-id> <lane-id> | lane transition <lane-id> <state> | lease acquire <owner> <key> <ttl-ms> | lease renew <owner> <key> <token> | lease release <owner> <key> <token> | reap | status");
+  throw new Error("usage: mission create <correlation-id> | mission transition <id> <state> | lane create <mission-id> <lane-id> | lane transition <lane-id> <state> | lease acquire <owner> <key> <ttl-ms> | lease renew <owner> <key> <token> [ttl-ms] | lease release <owner> <key> <token> | reap | status");
 }
 
 function required(value: string | undefined): string {
@@ -69,11 +74,12 @@ function run(args: string[]): void {
       console.log(`LEASE key=${key} owner=${owner} token=${lease.fencingToken}`);
       return;
     }
-    if (group === "lease" && action === "renew" && values.length === 3) {
+    if (group === "lease" && action === "renew" && (values.length === 3 || values.length === 4)) {
       const owner = required(values[0]);
       const key = required(values[1]);
       const token = positiveInteger(values[2], "fencing token");
-      store.renewLease(owner, key, token, renewalTtlMs);
+      const ttlMs = values.length === 4 ? positiveInteger(values[3], "lease ttl") : defaultRenewalTtlMs;
+      store.renewLease(owner, key, token, ttlMs);
       console.log(`LEASE key=${key} owner=${owner} token=${token}`);
       return;
     }

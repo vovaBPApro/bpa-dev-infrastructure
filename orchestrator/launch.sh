@@ -376,7 +376,12 @@ start() {
     printf 'SKIP state-db-absent path=%s\n' "$STATE_DB" >&2
     : > "$startup_file"
   fi
-  if state_available && ! mission_cli lease renew "$owner" orchestrator "$token" >/dev/null 2>&1; then
+  # These two renewals are liveness probes on a lease acquired seconds ago, and
+  # they MUST carry the same TTL the acquire used. Without an explicit TTL the
+  # CLI applies its 30s default, so a probe silently SHRANK a 120s lease to 30s
+  # — measured live: session created at 1785424061, lease expires_at
+  # 1785424095167, i.e. dead 34s after start with nothing left to renew it.
+  if state_available && ! mission_cli lease renew "$owner" orchestrator "$token" "$LEASE_TTL_MS" >/dev/null 2>&1; then
     tmux kill-session -t "$SESSION" 2>/dev/null || true
     release_current_lease
     printf 'ERROR orchestrator-lease-renew-failed owner=%s\n' "$owner" >&2
@@ -407,7 +412,7 @@ start() {
     printf 'ERROR orchestrator-provider-exited provider=%s session=%s\n' "$PROVIDER" "$SESSION" >&2
     return 1
   fi
-  if state_available && ! mission_cli lease renew "$owner" orchestrator "$token" >/dev/null 2>&1; then
+  if state_available && ! mission_cli lease renew "$owner" orchestrator "$token" "$LEASE_TTL_MS" >/dev/null 2>&1; then
     tmux kill-session -t "$SESSION" 2>/dev/null || true
     release_current_lease
     printf 'ERROR orchestrator-lease-renew-failed owner=%s\n' "$owner" >&2

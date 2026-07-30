@@ -144,7 +144,10 @@ ChatGPT share link (msg 144/59); Vova will send it as PDF — study on arrival.
   discussion level (consilium composition). Detail: HR-146 §NI-1. EXPANDED by
   the 2026-07-30 evening brainstorm (HR-161: adaptive user model, RPG matrix,
   mutual agent models — explicitly BRAINSTORM not a decision per his msg 167;
-  an RFC + chat history + BPA_ROLES_AND_REVIEW.md are incoming; orchestrator
+  an RFC + chat history + BPA_ROLES_AND_REVIEW.md are incoming (ARRIVED
+  2026-07-30 ~23:15 via old-orch relay: orch-mailbox/vova-inbound-20260730/);
+  HR-185 authorizes implementing the CERTAIN subset (phase-1 static
+  compose-pack personas) ahead of the RFC; orchestrator
   phased opinion given in reply 169: static personas as compose-pack profiles
   first, adaptive modeling as a separate metrics-backed RFC; finalize
   three-way before implementation).

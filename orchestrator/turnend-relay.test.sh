@@ -84,6 +84,27 @@ do
   fi
 done
 
+# ── Failed delivery must not fake a dead orchestrator ──────────────────────
+# The turn really ended, so the heartbeat is owed regardless of whether the sink
+# accepted the payload. This ordering was inverted once: ORCH_RELAY_URL pointed
+# at the daemon's /notify, which answers a Codex notify payload with HTTP 400;
+# `curl --fail` under `set -e` aborted the script before the heartbeat write and
+# the watchdog read the silence as a dead orchestrator.
+STALE_RUNTIME="$SCRATCH/stale"
+mkdir -p "$STALE_RUNTIME"
+printf '1\n' > "$STALE_RUNTIME/orchestrator.heartbeat"
+if ORCH_RUNTIME_DIR="$STALE_RUNTIME" ORCH_RELAY_URL='http://127.0.0.1:1/notify' \
+  "$SCRIPT_DIR/orchestrator-turnend-relay.sh" "$PAYLOAD" 2>/dev/null; then
+  printf 'a rejected delivery must still surface as a non-zero exit\n' >&2
+  exit 1
+fi
+beat="$(cat "$STALE_RUNTIME/orchestrator.heartbeat")"
+[[ "$beat" =~ ^[0-9]+$ ]] || { printf 'heartbeat not numeric: %s\n' "$beat" >&2; exit 1; }
+if (( beat <= 1 )); then
+  printf 'delivery failure suppressed the heartbeat write (watchdog liveness killed)\n' >&2
+  exit 1
+fi
+
 # ── A non-turn-end event must not be normalized into a fake turn ────────────
 WRONG_TYPE='{"type":"agent-turn-started","thread-id":"t","turn-id":"u","last-assistant-message":"x"}'
 if "$SCRIPT_DIR/orchestrator-turnend-relay.sh" "$WRONG_TYPE" 2>/dev/null; then

@@ -156,6 +156,34 @@ test('buildRuntimeStatus reports worktrees separately from running agents', () =
   expect(lines).toContain('running_agents: unknown (process query unavailable)');
 });
 
+test('ACCEPTANCE: teardown/startup overlap never fabricates a zero-width fleet', () => {
+  // Teardown snapshot: open lane worktrees remain while the process census is
+  // unavailable during restart. The process side degrades to unknown.
+  const duringTeardown = buildRuntimeStatus(statusDeps());
+  expect(duringTeardown).toContain('lane_worktrees: 2 (worktree query ok)');
+  expect(duringTeardown).toContain(
+    'running_agents: unknown (process query unavailable)',
+  );
+  expect(duringTeardown).not.toContain('running_agents: 0');
+
+  // Startup snapshot: a process is running while the worktree census times out.
+  // The worktree side must degrade to unknown rather than presenting idle.
+  const duringStartup = buildRuntimeStatus(
+    statusDeps({
+      runCmd: () => ({ out: '', ok: false, timedOut: true }),
+      countRunningAgents: () => ({
+        count: 1,
+        source: 'test process census',
+      }),
+    }),
+  );
+  expect(duringStartup).toContain(
+    'running_agents: 1 (processes: test process census)',
+  );
+  expect(duringStartup).toContain('lane_worktrees: unknown (git timeout)');
+  expect(duringStartup).not.toContain('lane_worktrees: 0');
+});
+
 test('REGRESSION: last relay is labeled as an attempt with unknown acknowledgement', () => {
   const lines = buildRuntimeStatus(
     statusDeps({ lastRelayResult: 'codex:deliver:sent' }),

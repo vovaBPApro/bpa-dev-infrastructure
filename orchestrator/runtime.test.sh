@@ -36,8 +36,7 @@ cat > "$SHIM/systemd-run" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'systemd-run %s\n' "$*" >> "${MOCK_STATE:?}/calls"
-while [[ "$1" == -* ]]; do shift; done
-exec "$@"
+exit 97
 EOF
 cat > "$SHIM/codex" <<'EOF'
 #!/usr/bin/env bash
@@ -48,6 +47,7 @@ chmod +x "$SHIM/tmux" "$SHIM/systemd-run" "$SHIM/codex"
 export PATH="$SHIM:$PATH" MOCK_STATE="$STATE" MOCK_PANE_PID="$$"
 export ORCH_RUNTIME_DIR="$STATE/runtime" ORCH_SESSION="test-orch" ORCH_PROVIDER=codex
 export ORCH_AUTH_PREFLIGHT="$SCRIPT_DIR/preflight-cli-auth.sh"
+unset DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert() { "$@" || fail "$*"; }
@@ -59,6 +59,7 @@ assert_not "$SCRIPT_DIR/launch.sh" status
 [[ ! -e "$STATE/calls" ]] || fail 'help/status had side effects'
 
 assert "$SCRIPT_DIR/launch.sh" start
+[[ "$(calls 'systemd-run')" == 0 ]] || fail 'launch used a systemd-run wrapper'
 assert_not "$SCRIPT_DIR/launch.sh" start
 [[ "$(calls 'tmux new-session')" == 1 ]] || fail 'double launch created another session'
 

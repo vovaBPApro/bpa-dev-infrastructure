@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Launch an isolated tmux-hosted orchestrator.  The systemd scope prevents a
-# Telegram daemon restart from taking the CLI session down with its cgroup.
+# Launch an isolated tmux-hosted orchestrator. A detached tmux server owns the
+# CLI lifecycle independently of the Telegram daemon and needs no user D-Bus.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,6 +26,9 @@ STATE_DB="${ORCH_STATE_DB:-$REPO_DIR/runtime/state.db}"
 LEASE_TTL_MS="${ORCH_LEASE_TTL_MS:-120000}"
 LEASE_FILE="${ORCH_LEASE_FILE:-$RUNTIME_DIR/orchestrator.lease}"
 HEARTBEAT_FILE="${ORCH_HEARTBEAT_FILE:-$RUNTIME_DIR/orchestrator.heartbeat}"
+CLAUDE_RELAY_SETTINGS="${ORCH_CLAUDE_RELAY_SETTINGS:-$RUNTIME_DIR/claude-relay-settings.json}"
+BOUND_CHAT_ID="${TELEGRAM_BOUND_CHAT_ID:-${TELEGRAM_CHAT_ID:-}}"
+INSTANCE_LOCK_FILE="${ORCH_INSTANCE_LOCK_FILE:-${BOUND_CHAT_ID:+$HOME/.claude/orchestrator-chat-$BOUND_CHAT_ID.lock}}"
 
 usage() {
   printf '%s\n' 'Usage: launch.sh [start|stop|status|--help]'
@@ -73,20 +76,42 @@ status() {
 stop() {
   if session_exists; then
     tmux kill-session -t "$SESSION"
-    if state_available && lease_state; then
-      mission_cli lease release "$LEASE_OWNER" orchestrator "$LEASE_TOKEN" >/dev/null 2>&1 || true
-    fi
-    rm -f "$LEASE_FILE"
     printf 'stopped: %s\n' "$SESSION"
   else
     printf 'already stopped: %s\n' "$SESSION"
   fi
+  # The provider can exit before the launcher is asked to stop. Its durable
+  # lease must still be released or the next daemon-bound start is fenced out.
+  if state_available && lease_state; then
+    mission_cli lease release "$LEASE_OWNER" orchestrator "$LEASE_TOKEN" >/dev/null 2>&1 || true
+  fi
+  rm -f "$LEASE_FILE"
+  [[ -z "$INSTANCE_LOCK_FILE" ]] || rm -f "$INSTANCE_LOCK_FILE"
 }
 
 build_command() {
   case "$PROVIDER" in
     claude)
-      [[ -n "$MODEL" ]] && printf 'exec claude --model %q --dangerously-skip-permissions' "$MODEL" || printf '%s' 'exec claude --dangerously-skip-permissions'
+      local relay="${ORCH_CLAUDE_STOP_RELAY:-$SCRIPT_DIR/orchestrator-claude-stop-relay.sh}"
+      local settings=""
+      if [[ -x "$relay" ]]; then
+        local settings_tmp
+        mkdir -p "$(dirname "$CLAUDE_RELAY_SETTINGS")"
+        settings_tmp="$(mktemp "$(dirname "$CLAUDE_RELAY_SETTINGS")/.claude-relay-settings.XXXXXX")"
+        "$BUN_BIN" -e '
+const relay = process.argv[1];
+process.stdout.write(JSON.stringify({
+  hooks: {
+    Stop: [{
+      hooks: [{ type: "command", command: relay }],
+    }],
+  },
+}, null, 2) + "\n");
+' "$relay" > "$settings_tmp"
+        mv -f "$settings_tmp" "$CLAUDE_RELAY_SETTINGS"
+        printf -v settings ' --settings %q' "$CLAUDE_RELAY_SETTINGS"
+      fi
+      [[ -n "$MODEL" ]] && printf 'exec claude --model %q --dangerously-skip-permissions%s' "$MODEL" "$settings" || printf 'exec claude --dangerously-skip-permissions%s' "$settings"
       ;;
     codex)
       local relay="${ORCH_TURNEND_RELAY:-$SCRIPT_DIR/orchestrator-turnend-relay.sh}"
@@ -145,16 +170,14 @@ start() {
     printf 'auth preflight missing or not executable: %s\n' "$AUTH_PREFLIGHT" >&2
     return 2
   fi
-  local command provider_bin singleton_command unit
+  local command provider_bin singleton_command
   command="$(build_command)"
   provider_bin="${command#exec }"; provider_bin="${provider_bin%% *}"
   command -v "$provider_bin" >/dev/null 2>&1 || { printf 'provider not found: %s\n' "$provider_bin" >&2; release_current_lease; return 2; }
   printf -v singleton_command 'flock -n %q sh -c %q' "$SINGLETON_LOCK_FILE" "$command"
-  unit="orch-${SESSION//[^a-zA-Z0-9_.-]/-}"
   # Do not leak the launch mutex into tmux/the provider process.
   exec 9>&-
-  if ! systemd-run --user --scope --quiet --unit="$unit" \
-    tmux new-session -d -s "$SESSION" -c "$WORK_DIR" "$singleton_command"; then
+  if ! tmux new-session -d -s "$SESSION" -c "$WORK_DIR" "$singleton_command"; then
     release_current_lease
     return 1
   fi
@@ -168,6 +191,21 @@ start() {
   fi
   mkdir -p "$(dirname "$HEARTBEAT_FILE")"
   printf '%s\n' "$(date +%s)" > "$HEARTBEAT_FILE"
+  if [[ -n "$INSTANCE_LOCK_FILE" ]]; then
+    local pane_pid lock_tmp
+    pane_pid="$(tmux list-panes -t "$SESSION" -F '#{pane_pid}' | head -n 1)"
+    [[ "$pane_pid" =~ ^[1-9][0-9]*$ ]] || {
+      printf 'ERROR orchestrator-instance-pid-invalid\n' >&2
+      tmux kill-session -t "$SESSION" 2>/dev/null || true
+      release_current_lease
+      return 1
+    }
+    mkdir -p "$(dirname "$INSTANCE_LOCK_FILE")"
+    lock_tmp="$(mktemp "$(dirname "$INSTANCE_LOCK_FILE")/.orchestrator-lock.XXXXXX")"
+    printf '{"pid":%s,"pid_started_at":"%s"}\n' \
+      "$pane_pid" "$(date --iso-8601=seconds)" > "$lock_tmp"
+    mv -f "$lock_tmp" "$INSTANCE_LOCK_FILE"
+  fi
   printf 'started: %s (%s)\n' "$SESSION" "$PROVIDER"
 }
 

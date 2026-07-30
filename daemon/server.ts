@@ -1945,25 +1945,32 @@ async function flushBufferedMessagesToTmux(): Promise<number> {
 
 async function launchProvider(
   provider: Provider,
+  boundChatId?: string | null,
 ): Promise<{ ok: boolean; out: string }> {
+  const instanceLock =
+    boundChatId && /^-?\d+$/.test(boundChatId)
+      ? join(homedir(), `.claude/orchestrator-chat-${boundChatId}.lock`)
+      : '';
   const { out, ok } = await sh(
-    `ORCH_PROVIDER='${provider}' ORCH_SESSION='${TMUX_SESSION}' '${LAUNCHER_SCRIPT}' start`,
+    `ORCH_PROVIDER='${provider}' ORCH_SESSION='${TMUX_SESSION}' ORCH_INSTANCE_LOCK_FILE='${instanceLock}' '${LAUNCHER_SCRIPT}' start`,
   );
   return { ok, out };
 }
 
 async function stopOrchestratorSession(): Promise<void> {
-  if (!(await tmuxAlive())) {
-    persistBinding(null);
-    return;
+  if (await tmuxAlive()) {
+    await sh(`tmux send-keys -t '${TMUX_SESSION}' C-c`);
+    await new Promise((r) => setTimeout(r, 300));
+    await sh(`tmux send-keys -t '${TMUX_SESSION}' C-u`);
+    await new Promise((r) => setTimeout(r, 200));
+    await sh(`tmux send-keys -t '${TMUX_SESSION}' '/exit' Enter`);
+    await new Promise((r) => setTimeout(r, 1000));
   }
-  await sh(`tmux send-keys -t '${TMUX_SESSION}' C-c`);
-  await new Promise((r) => setTimeout(r, 300));
-  await sh(`tmux send-keys -t '${TMUX_SESSION}' C-u`);
-  await new Promise((r) => setTimeout(r, 200));
-  await sh(`tmux send-keys -t '${TMUX_SESSION}' '/exit' Enter`);
-  await new Promise((r) => setTimeout(r, 1000));
-  await sh(`tmux kill-session -t '${TMUX_SESSION}'`);
+  // Use the launcher teardown so the durable lease and live-instance lock are
+  // released even when the provider/tmux died before restart was requested.
+  // launch.sh only releases the recorded owner/token and never steals a live
+  // lease owned by another instance.
+  await sh(`'${LAUNCHER_SCRIPT}' stop`);
   persistBinding(null);
 }
 
@@ -1980,8 +1987,8 @@ async function restartOrchestrator(): Promise<{ ok: boolean; out: string }> {
   const provider =
     activeBinding?.provider ?? loadPersistedBinding()?.provider ?? 'codex';
   const chat = notifyChatId();
-  if (await tmuxAlive()) await stopOrchestratorSession();
-  const { ok, out } = await launchProvider(provider);
+  await stopOrchestratorSession();
+  const { ok, out } = await launchProvider(provider, chat);
   if (ok && chat) {
     persistBinding(buildBinding(provider, '', chat));
     if (provider === 'codex') await flushBufferedMessagesToTmux();
@@ -2121,7 +2128,7 @@ async function handleSessionCommand(
       return true;
     }
     const provider = providerFromStartCmd(cmd);
-    const { ok, out } = await launchProvider(provider);
+    const { ok, out } = await launchProvider(provider, chat_id);
     if (!ok) {
       await bot.api
         .sendMessage(
@@ -2239,8 +2246,8 @@ async function handleSessionCommand(
 
   if (cmd === '/restart') {
     const provider = activeBinding?.provider ?? 'claude';
-    if (alive) await stopOrchestratorSession();
-    const { ok, out } = await launchProvider(provider);
+    await stopOrchestratorSession();
+    const { ok, out } = await launchProvider(provider, chat_id);
     if (!ok) {
       await bot.api.sendMessage(chat_id, `❌ restart failed:\n${out}`);
       return true;

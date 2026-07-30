@@ -21,9 +21,8 @@ exec /usr/bin/tmux -L "${ORCH_TEST_TMUX_SOCKET:?}" "$@"
 EOF
 cat > "$SHIM/systemd-run" <<'EOF'
 #!/usr/bin/env bash
-set -euo pipefail
-while [[ "$1" == -* ]]; do shift; done
-exec "$@"
+printf '%s\n' 'Failed to connect to user scope bus via local transport' >&2
+exit 1
 EOF
 cat > "$SHIM/codex" <<'EOF'
 #!/usr/bin/env bash
@@ -46,9 +45,9 @@ export ORCH_AUTH_PREFLIGHT="$SCRATCH/preflight.sh"
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 export ORCH_SESSION=singleton-first ORCH_RUNTIME_DIR="$SCRATCH/runtime-first"
-"$SCRIPT_DIR/launch.sh" start
+env -u DBUS_SESSION_BUS_ADDRESS -u XDG_RUNTIME_DIR "$SCRIPT_DIR/launch.sh" start
 tmux -L "$TMUX_SOCKET" has-session -t singleton-first ||
-  fail 'first launch did not remain running without a state DB'
+  fail 'headless launch did not spawn a detached tmux session'
 
 export ORCH_SESSION=singleton-second ORCH_RUNTIME_DIR="$SCRATCH/runtime-second"
 set +e

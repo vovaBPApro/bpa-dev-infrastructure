@@ -151,6 +151,27 @@ the only shape an orchestrator ever has. On the live orchestrator session it rea
 healthy session dead and killed it — turning a fidelity win into a
 kill-everything watchdog. Restore the intent, verify the mechanism.
 
+## Superseded refs, deliberately deleted (2026-07-30)
+
+Two unmerged pre-cutover branches were diagnosed hunk-by-hunk against landed
+main (6c551f1a) and ruled SUPERSEDED by the old orchestrator's concur — every
+functional hunk exists in main in a strictly more robust form (per-chat
+instance lock at `daemon/server.ts` `launchProvider(provider, boundChatId)`,
+launcher-based teardown with a `tmuxAlive()` guard, the Codex relay fallback
+in `orchestrator-turnend-relay.sh` plus the heartbeat-before-delivery ordering
+fix, and a real-relay regression test replacing the branch's stub that "locked
+nothing"). Deleted, SHAs recorded here so the ruling stays auditable:
+
+- `ag-orch-relay-bind-fix` = `5783d310` ("[CODER] Repair bound Codex Telegram
+  relay"; parent `71fa9651` "[CODER] Fix headless orchestrator launch")
+- `ag-orch-systemd-headless-launch` = `2386a99e` on origin (byte-identical to
+  `71fa9651`; local copy pointed at `71fa9651` itself)
+
+A Codex orchestrator launched from 6c551f1a comes up with a working
+per-chat-bound relay without either branch — verified before deletion, not
+assumed. If either SHA is ever needed, it remains recoverable from this record
+while the objects survive.
+
 ## What stops the next one
 
 `tools/state-contract/check.ts` fails the build when a durable artifact is read

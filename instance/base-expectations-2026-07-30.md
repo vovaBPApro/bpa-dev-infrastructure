@@ -46,8 +46,15 @@ actual rule, or flagged where it cannot be:
 | Rule 24 — fleet floor/ceiling | `instance/params.yaml: fleet` — recorded and `status: suspended` |
 | "docs/" | does not exist here; `instructions/` is the L1 home |
 
-`instance/decisions/HR-11736.md:16` also carries a stale "Rule 21" reference in
-its editorial prose (not inside Vova's quoted words).
+`instance/decisions/HR-11736.md:16` carried the same stale "Rule 21" in its
+editorial prose (outside Vova's quoted words); corrected to Rule 16 on
+2026-07-30 with the old orchestrator's confirmation. Vova's quoted words in that
+file are untouched.
+
+The old orchestrator has confirmed both the diagnosis and the mapping table
+above: the legacy numbers came from the dead `bpa-master` donor loaded in its
+bootstrap, and this repo's real surface is 17 Hard Rules + 6 Hard Floor lines +
+the Report Contract.
 
 ## The base
 

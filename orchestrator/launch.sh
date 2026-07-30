@@ -29,6 +29,13 @@ READINESS_POLL_SECONDS="${ORCH_READINESS_POLL_SECONDS:-0.15}"
 LEASE_FILE="${ORCH_LEASE_FILE:-$RUNTIME_DIR/orchestrator.lease}"
 HEARTBEAT_FILE="${ORCH_HEARTBEAT_FILE:-$RUNTIME_DIR/orchestrator.heartbeat}"
 CLAUDE_RELAY_SETTINGS="${ORCH_CLAUDE_RELAY_SETTINGS:-$RUNTIME_DIR/claude-relay-settings.json}"
+CLAUDE_MCP_CONFIG="${ORCH_CLAUDE_MCP_CONFIG:-$RUNTIME_DIR/claude-mcp-config.json}"
+# Two-way Telegram channel: the daemon exposes a legacy-SSE MCP endpoint, so the
+# orchestrator can call reply()/status_update() natively instead of depending on
+# the one-way Stop-hook relay. Host-local URL only — never a token.
+DAEMON_PORT="${TELEGRAM_DAEMON_PORT:-4822}"
+CLAUDE_MCP_URL="${ORCH_CLAUDE_MCP_URL:-http://127.0.0.1:$DAEMON_PORT/sse}"
+CLAUDE_MCP_SERVER_NAME="${ORCH_CLAUDE_MCP_SERVER_NAME:-telegram}"
 BOUND_CHAT_ID="${TELEGRAM_BOUND_CHAT_ID:-${TELEGRAM_CHAT_ID:-}}"
 INSTANCE_LOCK_FILE="${ORCH_INSTANCE_LOCK_FILE:-${BOUND_CHAT_ID:+$HOME/.claude/orchestrator-chat-$BOUND_CHAT_ID.lock}}"
 
@@ -119,7 +126,23 @@ process.stdout.write(JSON.stringify({
         mv -f "$settings_tmp" "$CLAUDE_RELAY_SETTINGS"
         printf -v settings ' --settings %q' "$CLAUDE_RELAY_SETTINGS"
       fi
-      [[ -n "$MODEL" ]] && printf 'exec claude --model %q --dangerously-skip-permissions%s' "$MODEL" "$settings" || printf 'exec claude --dangerously-skip-permissions%s' "$settings"
+      local mcp=""
+      if [[ -n "$CLAUDE_MCP_URL" ]]; then
+        local mcp_tmp
+        mkdir -p "$(dirname "$CLAUDE_MCP_CONFIG")"
+        mcp_tmp="$(mktemp "$(dirname "$CLAUDE_MCP_CONFIG")/.claude-mcp-config.XXXXXX")"
+        "$BUN_BIN" -e '
+const [, name, url] = process.argv;
+process.stdout.write(JSON.stringify({
+  mcpServers: {
+    [name]: { type: "sse", url },
+  },
+}, null, 2) + "\n");
+' "$CLAUDE_MCP_SERVER_NAME" "$CLAUDE_MCP_URL" > "$mcp_tmp"
+        mv -f "$mcp_tmp" "$CLAUDE_MCP_CONFIG"
+        printf -v mcp ' --mcp-config %q' "$CLAUDE_MCP_CONFIG"
+      fi
+      [[ -n "$MODEL" ]] && printf 'exec claude --model %q --dangerously-skip-permissions%s%s' "$MODEL" "$settings" "$mcp" || printf 'exec claude --dangerously-skip-permissions%s%s' "$settings" "$mcp"
       ;;
     codex)
       local relay="${ORCH_TURNEND_RELAY:-$SCRIPT_DIR/orchestrator-turnend-relay.sh}"

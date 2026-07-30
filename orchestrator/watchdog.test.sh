@@ -64,8 +64,13 @@ PROGRESS_DB="$SCRATCH/progress.db"
 PROGRESS_OUTBOX="$SCRATCH/progress.outbox"
 progress_mission="$(create_mission "$PROGRESS_DB" winding-down lane-progress)"
 INFRA_STATE_DB="$PROGRESS_DB" bun "$SCRIPT_DIR/../core/mission-cli.ts" mission transition "$progress_mission" running >/dev/null
-sleep 0.01
 INFRA_STATE_DB="$PROGRESS_DB" bun "$SCRIPT_DIR/../core/mission-cli.ts" lane transition lane-progress running >/dev/null
+INFRA_STATE_DB="$PROGRESS_DB" bun -e \
+  'import { Database } from "bun:sqlite";
+   const db = new Database(process.env.INFRA_STATE_DB);
+   const lane = db.query("SELECT updated_at FROM lanes WHERE id = ?").get("lane-progress");
+   db.query("UPDATE missions SET updated_at = ? WHERE id = ?").run(lane.updated_at - 10000, process.argv[1]);' \
+  "$progress_mission"
 progress_updated="$(INFRA_STATE_DB="$PROGRESS_DB" bun "$SCRIPT_DIR/../core/mission-cli.ts" status | bun -e \
   'const s=JSON.parse(await Bun.stdin.text()); console.log(Math.max(s.missions[0].updatedAt, ...s.lanes.map((lane) => lane.updatedAt)));')"
 run_watchdog "$PROGRESS_DB" "$SCRATCH/progress-runtime" "$PROGRESS_OUTBOX" "$(( progress_updated + 100 ))"

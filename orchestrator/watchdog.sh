@@ -134,7 +134,7 @@ check_mission_pressure() {
   while IFS=$'\t' read -r correlation open_lanes active updated_at; do
     [[ -n "$correlation" ]] || continue
     [[ "$open_lanes" =~ ^[0-9]+$ && "$active" =~ ^[0-9]+$ && "$updated_at" =~ ^[0-9]+$ ]] || continue
-    if (( open_lanes > 0 && active == 0 && now - updated_at >= FLEET_IDLE_NUDGE_MS )) && nudge_due mission "$correlation" "$now"; then
+    if (( open_lanes > 0 && now - updated_at >= FLEET_IDLE_NUDGE_MS )) && nudge_due mission "$correlation" "$now"; then
       append_nudge "NUDGE mission=$correlation open_lanes=$open_lanes active=$active idle_ms=$(( now - updated_at ))"
       record_nudge mission "$correlation" "$now"
     fi
@@ -144,7 +144,8 @@ const status = JSON.parse(input);
 for (const mission of status.missions) {
   const lanes = status.lanes.filter((lane) => lane.missionId === mission.id);
   const active = status.leases.filter((lease) => lanes.some((lane) => lane.id === lease.key)).length;
-  console.log([mission.correlationId, lanes.length, active, mission.updatedAt].join("\t"));
+  const updatedAt = Math.max(mission.updatedAt, ...lanes.map((lane) => lane.updatedAt));
+  console.log([mission.correlationId, lanes.length, active, updatedAt].join("\t"));
 }')
 }
 

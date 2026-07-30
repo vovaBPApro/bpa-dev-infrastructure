@@ -101,7 +101,7 @@ describe("collectSessionLoad — composition", () => {
     const text = collectSessionLoad(root).text;
     expect(text).toContain('missions: [{"id":"mission-live","correlationId":"corr-live","state":"running"}]');
     expect(text).toContain('lanes: [{"id":"lane-live","missionId":"mission-live","state":"running"}]');
-    expect(text).toContain('"key":"lane-live","owner":"coder-a","fencingToken":7');
+    expect(text).toContain('leases: [{"key":"lane-live","owner":"coder-a","fencingToken":7');
   });
 
   test("startup verdict is ready on a clean healthy load", () => {

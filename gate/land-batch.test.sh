@@ -114,6 +114,9 @@ skip_output="$fixture_root/skip-review.out"
 "$batch" --branches ag-skip-first,ag-skip-second --reports "$fixture_root/skip-first.md,$fixture_root/skip-second.md" --repo "$repo" --no-push --skip-review "$skip_reason" >"$skip_output" 2>&1
 skip_audit="$repo/orchestrator/runtime/review-skips.log"
 assert_output_has "$skip_output" "BATCH review=SKIPPED reason=$skip_reason"
+assert_output_has "$skip_output" 'BATCH step=review branch=ag-skip-first status=pass'
+assert_output_has "$skip_output" 'BATCH step=review branch=ag-skip-second status=pass'
+assert_output_has "$skip_output" 'review=ag-skip-first:skipped,ag-skip-second:not-required'
 assert grep -Eq "^[-0-9TZ:]+"$'\t'"branch=ag-skip-first"$'\t'"sha=$skip_first_sha"$'\t'"reason=$skip_reason$" "$skip_audit"
 assert grep -Eq "^[-0-9TZ:]+"$'\t'"branch=ag-skip-second"$'\t'"sha=$skip_second_sha"$'\t'"reason=$skip_reason$" "$skip_audit"
 assert test "$(grep -Fc "reason=$skip_reason" "$skip_audit")" -eq 2

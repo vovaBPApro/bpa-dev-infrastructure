@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test';
 import {
+  canSendWatchdogNotice,
   classifyTurn,
   codexPasteMarker,
   decideRelay,
@@ -7,6 +8,7 @@ import {
   evaluateStall,
   getWatchdogTimeoutConfig,
   isPendingReplyTimedOut,
+  markWatchdogNoticeSent,
   parseCodexApprovalPrompt,
   parseCodexDecisionPrompt,
   parseAssistantChunk,
@@ -197,6 +199,73 @@ test('decideRelay delivers final Codex turn after an early auto relay', () => {
     reply_to_message_id: 42,
     outcome: 'delivered_layer1',
   });
+});
+
+test('watchdog notice stays non-terminal until the real turn-end answer is delivered once', () => {
+  const entry = pending(100, { messageId: 42 });
+  let notices = 0;
+  if (isPendingReplyTimedOut(entry.opened_at, 301_000, 300_000)) {
+    expect(canSendWatchdogNotice(entry)).toBe(true);
+    notices++;
+    markWatchdogNoticeSent(entry, 'auto_placeholder');
+  }
+  expect(notices).toBe(1);
+
+  const payload = {
+    provider: 'claude' as const,
+    session_id: 'sess-1',
+    turn_id: 'turn-after-notice',
+    assistant_text: 'real answer',
+    cwd: '/tmp',
+    source: 'claude_stop_hook' as const,
+  };
+  const realAnswer = decideRelay({
+    binding: claudeBinding,
+    configuredBoundChatId: 'chat-1',
+    pending: entry,
+    payload,
+    started_at: 301_001,
+  });
+  expect(realAnswer).toEqual({
+    action: 'deliver',
+    classification: 'solicited',
+    chat_id: 'chat-1',
+    reply_to_message_id: 42,
+    outcome: 'delivered_layer1',
+  });
+
+  const duplicate = decideRelay({
+    binding: claudeBinding,
+    configuredBoundChatId: 'chat-1',
+    pending: entry,
+    payload,
+    started_at: 301_002,
+    existingDelivery: {
+      chat_id: 'chat-1',
+      outcome: 'delivered_layer1',
+      source: 'claude_stop_hook',
+      first_seen_at: 301_001,
+    },
+  });
+  expect(duplicate).toEqual({
+    action: 'dedup',
+    outcome: 'delivered_layer1',
+  });
+});
+
+test('watchdog notice is sent at most once per pending inbound', () => {
+  const entry = pending(100);
+  let notices = 0;
+  for (const now of [301_000, 316_000, 331_000]) {
+    if (
+      isPendingReplyTimedOut(entry.opened_at, now, 300_000) &&
+      canSendWatchdogNotice(entry)
+    ) {
+      notices++;
+      markWatchdogNoticeSent(entry, 'auto_placeholder');
+    }
+  }
+  expect(notices).toBe(1);
 });
 
 test('decideRelay suppresses unsolicited turns and rejects mismatched chat config', () => {

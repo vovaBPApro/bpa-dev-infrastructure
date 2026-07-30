@@ -36,6 +36,23 @@ export type PendingReply = {
   relay_message_id?: number;
 };
 
+export function canSendWatchdogNotice(pending: PendingReply): boolean {
+  return pending.replied_at == null && !pending.fallback_sent;
+}
+
+export function markWatchdogNoticeSent(
+  pending: PendingReply,
+  source: 'auto_relay' | 'auto_placeholder',
+  chunk?: string,
+): void {
+  // A watchdog notice is non-terminal: fallback_sent prevents repeat notices,
+  // while replied_at remains free for the eventual authoritative reply.
+  pending.fallback_sent = true;
+  pending.reply_source = source;
+  if (source === 'auto_relay') pending.last_relayed_chunk = chunk;
+  if (source === 'auto_placeholder') pending.placeholder_sent = true;
+}
+
 export type TurnEndPayload = {
   provider: Provider;
   session_id: string;

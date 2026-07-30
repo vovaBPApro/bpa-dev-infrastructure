@@ -70,6 +70,7 @@ import { drainOutbox, resolveOrchestratorLauncher } from './control';
 import { appendInboxLine } from './inbox-mirror';
 import {
   buildAgentLines,
+  buildDaemonHealth,
   buildRuntimeStatus,
   type ShRunner,
   type JsonReader,
@@ -506,6 +507,7 @@ function shortId(): string {
 type BufferedMsg = { content: string; meta: Record<string, string> };
 const msgBuffer: BufferedMsg[] = [];
 const MAX_BUFFER = 200; // drop oldest when over cap
+const PROCESS_STARTED_AT = new Date().toISOString();
 
 // Auto-reply throttle for "no Claude session" case — one notice per chat per
 // minute. Cleared when a session reconnects so the next disconnect re-notifies
@@ -1999,15 +2001,22 @@ async function handleSessionCommand(
   // Commands that don't need tmux
   if (cmd === '/session' || cmd === '/status') {
     const alive = await tmuxAlive();
-    const daemonHealth = {
-      daemon: 'running',
+    const botProbe = await bot.api
+      .getMe()
+      .then((info) => ({ connected: true as const, username: info.username }))
+      .catch(() => ({ connected: false as const }));
+    const daemonHealth = buildDaemonHealth({
       pid: process.pid,
-      bot: botUsername || 'starting',
-      claude_connected: activeServer !== null,
-      tmux_session: TMUX_SESSION || '(not configured)',
-      tmux_alive: TMUX_SESSION ? alive : 'n/a',
-      buffered_msgs: msgBuffer.length,
-    };
+      bot: botProbe,
+      claudeConnected:
+        activeServer !== null &&
+        activeTransport !== null &&
+        isConnectionAliveForStatus(),
+      tmuxSession: TMUX_SESSION,
+      tmuxAlive: alive,
+      inMemoryBufferCount: msgBuffer.length,
+      processStartedAt: PROCESS_STARTED_AT,
+    });
     const orch = buildOrchRuntimeStatus();
     const agents = await activeAgentLines();
     const msg =
@@ -2412,6 +2421,17 @@ function isConnectionAlive(): boolean {
   const r = t._res;
   if (!r) return true; // unknown state → assume alive (conservative)
   return !r.destroyed && !(r.socket?.destroyed ?? true);
+}
+
+// /status is fail-closed: an SDK transport without an inspectable response is
+// not evidence of a live connection.
+function isConnectionAliveForStatus(): boolean {
+  if (!activeTransport) return false;
+  const transport = activeTransport as unknown as { _res?: ServerResponse };
+  const response = transport._res;
+  return response
+    ? !response.destroyed && !(response.socket?.destroyed ?? true)
+    : false;
 }
 
 async function readRequestBody(req: IncomingMessage): Promise<string> {

@@ -30,3 +30,26 @@ if land_secret_scan "$tmp/repo" ag-secret; then
   exit 1
 fi
 echo "PASS secret scan rejects Google and Slack token shapes"
+
+git -C "$tmp/repo" checkout -q main
+git -C "$tmp/repo" checkout -qb ag-encoded-secret
+encoded_secret="$(printf '%s%s' 'gh' 'p_')$(printf 'f%.0s' {1..36})"
+printf '%s' "$encoded_secret" | base64 > "$tmp/repo/encoded.txt"
+git -C "$tmp/repo" add encoded.txt
+git -C "$tmp/repo" commit -qm encoded-secret-fixture
+if land_secret_scan "$tmp/repo" ag-encoded-secret; then
+  echo "FAIL secret scan accepted a base64-encoded token shape"
+  exit 1
+fi
+echo "PASS secret scan rejects a base64-encoded token shape"
+
+git -C "$tmp/repo" checkout -q main
+git -C "$tmp/repo" checkout -qb ag-harmless-base64
+printf '%s' 'ordinary documentation payload' | base64 > "$tmp/repo/encoded.txt"
+git -C "$tmp/repo" add encoded.txt
+git -C "$tmp/repo" commit -qm harmless-base64-fixture
+if ! land_secret_scan "$tmp/repo" ag-harmless-base64; then
+  echo "FAIL secret scan rejected harmless base64"
+  exit 1
+fi
+echo "PASS secret scan accepts harmless base64"

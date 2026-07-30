@@ -65,6 +65,13 @@ Any hit blocks the commit or landing until removed and reassessed. If
 run, report `secret-scan: NO-GO` (scanner missing) — never write
 `secret-scan: clean` from manual inspection alone.
 
+The landing scan also extracts bounded base64-like runs from each changed
+file's added content, decodes valid candidates, and applies that same signature
+pattern to the decoded text. This is a signature scan, not a generic secret
+detector: secrets split across lines or assembled through string concatenation
+remain outside its boundary. Generic Shannon-entropy scanning is deliberately
+excluded because its gate-level false-positive rate is not acceptable.
+
 ## Reject False Greens
 
 Reject a lock review when it did not execute the lock; did not demonstrate red

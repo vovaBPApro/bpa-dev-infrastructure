@@ -161,9 +161,8 @@ land_record_review_skip() {
 land_secret_scan() {
   local repo="$1" branch="$2" merge_base changed_file scan_result scan_status_line line_count diff_file diff_fd
   local scan_marker scan_show_status scan_grep_status secret_hits=0
-  local secret_pattern
+  local secret_pattern added_diff_file candidate_file decoded_file candidate
   merge_base=$(git -C "$repo" merge-base "$LAND_DEFAULT_BRANCH" "$branch") || return 2
-  # TODO: Signature scanning does not detect base64 or split secret forms; keep this bounded until a reviewed detector exists.
   secret_pattern=$(printf '%s%s%s%s%s%s%s%s%s%s%s' '[0-9]{8,10}:AA|' 'gh' 'p_|github' '_pat|client' '_secret|PRIVATE ' 'KEY|AK' 'IA[0-9A-Z]{16}|' 'sk' '-ant-|' '(^|[^0-9A-Za-z_-])AIza[0-9A-Za-z_-]{35}([^0-9A-Za-z_-]|$)|' '(^|[^0-9A-Za-z])xox[baprs]-[0-9A-Za-z-]{10,}([^0-9A-Za-z]|$)')
   diff_file=$(mktemp "${TMPDIR:-/tmp}/bpa-land-secret-diff.XXXXXX") || return 2
   if ! git -C "$repo" -c core.quotepath=false diff --name-only -z "$merge_base..$branch" > "$diff_file"; then
@@ -199,6 +198,32 @@ land_secret_scan() {
     read -r scan_marker scan_show_status scan_grep_status <<< "$scan_status_line"
     if [ "$scan_marker" != '__LAND_SCAN_STATUS__' ] || [ "$scan_show_status" -ne 0 ] || { [ "$scan_grep_status" -ne 0 ] && [ "$scan_grep_status" -ne 1 ]; }; then echo "LAND secret-scan unreadable file=$changed_file" >&2; exec {diff_fd}<&-; return 2; fi
     if [ "$line_count" -gt 0 ]; then echo "LAND secret-scan match file=$changed_file lines=$line_count" >&2; secret_hits=$((secret_hits + line_count)); fi
+
+    added_diff_file=$(mktemp "${TMPDIR:-/tmp}/bpa-land-secret-added.XXXXXX") || { exec {diff_fd}<&-; return 2; }
+    candidate_file=$(mktemp "${TMPDIR:-/tmp}/bpa-land-secret-candidates.XXXXXX") || { rm -f "$added_diff_file"; exec {diff_fd}<&-; return 2; }
+    decoded_file=$(mktemp "${TMPDIR:-/tmp}/bpa-land-secret-decoded.XXXXXX") || { rm -f "$added_diff_file" "$candidate_file"; exec {diff_fd}<&-; return 2; }
+    if ! git -C "$repo" -c core.quotepath=false diff --no-ext-diff --unified=0 "$merge_base..$branch" -- "$changed_file" > "$added_diff_file"; then
+      rm -f "$added_diff_file" "$candidate_file" "$decoded_file"
+      echo "LAND secret-scan unreadable file=$changed_file" >&2
+      exec {diff_fd}<&-
+      return 2
+    fi
+    # Bound decoding to 1 MiB of added text and the first 64 candidate runs per file.
+    sed -n '/^+++/d; s/^+//p' "$added_diff_file" |
+      head -c 1048576 |
+      LC_ALL=C grep -aoE '[A-Za-z0-9+/=]{16,}' |
+      head -n 64 > "$candidate_file" || true
+    while IFS= read -r candidate; do
+      printf '%s' "$candidate" | base64 -d >> "$decoded_file" 2>/dev/null || true
+      printf '\n' >> "$decoded_file"
+    done < "$candidate_file"
+    scan_result=$(LC_ALL=C grep -aE -c "$secret_pattern" "$decoded_file"; scan_grep_status=$?; printf '__LAND_SCAN_STATUS__ 0 %s\n' "$scan_grep_status")
+    rm -f "$added_diff_file" "$candidate_file" "$decoded_file"
+    scan_status_line=${scan_result##*$'\n'}
+    line_count=${scan_result%$'\n'*}
+    read -r scan_marker scan_show_status scan_grep_status <<< "$scan_status_line"
+    if [ "$scan_marker" != '__LAND_SCAN_STATUS__' ] || [ "$scan_show_status" -ne 0 ] || { [ "$scan_grep_status" -ne 0 ] && [ "$scan_grep_status" -ne 1 ]; }; then echo "LAND secret-scan unreadable file=$changed_file" >&2; exec {diff_fd}<&-; return 2; fi
+    if [ "$line_count" -gt 0 ]; then echo "LAND secret-scan decoded-match file=$changed_file lines=$line_count" >&2; secret_hits=$((secret_hits + line_count)); fi
   done <&"$diff_fd"
   exec {diff_fd}<&-
   [ "$secret_hits" -eq 0 ]

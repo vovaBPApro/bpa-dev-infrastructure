@@ -1,15 +1,53 @@
 name: CI
 
+# Suites are DISCOVERED, never listed. Every job below delegates to
+# .github/scripts/run-suites.sh, which globs the tree, runs what it finds, and
+# fails if a suite exists but produced no result row. The old hand-maintained
+# list of four shell suites left 46 suites — every orchestrator, tools and soak
+# lock in the repo — running only when a human remembered to run them.
+
 on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Nightly full run, 02:17 UTC. Same job set as a PR; the schedule exists so
+    # a suite that only breaks with time/host drift still gets caught, and the
+    # nightly-alarm job below turns a red night into a GitHub issue.
+    - cron: '17 2 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  bun-tests:
+  # Guards the direction the coverage guard cannot: a suite that belongs to no
+  # group would never be discovered by any job, so no job could miss it.
+  suite-partition:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Every tracked suite belongs to a CI group
+        run: .github/scripts/run-suites.sh partition
+
+  repo-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.2.22
+      # tools/state-contract/check.ts matches the daemon-deps requirement, and a
+      # SKIP now fails the job (run-suites.sh skip gate), so this job must be
+      # provisioned like the others. Before the gate existed this checker was
+      # silently skipping here — the exact green-on-SKIP hole the gate closes.
+      - name: Install daemon dependencies
+        working-directory: daemon
+        run: bun install --frozen-lockfile
+      - name: State contract and instruction checkers
+        run: .github/scripts/run-suites.sh checks
+
+  bun-suites:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -19,30 +57,52 @@ jobs:
       - name: Install daemon dependencies
         working-directory: daemon
         run: bun install --frozen-lockfile
-      - name: Run daemon Bun tests
-        run: bun test daemon/*.test.ts
-      - name: Run core Bun tests
-        run: bun test core/*.test.ts
-      - name: Run gate Bun tests
-        run: bun test gate/*.test.ts
-      - name: Run stand Bun tests
-        run: bun test stand/*.test.ts
+      - name: Run every *.test.ts
+        run: .github/scripts/run-suites.sh bun
 
-  shell-tests:
+  shell-suites:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
           bun-version: 1.2.22
-      - name: Run shell tests
-        run: |
-          bootstrap/bootstrap.test.sh
-          hygiene/reap.test.sh
-          workspace/workspace.test.sh
-          if [[ -f gate/land.test.sh ]]; then
-            gate/land.test.sh
-          fi
+      # Installed rather than left to a skip: a dozen orchestrator suites drive
+      # a real tmux server on a private socket, and skipping them would leave
+      # the launch/watchdog/relay locks unexecuted, which is the exact hole this
+      # workflow closes.
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
+      # orchestrator/liveness-alarm.test.sh and friends boot daemon/server.ts,
+      # which imports grammy/zod. Without this they would skip with a named
+      # reason instead of running.
+      - name: Install daemon dependencies
+        working-directory: daemon
+        run: bun install --frozen-lockfile
+      - name: Run every *.test.sh outside soak/
+        run: .github/scripts/run-suites.sh shell
+
+  # Its own job, not its own schedule. Measured at 27s wall clock, so it is not
+  # too slow for every push — but it forks hundreds of processes and probes the
+  # docker daemon, so it gets an isolated runner rather than sharing one with
+  # the hermetic suites. Running it on every PR keeps it a real check; a
+  # nightly-only soak is a check nobody executes.
+  soak-suites:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.2.22
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: Install daemon dependencies
+        working-directory: daemon
+        run: bun install --frozen-lockfile
+      - name: Run every soak/*.test.sh
+        env:
+          SUITE_TIMEOUT: '900'
+        run: .github/scripts/run-suites.sh soak
 
   shellcheck:
     runs-on: ubuntu-latest
@@ -68,4 +128,60 @@ jobs:
             if [[ "$scan_status" -ne 1 ]]; then
               exit "$scan_status"
             fi
+          fi
+
+  # A nightly red run posts nowhere by default — nobody watches the Actions tab
+  # at 02:17. This turns it into one reusable issue a human actually sees.
+  nightly-alarm:
+    runs-on: ubuntu-latest
+    needs:
+      - suite-partition
+      - repo-checks
+      - bun-suites
+      - shell-suites
+      - soak-suites
+      - shellcheck
+      - secret-scan
+    # `cancelled` counts as red too: a nightly job that was cancelled (runner
+    # reclaimed, concurrency kill, manual stop) also left its suites unexecuted,
+    # and an alarm that only fires on `failure` would sleep through that.
+    if: always() && github.event_name == 'schedule' && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Open or update the nightly CI alarm issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        shell: bash
+        run: |
+          title='NIGHTLY CI RED'
+          body="Nightly suite run failed.
+
+          run: $RUN_URL
+          commit: ${GITHUB_SHA}
+
+          Job results:
+          - suite-partition: ${{ needs.suite-partition.result }}
+          - repo-checks:     ${{ needs.repo-checks.result }}
+          - bun-suites:      ${{ needs.bun-suites.result }}
+          - shell-suites:    ${{ needs.shell-suites.result }}
+          - soak-suites:     ${{ needs.soak-suites.result }}
+          - shellcheck:      ${{ needs.shellcheck.result }}
+          - secret-scan:     ${{ needs.secret-scan.result }}
+
+          Per-suite pass/fail/skip counts are in each job's summary."
+          existing="$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number')"
+          if [[ -n "$existing" ]]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            # The label may not exist in a fresh repo; --force makes this
+            # idempotent when it does. If labeling still fails, the alarm must
+            # land anyway — an unlabeled issue beats a lost one.
+            gh label create ci --color B60205 \
+              --description 'continuous integration health' --force || true
+            gh issue create --title "$title" --body "$body" --label ci \
+              || gh issue create --title "$title" --body "$body"
           fi

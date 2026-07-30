@@ -139,8 +139,7 @@ function statusDeps(
     readJson: () => ({ present: false }) as JsonReadResult,
     statePath: '/nope/orchestrator-state.json',
     lockPath: '/nope/orchestrator-chat-1.lock',
-    missionsPath: '/nope/orchestrator-missions.json',
-    parseMission: () => null,
+    mission: { present: false, reason: 'no state DB at /nope/state.db' },
     binding: null,
     lastRelayResult: 'none',
     lastPaneProgressAt: 0,
@@ -215,9 +214,7 @@ test('buildRuntimeStatus: missing state files degrade to honest n/a, no throw', 
   expect(joined).toContain('plan: n/a (no orchestrator-state.json)');
   expect(joined).toContain('context: n/a (no orchestrator-state.json)');
   expect(joined).toContain('vendor_quota: n/a (no orchestrator-state.json)');
-  expect(joined).toContain(
-    'mission: n/a (no orchestrator-missions.json)',
-  );
+  expect(joined).toContain('mission: n/a (no state DB at /nope/state.db)');
   // Lock file absent -> honest "stopped (no lock file)", not a stale running pid.
   expect(joined).toContain('instance: stopped (no lock file)');
 });
@@ -281,6 +278,56 @@ test('REGRESSION: stale state values are labeled with their age', () => {
   );
   expect(lines).toContain('plan: PLAN_OLD (impl) (stale, age 11m)');
   expect(lines).toContain('context: green (stale, age 11m)');
+});
+
+test('buildRuntimeStatus renders the mission read from the durable state DB', () => {
+  const now = Date.parse('2026-07-30T12:00:00.000Z');
+  const fresh = buildRuntimeStatus(
+    statusDeps({
+      now,
+      mission: {
+        present: true,
+        mission: { status: 'running', desc: 'HR-101 re-arm alarm' },
+        updatedAt: now - 60_000,
+      },
+    }),
+  );
+  expect(fresh).toContain('mission: running: HR-101 re-arm alarm');
+
+  const stale = buildRuntimeStatus(
+    statusDeps({
+      now,
+      mission: {
+        present: true,
+        mission: { status: 'running', desc: 'HR-101 re-arm alarm' },
+        updatedAt: now - 47 * 60_000,
+      },
+    }),
+  );
+  expect(stale).toContain(
+    'mission: running: HR-101 re-arm alarm (stale, age 47m)',
+  );
+
+  const none = buildRuntimeStatus(
+    statusDeps({ mission: { present: true, mission: null, updatedAt: null } }),
+  );
+  expect(none).toContain('mission: none');
+});
+
+// REGRESSION: an unreadable mission source must never render as "none". "none"
+// means "the source answered and there is no mission"; a broken source has to
+// say so, or a disarmed alarm looks identical to an idle one.
+test('buildRuntimeStatus distinguishes a broken mission source from no mission', () => {
+  const broken = buildRuntimeStatus(
+    statusDeps({
+      mission: {
+        present: false,
+        reason: 'state DB unreadable: disk I/O error',
+      },
+    }),
+  );
+  expect(broken).toContain('mission: n/a (state DB unreadable: disk I/O error)');
+  expect(broken.join('\n')).not.toContain('mission: none');
 });
 
 // This is the field the /status handler embeds verbatim in the Telegram message

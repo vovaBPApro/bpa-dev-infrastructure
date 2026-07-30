@@ -57,6 +57,18 @@ export ORCH_STATE_DB="$STATE/state.db"
 export ORCH_INSTANCE_LOCK_FILE="$STATE/instance.lock"
 export ORCH_SINGLETON_LOCK_FILE="$STATE/singleton.lock"
 export ORCH_LEASE_FILE="$STATE/orchestrator.lease"
+# Same class of leak, two paths ORCH_RUNTIME_DIR does not cover: the `/done`
+# rest sentinel lives under the DAEMON's state dir (an operator who had typed
+# /done would make the watchdog rest and every relaunch assertion below would
+# read as a pass with nothing happening), and the daemon health probe defaults
+# to the live daemon's URL.
+export ORCH_DONE_SENTINEL="$STATE/no-done-sentinel"
+export ORCH_DAEMON_HEALTH_URL=""
+export ORCH_RESTART_STATE_FILE="$STATE/watchdog-restart-state"
+# This suite asserts the recovery ACTIONS (relaunch, kill-relaunch) back to
+# back, which the production restart cooldown would legitimately suppress on the
+# second one. Throttling is covered by watchdog-supervision.test.sh.
+export ORCH_RESTART_COOLDOWN=0 ORCH_RESTART_COOLDOWN_NIGHT=0
 unset DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }

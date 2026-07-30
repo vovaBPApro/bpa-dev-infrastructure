@@ -615,6 +615,52 @@ test('evaluateStall returns idle when done_cmd reports completed', () => {
   expect(stall.shouldAlert).toBe(true);
 });
 
+// REGRESSION (fail-open alarm): a bound provider session whose tmux is gone is
+// a fault whether or not mission bookkeeping exists. Requiring an active
+// mission on this branch is how the operator got silence from a dead
+// orchestrator — the mission input had no writer, so `mission` was always null
+// and the dead branch was unreachable.
+test('evaluateStall alerts on a dead bound session even with no mission record', () => {
+  const dead = evaluateStall({
+    hasBinding: true,
+    providerKnown: true,
+    mission: null,
+    tmuxAlive: false,
+    now: 1000,
+    thresholdMs: 100,
+  });
+  expect(dead.state).toBe('dead');
+  expect(dead.shouldAlert).toBe(true);
+  expect(dead.reason).toBe('tmux_missing');
+
+  // Repeat ticks must not re-notify.
+  expect(
+    evaluateStall({
+      hasBinding: true,
+      providerKnown: true,
+      mission: null,
+      tmuxAlive: false,
+      now: 2000,
+      thresholdMs: 100,
+      lastAlertKey: dead.alertKey,
+    }).shouldAlert,
+  ).toBe(false);
+
+  // A live session with no mission is legitimate idling, not a stall.
+  const quiet = evaluateStall({
+    hasBinding: true,
+    providerKnown: true,
+    mission: null,
+    tmuxAlive: true,
+    now: 10_000,
+    lastPaneProgressAt: 1,
+    lastGitProgressAt: 1,
+    thresholdMs: 100,
+  });
+  expect(quiet.state).toBe('idle');
+  expect(quiet.reason).toBe('no_active_mission');
+});
+
 test('evaluateStall distinguishes idle, dead, and stall with alert dedupe', () => {
   expect(
     evaluateStall({

@@ -44,8 +44,15 @@ export ORCH_TEST_TMUX_SOCKET="$TMUX_SOCKET" ORCH_TEST_TOKENS="$SCRATCH/provider-
 export ORCH_CONFIG_FILE="$SCRATCH/no-runtime.env" ORCH_RUNTIME_DIR="$RUNTIME_DIR"
 export ORCH_SINGLETON_LOCK_FILE="$SCRATCH/orchestrator.singleton.lock"
 export ORCH_INSTANCE_LOCK_FILE="$SCRATCH/orchestrator-instance.lock"
-export ORCH_STATE_DB="$STATE_DB" ORCH_LEASE_TTL_MS=1000 ORCH_PROVIDER=codex
+# The acquisition TTL must exceed launch.sh's readiness window: renewals now
+# carry this same TTL (they used to be silently inflated to the CLI's 30s
+# default), so a TTL under the readiness wait means the launcher's own lease
+# expires while it is still waiting on the provider.
+export ORCH_STATE_DB="$STATE_DB" ORCH_LEASE_TTL_MS=6000 ORCH_PROVIDER=codex
 export ORCH_AUTH_PREFLIGHT="$SCRATCH/preflight.sh" ORCH_WATCHDOG_LOG="$LOG_FILE"
+# Not covered by ORCH_RUNTIME_DIR: the `/done` rest sentinel lives under the
+# daemon's state dir and the health probe defaults to the live daemon's URL.
+export ORCH_DONE_SENTINEL="$SCRATCH/no-done-sentinel" ORCH_DAEMON_HEALTH_URL=""
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert() { "$@" || fail "$*"; }
@@ -90,8 +97,12 @@ assert "$SCRIPT_DIR/launch.sh" start
 second_token="$(token)"
 (( second_token > first_token )) || fail 'relaunch token did not increase'
 
-# Renew changes the CLI's lease deadline to 30 seconds, so it remains live
-# past the short acquisition TTL used by this fixture.
+# A watchdog tick renews with ORCH_LEASE_TTL_MS, so the lease stays live past
+# the point where the acquisition would otherwise have lapsed. (This used to
+# read "renew changes the deadline to 30 seconds" and depended on that
+# accidental inflation — which is precisely the bug that let the real lease die
+# ~34s after launch. The renewal now carries the configured TTL and nothing
+# else.)
 assert "$SCRIPT_DIR/watchdog.sh"
 sleep 1.2
 third_output="$SCRATCH/third-launch.out"
@@ -101,13 +112,24 @@ grep -q '^ERROR orchestrator-lease-held ' "$third_output" || fail 'watchdog rene
 
 # Release then acquire from a new owner. The stored token is now fenced and a
 # watchdog tick must stop, rather than relaunch, the supervised session.
+#
+# The replacement owner is spelled "<host>:<live pid>", the shape launch.sh
+# actually writes, because the fence now fires only on a holder it can VERIFY is
+# alive. Displacement by a verifiable live owner is the one case that still
+# kills; an expired-but-uncontested lease, a corpse still holding a row, or an
+# unreadable store are all no-kill (watchdog-lease-guard.test.sh). The old
+# fixture used the bare string "replacement-owner", which no longer names
+# anything the watchdog can check.
+sleep 1000 & replacement_pid=$!
 current_owner="$(owner)"
 current_token="$(token)"
 assert env INFRA_STATE_DB="$STATE_DB" bun "$SCRIPT_DIR/../core/mission-cli.ts" lease release "$current_owner" orchestrator "$current_token"
-assert env INFRA_STATE_DB="$STATE_DB" bun "$SCRIPT_DIR/../core/mission-cli.ts" lease acquire replacement-owner orchestrator 30000
+assert env INFRA_STATE_DB="$STATE_DB" bun "$SCRIPT_DIR/../core/mission-cli.ts" lease acquire "$(hostname):$replacement_pid" orchestrator 30000
 export ORCH_SESSION=lease-second
 assert "$SCRIPT_DIR/watchdog.sh"
 assert_not tmux -L "$TMUX_SOCKET" has-session -t lease-second
-grep -q 'WATCHDOG lease-lost' "$LOG_FILE" || fail 'stale token did not log lease-lost'
+grep -q "WATCHDOG lease-displaced .*holder=$(hostname):$replacement_pid" "$LOG_FILE" ||
+  fail 'displacement by a live owner did not log lease-displaced'
+kill "$replacement_pid" 2>/dev/null || true
 
 printf 'runtime wiring tests: PASS\n'

@@ -51,6 +51,19 @@ export ORCH_LEASE_FILE="$RUNTIME_DIR/orchestrator.lease"
 export ORCH_INSTANCE_LOCK_FILE="$SCRATCH/instance.lock"
 export NUDGE_OUTBOX_FILE="$RUNTIME_DIR/nudges.outbox"
 export NUDGE_RATE_FILE="$RUNTIME_DIR/nudge-rate.tsv"
+# The `/done` rest sentinel lives under the DAEMON's state dir, not the runtime
+# dir, so it is not covered by ORCH_RUNTIME_DIR. Left ambient, an operator who
+# had typed /done would make every assertion below vacuous: the tick would rest
+# and take no recovery action at all.
+export ORCH_DONE_SENTINEL="$SCRATCH/no-done-sentinel"
+# Keep the tick off the network: the default probe URL is the live daemon.
+export ORCH_DAEMON_HEALTH_URL=""
+# This suite is about heartbeat semantics, not restart throttling: it drives two
+# recoveries in one run, which the production cooldown would (correctly)
+# suppress. Throttling has its own coverage in watchdog-supervision.test.sh.
+export ORCH_RESTART_COOLDOWN=0
+export ORCH_RESTART_COOLDOWN_NIGHT=0
+export ORCH_RESTART_STATE_FILE="$RUNTIME_DIR/watchdog-restart-state"
 # Standalone-runtime branch: with no relay entry and no ORCH_RELAY_URL the hook
 # delivers nothing and only advances liveness, which is all this suite is about.
 # It also keeps the suite hermetic — a real delivery would POST to whatever

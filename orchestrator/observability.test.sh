@@ -40,7 +40,11 @@ make_open_lane() {
 
 run_watchdog() {
   local db="$1" runtime="$2" outbox="$3"
+  # The rest sentinel lives under the daemon's state dir and the health probe
+  # defaults to the live daemon's URL, so neither is covered by
+  # ORCH_RUNTIME_DIR. Ambient, a real /done would silence every nudge below.
   PATH="$SHIM:$PATH" ORCH_CONFIG_FILE="$SCRATCH/no-config" ORCH_STATE_DB="$db" ORCH_RUNTIME_DIR="$runtime" \
+    ORCH_DONE_SENTINEL="$SCRATCH/no-done-sentinel" ORCH_DAEMON_HEALTH_URL="" \
     ORCH_WATCHDOG_LOG="$runtime/watchdog.log" NUDGE_OUTBOX_FILE="$outbox" ORCH_INSTALL_ROOT="$SCRATCH" \
     FLEET_IDLE_NUDGE_MS=1 FLEET_NUDGE_REPEAT_MS=3600000 DISK_ALERT_PCT=99 ORCH_WATCHDOG_NOW_MS="$(( $(date +%s) * 1000 + 10000 ))" \
     "$SCRIPT_DIR/watchdog.sh"
@@ -77,6 +81,7 @@ DISK_OUTBOX="$SCRATCH/disk.outbox"
 mkdir -p "$DISK_RUNTIME"
 PATH="$SHIM:$PATH" ORCH_CONFIG_FILE="$SCRATCH/no-config" ORCH_STATE_DB="$DISK_DB" ORCH_RUNTIME_DIR="$DISK_RUNTIME" \
   ORCH_WATCHDOG_LOG="$DISK_RUNTIME/watchdog.log" NUDGE_OUTBOX_FILE="$DISK_OUTBOX" ORCH_INSTALL_ROOT="$SCRATCH" \
+  ORCH_DONE_SENTINEL="$SCRATCH/no-done-sentinel" ORCH_DAEMON_HEALTH_URL="" \
   ORCH_TEST_DF_PCT=91 DISK_ALERT_PCT=80 FLEET_NUDGE_REPEAT_MS=3600000 "$SCRIPT_DIR/watchdog.sh"
 contains 'WATCHDOG disk-pressure pct=91' "$DISK_RUNTIME/watchdog.log"
 contains 'NUDGE disk-pressure pct=91' "$DISK_OUTBOX"

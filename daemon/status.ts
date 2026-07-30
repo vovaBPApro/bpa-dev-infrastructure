@@ -225,14 +225,26 @@ function formatIso(input: unknown): string | null {
   return Number.isNaN(d.getTime()) ? input : d.toISOString();
 }
 
+// Mission input for /status. It is passed in already resolved rather than as a
+// path plus a parser, because the mission's home is now the durable state DB
+// (`daemon/mission-source.ts`), not a JSON file. `present: false` carries the
+// reason so a broken mission input is reported instead of being rendered as an
+// honest-looking "none".
+export type MissionStatusInput =
+  | { present: false; reason: string }
+  | {
+      present: true;
+      mission: { status: string; desc: string } | null;
+      updatedAt?: number | null;
+    };
+
 export type RuntimeStatusDeps = {
   canonicalRepo: string;
   runCmd: ShRunner;
   readJson: JsonReader;
   statePath: string;
   lockPath: string | null;
-  missionsPath: string;
-  parseMission: (raw: unknown) => { status: string; desc: string } | null;
+  mission: MissionStatusInput;
   binding: { provider: string; session_id?: string } | null;
   lastRelayResult: string;
   lastPaneProgressAt: number;
@@ -252,8 +264,6 @@ export function buildRuntimeStatus(deps: RuntimeStatusDeps): string[] {
   const lockRead = deps.lockPath
     ? deps.readJson(deps.lockPath)
     : ({ present: false } as JsonReadResult);
-  const missionsRead = deps.readJson(deps.missionsPath);
-
   const stateLabel = 'orchestrator-state.json';
 
   const plan = stateField(stateRead, stateLabel, (s) => {
@@ -340,10 +350,17 @@ export function buildRuntimeStatus(deps: RuntimeStatusDeps): string[] {
     : 'idle/unbound';
 
   const mission = (() => {
-    if (!missionsRead.present) return 'n/a (no orchestrator-missions.json)';
-    const m = deps.parseMission(missionsRead.value);
-    const text = m ? `${m.status}: ${m.desc}` : 'none';
-    const age = stateAge(missionsRead, now);
+    if (!deps.mission.present) return `n/a (${deps.mission.reason})`;
+    const m = deps.mission.mission;
+    if (!m) return 'none';
+    const text = `${m.status}: ${m.desc}`;
+    const updatedAt = deps.mission.updatedAt;
+    const age = stateAge(
+      updatedAt == null
+        ? { present: true, value: null }
+        : { present: true, value: null, modifiedAt: updatedAt },
+      now,
+    );
     return age ? `${text} (${age})` : text;
   })();
 

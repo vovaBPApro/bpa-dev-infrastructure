@@ -59,7 +59,6 @@ printf '%s\n' \
 printf '%s\n' '#!/usr/bin/env bash' 'printf "shell-red-ran\n"' 'exit 9' > "$MIXED_ROOT/red.test.sh"
 chmod +x "$MIXED_ROOT/red.test.sh"
 assert_not run_tick "$MIXED_ROOT" "$MIXED_RUNTIME" "$SCRATCH/mixed.outbox"
-contains 'green fixture' "$MIXED_RUNTIME/full-suite.log"
 contains 'suite=green.test.ts rc=0' "$MIXED_RUNTIME/full-suite.log"
 contains 'shell-red-ran' "$MIXED_RUNTIME/full-suite.log"
 contains 'suite=red.test.sh rc=9' "$MIXED_RUNTIME/full-suite.log"

@@ -33,7 +33,8 @@ land_review_check() {
   local review_artifact review_verdict_value reviewer_value reviewed_sha_value independence_value
   local review_verdict_count reviewer_count reviewed_sha_count independence_count report_sha
   local commit_author_name commit_author_email reviewer_name reviewer_email reviewer_normalized
-  local author_name_normalized author_email_normalized reviewer_name_tokens author_name_tokens nul_status
+  local author_name_normalized author_email_normalized reviewer_name_tokens author_name_tokens
+  local reviewer_name_sorted author_name_sorted nul_status
   export LAND_REVIEW_VERDICT="not-required"
   merge_base=$(git -C "$repo" merge-base "$LAND_DEFAULT_BRANCH" "$branch") || return 2
   if [ ! -r "$policy_file" ]; then
@@ -95,10 +96,13 @@ land_review_check() {
           return 2
         fi
       fi
-      review_verdict_value=$(sed -n 's/^verdict:[[:space:]]*//p' "$review_artifact" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-      reviewer_value=$(sed -n 's/^reviewer:[[:space:]]*//p' "$review_artifact" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-      reviewed_sha_value=$(sed -n 's/^reviewed-sha:[[:space:]]*//p' "$review_artifact" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-      independence_value=$(sed -n 's/^independence:[[:space:]]*//p' "$review_artifact" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+      land_normalize_identity() {
+        tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]][[:space:]]*/ /g'
+      }
+      review_verdict_value=$(sed -n 's/^verdict:[[:space:]]*//p' "$review_artifact" | land_normalize_identity)
+      reviewer_value=$(sed -n 's/^reviewer:[[:space:]]*//p' "$review_artifact" | land_normalize_identity)
+      reviewed_sha_value=$(sed -n 's/^reviewed-sha:[[:space:]]*//p' "$review_artifact" | land_normalize_identity)
+      independence_value=$(sed -n 's/^independence:[[:space:]]*//p' "$review_artifact" | land_normalize_identity)
       review_verdict_count=$(grep -c '^verdict:' "$review_artifact" || true)
       reviewer_count=$(grep -c '^reviewer:' "$review_artifact" || true)
       reviewed_sha_count=$(grep -c '^reviewed-sha:' "$review_artifact" || true)
@@ -113,17 +117,19 @@ land_review_check() {
         echo "ERROR review-required malformed-artifact unsafe-identity-field file=$review_artifact" >&2
         return 2
       fi
-      commit_author_name=$(git -C "$repo" log -1 --format='%an' "$branch" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//') || return 2
-      commit_author_email=$(git -C "$repo" log -1 --format='%ae' "$branch" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//') || return 2
-      reviewer_name=$(printf '%s' "$reviewer_value" | sed -E 's/[[:space:]]*<[^<>]*>[[:space:]]*$//' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-      reviewer_email=$(printf '%s' "$reviewer_value" | sed -nE 's/^.*<([^<>]*)>[[:space:]]*$/\1/p' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+      commit_author_name=$(git -C "$repo" log -1 --format='%an' "$branch" | land_normalize_identity) || return 2
+      commit_author_email=$(git -C "$repo" log -1 --format='%ae' "$branch" | land_normalize_identity) || return 2
+      reviewer_name=$(printf '%s' "$reviewer_value" | sed -E 's/[[:space:]]*<[^<>]*>[[:space:]]*$//' | land_normalize_identity)
+      reviewer_email=$(printf '%s' "$reviewer_value" | sed -nE 's/^.*<([^<>]*)>[[:space:]]*$/\1/p' | land_normalize_identity)
       if [ -z "$reviewer_email" ] && [[ "$reviewer_value" == *'@'* ]]; then reviewer_email="$reviewer_value"; fi
       reviewer_normalized=${reviewer_value,,}
       author_name_normalized=${commit_author_name,,}
       author_email_normalized=${commit_author_email,,}
       reviewer_name_tokens=$(printf '%s' "$reviewer_normalized" | LC_ALL=C sed 's/[^[:alnum:] ]/ /g; s/[[:space:]][[:space:]]*/ /g')
       author_name_tokens=$(printf '%s' "$author_name_normalized" | LC_ALL=C sed 's/[^[:alnum:] ]/ /g; s/[[:space:]][[:space:]]*/ /g')
-      if [ "${reviewer_name,,}" = "$author_name_normalized" ] || [ -n "$reviewer_email" ] && [ "${reviewer_email,,}" = "$author_email_normalized" ] || [[ "$reviewer_normalized" == *"$author_email_normalized"* ]] || { [ -n "$author_name_tokens" ] && [[ " $reviewer_name_tokens " == *" $author_name_tokens "* ]]; }; then
+      reviewer_name_sorted=$(printf '%s\n' "${reviewer_name,,}" | tr ' ' '\n' | LC_ALL=C sort | paste -sd ' ' -)
+      author_name_sorted=$(printf '%s\n' "$author_name_normalized" | tr ' ' '\n' | LC_ALL=C sort | paste -sd ' ' -)
+      if [ "${reviewer_name,,}" = "$author_name_normalized" ] || { [ -n "$author_name_sorted" ] && [ "$reviewer_name_sorted" = "$author_name_sorted" ]; } || { [ -n "$reviewer_email" ] && [ "${reviewer_email,,}" = "$author_email_normalized" ]; } || [[ "$reviewer_normalized" == *"$author_email_normalized"* ]] || { [ -n "$author_name_tokens" ] && [[ " $reviewer_name_tokens " == *" $author_name_tokens "* ]]; }; then
         echo "ERROR review-required self-authored-review file=$review_artifact" >&2
         return 2
       fi

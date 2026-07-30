@@ -39,6 +39,14 @@ make_lane() {
 report() { printf 'commit: %s fixture\nverify: true\nresult: clean\nsecret-scan: clean\nremaining: none\n' "$2" > "$1"; }
 
 make_fixture disjoint
+bare_skip_before=$(git -C "$repo" rev-parse main)
+bare_skip_remote_before=$(git --git-dir="$bare" rev-parse main)
+bare_skip_output="$fixture_root/bare-skip-review.out"
+if "$batch" --branches ag-one,ag-two --reports "$fixture_root/one.md,$fixture_root/two.md" --repo "$repo" --skip-review >"$bare_skip_output" 2>&1; then exit 1; fi
+assert_output_has "$bare_skip_output" 'usage: gate/land-batch.sh'
+assert test "$(git -C "$repo" rev-parse main)" = "$bare_skip_before"
+assert test "$(git --git-dir="$bare" rev-parse main)" = "$bare_skip_remote_before"
+assert test -z "$(git -C "$repo" status --porcelain)"
 batch_whitespace_output="$fixture_root/whitespace-skip-review.out"
 if "$batch" --branches ag-one,ag-two --reports "$fixture_root/one.md,$fixture_root/two.md" --repo "$repo" --skip-review '   ' >"$batch_whitespace_output" 2>&1; then exit 1; fi
 assert_output_has "$batch_whitespace_output" 'usage: gate/land-batch.sh'
@@ -96,6 +104,19 @@ risk_output="$fixture_root/risk.out"
 if "$batch" --branches ag-risk,ag-safe --reports "$fixture_root/risk.md,$fixture_root/safe.md" --repo "$repo" --no-push >"$risk_output" 2>&1; then exit 1; fi
 assert_output_has "$risk_output" 'ERROR review-required missing-artifact'
 assert test "$(git -C "$repo" rev-parse main)" = "$(git -C "$repo" rev-parse origin/main)"
+
+make_fixture skip-review
+skip_first_sha=$(make_lane "$repo" ag-skip-first gate/first.txt first)
+skip_second_sha=$(make_lane "$repo" ag-skip-second instructions/second.md second)
+report "$fixture_root/skip-first.md" "$skip_first_sha"; report "$fixture_root/skip-second.md" "$skip_second_sha"
+skip_reason='fake urgent maintenance'
+skip_output="$fixture_root/skip-review.out"
+"$batch" --branches ag-skip-first,ag-skip-second --reports "$fixture_root/skip-first.md,$fixture_root/skip-second.md" --repo "$repo" --no-push --skip-review "$skip_reason" >"$skip_output" 2>&1
+skip_audit="$repo/orchestrator/runtime/review-skips.log"
+assert_output_has "$skip_output" "BATCH review=SKIPPED reason=$skip_reason"
+assert grep -Eq "^[-0-9TZ:]+"$'\t'"branch=ag-skip-first"$'\t'"sha=$skip_first_sha"$'\t'"reason=$skip_reason$" "$skip_audit"
+assert grep -Eq "^[-0-9TZ:]+"$'\t'"branch=ag-skip-second"$'\t'"sha=$skip_second_sha"$'\t'"reason=$skip_reason$" "$skip_audit"
+assert test "$(grep -Fc "reason=$skip_reason" "$skip_audit")" -eq 2
 
 make_fixture secret
 secret_sha=$(make_lane "$repo" ag-secret secret.txt "$(printf '%s%s' gh p_)$(printf 'x%.0s' $(seq 1 36))")

@@ -235,6 +235,43 @@ land_secret_scan() {
   [ "$secret_hits" -eq 0 ]
 }
 
+# Remote half of the reap: delete refs/heads/<branch> on origin and verify the
+# absence with ls-remote before allowing a pass. Returns 0 only when ls-remote
+# confirms the ref is absent on origin — either deleted now, or it never
+# existed there (reported explicitly). Any push failure, lookup failure, or a
+# ref still present after deletion returns 1 so the caller reports
+# local-only/fail, never pass. allow_delete=false (no-push landings) refuses to
+# delete a present remote ref: origin/main does not contain the merge yet, so
+# deleting the remote lane ref could orphan the lane commits on origin.
+land_remote_reap() {
+  local repo="$1" branch="$2" prefix="$3" allow_delete="$4" listing
+  if ! listing=$(git -C "$repo" ls-remote origin "refs/heads/$branch"); then
+    echo "$prefix reap remote=unverified branch=$branch detail=ls-remote-failed" >&2
+    return 1
+  fi
+  if [ -z "$listing" ]; then
+    echo "$prefix reap remote=absent branch=$branch detail=never-on-origin-nothing-to-delete"
+    return 0
+  fi
+  if [ "$allow_delete" != true ]; then
+    echo "$prefix reap remote=present branch=$branch detail=no-push-remote-delete-refused" >&2
+    return 1
+  fi
+  if ! git -C "$repo" push origin --delete "$branch"; then
+    echo "$prefix reap remote=present branch=$branch detail=push-delete-failed" >&2
+    return 1
+  fi
+  if ! listing=$(git -C "$repo" ls-remote origin "refs/heads/$branch"); then
+    echo "$prefix reap remote=unverified branch=$branch detail=ls-remote-failed" >&2
+    return 1
+  fi
+  if [ -n "$listing" ]; then
+    echo "$prefix reap remote=present branch=$branch detail=still-on-origin-after-delete" >&2
+    return 1
+  fi
+  echo "$prefix reap remote=deleted branch=$branch"
+}
+
 land_payload_guard() {
   local repo="$1" branch="$2" merge_base raw_entry changed_file diff_file diff_fd
   local old_mode new_mode change_status

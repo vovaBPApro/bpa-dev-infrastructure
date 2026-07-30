@@ -58,7 +58,7 @@ land_fail() {
   exit "${2:-1}"
 }
 land_reap_fail() {
-  echo "LAND step=reap status=fail" >&2
+  echo "LAND step=reap status=${1:-fail}" >&2
   if [ "$pushed" = true ]; then
     echo "LAND verdict=landed-reap-failed sha=$merge_sha" >&2
     exit 1
@@ -220,6 +220,13 @@ if [ -n "$worktree" ] && ! git -C "$repo" worktree remove "$worktree"; then
 fi
 if ! git -C "$repo" branch -d "$branch"; then
   land_reap_fail
+fi
+# The reap is only done when origin no longer has the lane ref: delete it and
+# verify absence with ls-remote. A local-only delete must never report pass.
+allow_remote_delete=true
+if [ "$no_push" = true ]; then allow_remote_delete=false; fi
+if ! land_remote_reap "$repo" "$branch" LAND "$allow_remote_delete"; then
+  land_reap_fail local-only
 fi
 land_pass reap
 echo "LAND verdict=landed sha=$merge_sha review=$review_verdict"

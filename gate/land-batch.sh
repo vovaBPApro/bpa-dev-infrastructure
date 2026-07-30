@@ -186,13 +186,23 @@ else
 fi
 
 reap_failed=false
+reap_local_only=false
+allow_remote_delete=true
+if [ "$no_push" = true ]; then allow_remote_delete=false; fi
 for branch in "${branches[@]}" "$integration_branch"; do
   if ! git -C "$repo" branch -d "$branch"; then
     echo "BATCH reap failure branch=$branch" >&2
     reap_failed=true
+    continue
+  fi
+  # The reap is only done when origin no longer has the ref: delete it and
+  # verify absence with ls-remote. A local-only delete must never report pass.
+  if ! land_remote_reap "$repo" "$branch" BATCH "$allow_remote_delete"; then
+    reap_local_only=true
   fi
 done
-if [ "$reap_failed" = true ]; then
+if [ "$reap_failed" = true ] || [ "$reap_local_only" = true ]; then
+  if [ "$reap_failed" = true ]; then echo "BATCH step=reap status=fail" >&2; else echo "BATCH step=reap status=local-only" >&2; fi
   if [ "$no_push" = true ]; then echo "BATCH verdict=landed-local-reap-failed sha=$merge_sha" >&2; else echo "BATCH verdict=landed-reap-failed sha=$merge_sha" >&2; fi
   exit 1
 fi

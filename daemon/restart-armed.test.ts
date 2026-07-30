@@ -107,10 +107,24 @@ esac
   );
   chmodSync(tmux, 0o755);
 
+  // A coder lane (and the nightly sweep) runs inside the orchestrator's own
+  // process tree, so `process.env` carries the LIVE ORCH_*/TELEGRAM_* surface:
+  // ORCH_INSTANCE_LOCK_FILE points at the operator's real instance lock,
+  // ORCH_PROVIDER/ORCH_SESSION at the running session, ORCH_STATE_DB at the
+  // real lease database. Spreading that into the daemon under test made it
+  // compute the live instance lock instead of this scratch one — the assertion
+  // below caught it, but only because the launcher here is a shim. Scrub the
+  // whole prefix and re-add exactly what the test owns.
+  const inherited = Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([key]) => !key.startsWith('ORCH_') && !key.startsWith('TELEGRAM_'),
+    ),
+  ) as Record<string, string>;
+
   const child = Bun.spawn(['bun', join(import.meta.dir, 'server.ts')], {
     cwd: import.meta.dir,
     env: {
-      ...process.env,
+      ...inherited,
       HOME: homeDir,
       PATH: `${binDir}:${process.env.PATH ?? ''}`,
       TELEGRAM_BOT_TOKEN: '123456:test-token',

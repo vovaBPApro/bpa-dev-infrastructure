@@ -55,6 +55,17 @@ orchestrator:
   # model/vendor map here" omission is lifted for these keys only.
   top_provider: claude             # instance/handoff-oldorch-2026-07-30.md §1 (thin Claude top)
   top_posture: thin                # ibid — routing/decisions/Human contact only, minimal Anthropic quota
+  # Pinned in source (orchestrator/launch.sh CLAUDE_MODEL) for the same reason
+  # as fallback_model below: an unpinned claude launch emits no --model and the
+  # top orchestrator silently becomes the account default.
+  top_model: claude-opus-5         # verified runnable on this box 2026-07-30 (`claude --model … -p`)
+  top_model_status: pinned         # orchestrator/model-command.test.sh locks the emitted --model;
+  # ORCH_CLAUDE_MODEL in runtime.env overrides it per host (written by /model).
+  # Escalation tier reachable from Telegram (`/model fable`); switch up for a
+  # hairy incident, back down after. Selectable set: daemon/model-registry.ts.
+  escalation_model: claude-fable-5 # instance/handoff-oldorch-2026-07-30.md §1; verified runnable 2026-07-30
+  lean_model: claude-sonnet-5      # ibid (thin/lean top); verified runnable 2026-07-30
+  model_switch: telegram-/model    # daemon/server.ts handleModelCommand; relaunch-scoped, persisted to runtime.env
   manager_provider: codex          # ibid — Codex managers between orchestrator and workers
   coder_provider: codex            # ibid — Codex coders below the managers
   # Fallback/alternate top orchestrator (instructions/orchestrator-fallback.md,

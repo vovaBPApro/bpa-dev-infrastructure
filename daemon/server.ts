@@ -69,6 +69,15 @@ import {
   sanitizeChatRegion,
 } from './reliability';
 import { drainOutbox, resolveOrchestratorLauncher } from './control';
+import {
+  MODEL_CATALOG,
+  formatModelReport,
+  formatModelSelection,
+  formatUnknownModel,
+  parseLauncherModelState,
+  resolveModelChoice,
+  upsertEnvAssignment,
+} from './model-registry';
 import { appendInboxLine } from './inbox-mirror';
 import {
   buildAgentLines,
@@ -1959,6 +1968,92 @@ async function launchProvider(
   return { ok, out };
 }
 
+// ── /model — orchestrator model tier switch ─────────────────────────────────
+// The agreed posture is a thin Claude top on a lean tier with Fable as an
+// ESCALATION tier: switch up for a hairy incident, back down after. Without a
+// command there is no mechanism to switch at all — and the orchestrator cannot
+// switch itself from inside its own session, so this has to live on the
+// Telegram side. See daemon/model-registry.ts for why the pin is
+// provider-scoped (runtime.env is SOURCED and would otherwise hijack
+// ORCH_PROVIDER, desynchronising binding.provider into decideRelay's
+// provider_mismatch) and why the switch is relaunch-scoped.
+async function handleModelCommand(
+  text: string,
+  chat_id: string,
+): Promise<void> {
+  const arg = text.trim().split(/\s+/).slice(1).join(' ');
+  // launch.sh owns the precedence chain; asking it is the only way to report
+  // the model that would ACTUALLY start rather than a second copy of the
+  // defaults that can drift out of step with it.
+  const { out, ok } = await sh(`'${LAUNCHER_SCRIPT}' model`);
+  const state = ok ? parseLauncherModelState(out) : null;
+  const alive = await tmuxAlive();
+  const liveProvider = alive ? (currentBinding()?.provider ?? null) : null;
+
+  if (!arg) {
+    await sendLong(chat_id, formatModelReport({ liveProvider, state }));
+    return;
+  }
+
+  const choice = resolveModelChoice(arg);
+  if (!choice) {
+    await sendLong(chat_id, formatUnknownModel(arg));
+    return;
+  }
+
+  if (!state) {
+    await bot.api.sendMessage(
+      chat_id,
+      '❌ NO-GO: launch.sh model не відповів, тож шлях до runtime.env ' +
+        'підтвердити нічим. Нічого не записано.',
+    );
+    return;
+  }
+
+  const previousModel =
+    choice.provider === 'codex' ? state.codexModel : state.claudeModel;
+
+  let existing = '';
+  try {
+    existing = readFileSync(state.configFile, 'utf8');
+  } catch {
+    // runtime.env is gitignored host state and legitimately absent on a fresh
+    // box; the first pin creates it.
+  }
+
+  let next: string;
+  try {
+    next = upsertEnvAssignment(existing, choice.envKey, choice.model);
+  } catch (err) {
+    await bot.api.sendMessage(chat_id, `❌ ${(err as Error).message}`);
+    return;
+  }
+
+  try {
+    // Atomic: launch.sh may source this file at any moment, and a half-written
+    // runtime.env is a broken launch, not a partial one.
+    const tmp = `${state.configFile}.model-${randomBytes(6).toString('hex')}`;
+    writeFileSync(tmp, next, { mode: 0o600 });
+    renameSync(tmp, state.configFile);
+  } catch (err) {
+    await bot.api.sendMessage(
+      chat_id,
+      `❌ Не вдалося записати ${state.configFile}: ${(err as Error).message}`,
+    );
+    return;
+  }
+
+  await sendLong(
+    chat_id,
+    formatModelSelection({
+      choice,
+      liveProvider,
+      sessionAlive: alive,
+      previousModel,
+    }),
+  );
+}
+
 async function stopOrchestratorSession(): Promise<void> {
   if (await tmuxAlive()) {
     await sh(`tmux send-keys -t '${TMUX_SESSION}' C-c`);
@@ -2082,11 +2177,28 @@ async function handleSessionCommand(
     return true;
   }
 
+  // /model — report or switch the orchestrator model tier. Bound-chat guarded
+  // like /start_*: it writes host state that decides what the next launch runs.
+  if (cmd === '/model') {
+    if (CONFIGURED_BOUND_CHAT_ID && chat_id !== CONFIGURED_BOUND_CHAT_ID) {
+      await bot.api.sendMessage(
+        chat_id,
+        '❌ This daemon is bound to a different chat.',
+      );
+      return true;
+    }
+    await handleModelCommand(text, chat_id);
+    return true;
+  }
+
   if (cmd === '/help') {
     await bot.api.sendMessage(
       chat_id,
       `Команди керування сесією:\n\n` +
         `/status — daemon + orchestrator статус\n` +
+        `/model — показати модель; /model <${MODEL_CATALOG.map(
+          (c) => c.name,
+        ).join('|')}> — закріпити (діє з наступного старту)\n` +
         `/screen — скріншот поточного терміналу\n` +
         `/compact — надіслати /compact в Claude сесію\n` +
         `/restart — перезапустити Claude в tmux\n` +
@@ -3519,6 +3631,11 @@ void (async () => {
                   command: 'status',
                   description:
                     'Стан: демон живий? tmux сесія? скільки в буфері?',
+                },
+                {
+                  command: 'model',
+                  description:
+                    'Модель оркестратора: показати або закріпити (з наступного старту)',
                 },
                 {
                   command: 'screen',

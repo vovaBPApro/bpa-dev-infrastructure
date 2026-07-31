@@ -7,6 +7,22 @@ must replace fragile human-operated coordination with a reproducible Bun/TypeScr
 orchestrator stack: isolated workspaces, Docker stands, Telegram admin, watchdogs,
 leases, cleanup, restart/recovery, evidence gates, and review routing.
 
+It is a **GENERIC** solution, not a one-off for the current project: a reusable
+simulation of a team of up to ten people, usable to build ANY product. Anything
+that hard-codes this product, this host, or this operator into the mechanism is a
+defect — that is what `instance/` exists to absorb (operator ruling:
+`instance/decisions/HR-309.md`).
+
+It is also **SELF-HOSTING**: the orchestrator is used to build the orchestrator,
+and the infrastructure is used to improve the infrastructure. Every improvement
+therefore compounds — and every drift between the running system and the tracked
+one compounds too.
+
+Consequently the repository must satisfy the **meteorite test**: if this host were
+destroyed right now, the repository alone must bring it back. Every script, unit,
+config, step and decision rule is committed; host-only mechanisms are defects.
+That is Hard Floor 5, and its full rule is `instructions/reproducible-from-git.md`.
+
 The repo is not a dumping ground for the old project. Import old behavior only
 after source inventory, parity notes, and tests show why it belongs here.
 
@@ -41,8 +57,9 @@ Generated from `instructions/*` docs carrying `floor: true` (edit the source doc
 2. Preserve Human words verbatim when they define work; never reword, trim, or "fix" them. (`human-requirements`)
 3. Artifacts beat explanations — finish the file, commit, test, and report the exact SHA. (`lane-lifecycle`)
 4. Zero secrets in git — secret-scan before every commit and record `secret-scan: clean`. (`repository-hygiene`)
-5. Keep the permission surface versioned and fail-closed; ask the Human only for the irreversible set. (`tool-permissions`)
-6. Green is fail-closed — never relabel a failure as a warning; missing evidence is `NO-GO`. (`verification-and-locks`)
+5. Every infrastructure or configuration change lands in git — a destroyed host must be rebuildable from the repository alone. (`reproducible-from-git`)
+6. Keep the permission surface versioned and fail-closed; ask the Human only for the irreversible set. (`tool-permissions`)
+7. Green is fail-closed — never relabel a failure as a warning; missing evidence is `NO-GO`. (`verification-and-locks`)
 <!-- hard-floor:end -->
 
 ## Hard Rules

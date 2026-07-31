@@ -56,21 +56,48 @@ export function parseCodexQuotaJsonl(contents: readonly string[]): Pick<LocalVen
 
 export function parseClaudeQuotaJsonl(contents: readonly string[]): Pick<LocalVendorQuota, 'claudeWeekly' | 'claudeCredits' | 'claudeLogin' | 'claudeReason'> {
   let authFailure = false;
+  let latest: { timestamp: number; quota: Record<string, unknown> } | null = null;
   for (const content of contents) {
     for (const line of content.split('\n')) {
       try {
         const event = JSON.parse(line) as Record<string, any>;
         const error = event?.message?.error ?? event?.error;
         if (typeof error === 'string' && /session expired|re-?login|unauthorized|authentication.+(?:expired|failed)/i.test(error)) authFailure = true;
+        const quota = event?.payload?.vendor_quotas?.claude;
+        const timestamp = Date.parse(event?.timestamp);
+        if (
+          event?.type === 'event_msg' &&
+          event?.payload?.type === 'vendor_quota_snapshot' &&
+          quota &&
+          typeof quota === 'object' &&
+          Number.isFinite(timestamp) &&
+          (!latest || timestamp > latest.timestamp)
+        ) {
+          latest = { timestamp, quota };
+        }
       } catch { /* ignore malformed records */ }
     }
   }
-  const reason = 'Claude local JSONL does not expose subscription weekly usage or credits';
+  const weekly = latest?.quota.weeklyUsedPercent;
+  const credits = latest?.quota.creditsLabel;
+  const loginState = latest?.quota.loginState;
+  if (loginState === 'relogin-needed') authFailure = true;
+  const noSnapshot = 'no local Claude vendor_quota_snapshot event';
   return {
-    claudeWeekly: unknown(reason),
-    claudeCredits: null,
-    claudeLogin: authFailure ? 'relogin-needed' : 'unknown',
-    claudeReason: authFailure ? 'local Claude JSONL contains an authentication-expired error' : reason,
+    claudeWeekly: typeof weekly === 'number'
+      ? { state: 'known', usedPercent: weekly, resetsAt: null }
+      : unknown(latest ? 'weekly usage absent from latest local Claude snapshot' : noSnapshot),
+    claudeCredits: typeof credits === 'string' && credits.trim() ? credits.trim() : null,
+    claudeLogin: authFailure
+      ? 'relogin-needed'
+      : loginState === 'authenticated'
+        ? 'authenticated'
+        : 'unknown',
+    claudeReason: authFailure
+      ? 'local Claude JSONL contains an authentication-expired reading'
+      : latest
+        ? 'latest local Claude snapshot reports authenticated'
+        : noSnapshot,
   };
 }
 
@@ -87,11 +114,18 @@ function recentJsonl(root: string, cutoff: number, out: string[], depth = 0): vo
   }
 }
 
+function recentFile(path: string, cutoff: number, out: string[]): void {
+  try {
+    if (statSync(path).mtimeMs >= cutoff) out.push(readFileSync(path, 'utf8'));
+  } catch { /* optional local state, or raced with replacement */ }
+}
+
 export function readLocalVendorQuota(home: string, now = Date.now()): LocalVendorQuota {
   const codex: string[] = [];
   const claude: string[] = [];
   const cutoff = now - 14 * 24 * 60 * 60 * 1000;
   recentJsonl(join(home, '.codex', 'sessions'), cutoff, codex);
+  recentFile(join(home, '.codex', 'quota-latest.jsonl'), cutoff, claude);
   recentJsonl(join(home, '.claude', 'projects'), cutoff, claude);
   return { ...parseCodexQuotaJsonl(codex), ...parseClaudeQuotaJsonl(claude) };
 }

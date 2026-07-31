@@ -1,5 +1,8 @@
 import { expect, test } from 'bun:test';
-import { formatLocalVendorQuota, parseClaudeQuotaJsonl, parseCodexQuotaJsonl } from './vendor-quota-local';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { formatLocalVendorQuota, parseClaudeQuotaJsonl, parseCodexQuotaJsonl, readLocalVendorQuota } from './vendor-quota-local';
 
 const event = (timestamp: string, rate_limits: unknown) => JSON.stringify({ type: 'event_msg', timestamp, payload: { type: 'token_count', rate_limits } });
 
@@ -22,15 +25,58 @@ test('a genuinely absent local window is unknown with a reason, never guessed', 
   expect(parsed.codex5h).toEqual({ state: 'unknown', reason: '5h window absent from latest local Codex event' });
 });
 
-test('Claude local JSONL reports re-login warning but does not invent weekly quota or credits', () => {
-  const claude = parseClaudeQuotaJsonl([JSON.stringify({ type: 'assistant', message: { error: 'Session expired; re-login required' } })]);
+test('REGRESSION ML-6: local snapshot exposes Claude weekly/credits and re-login warning', () => {
+  const snapshot = JSON.stringify({
+    type: 'event_msg',
+    timestamp: '2026-07-31T12:00:00Z',
+    payload: {
+      type: 'vendor_quota_snapshot',
+      vendor_quotas: {
+        claude: {
+          weeklyUsedPercent: 61,
+          creditsLabel: '$17.00',
+          loginState: 'relogin-needed',
+        },
+      },
+    },
+  });
+  const claude = parseClaudeQuotaJsonl([snapshot]);
   expect(claude.claudeLogin).toBe('relogin-needed');
-  expect(claude.claudeWeekly.state).toBe('unknown');
-  expect(claude.claudeCredits).toBeNull();
+  expect(claude.claudeWeekly).toEqual({ state: 'known', usedPercent: 61, resetsAt: null });
+  expect(claude.claudeCredits).toBe('$17.00');
   const lines = formatLocalVendorQuota({
     ...parseCodexQuotaJsonl([]),
     ...claude,
   });
   expect(lines.join('\n')).toContain('сесія протермінована — треба перелогінитись');
-  expect(lines.join('\n')).toContain('weekly=unknown (Claude local JSONL does not expose subscription weekly usage or credits)');
+  expect(lines.join('\n')).toContain('weekly=61% used, credits=$17.00');
+});
+
+test('Claude fields are unknown with a concrete reason when no local snapshot exists', () => {
+  const claude = parseClaudeQuotaJsonl([]);
+  expect(claude.claudeWeekly).toEqual({ state: 'unknown', reason: 'no local Claude vendor_quota_snapshot event' });
+  expect(claude.claudeCredits).toBeNull();
+  expect(claude.claudeLogin).toBe('unknown');
+});
+
+test('the reader consumes only the local quota snapshot path, with no browser or API dependency', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ml6-local-quota-'));
+  try {
+    mkdirSync(join(home, '.codex'), { recursive: true });
+    writeFileSync(join(home, '.codex', 'quota-latest.jsonl'), JSON.stringify({
+      type: 'event_msg',
+      timestamp: new Date().toISOString(),
+      payload: {
+        type: 'vendor_quota_snapshot',
+        vendor_quotas: { claude: { weeklyUsedPercent: 44, creditsLabel: '12 left', loginState: 'authenticated' } },
+      },
+    }));
+
+    const quota = readLocalVendorQuota(home);
+    expect(quota.claudeWeekly).toEqual({ state: 'known', usedPercent: 44, resetsAt: null });
+    expect(quota.claudeCredits).toBe('12 left');
+    expect(quota.claudeLogin).toBe('authenticated');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });

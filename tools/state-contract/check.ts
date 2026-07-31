@@ -133,6 +133,44 @@ export const REGISTRY: Artifact[] = [
       'instructions ledger ages it.',
   },
   {
+    id: 'orchestrator.liveness',
+    kind: 'internal',
+    writers: [
+      'orchestrator/launch.sh',
+      'orchestrator/orchestrator-liveness-pulse.sh',
+    ],
+    readers: ['orchestrator/watchdog.sh'],
+    note:
+      'Positive in-turn liveness stamp. launch.sh seeds it at start; the ' +
+      'in-pane pulse loop re-stamps it while the provider PID exists and ' +
+      'stops when it dies. The watchdog kills on a stale heartbeat ONLY when ' +
+      'this stamp is present AND stale AND the provider recorded in the ' +
+      'VAR.identity sidecar is verifiably gone; fresh means alive, absent ' +
+      'means ambiguity (alert, never kill). A forged writer here would hide ' +
+      'a dead session exactly like a forged heartbeat.',
+  },
+  {
+    // Entirely-derived basename, same normalization as VAR.lock below: every
+    // reference is spelled `"$LIVENESS_FILE.identity"` (never a second knob),
+    // so the sweep sees `VAR.identity`.
+    id: 'VAR.identity',
+    kind: 'internal',
+    writers: [
+      'orchestrator/launch.sh',
+      'orchestrator/orchestrator-liveness-pulse.sh',
+    ],
+    readers: ['orchestrator/watchdog.sh'],
+    note:
+      'Provider-identity sidecar of orchestrator.liveness: pid= plus the ' +
+      'reuse-safe starttime= (/proc/<pid>/stat field 22) of the provider the ' +
+      'stamp vouches for, written by launch.sh at start and by the pulse ' +
+      'loop at its startup. The stale-pulse kill fires ONLY when this ' +
+      'identity is verifiably gone (pid absent, or occupied by a different ' +
+      'starttime); a live match means the pulse helper died alone — degraded ' +
+      'liveness, alert-only; unrecorded or unverifiable is ambiguity, never ' +
+      'a kill.',
+  },
+  {
     id: 'orchestrator.singleton.lock',
     kind: 'internal',
     writers: ['orchestrator/launch.sh'],
@@ -285,6 +323,32 @@ export const REGISTRY: Artifact[] = [
       'trusted before starting a pane nobody can answer a trust prompt in.',
   },
   {
+    id: 'auth.json',
+    kind: 'external',
+    owner: 'Codex CLI',
+    writers: [],
+    readers: ['orchestrator/preflight-cli-auth.sh'],
+    note:
+      'Codex CLI\'s credential file (~/.codex/auth.json), written by `codex ' +
+      'login`. The auth preflight only READS it: it refuses launch when an ' +
+      'OPENAI_API_KEY is embedded there (metered billing) and also requires ' +
+      'affirmative ChatGPT login tokens — missing or unverifiable is a ' +
+      'refusal, never a pass. This repo must never write it.',
+  },
+  {
+    id: '.credentials.json',
+    kind: 'external',
+    owner: 'Claude Code CLI',
+    writers: [],
+    readers: ['orchestrator/preflight-cli-auth.sh'],
+    note:
+      'Claude Code\'s credential file (~/.claude/.credentials.json), written ' +
+      'by the CLI\'s /login. The auth preflight only READS it, structurally, ' +
+      'for affirmative subscription OAuth evidence (claudeAiOauth.accessToken); ' +
+      'missing or unverifiable is a refusal. This repo must never write it, ' +
+      'and nothing from it may ever be printed.',
+  },
+  {
     id: 'package.json',
     kind: 'repo-file',
     trackedPath: 'daemon/package.json',
@@ -302,7 +366,8 @@ export const REGISTRY: Artifact[] = [
 // hid three durable artifacts — inbox.jsonl, triage.jsonl and quota-latest.jsonl
 // — one of which (triage.jsonl) is a live instance of the very defect this
 // checker exists to catch.
-const EXT = 'jsonl|json|db|lock|lease|heartbeat|outbox|watermark|tsv|pid';
+const EXT =
+  'jsonl|json|db|lock|lease|heartbeat|liveness|identity|outbox|watermark|tsv|pid';
 const WITH_EXT = new RegExp(
   `['"\`/](\\.?[A-Za-z0-9_.-]+\\.(?:${EXT}))(?![A-Za-z0-9])`,
   'g',

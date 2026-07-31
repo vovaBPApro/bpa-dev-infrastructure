@@ -8,6 +8,7 @@ INSTALL_ROOT="${INSTALL_ROOT:-/home/bpa-dev-infrastructure}"
 DRY_RUN=false
 VERIFY=false
 NO_CRON=false
+ARM_WATCHDOG=false
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -22,11 +23,13 @@ FULL_SUITE_ON_CALENDAR="${FULL_SUITE_ON_CALENDAR:-}"
 
 usage() {
   cat <<'EOF'
-Usage: bootstrap/install.sh [--dry-run | --verify] [--no-cron]
+Usage: bootstrap/install.sh [--dry-run | --verify] [--no-cron] [--arm-watchdog]
 
 Environment overrides: INSTALL_ROOT, REPO_URL, BUN_VERSION, ENV_FILE, BUN_BIN,
 RUNTIME_DIR, INFRA_STATE_DB, and CRONTAB_CMD.
 The Telegram token is never accepted as an argument. Paste it into .env locally.
+The watchdog timer is installed INERT; a configured token never arms it. Only
+the explicit --arm-watchdog flag enables bpa-orchestrator-watchdog.timer.
 EOF
 }
 
@@ -35,6 +38,7 @@ while (($#)); do
     --dry-run) DRY_RUN=true ;;
     --verify) VERIFY=true ;;
     --no-cron) NO_CRON=true ;;
+    --arm-watchdog) ARM_WATCHDOG=true ;;
     -h|--help) usage; exit 0 ;;
     *) echo "ERROR: unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -48,6 +52,11 @@ fi
 
 if "$VERIFY" && "$NO_CRON"; then
   echo "ERROR: --verify and --no-cron cannot be combined" >&2
+  exit 2
+fi
+
+if "$ARM_WATCHDOG" && { "$DRY_RUN" || "$VERIFY"; }; then
+  echo "ERROR: --arm-watchdog applies only to a real install run" >&2
   exit 2
 fi
 
@@ -67,7 +76,7 @@ print_plan() {
   plan "hygiene" "install hygiene cron unless --no-cron is set"
   plan "test-gate" "run the full daemon, core, gate, stand, and workspace test sweep"
   plan "units" "render daemon, watchdog, full-suite, and morning-report systemd --user units in $SYSTEMD_USER_DIR"
-  plan "activate" "reload user systemd and enable units when available; otherwise print VM activation instructions"
+  plan "activate" "reload user systemd and enable units when available; the watchdog timer stays INERT unless --arm-watchdog is passed"
 }
 
 if "$DRY_RUN"; then
@@ -181,15 +190,20 @@ verify() {
   if ! systemd_user_available; then
     skip "user systemd" "no user-systemd session"
     skip "daemon enabled" "user-systemd unavailable"
-    skip "watchdog enabled" "user-systemd unavailable"
+    skip "watchdog armed" "user-systemd unavailable"
     skip "full-suite enabled" "user-systemd unavailable"
     skip "morning enabled" "user-systemd unavailable"
   elif ! has_configured_token; then
     skip "daemon enabled" "token placeholder remains"
-    skip "watchdog enabled" "token placeholder remains"
+    skip "watchdog armed" "token placeholder remains"
   else
     check "daemon enabled" systemctl --user is-enabled --quiet bpa-telegram-daemon.service
-    check "watchdog enabled" systemctl --user is-enabled --quiet bpa-orchestrator-watchdog.timer
+    # Unarmed is the ruled deploy default, never a failure: report the state.
+    if systemctl --user is-enabled --quiet bpa-orchestrator-watchdog.timer; then
+      check "watchdog armed" true
+    else
+      skip "watchdog armed" "unarmed by default; arm with bootstrap/install.sh --arm-watchdog"
+    fi
     check "full-suite enabled" systemctl --user is-enabled --quiet bpa-full-suite.timer
     check "morning enabled" systemctl --user is-enabled --quiet orch-morning-report.timer
   fi
@@ -316,15 +330,41 @@ run_install_test_gate() {
 
 render_units() {
   install -d -m 700 "$SYSTEMD_USER_DIR"
-  local source destination configured_calendar
+  local source destination configured_calendar configured_interval
   if [[ -z "$FULL_SUITE_ON_CALENDAR" && -f "$ENV_FILE" ]]; then
     configured_calendar="$(sed -n 's/^FULL_SUITE_ON_CALENDAR=//p' "$ENV_FILE" | tail -n 1)"
     [[ -n "$configured_calendar" ]] && FULL_SUITE_ON_CALENDAR="$configured_calendar"
   fi
   FULL_SUITE_ON_CALENDAR="${FULL_SUITE_ON_CALENDAR:-*-*-* 03:30:00}"
+  # The watchdog cadence has to come from the SAME knob watchdog.sh reads, or the
+  # installed timer and the tick's own lease-fence arithmetic describe different
+  # intervals. Before this, the timer carried a hard-coded 10min while .env
+  # carried a name nothing read and watchdog.sh assumed 60s — three numbers, no
+  # agreement. The deprecated ORCH_WATCHDOG_INTERVAL_SECONDS spelling is still
+  # honoured here so an .env written by the old template keeps working.
+  if [[ -z "${ORCH_WATCHDOG_INTERVAL:-}" && -f "$ENV_FILE" ]]; then
+    configured_interval="$(sed -n 's/^ORCH_WATCHDOG_INTERVAL=//p' "$ENV_FILE" | tail -n 1)"
+    [[ -z "$configured_interval" ]] &&
+      configured_interval="$(sed -n 's/^ORCH_WATCHDOG_INTERVAL_SECONDS=//p' "$ENV_FILE" | tail -n 1)"
+    [[ -n "$configured_interval" ]] && ORCH_WATCHDOG_INTERVAL="$configured_interval"
+  fi
+  ORCH_WATCHDOG_INTERVAL="${ORCH_WATCHDOG_INTERVAL:-60}"
+  # Same central bounded parser the tick (watchdog.sh) and the user-timer
+  # installer (install-watchdog.sh) use: the value is rendered into a systemd
+  # unit verbatim, so empty/non-numeric/newline-carrying/out-of-range values
+  # must fail BEFORE any unit file is written. The reason is printed instead of
+  # the raw value so a hostile value cannot reach the terminal.
+  # shellcheck disable=SC1091
+  source "$SOURCE_ROOT/orchestrator/knobs.sh"
+  if ! knob_check "$ORCH_WATCHDOG_INTERVAL" 10 86400; then
+    echo "ERROR: invalid ORCH_WATCHDOG_INTERVAL (reason=$KNOB_REASON, allowed=10..86400 integer seconds); refusing to render units" >&2
+    return 1
+  fi
   for source in "$SOURCE_ROOT"/bootstrap/units/*.in; do
     destination="$SYSTEMD_USER_DIR/$(basename "${source%.in}")"
-    INSTALL_ROOT="$INSTALL_ROOT" ENV_FILE="$ENV_FILE" BUN_BIN="$BUN_BIN" FULL_SUITE_ON_CALENDAR="$FULL_SUITE_ON_CALENDAR" envsubst < "$source" > "$destination"
+    INSTALL_ROOT="$INSTALL_ROOT" ENV_FILE="$ENV_FILE" BUN_BIN="$BUN_BIN" \
+      FULL_SUITE_ON_CALENDAR="$FULL_SUITE_ON_CALENDAR" ORCH_WATCHDOG_INTERVAL="$ORCH_WATCHDOG_INTERVAL" \
+      envsubst < "$source" > "$destination"
     chmod 600 "$destination"
   done
   if systemd_user_available; then
@@ -332,7 +372,9 @@ render_units() {
   else
     echo "User systemd is unavailable; units were rendered only. On a VM with a user session, run:"
     echo "  systemctl --user daemon-reload"
-    echo "  systemctl --user enable --now bpa-telegram-daemon.service bpa-orchestrator-watchdog.timer bpa-full-suite.timer orch-morning-report.timer"
+    echo "  systemctl --user enable --now bpa-telegram-daemon.service bpa-full-suite.timer orch-morning-report.timer"
+    echo "The watchdog timer stays INERT by ruling; arm it only deliberately with:"
+    echo "  bootstrap/install.sh --arm-watchdog"
   fi
 }
 
@@ -343,9 +385,16 @@ activate_units() {
   fi
   if has_configured_token; then
     systemctl --user enable --now bpa-telegram-daemon.service
-    systemctl --user enable --now bpa-orchestrator-watchdog.timer
     systemctl --user enable --now bpa-full-suite.timer
     systemctl --user enable --now orch-morning-report.timer
+    # A configured token is NOT a watchdog opt-in. The standing deploy ruling
+    # keeps bpa-orchestrator-watchdog.timer unarmed; only the explicit
+    # --arm-watchdog flag may enable it.
+    if "$ARM_WATCHDOG"; then
+      systemctl --user enable --now bpa-orchestrator-watchdog.timer
+    else
+      echo "Watchdog timer installed INERT (deploy ruling: stays unarmed). Arm deliberately with: bootstrap/install.sh --arm-watchdog"
+    fi
   else
     echo "Token remains a placeholder; units installed but not enabled. Edit $ENV_FILE, then re-run this installer."
   fi

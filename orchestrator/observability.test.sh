@@ -21,7 +21,21 @@ cat > "$SHIM/df" <<'EOF'
 printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
 printf 'fixture 100 50 50 %s%% /\n' "${ORCH_TEST_DF_PCT:-10}"
 EOF
-chmod +x "$SHIM/tmux" "$SHIM/df"
+# Simulated disk pressure now makes the tick RECLAIM, not just alert. Without
+# this shim the fixture percentage above would prune the real Docker cache of
+# whatever host runs the suite. Reclamation behaviour has its own coverage in
+# docker-remediation.test.sh; here the shim only has to be inert and free.
+cat > "$SHIM/docker" <<'EOF'
+#!/usr/bin/env bash
+printf 'docker %s\n' "$*" >> "${ORCH_TEST_DOCKER_CALLS:-/dev/null}"
+case "$1 ${2:-}" in
+  'info ') exit 0 ;;
+  'builder prune'|'image prune') printf 'Total reclaimed space: 0B\n' ;;
+  *) ;;
+esac
+exit 0
+EOF
+chmod +x "$SHIM/tmux" "$SHIM/df" "$SHIM/docker"
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert() { "$@" || fail "$*"; }

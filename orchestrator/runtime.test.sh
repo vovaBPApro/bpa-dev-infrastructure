@@ -47,6 +47,12 @@ chmod +x "$SHIM/tmux" "$SHIM/systemd-run" "$SHIM/codex"
 export PATH="$SHIM:$PATH" MOCK_STATE="$STATE" MOCK_PANE_PID="$$"
 export ORCH_RUNTIME_DIR="$STATE/runtime" ORCH_SESSION="test-orch" ORCH_PROVIDER=codex
 export ORCH_AUTH_PREFLIGHT="$SCRIPT_DIR/preflight-cli-auth.sh"
+# The REAL preflight runs here, and it now requires affirmative subscription
+# evidence rather than merely the absence of a key — so the suite must not
+# depend on whether THIS box happens to be logged in. Hermetic fixture, shaped
+# like a real ChatGPT-login auth.json.
+printf '%s\n' '{"OPENAI_API_KEY":null,"tokens":{"access_token":"fixture-access"}}' > "$STATE/codex-auth.json"
+export ORCH_CODEX_AUTH_FILE="$STATE/codex-auth.json"
 # Hermetic state. tmux/systemd-run/codex are already shimmed, but the durable
 # paths were not: ORCH_STATE_DB fell back to the caller's env or the repo's real
 # runtime/state.db, so this suite reaped and acquired leases under the shared
@@ -64,11 +70,17 @@ export ORCH_LEASE_FILE="$STATE/orchestrator.lease"
 # to the live daemon's URL.
 export ORCH_DONE_SENTINEL="$STATE/no-done-sentinel"
 export ORCH_DAEMON_HEALTH_URL=""
+# Same class again, for the disk guard: this suite runs the tick against the
+# REAL df, so on a host above DISK_ALERT_PCT it would reclaim that host's Docker
+# build cache and dangling images while asserting relaunch behaviour.
+export DOCKER_PRUNE_ENABLED=0
 export ORCH_RESTART_STATE_FILE="$STATE/watchdog-restart-state"
 # This suite asserts the recovery ACTIONS (relaunch, kill-relaunch) back to
-# back, which the production restart cooldown would legitimately suppress on the
-# second one. Throttling is covered by watchdog-supervision.test.sh.
-export ORCH_RESTART_COOLDOWN=0 ORCH_RESTART_COOLDOWN_NIGHT=0
+# back, which the production restart cooldown would legitimately suppress on
+# the second one. A zero cooldown is no longer a legal knob (knob-bounds.test.sh
+# — it used to disable the anti-thrash throttle), so each recovery case zeroes
+# the restart STATE instead. Throttling is covered by watchdog-supervision.test.sh.
+export ORCH_LIVENESS_FILE="$STATE/liveness"
 unset DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
@@ -93,6 +105,22 @@ heartbeat="$STATE/heartbeat"
 touch "$heartbeat"
 export ORCH_HEARTBEAT_FILE="$heartbeat" ORCH_HEARTBEAT_MAX_AGE=10 ORCH_WATCHDOG_NOW=1000
 touch -d '@1' "$heartbeat"
+# Positive death evidence: a liveness pulse that WAS renewing and went stale,
+# PLUS a recorded provider identity that is verifiably gone. A stale stamp
+# alone only proves the pulse HELPER stopped (heartbeat-liveness.test.sh owns
+# that verdict table), so this corpse fixture kills its provider first and
+# checks the corpse before expecting recovery.
+printf '%s\n' 1 > "$STATE/liveness"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/proc-identity.sh"
+sleep 300 & corpse_pid=$!
+corpse_starttime="$(proc_starttime "$corpse_pid")"
+[[ -n "$corpse_starttime" ]] || fail 'could not read a fixture starttime from /proc'
+kill "$corpse_pid" 2>/dev/null || true
+wait "$corpse_pid" 2>/dev/null || true
+! kill -0 "$corpse_pid" 2>/dev/null || fail 'fixture corpse refused to die'
+printf 'pid=%s\nstarttime=%s\n' "$corpse_pid" "$corpse_starttime" > "$STATE/liveness.identity"
+rm -f "$ORCH_RESTART_STATE_FILE"
 assert "$SCRIPT_DIR/watchdog.sh"
 [[ "$(calls 'tmux kill-session')" == 1 ]] || fail 'stale heartbeat did not kill zombie'
 [[ "$(calls 'tmux new-session')" == 3 ]] || fail 'stale heartbeat did not relaunch zombie'

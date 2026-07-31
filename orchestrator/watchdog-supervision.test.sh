@@ -99,8 +99,8 @@ unset ORCH_WATCHDOG_NOW ORCH_WATCHDOG_NOW_MS
 assert_isolated() {
   local name value
   for name in ORCH_RUNTIME_DIR ORCH_STATE_DB ORCH_LEASE_FILE ORCH_HEARTBEAT_FILE \
-    ORCH_HEARTBEAT_MISSING_SINCE_FILE ORCH_WATCHDOG_LOG ORCH_DONE_SENTINEL \
-    ORCH_RESTART_STATE_FILE NUDGE_OUTBOX_FILE NUDGE_RATE_FILE \
+    ORCH_HEARTBEAT_MISSING_SINCE_FILE ORCH_LIVENESS_FILE ORCH_WATCHDOG_LOG \
+    ORCH_DONE_SENTINEL ORCH_RESTART_STATE_FILE NUDGE_OUTBOX_FILE NUDGE_RATE_FILE \
     ORCH_INSTANCE_LOCK_FILE ORCH_LAUNCH_SCRIPT ORCH_INSTALL_ROOT; do
     value="${!name-}"
     [[ -n "$value" ]] || fail "isolation: $name is unset; it would resolve to a live path"
@@ -121,6 +121,7 @@ new_case() {
   export ORCH_LEASE_FILE="$root/runtime/orchestrator.lease"
   export ORCH_HEARTBEAT_FILE="$root/runtime/orchestrator.heartbeat"
   export ORCH_HEARTBEAT_MISSING_SINCE_FILE="$root/runtime/heartbeat-missing-since"
+  export ORCH_LIVENESS_FILE="$root/runtime/orchestrator.liveness"
   export ORCH_WATCHDOG_LOG="$root/runtime/watchdog.log"
   export ORCH_DONE_SENTINEL="$root/done-sentinel"
   export ORCH_RESTART_STATE_FILE="$root/runtime/watchdog-restart-state"
@@ -260,9 +261,24 @@ outbox_has "NUDGE watchdog-restart-failed session=$ORCH_SESSION"
 outbox_has needs=manual-intervention
 log_has 'WATCHDOG NO-GO reason=restart-failed'
 
-# A stale heartbeat is a kill-then-relaunch, and must be announced the same way.
+# A stale heartbeat is a kill-then-relaunch, and must be announced the same
+# way. The kill now requires positive death evidence: a liveness pulse that WAS
+# being renewed and has gone stale, AND a recorded provider identity that is
+# verifiably gone — a stale stamp alone only proves the pulse HELPER stopped.
+# heartbeat-liveness.test.sh owns that verdict table; this corpse fixture kills
+# its provider first and checks the corpse before expecting the announcement.
 new_case zombie-restart-announced
 printf '%s\n' 100 > "$ORCH_HEARTBEAT_FILE"
+printf '%s\n' 100 > "$ORCH_LIVENESS_FILE"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/proc-identity.sh"
+sleep 300 & corpse_pid=$!
+corpse_starttime="$(proc_starttime "$corpse_pid")"
+[[ -n "$corpse_starttime" ]] || fail 'could not read a fixture starttime from /proc'
+kill "$corpse_pid" 2>/dev/null || true
+wait "$corpse_pid" 2>/dev/null || true
+! kill -0 "$corpse_pid" 2>/dev/null || fail 'fixture corpse refused to die'
+printf 'pid=%s\nstarttime=%s\n' "$corpse_pid" "$corpse_starttime" > "$ORCH_LIVENESS_FILE.identity"
 ORCH_WATCHDOG_NOW=100000 ORCH_HEARTBEAT_MAX_AGE=10 tick
 assert_actions 1 1
 log_has 'zombie session='

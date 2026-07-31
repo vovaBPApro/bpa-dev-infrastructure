@@ -10,12 +10,33 @@ if [[ -f "$CONFIG_FILE" ]]; then
 fi
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib.sh"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/knobs.sh"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/proc-identity.sh"
 SESSION="${ORCH_SESSION:-orchestrator}"
 RUNTIME_DIR="${ORCH_RUNTIME_DIR:-$SCRIPT_DIR/runtime}"
 LOG_FILE="${ORCH_WATCHDOG_LOG:-$RUNTIME_DIR/watchdog.log}"
 HEARTBEAT_FILE="${ORCH_HEARTBEAT_FILE:-$RUNTIME_DIR/orchestrator.heartbeat}"
 HEARTBEAT_MAX_AGE="${ORCH_HEARTBEAT_MAX_AGE:-1200}"
 HEARTBEAT_MISSING_SINCE_FILE="${ORCH_HEARTBEAT_MISSING_SINCE_FILE:-$RUNTIME_DIR/heartbeat-missing-since}"
+# ── Positive liveness pulse ─────────────────────────────────────────────────
+# orchestrator-liveness-pulse.sh (started by launch.sh inside the supervised
+# pane) re-stamps this file every ORCH_LIVENESS_PULSE_INTERVAL seconds for as
+# long as the provider process exists — turns in flight included. It is the
+# only signal that can PROVE a silent long turn is alive. Its going stale is
+# necessary but NOT sufficient for a kill: the pulse loop is a helper process,
+# so a stale stamp proves only that the HELPER stopped — the kill additionally
+# requires the identity fence below; see the stale-heartbeat branch for the
+# full verdict table.
+LIVENESS_FILE="${ORCH_LIVENESS_FILE:-$RUNTIME_DIR/orchestrator.liveness}"
+# Identity sidecar: WHICH provider the stamp vouches for (pid= plus the
+# kernel's reuse-safe starttime=, /proc/<pid>/stat field 22), written by
+# launch.sh at start and by the pulse loop at its own startup. Derived from
+# LIVENESS_FILE rather than a separate knob so the identity can never point at
+# a different file than the stamp it fences.
+LIVENESS_IDENTITY_FILE="$LIVENESS_FILE.identity"
+LIVENESS_MAX_AGE="${ORCH_LIVENESS_MAX_AGE:-120}"
 LAUNCH_SCRIPT="${ORCH_LAUNCH_SCRIPT:-$SCRIPT_DIR/launch.sh}"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MISSION_CLI="${ORCH_MISSION_CLI:-$REPO_DIR/core/mission-cli.ts}"
@@ -24,13 +45,58 @@ LEASE_FILE="${ORCH_LEASE_FILE:-$RUNTIME_DIR/orchestrator.lease}"
 # The watchdog is the ONLY thing that renews the orchestrator lease, so the TTL
 # it renews with has to outlive its own tick interval — see the lease fence
 # below. Same knob launch.sh acquires with, so there is one number, not two.
-LEASE_TTL_MS="${ORCH_LEASE_TTL_MS:-120000}"
-WATCHDOG_INTERVAL_S="${ORCH_WATCHDOG_INTERVAL:-60}"
+# 180000 is three ticks at the 60s default interval: two ticks of headroom (the
+# fence's minimum) plus one tick of margin. It was 120000, which sat EXACTLY on
+# the fence boundary — see the strictness note there.
+LEASE_TTL_MS="${ORCH_LEASE_TTL_MS:-180000}"
+# ── Tick cadence: ONE knob ──────────────────────────────────────────────────
+# `ORCH_WATCHDOG_INTERVAL` is the name. `ORCH_WATCHDOG_INTERVAL_SECONDS` is a
+# deprecated alias, honoured only because bootstrap/env.template shipped that
+# spelling: every installed .env on disk carries it, and nothing read it, so the
+# documented cadence silently never applied. Dropping the name outright would
+# have changed those hosts' behaviour a second time, in silence, so it resolves
+# here instead — and cadence-knob.test.sh fails if the template, this reader,
+# install-watchdog.sh and the rendered timer ever disagree again.
+WATCHDOG_INTERVAL_S="${ORCH_WATCHDOG_INTERVAL:-${ORCH_WATCHDOG_INTERVAL_SECONDS:-60}}"
 INSTALL_ROOT="${ORCH_INSTALL_ROOT:-${INSTALL_ROOT:-$REPO_DIR}}"
 NUDGE_OUTBOX_FILE="${NUDGE_OUTBOX_FILE:-$RUNTIME_DIR/nudges.outbox}"
 FLEET_IDLE_NUDGE_MS="${FLEET_IDLE_NUDGE_MS:-900000}"
 FLEET_NUDGE_REPEAT_MS="${FLEET_NUDGE_REPEAT_MS:-3600000}"
 DISK_ALERT_PCT="${DISK_ALERT_PCT:-80}"
+# ── Disk remediation thresholds ─────────────────────────────────────────────
+# At DISK_ALERT_PCT the tick reclaims Docker space and re-measures; only if the
+# filesystem is STILL at or above DISK_CRITICAL_PCT does the operator get told.
+# Written after a real ENOSPC outage: a full disk truncates files mid-write, so
+# detecting-and-alerting without reclaiming leaves the box to corrupt itself
+# until a human wakes up.
+DISK_CRITICAL_PCT="${DISK_CRITICAL_PCT:-88}"
+# Set 0 to disable reclamation and keep the previous alert-only behaviour.
+DOCKER_PRUNE_ENABLED="${DOCKER_PRUNE_ENABLED:-1}"
+# ── Docker ownership label: the reclamation boundary ────────────────────────
+# Unattended reclamation may delete ONLY Docker resources this control plane
+# provably created, declared by carrying this exact object label:
+#
+#     pro.bpa.owner=bpa-dev-infrastructure
+#
+# Images built by this repo's stands/builds must be created with
+# `--label pro.bpa.owner=bpa-dev-infrastructure` (or the configured override)
+# to be eligible. Everything else on the host daemon — build cache, dangling
+# images, tag-matching images someone else built or pulled — is somebody
+# else's property: disk pressure ALERTS on it and never mutates it. The
+# override exists for a deployment that already has its own label vocabulary;
+# it is validated to a strict key=value charset before any docker call uses it.
+DOCKER_OWNER_LABEL="${ORCH_DOCKER_OWNER_LABEL:-pro.bpa.owner=bpa-dev-infrastructure}"
+# Opt-in sweep of DISPOSABLE TAGGED images, which are not dangling and so are
+# never reclaimed by `image prune`. Deliberately EMPTY by default: the reference
+# implementation hard-coded the old project's tag vocabulary
+# (rollback|release|pre-|night|batch|…), and shipping that verbatim here would
+# either match nothing or, worse, match a tag this repo gives a different
+# meaning. An operator who has such a convention names it; nobody else can be
+# surprised by it. The pattern only ever NARROWS the owner-label filter above —
+# an unlabeled image never matches, whatever its tag. Never matches running
+# containers' images — see the sweep.
+DOCKER_STALE_TAG_PATTERN="${DOCKER_STALE_TAG_PATTERN:-}"
+DOCKER_STALE_TAG_KEEP="${DOCKER_STALE_TAG_KEEP:-3}"
 NUDGE_RATE_FILE="${NUDGE_RATE_FILE:-$RUNTIME_DIR/nudge-rate.tsv}"
 # `/done` rest sentinel. The daemon writes this file on /done and /mission_done
 # and deletes it on the next inbound Human directive (daemon/server.ts), and it
@@ -62,20 +128,49 @@ fi
 DAEMON_HEALTH_URL="${ORCH_DAEMON_HEALTH_URL-http://127.0.0.1:${TELEGRAM_DAEMON_PORT:-4822}/health}"
 
 log() { mkdir -p "$RUNTIME_DIR"; printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$LOG_FILE"; }
-validate_numeric_knob() {
-  local name="$1" default="$2" value="${!1}"
-  if ! [[ "$value" =~ ^[0-9]+$ ]]; then
-    log "WATCHDOG invalid-knob name=$name value=$value using-default=$default"
+# Bounded validation through the ONE central parser (knobs.sh) shared with
+# install-watchdog.sh, so the tick and the installer reject the same values.
+# An invalid runtime knob falls back to its documented default — logged, never
+# fatal, and never a restart: `0` for the cadence/heartbeat/cooldown knobs used
+# to pass the old [0-9]+ check and turned the restart throttle off entirely.
+# The logged value is stripped of control characters so a hostile knob cannot
+# forge log lines either.
+validate_bounded_knob() { # <name> <min> <max> <default>
+  local name="$1" min="$2" max="$3" default="$4" value="${!1}" shown
+  if ! knob_check "$value" "$min" "$max"; then
+    shown="$(printf '%s' "$value" | tr -d '[:cntrl:]' | cut -c1-40)"
+    log "WATCHDOG invalid-knob name=$name value=$shown using-default=$default reason=$KNOB_REASON allowed=${min}..${max}"
     printf -v "$name" '%s' "$default"
   fi
 }
-validate_numeric_knob FLEET_IDLE_NUDGE_MS 900000
-validate_numeric_knob FLEET_NUDGE_REPEAT_MS 3600000
-validate_numeric_knob DISK_ALERT_PCT 80
-validate_numeric_knob HEARTBEAT_MAX_AGE 1200
-validate_numeric_knob LEASE_TTL_MS 120000
-validate_numeric_knob WATCHDOG_INTERVAL_S 60
-validate_numeric_knob RESTART_COOLDOWN_S 1800
+# Floor 1, not 1000: a tiny idle threshold only makes missions report idle
+# sooner, and the nudge path stays throttled by FLEET_NUDGE_REPEAT_MS — it is
+# not a restart-storm vector the way cadence/cooldown are.
+validate_bounded_knob FLEET_IDLE_NUDGE_MS 1 604800000 900000
+validate_bounded_knob FLEET_NUDGE_REPEAT_MS 0 604800000 3600000
+validate_bounded_knob DISK_ALERT_PCT 1 100 80
+validate_bounded_knob DISK_CRITICAL_PCT 1 100 88
+validate_bounded_knob HEARTBEAT_MAX_AGE 5 604800 1200
+validate_bounded_knob LIVENESS_MAX_AGE 15 86400 120
+validate_bounded_knob LEASE_TTL_MS 1000 86400000 180000
+validate_bounded_knob WATCHDOG_INTERVAL_S 10 86400 60
+validate_bounded_knob DOCKER_STALE_TAG_KEEP 1 1000 3
+if (( WATCHDOG_NIGHT == 1 )); then
+  validate_bounded_knob RESTART_COOLDOWN_S 60 604800 900
+else
+  validate_bounded_knob RESTART_COOLDOWN_S 60 604800 1800
+fi
+# Ordering constraints that need two knobs at once. A cooldown shorter than the
+# tick interval cannot throttle anything (every tick is already "past" it), so
+# it is clamped up rather than honoured — the alternative is a restart storm.
+if (( RESTART_COOLDOWN_S < WATCHDOG_INTERVAL_S )); then
+  log "WATCHDOG invalid-knob-ordering name=RESTART_COOLDOWN_S value=$RESTART_COOLDOWN_S floor=WATCHDOG_INTERVAL_S clamped=$WATCHDOG_INTERVAL_S"
+  RESTART_COOLDOWN_S="$WATCHDOG_INTERVAL_S"
+fi
+if (( DISK_CRITICAL_PCT < DISK_ALERT_PCT )); then
+  log "WATCHDOG invalid-knob-ordering name=DISK_CRITICAL_PCT value=$DISK_CRITICAL_PCT floor=DISK_ALERT_PCT clamped=$DISK_ALERT_PCT"
+  DISK_CRITICAL_PCT="$DISK_ALERT_PCT"
+fi
 
 # ── `/done` rest ────────────────────────────────────────────────────────────
 # Checked before anything else, exactly like the reference implementation. The
@@ -237,6 +332,120 @@ heartbeat_stale() {
   (( now - heartbeat > HEARTBEAT_MAX_AGE ))
 }
 
+# ── Second liveness signal: is the pane still producing output? ─────────────
+# The heartbeat above has exactly ONE ongoing writer — the turn-end hook
+# (orchestrator-turnend-relay.sh, which Codex's notify and Claude's Stop hook
+# both funnel into). It therefore says "a turn ENDED", never "a turn is running".
+# A single turn longer than HEARTBEAT_MAX_AGE is completely ordinary for this
+# role (a long dispatch, a slow build, a big review) and used to be indistinguish-
+# able from a corpse: the tick went straight to kill-and-relaunch and shot a
+# session that was alive and mid-work, losing the turn and burning quota.
+#
+# tmux knows better, because it sees the bytes. This is the newest-signal-wins
+# rule from the reference watchdog, with one deliberate substitution:
+#
+#   the reference used `#{session_activity}`; MEASURED on tmux 3.4, that field
+#   does NOT advance for a DETACHED session — which is the only shape an
+#   orchestrator ever has. It stays frozen at session creation, so restoring it
+#   verbatim would read "dead" for every healthy session and change nothing.
+#   `#{window_activity}` does track pane output: ~0s for a busy pane, growing
+#   with wall-clock for a wedged or SIGSTOPped one. That is the property this
+#   guard needs, so that is the field used.
+#
+# Windows are max()'d rather than taking the session's current window, so a
+# multi-window session is judged by its newest output anywhere.
+# Prints the age in seconds of the newest pane output, or nothing at all when
+# tmux cannot answer — absence of a signal is never evidence of death here.
+session_activity_age() {
+  local now="$1" newest age
+  newest="$(tmux list-windows -t "$SESSION" -F '#{window_activity}' 2>/dev/null |
+    grep -oE '^[0-9]+' | sort -n | tail -n 1)" || true
+  [[ "$newest" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]] || return 0
+  # Some tmux builds report milliseconds.
+  (( ${#newest} >= 13 )) && newest=$(( newest / 1000 ))
+  age=$(( now - newest ))
+  # A future timestamp means clock skew, not staleness. Clamp to fresh.
+  (( age < 0 )) && age=0
+  printf '%s\n' "$age"
+}
+
+# ── Third signal: the positive in-pane liveness pulse ───────────────────────
+# orchestrator-liveness-pulse.sh re-stamps LIVENESS_FILE while the provider
+# PID exists and stops (leaving the stamp to age) the moment it dies. Prints
+# the stamp's age in seconds; prints NOTHING when the file is absent or its
+# content unusable — which is ambiguity, never evidence in either direction.
+liveness_pulse_age() {
+  local now="$1" stamp age
+  [[ -f "$LIVENESS_FILE" ]] || return 0
+  stamp="$(cat "$LIVENESS_FILE" 2>/dev/null)" || return 0
+  [[ "$stamp" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]] || return 0
+  age=$(( now - stamp ))
+  # A future stamp means clock skew, not staleness. Clamp to fresh.
+  (( age < 0 )) && age=0
+  printf '%s\n' "$age"
+}
+
+# ── Provider identity: the fence in front of every stale-pulse kill ─────────
+# The pulse loop is a HELPER — a separate process from the provider it vouches
+# for. If the helper alone dies (crash, OOM kill, stray kill) the stamp goes
+# stale while the provider lives and may be silently mid-turn — and a stale
+# stamp alone used to be read as "the renewer died with its owner", killing a
+# live provider: the A1 false restart, one hop removed. So staleness is never
+# kill evidence by itself. This resolves the recorded identity against /proc:
+#
+#   alive        -> same pid AND same starttime exist: the provider lives.
+#   gone         -> the recorded pid is absent, or a DIFFERENT process
+#                   (starttime mismatch) now occupies it: affirmative proof
+#                   that THAT exact provider is dead.
+#   unrecorded   -> no usable pid= in the sidecar: nothing to verify against.
+#   unverifiable -> /proc cannot answer (unreadable, raced away mid-check,
+#                   recorded starttime unparseable while the pid exists).
+#
+# Only `gone` may kill. Sets PROVIDER_VERDICT plus PROVIDER_PID /
+# PROVIDER_STARTTIME for the logs — variables, not stdout, because a command
+# substitution would run this in a subshell and drop the pid/starttime the
+# log lines need.
+provider_identity_verdict() {
+  local current
+  PROVIDER_PID=""
+  PROVIDER_STARTTIME=""
+  PROVIDER_VERDICT=unrecorded
+  if [[ -f "$LIVENESS_IDENTITY_FILE" ]]; then
+    # `|| true`: under pipefail a sidecar deleted mid-read must degrade to
+    # `unrecorded`, not abort the whole tick.
+    PROVIDER_PID="$(sed -n 's/^pid=//p' "$LIVENESS_IDENTITY_FILE" 2>/dev/null | head -n 1 || true)"
+    PROVIDER_STARTTIME="$(sed -n 's/^starttime=//p' "$LIVENESS_IDENTITY_FILE" 2>/dev/null | head -n 1 || true)"
+  fi
+  if [[ ! "$PROVIDER_PID" =~ ^[1-9][0-9]*$ ]]; then
+    PROVIDER_VERDICT=unrecorded
+    return 0
+  fi
+  # Without a working /proc, the absence of /proc/<pid> proves nothing.
+  if [[ ! -r /proc/self/stat ]]; then
+    PROVIDER_VERDICT=unverifiable
+    return 0
+  fi
+  if [[ ! -e "/proc/$PROVIDER_PID" ]]; then
+    PROVIDER_VERDICT=gone
+    return 0
+  fi
+  current="$(proc_starttime "$PROVIDER_PID")"
+  if [[ -z "$current" ]]; then
+    # Vanished between the existence check and the stat read — check again.
+    if [[ -e "/proc/$PROVIDER_PID" ]]; then PROVIDER_VERDICT=unverifiable; else PROVIDER_VERDICT=gone; fi
+    return 0
+  fi
+  if [[ ! "$PROVIDER_STARTTIME" =~ ^[0-9]+$ ]]; then
+    PROVIDER_VERDICT=unverifiable
+    return 0
+  fi
+  if [[ "$current" == "$PROVIDER_STARTTIME" ]]; then
+    PROVIDER_VERDICT=alive
+  else
+    PROVIDER_VERDICT=gone
+  fi
+}
+
 # Watchdog nudge updates are written to a same-directory temporary file then
 # renamed, so a Telegram reader observes either the old complete file or the
 # new complete file. full-suite.sh follows the same outbox pattern.
@@ -272,17 +481,111 @@ record_nudge() {
   mv -f "$tmp" "$NUDGE_RATE_FILE"
 }
 
+disk_pct() {
+  df -P "$INSTALL_ROOT" 2>/dev/null | awk 'NR == 2 { value=$5; sub(/%$/, "", value); print value }'
+}
+
+# ── Docker reclamation: label-scoped, never host-global ─────────────────────
+# This runs UNATTENDED against the host's shared Docker daemon, so its blast
+# radius is a contract, not a tuning choice. It may delete only what carries
+# the exact ownership label (DOCKER_OWNER_LABEL above — resources this control
+# plane provably created), which means:
+#   1. DANGLING images: `image prune -f --filter label=<owner>` — label-scoped
+#      and never `-a` (which would delete every unreferenced image on the box).
+#      A host-global `image prune -f` deletes other projects' dangling layers
+#      and is forbidden here.
+#   2. Disposable TAGGED owner-labeled images, and only when the operator has
+#      also declared a tag pattern (DOCKER_STALE_TAG_PATTERN, empty by
+#      default). The candidate list is label-filtered FIRST; a foreign image
+#      whose tag happens to match the pattern is not a candidate.
+#   3. The BuildKit build cache is NOT pruned at all: `builder prune` has no
+#      label filter, so any unattended prune of it is host-global by
+#      construction. Persistent build-cache pressure is alerted via the
+#      disk-critical path for a human to act on.
+# It never touches volumes (operator data), never touches networks, never stops
+# or removes a container. Images in use by ANY container, running or not, are
+# protected by `docker rmi` itself: it refuses with "image is being used",
+# which is caught and logged rather than forced. There is no `-f` on the rmi
+# for that reason. Anything outside the label boundary -> alert-only, no
+# mutation.
+docker_reclaim() {
+  local before_pct="$1" output images image kept
+  command -v docker >/dev/null 2>&1 || { log "SKIP reason=docker-unavailable"; return 0; }
+  if ! docker info >/dev/null 2>&1; then
+    log "SKIP reason=docker-daemon-unreachable"
+    return 0
+  fi
+  # The label reaches docker verbatim as a filter; a malformed override could
+  # widen the filter or smuggle option-looking text, so anything outside the
+  # strict key=value charset disables reclamation outright (alert-only).
+  if ! [[ "$DOCKER_OWNER_LABEL" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*=[A-Za-z0-9._-]+$ ]]; then
+    log "WATCHDOG NO-GO reason=docker-owner-label-invalid action=alert-only"
+    return 0
+  fi
+
+  log "DISK reclaim step=builder-cache result=skipped reason=no-label-filter-exists-global-prune-forbidden"
+
+  if output="$(docker image prune -f --filter "label=$DOCKER_OWNER_LABEL" 2>&1)"; then
+    log "DISK reclaim step=image-prune-dangling-owned label=$DOCKER_OWNER_LABEL $(printf '%s' "$output" | grep -i 'reclaimed' | tail -n 1)"
+  else
+    log "DISK reclaim step=image-prune-dangling-owned label=$DOCKER_OWNER_LABEL result=failed detail=$(printf '%s' "$output" | tr '\n' ' ' | cut -c1-200)"
+  fi
+
+  if [[ -z "$DOCKER_STALE_TAG_PATTERN" ]]; then
+    log "DISK reclaim step=stale-tag-sweep result=disabled reason=no-pattern-configured"
+  else
+    # Owner-labeled images only, then newest-first, keep DOCKER_STALE_TAG_KEEP
+    # per repository so a recent rollback target stays usable, drop the rest.
+    images="$(docker images --filter "label=$DOCKER_OWNER_LABEL" --format '{{.CreatedAt}}\t{{.Repository}}:{{.Tag}}' 2>/dev/null |
+      grep -E -- "$DOCKER_STALE_TAG_PATTERN" |
+      sort -r |
+      awk -F '\t' -v keep="$DOCKER_STALE_TAG_KEEP" \
+        '{ repo = $2; sub(/:.*/, "", repo); seen[repo]++; if (seen[repo] > keep) print $2 }')" || true
+    kept=0
+    while IFS= read -r image; do
+      [[ -n "$image" ]] || continue
+      if output="$(docker rmi "$image" 2>&1)"; then
+        log "DISK reclaim step=stale-tag-sweep removed=$image"
+      else
+        kept=$(( kept + 1 ))
+        log "DISK reclaim step=stale-tag-sweep retained=$image reason=$(printf '%s' "$output" | tr '\n' ' ' | cut -c1-120)"
+      fi
+    done <<< "$images"
+    (( kept > 0 )) && log "DISK reclaim step=stale-tag-sweep retained_count=$kept reason=in-use-or-refused"
+  fi
+
+  log "DISK reclaim before_pct=$before_pct after_pct=$(disk_pct) root=$INSTALL_ROOT"
+  return 0
+}
+
 check_disk_pressure() {
-  local pct now
-  pct="$(df -P "$INSTALL_ROOT" 2>/dev/null | awk 'NR == 2 { value=$5; sub(/%$/, "", value); print value }')"
+  local pct now after
+  pct="$(disk_pct)"
   [[ "$pct" =~ ^[0-9]+$ ]] || { log "SKIP reason=disk-stat-unavailable root=$INSTALL_ROOT"; return; }
-  if (( pct >= DISK_ALERT_PCT )); then
-    log "WATCHDOG disk-pressure pct=$pct root=$INSTALL_ROOT"
-    now="${ORCH_WATCHDOG_NOW_MS:-$(( $(date +%s) * 1000 ))}"
+  (( pct >= DISK_ALERT_PCT )) || return
+  log "WATCHDOG disk-pressure pct=$pct root=$INSTALL_ROOT"
+
+  after="$pct"
+  if (( DOCKER_PRUNE_ENABLED == 1 )); then
+    docker_reclaim "$pct" || log "WATCHDOG NO-GO reason=docker-reclaim-failed root=$INSTALL_ROOT action=alert-only"
+    after="$(disk_pct)"
+    [[ "$after" =~ ^[0-9]+$ ]] || after="$pct"
+  else
+    log "SKIP reason=docker-prune-disabled root=$INSTALL_ROOT"
+  fi
+
+  now="${ORCH_WATCHDOG_NOW_MS:-$(( $(date +%s) * 1000 ))}"
+  # The operator is told when the disk is still critically full AFTER
+  # reclamation — that is the state a human has to act on. Reclamation that
+  # brought it back under DISK_CRITICAL_PCT is a log line, not an interruption.
+  if (( after >= DISK_CRITICAL_PCT )); then
+    log "WATCHDOG disk-critical pct=$after was_pct=$pct root=$INSTALL_ROOT"
     if nudge_due disk "$INSTALL_ROOT" "$now"; then
-      append_nudge "NUDGE disk-pressure pct=$pct root=$INSTALL_ROOT"
+      append_nudge "NUDGE disk-pressure pct=$after was_pct=$pct root=$INSTALL_ROOT needs=manual-cleanup"
       record_nudge disk "$INSTALL_ROOT" "$now"
     fi
+  elif (( after < pct )); then
+    log "WATCHDOG disk-recovered pct=$after was_pct=$pct root=$INSTALL_ROOT"
   fi
 }
 
@@ -399,8 +702,16 @@ if state_available; then
   # A renewal that does not survive until the next tick is not a renewal: the
   # lease is guaranteed dead when this same script comes back to renew it. Two
   # ticks of headroom is the minimum that tolerates one skipped or slow tick.
-  if (( LEASE_TTL_MS < WATCHDOG_INTERVAL_S * 2000 )); then
-    log "WATCHDOG NO-GO reason=lease-ttl-under-tick ttl_ms=$LEASE_TTL_MS interval_s=$WATCHDOG_INTERVAL_S needs_ms=$(( WATCHDOG_INTERVAL_S * 2000 )) action=no-kill"
+  #
+  # The comparison is `<=`, not `<`. At TTL == exactly two ticks the lease
+  # expires at the very instant the second tick is due, so ANY jitter puts
+  # expiry first — and systemd timers jitter by a minute at the default
+  # AccuracySec. Zero margin is inside the trap this fence exists to catch, not
+  # outside it. Strict `<` never fired at that boundary, and the shipped default
+  # pair (60s / 120000ms) sat precisely on it, so the fence was silent in exactly
+  # the configuration it was written for. The default TTL is now 180000.
+  if (( LEASE_TTL_MS <= WATCHDOG_INTERVAL_S * 2000 )); then
+    log "WATCHDOG NO-GO reason=lease-ttl-under-tick ttl_ms=$LEASE_TTL_MS interval_s=$WATCHDOG_INTERVAL_S needs_over_ms=$(( WATCHDOG_INTERVAL_S * 2000 )) action=no-kill"
   fi
   if ! lease_state; then
     log "SKIP reason=lease-state-missing"
@@ -416,12 +727,103 @@ if ! session_healthy; then
   supervise_restart dead 0
 fi
 if heartbeat_stale; then
-  if [[ -f "$HEARTBEAT_FILE" ]]; then
-    log "zombie session=$SESSION action=kill-relaunch"
-    supervise_restart zombie 1
+  # A stale heartbeat is a QUESTION, not a verdict. The heartbeat proves "a
+  # turn ENDED" and window activity proves "bytes were printed" — a legitimate
+  # long turn that prints nothing satisfies neither, so stale-heartbeat +
+  # stale-output ALONE must never kill. The verdict table, first match wins:
+  #
+  #   pulse fresh                 -> alive mid-turn: NO-GO, log+nudge, no kill
+  #   pane output fresh           -> alive and printing: NO-GO, log+nudge
+  #   pulse stale + provider GONE -> the ONLY positive death evidence — recover
+  #                                  (gone = recorded pid absent, or occupied
+  #                                  by a different starttime: pid reuse)
+  #   pulse stale + provider LIVE -> the pulse HELPER died alone: DEGRADED
+  #                                  liveness — NO-GO, log+nudge, never kill,
+  #                                  never adopt/restart the helper from here
+  #   pulse stale, identity
+  #   unrecorded/unverifiable     -> ambiguity: NO-GO, alert, never stop
+  #   pulse absent/unreadable     -> ambiguity (wrapper never ran, knob points
+  #                                  elsewhere): NO-GO, alert, never stop
+  watchdog_now="${ORCH_WATCHDOG_NOW:-$(date +%s)}"
+  pulse_age="$(liveness_pulse_age "$watchdog_now")"
+  activity_age="$(session_activity_age "$watchdog_now")"
+  now_ms="${ORCH_WATCHDOG_NOW_MS:-$(( watchdog_now * 1000 ))}"
+  if [[ -n "$pulse_age" ]] && (( pulse_age <= LIVENESS_MAX_AGE )); then
+    # Positively alive — the pulse renews only while the provider process
+    # exists. A silent turn longer than HEARTBEAT_MAX_AGE is ordinary for this
+    # role; never kill it. But never swallow the stale heartbeat either: the
+    # likeliest cause is a broken turn-end relay, and a silently tolerated
+    # broken relay is how the turn-end signal dies unnoticed.
+    log "WATCHDOG NO-GO reason=heartbeat-stale-process-live session=$SESSION pulse_age_s=$pulse_age pulse_max_age_s=$LIVENESS_MAX_AGE action=no-kill"
+    if nudge_due heartbeat-stale-active "$SESSION" "$now_ms"; then
+      append_nudge "NUDGE heartbeat-stale-process-live session=$SESSION pulse_age_s=$pulse_age max_age_s=$HEARTBEAT_MAX_AGE"
+      record_nudge heartbeat-stale-active "$SESSION" "$now_ms"
+    fi
+  elif [[ -n "$activity_age" ]] && (( activity_age <= HEARTBEAT_MAX_AGE )); then
+    # Alive and working, but the heartbeat writer has gone quiet for longer than
+    # a turn should take. Never kill on this — log every tick, nudge the
+    # operator on the usual throttle.
+    log "WATCHDOG NO-GO reason=heartbeat-stale-session-active session=$SESSION activity_age_s=$activity_age max_age_s=$HEARTBEAT_MAX_AGE action=no-kill"
+    if nudge_due heartbeat-stale-active "$SESSION" "$now_ms"; then
+      append_nudge "NUDGE heartbeat-stale-session-active session=$SESSION activity_age_s=$activity_age max_age_s=$HEARTBEAT_MAX_AGE"
+      record_nudge heartbeat-stale-active "$SESSION" "$now_ms"
+    fi
+  elif [[ -n "$pulse_age" ]]; then
+    # The pulse loop stamped this file and stopped renewing. But the loop is a
+    # HELPER — a separate process — so a stale stamp proves only that the
+    # HELPER stopped, never which of the two died. Resolve the recorded
+    # provider identity before the verdict: only affirmative proof that THAT
+    # provider (same pid, same starttime) is gone may kill.
+    provider_identity_verdict
+    case "$PROVIDER_VERDICT" in
+      gone)
+        # Stale pulse + stale heartbeat + no recent output + the recorded
+        # provider verifiably gone: positive death evidence, the one
+        # combination allowed to kill.
+        if [[ -f "$HEARTBEAT_FILE" ]]; then
+          log "zombie session=$SESSION pulse_age_s=$pulse_age activity_age_s=${activity_age:-unavailable} provider_pid=$PROVIDER_PID provider=gone action=kill-relaunch"
+          supervise_restart zombie 1
+        else
+          log "heartbeat-missing session=$SESSION pulse_age_s=$pulse_age activity_age_s=${activity_age:-unavailable} provider_pid=$PROVIDER_PID provider=gone action=kill-relaunch"
+          supervise_restart heartbeat-missing 1
+        fi
+        ;;
+      alive)
+        # The provider exists under the recorded start time: the pulse helper
+        # died ALONE. That is DEGRADED liveness, not death — tell the operator
+        # the positive signal is gone, never kill, and never restart the
+        # helper from here: the watchdog is a verdict engine, not a process
+        # manager, and adopting the helper would put a watchdog-owned writer
+        # on the very file the watchdog judges.
+        log "WATCHDOG NO-GO reason=liveness-pulse-degraded session=$SESSION pulse_age_s=$pulse_age provider_pid=$PROVIDER_PID provider_starttime=$PROVIDER_STARTTIME action=no-kill"
+        if nudge_due liveness-degraded "$SESSION" "$now_ms"; then
+          append_nudge "NUDGE liveness-pulse-degraded session=$SESSION provider_pid=$PROVIDER_PID pulse_age_s=$pulse_age needs=check-liveness-pulse"
+          record_nudge liveness-degraded "$SESSION" "$now_ms"
+        fi
+        ;;
+      *)
+        # unrecorded / unverifiable: no affirmative evidence in either
+        # direction — the same fail-closed rule as an absent pulse file.
+        # Alert, never kill. A genuinely dead PROCESS still recovers through
+        # the dead-session path above (its pane dies with it).
+        log "WATCHDOG NO-GO reason=provider-identity-$PROVIDER_VERDICT session=$SESSION pulse_age_s=$pulse_age identity_file=$LIVENESS_IDENTITY_FILE action=no-kill"
+        if nudge_due provider-identity "$SESSION" "$now_ms"; then
+          append_nudge "NUDGE provider-identity-$PROVIDER_VERDICT session=$SESSION liveness_file=$LIVENESS_FILE needs=check-liveness-pulse"
+          record_nudge provider-identity "$SESSION" "$now_ms"
+        fi
+        ;;
+    esac
   else
-    log "heartbeat-missing session=$SESSION action=kill-relaunch"
-    supervise_restart heartbeat-missing 1
+    # No usable pulse file. Stale-heartbeat + stale-output cannot distinguish a
+    # silent live turn from a corpse, so this is ambiguity: alert the operator
+    # (the pulse wrapper is broken or mispointed and liveness protection is
+    # degraded), never stop. A genuinely dead PROCESS is still recovered — the
+    # pane dies with it and the session_healthy check above relaunches.
+    log "WATCHDOG NO-GO reason=liveness-signal-absent session=$SESSION liveness_file=$LIVENESS_FILE activity_age_s=${activity_age:-unavailable} action=no-kill"
+    if nudge_due liveness-absent "$SESSION" "$now_ms"; then
+      append_nudge "NUDGE liveness-signal-absent session=$SESSION liveness_file=$LIVENESS_FILE needs=check-liveness-pulse"
+      record_nudge liveness-absent "$SESSION" "$now_ms"
+    fi
   fi
 fi
 

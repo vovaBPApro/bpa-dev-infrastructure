@@ -1,73 +1,60 @@
 # Coder terminal report: ag-ml1-alarm-classes
 
-commit: e3f4479a174228628051954e2293007c6aa321ff [CODER] record alarm readiness evidence
+commit: 62ed9beb1db2bcf8cb51dd813524e3ad85664a2b [CODER] preserve unknown and external terminal alarms
 verify: (cd daemon && bun test notify-handler.test.ts terminal-alert.test.ts && bun run typecheck) && (cd orchestrator && ORCH_SKIP_TRUST_CHECK=1 ./runtime.test.sh) && git diff --check origin/main...HEAD
-verify-count: 16/0
+verify-count: 18/0
 result: NO-GO
-blocker: Tier A orchestrator-core change requires independent re-review; the retained REJECT reviews a superseded SHA
+blocker: Tier A orchestrator-core change requires independent re-review of the current coder SHA
 secret-scan: clean
 remaining: independent re-review and landing evidence
 
-## Approach correction
+## Closed REJECT blockers
 
-The reviewer was correct. Sampling `#{pane_pipe}` for a short interval still
-treated a transient tmux child as classifier readiness. The replacement uses an
-affirmative ready-file handshake written by the real classifier process. Launch
-kills the new session unless both the pipe and that handshake are present.
-
-The other review blockers remain closed: `/notify` routes the internal audience
-to the orchestrator without invoking the Human relay, and the real HTTP handler
-tests the success and fail-closed paths.
+- Failure-looking terminal lines which match no declared pattern now route as
+  `unknown`; ordinary output remains ignored.
+- Audience classification is explicit, and the historical external `/notify`
+  path is locked through the real HTTP handler and Human sender boundary.
 
 ## FAIL-BEFORE
 
-The current lock files were copied into a disposable worktree at pre-fix commit
-`76d6b05`, then executed unchanged.
+The changed lock files were copied unchanged into a disposable detached
+worktree at pre-fix SHA `6a463b6`, then each named lock was executed.
 
-Command:
-
-```sh
-cd daemon && bun test terminal-alert.test.ts
-```
-
-Exit status was non-zero. Real output excerpt:
+Unknown terminal failure, exit 1:
 
 ```text
-Expected: true
-Received: false
-at <anonymous> (.../daemon/terminal-alert.test.ts:76:35)
-(fail) REGRESSION ML-1: classifier proves process readiness to its launcher [2017.10ms]
+Expected: "unknown"
+Received: null
+(fail) REGRESSION ML-1: an unclassified terminal failure remains actionable
+0 pass
+1 fail
 ```
 
-Command:
-
-```sh
-cd orchestrator && ORCH_SKIP_TRUST_CHECK=1 ./runtime.test.sh
-```
-
-Exit status was non-zero. Real terminal output:
+External routing boundary, exit 1:
 
 ```text
-started: test-orch (codex)
-FAIL: terminal alert pipe did not carry its readiness handshake path
+SyntaxError: Export named 'classifyNotifyAudience' not found
+0 pass
+1 fail
+1 error
 ```
 
 ## PASS-AFTER
 
-The `verify:` command above was run at the reported implementation SHA and
-exited successfully. Real output excerpts:
+The `verify:` command above exited 0 at the implementation SHA. Exact Bun
+summary:
 
 ```text
-(pass) internal /notify reaches the orchestrator and never the Human relay
-(pass) internal /notify fails closed when orchestrator delivery fails
-(pass) REGRESSION ML-1: classifier proves process readiness to its launcher
+18 pass
+0 fail
+29 expect() calls
+Ran 18 tests across 2 files.
 $ bunx tsc --noEmit
-ERROR terminal-alert-not-ready session=test-orch
 runtime tests: PASS
 ```
 
-The error line is the asserted fail-closed fixture: launch rejects a pipe that
-never proves classifier readiness and kills its session.
+The runtime output's two `ERROR terminal-alert-not-ready` lines are asserted
+negative fixtures; the script ended with `runtime tests: PASS` and exit 0.
 
 ## Consumption check
 

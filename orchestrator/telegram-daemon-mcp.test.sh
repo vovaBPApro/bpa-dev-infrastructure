@@ -17,10 +17,14 @@ expect_failure() {
 }
 
 printf '{"mcp_detached":true,"mcp_detached_duration_seconds":12}\n' > "$SCRATCH/detached.json"
-printf '{"mcp_detached":false}\n' > "$SCRATCH/connected.json"
+printf '{"mcp_detached":false,"connected":true}\n' > "$SCRATCH/connected.json"
+printf '{"mcp_detached":false,"connected":false}\n' > "$SCRATCH/contradictory.json"
+printf '{"mcp_detached":false}\n' > "$SCRATCH/missing-connected.json"
 printf '{"status":"ok"}\n' > "$SCRATCH/invalid.json"
 
 expect_failure "file://$SCRATCH/detached.json" detached 'mcp_detached:true for 12s'
+expect_failure "file://$SCRATCH/contradictory.json" contradictory 'MCP connectivity not proven'
+expect_failure "file://$SCRATCH/missing-connected.json" missing-connected 'MCP connectivity not proven'
 expect_failure "file://$SCRATCH/invalid.json" invalid 'invalid health response'
 expect_failure 'http://127.0.0.1:1' unavailable 'health endpoint unavailable'
 TELEGRAM_DAEMON_HEALTH_URL="file://$SCRATCH/connected.json" "$CHECK" |

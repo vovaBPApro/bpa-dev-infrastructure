@@ -2795,8 +2795,10 @@ const httpServer = createServer(
     if (req.method === 'GET' && url.pathname === '/health') {
       const binding = currentBinding();
       const transportConnected = activeServer !== null;
-      const alive = isConnectionAlive();
-      const connected = transportConnected && alive;
+      // Health is delivery evidence, so an SDK transport whose response cannot
+      // be inspected is disconnected rather than optimistically alive.
+      const connected = isConnectionAliveForStatus();
+      const alive = connected;
       const tmuxLive = binding?.tmux_session ? await tmuxAlive() : false;
       const mcpDetached = isMcpChannelDetached({
         provider: binding?.provider,

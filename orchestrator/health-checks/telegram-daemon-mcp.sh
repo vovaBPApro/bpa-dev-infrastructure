@@ -12,6 +12,7 @@ if ! health_json="$(curl -fsS --max-time "$timeout_seconds" "$health_url" 2>&1)"
 fi
 
 detached="$(printf '%s' "$health_json" | sed -n 's/.*"mcp_detached"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p')"
+connected="$(printf '%s' "$health_json" | sed -n 's/.*"connected"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p')"
 duration_seconds="$(printf '%s' "$health_json" | sed -n 's/.*"mcp_detached_duration_seconds"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')"
 
 if [ "$detached" = 'true' ]; then
@@ -21,8 +22,11 @@ if [ "$detached" = 'true' ]; then
     printf 'WARN telegram-daemon-mcp: mcp_detached:true for %ss\n' "$duration_seconds"
   fi
   exit 1
-elif [ "$detached" = 'false' ]; then
+elif [ "$detached" = 'false' ] && [ "$connected" = 'true' ]; then
   printf 'OK telegram-daemon-mcp: MCP connected\n'
+elif [ "$detached" = 'false' ]; then
+  printf 'WARN telegram-daemon-mcp: MCP connectivity not proven\n'
+  exit 1
 else
   printf 'WARN telegram-daemon-mcp: invalid health response\n'
   exit 1

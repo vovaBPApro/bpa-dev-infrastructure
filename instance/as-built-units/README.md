@@ -45,3 +45,38 @@ This is the written justification for those deviations.
 The as-built files remain immutable evidence of what was captured. The templates
 are the rebuildable desired state and the installer verifies their real SYSTEM
 activation.
+
+## `/tmp` compatibility check for `PrivateTmp=true`
+
+Before scheduling the daemon restart, the tracked and live daemon source were
+searched for `/tmp`, `tmpdir`, socket, Whisper, and ffmpeg use. Voice
+transcription creates a private `stt-*` directory through `os.tmpdir()`; ffmpeg
+and whisper-cli consume and produce files wholly inside it, and the directory is
+removed in `finally`. Telegram-to-tmux paste and `/screen` export each create a
+single `/tmp` file, consume it from the same daemon process through tmux or the
+Telegram client, and remove it. No daemon Unix-domain socket path uses `/tmp`.
+The live daemon's open file descriptors were also inspected; none referenced a
+file or Unix socket path under `/tmp`. A private namespace therefore does not
+break a cross-service file or socket hand-off in the current implementation.
+
+## Controlled restart plan (not executed by this change)
+
+1. Arrange an attended window with the operator because Telegram is the only
+   control channel; keep an independent shell open and record the current unit
+   and daemon health.
+2. Render the tracked units with `bootstrap/install.sh`, then run
+   `systemctl daemon-reload`. Do not use the installer's activation step for
+   this attended change because it may restart or start other units.
+3. Confirm `systemd-analyze verify /etc/systemd/system/bpa-telegram-daemon.service`
+   and inspect `systemctl cat bpa-telegram-daemon.service` for both hardening
+   directives.
+4. With the operator present, restart only `bpa-telegram-daemon.service` from
+   the independent shell. Confirm `active (running)`, Telegram text round-trip,
+   a voice-message transcription, `/screen`, and tmux delivery.
+5. If any check fails, restore the pre-change unit captured at step 1, run
+   `systemctl daemon-reload`, restart only the daemon, and repeat the text
+   round-trip. Preserve the failed journal and unit diff as `NO-GO` evidence.
+
+`bootstrap/check-unit-drift.sh` renders every tracked SYSTEM-unit template with
+the installation parameters and compares it byte-for-byte with the deployed
+unit. `bootstrap/install.sh --verify` now fails when any unit diverges.

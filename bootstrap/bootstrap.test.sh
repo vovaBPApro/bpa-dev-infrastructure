@@ -70,6 +70,25 @@ chmod 700 "$verify_fixture/bin"/*
 chmod 700 "$verify_fixture/root/workspace/workspace.sh"
 chmod 700 "$verify_fixture/root/orchestrator/watchdog.sh" "$verify_fixture/root/orchestrator/full-suite.sh" "$verify_fixture/root/orchestrator/morning.sh"
 chmod 700 "$verify_fixture/root/orchestrator/launch.sh" "$verify_fixture/opt/whisper.cpp/bin/whisper-cli"
+INSTALL_ROOT="$verify_fixture/root" \
+  ENV_FILE="$verify_fixture/root/.env" \
+  BUN_BIN="$verify_fixture/bin/bun" \
+  FULL_SUITE_ON_CALENDAR='*-*-* 03:30:00' \
+  ORCH_WATCHDOG_INTERVAL=60 \
+  envsubst < /dev/null >/dev/null
+render_fixture_unit() {
+  local unit_template="$1" unit_name
+  unit_name="$(basename "${unit_template%.in}")"
+  INSTALL_ROOT="$verify_fixture/root" \
+    ENV_FILE="$verify_fixture/root/.env" \
+    BUN_BIN="$verify_fixture/bin/bun" \
+    FULL_SUITE_ON_CALENDAR='*-*-* 03:30:00' \
+    ORCH_WATCHDOG_INTERVAL=60 \
+    envsubst < "$unit_template" > "$verify_fixture/systemd/system/$unit_name"
+}
+for unit_template in "$SCRIPT_DIR"/units/*.in; do
+  render_fixture_unit "$unit_template"
+done
 verify_output="$(PATH="$verify_fixture/bin:$PATH" \
   INSTALL_ROOT="$verify_fixture/root" \
   ENV_FILE="$verify_fixture/root/.env" \
@@ -85,7 +104,8 @@ for expected in \
   'PASS gate' \
   'PASS morning service' \
   'PASS morning timer' \
-  'PASS unit Exec paths'; do
+  'PASS unit Exec paths' \
+  'PASS deployed unit drift'; do
   grep -Fq "$expected" <<<"$verify_output"
 done
 grep -Fq 'PASS docker' <<<"$verify_output"
@@ -129,9 +149,27 @@ fi
 grep -Fq 'FAIL unit Exec paths' <<<"$broken_output"
 printf 'FAIL-BEFORE 148b9ad0 ExecStart=%s\n' "$old_watchdog_exec"
 grep '^FAIL unit Exec paths' <<<"$broken_output"
-printf '%s\n' \
-  '[Service]' \
-  "ExecStart=$verify_fixture/root/orchestrator/watchdog.sh" > "$verify_fixture/systemd/system/bpa-orchestrator-watchdog.service"
+render_fixture_unit "$SCRIPT_DIR/units/bpa-orchestrator-watchdog.service.in"
+
+# W-17 regression lock: a deployed unit that loses hardening must fail the
+# tracked-template comparison. This is the exact shape found on the live host.
+cp "$verify_fixture/systemd/system/bpa-telegram-daemon.service" "$verify_fixture/daemon.unit.good"
+sed -i '/^NoNewPrivileges=true$/d; /^PrivateTmp=true$/d' \
+  "$verify_fixture/systemd/system/bpa-telegram-daemon.service"
+if drift_output="$(TEMPLATE_DIR="$SCRIPT_DIR/units" \
+  INSTALL_ROOT="$verify_fixture/root" \
+  ENV_FILE="$verify_fixture/root/.env" \
+  BUN_BIN="$verify_fixture/bin/bun" \
+  SYSTEMD_SYSTEM_DIR="$verify_fixture/systemd/system" \
+  "$SCRIPT_DIR/check-unit-drift.sh" 2>&1)"; then
+  echo 'ERROR: unit drift check accepted missing daemon hardening' >&2
+  exit 1
+fi
+grep -Fq 'DRIFT bpa-telegram-daemon.service' <<<"$drift_output"
+grep -Fq -- '+NoNewPrivileges=true' <<<"$drift_output"
+grep -Fq -- '+PrivateTmp=true' <<<"$drift_output"
+printf '%s\n' 'FAIL-BEFORE W-17 deployed daemon missing NoNewPrivileges and PrivateTmp'
+mv "$verify_fixture/daemon.unit.good" "$verify_fixture/systemd/system/bpa-telegram-daemon.service"
 
 rm "$verify_fixture/systemd/system/orch-morning-report.timer"
 if missing_morning_output="$(PATH="$verify_fixture/bin:$PATH" \
@@ -147,7 +185,7 @@ fi
 grep -Fq 'FAIL morning timer' <<<"$missing_morning_output"
 printf '%s\n' 'FAIL-BEFORE missing morning timer'
 grep '^FAIL morning timer' <<<"$missing_morning_output"
-printf '%s\n' '[Timer]' > "$verify_fixture/systemd/system/orch-morning-report.timer"
+render_fixture_unit "$SCRIPT_DIR/units/orch-morning-report.timer.in"
 
 chmod 644 "$verify_fixture/root/.env"
 printf '%s\n' 'FAIL-BEFORE loose environment permissions'

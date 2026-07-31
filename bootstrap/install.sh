@@ -190,6 +190,12 @@ verify() {
   check "morning service" test -f "$SYSTEMD_SYSTEM_DIR/orch-morning-report.service"
   check "morning timer" test -f "$SYSTEMD_SYSTEM_DIR/orch-morning-report.timer"
   check "unit Exec paths" rendered_unit_exec_paths_status
+  check "deployed unit drift" env \
+    INSTALL_ROOT="$INSTALL_ROOT" ENV_FILE="$ENV_FILE" BUN_BIN="$BUN_BIN" \
+    SYSTEMD_SYSTEM_DIR="$SYSTEMD_SYSTEM_DIR" \
+    FULL_SUITE_ON_CALENDAR="${FULL_SUITE_ON_CALENDAR:-*-*-* 03:30:00}" \
+    ORCH_WATCHDOG_INTERVAL="${ORCH_WATCHDOG_INTERVAL:-60}" \
+    "$SCRIPT_DIR/check-unit-drift.sh"
   if ! systemd_system_available; then
     if "$source_only"; then
       skip "system systemd" "system manager unavailable (source mode)"

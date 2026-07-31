@@ -4,12 +4,18 @@
 }
 
 {$EDGE_DOMAIN} {
-	@oauth_callbacks path \
+	# The public surface is an explicit allowlist and nothing else. Two callback
+	# paths (Google is unified — the service is resolved from the OAuth `state`,
+	# so adding Gmail/Drive/Sheets never needs a new URL registered in the Google
+	# console), plus the routes that START a flow and report its state.
+	@oauth_public path \
  /api/integrations/qbo/callback \
- /api/integrations/gmail/callback \
- /api/integrations/drive/callback
+ /api/integrations/google/callback \
+ /api/integrations/qbo/connect \
+ /api/integrations/google/connect \
+ /api/integrations/status
 
-	handle @oauth_callbacks {
+	handle @oauth_public {
 		header X-BPA-Edge callback-proxy
 		reverse_proxy {$APP_UPSTREAM} {
 			header_up Host {upstream_hostport}

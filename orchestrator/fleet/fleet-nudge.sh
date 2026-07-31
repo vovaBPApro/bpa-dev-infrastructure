@@ -16,6 +16,7 @@ SESSION=bpa-orchestrator
 FLOOR=3
 BOARD=/root/bpa-dev-infrastructure/instance/workboard.md
 DAEMON=http://127.0.0.1:4822
+LOGFILE=/root/.cache/infra-lanes/fleet-nudge.log
 
 notify() { # text
   curl -s -m 10 -X POST "$DAEMON/notify" -H 'Content-Type: application/json' \
@@ -27,6 +28,16 @@ running=$(systemctl list-units --type=service --state=running --no-legend 'lane-
 [ "$running" -ge "$FLOOR" ] && exit 0
 
 open=$(grep -cE '^- \*\*(W|ML|NI|P)-[0-9]+' "$BOARD" 2>/dev/null || echo 0)
+
+# Every firing is recorded. This log is the honest metric of whether the
+# orchestrator holds the fleet by ITSELF: a nudge that fires often means the
+# orchestrator keeps ending its turn with the fleet idle, which is an
+# orchestrator defect, not a watchdog success. Vova asked for a number he can
+# demand at any time instead of taking the orchestrator's word (Telegram 314).
+# Query it with: tail /root/.cache/infra-lanes/fleet-nudge.log
+mkdir -p "$(dirname "$LOGFILE")" 2>/dev/null || true
+printf '%s fired running=%s floor=%s open_rows=%s\n' \
+  "$(date -Is)" "$running" "$FLOOR" "$open" >>"$LOGFILE" 2>/dev/null || true
 
 if [ "$open" -eq 0 ]; then
   # Nothing left to dispatch. This is the ONE case that legitimately goes to the

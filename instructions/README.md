@@ -16,6 +16,7 @@
 - [lang/typescript-ai-guidelines.md](lang/typescript-ai-guidelines.md) — TypeScript AI coding guidelines for TypeScript and TSX source files.
 - [lessons.md](lessons.md) — Operating lessons distilled from past failures into durable guidance.
 - [multi-project-isolation.md](multi-project-isolation.md) — Give each project an independent state root, secrets, identity, ports, leases, workspaces, logs, and mission store.
+- [operator-collaboration.md](operator-collaboration.md) — Compact binding directives for effective collaboration with Vova.
 - [operator-feedback.md](operator-feedback.md) — Treat operator input as test evidence and preserve the words that define work.
 - [orchestrator-cold-start.md](orchestrator-cold-start.md) — Exact cold-start path from a durable mission through dispatch, review, gated landing, and the final report.
 - [orchestrator-fallback.md](orchestrator-fallback.md) — Extra binding rules for an orchestrator running on a fallback (non-Anthropic, e.g. GPT) model when Fable/Anthropic quota is exhausted.

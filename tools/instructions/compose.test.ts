@@ -405,6 +405,17 @@ describe("compose.ts against the real repo", () => {
     }
   });
 
+  test("every role pack renders the operator collaboration body", () => {
+    const distinctiveLine =
+      "Escalate only as defined by the irreversible set in `instructions/autonomy-and-capacity.md`.";
+    for (const role of ["coder", "reviewer", "orchestrator", "manager"] as const) {
+      const result = runCompose(repoRoot, ["--role", role]);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("<!-- doc id=operator-collaboration ");
+      expect(result.stdout).toContain(distinctiveLine);
+    }
+  });
+
   test("real repo check --strict is clean (0 FAIL)", () => {
     const result = runCheck(repoRoot, ["--strict"]);
     expect(result.stdout).toContain("0 FAIL");

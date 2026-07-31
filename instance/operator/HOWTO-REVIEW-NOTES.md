@@ -54,3 +54,16 @@ Measured with `wc -l -c -w` after this refactor. No repository tokenizer is avai
 | CORE | 63 | 3,599 | 489 | ≈900 |
 
 If the alternative were attaching the full reference, the CORE saves 24,434 bytes, or ≈6,109 estimated tokens, per dispatch. Across 100 dispatches that is ≈610,850 estimated tokens.
+
+## 6. Resolution
+
+- Universal delivery to coder, reviewer, orchestrator, and manager was chosen.
+- The symlink was rejected because the landing payload guard rejects modified
+  symlinks; the compact file was moved into `instructions/` instead.
+- Short chat and quick answers are answer-first; substantive escalations,
+  decisions, and design proposals use Problem → Analysis → Tradeoffs →
+  Recommendation, with an optional alternative.
+- Chat follows `instructions/operator-feedback.md`; depth and evidence stay in
+  durable artifacts and are offered rather than sent.
+- Escalation follows only `instructions/autonomy-and-capacity.md`; binding
+  instructions take precedence over a conflicting full reference.

@@ -24,18 +24,15 @@ note. Derived-work items live here; Human directives stay in
   (Sweep tool landed 05689cdd; daily timer installer exists, not yet installed.)
 - **W-10 — install memory-sweep daily timer** on the host once W-08 triage
   is done (orchestrator/install-memory-sweep.sh).
-- **W-11 — confirm the top orchestrator's RESTING model tier with Vova** (low
-  priority; ask on his next natural exchange, do NOT page him for it). The box
-  now runs `claude-fable-5` (`instance/params.yaml: orchestrator.top_model`,
-  pinned in the gitignored `runtime.env` per the old orchestrator's 2026-07-31
-  ruling). That value is recorded **as run**, not as his decision — three
-  positions are on record and they disagree: Vova, 2026-07-30, «верхній
-  оркестратор має бути на Fable … щоб квота мінімально використовувалася»; the
-  old orchestrator's A8, a lean tier at rest with Fable as the *escalation* tier;
-  and `orchestrator/launch.sh`'s source default, `claude-opus-5`, which is what an
-  unpinned launch silently resolved to. When he answers, open a proper
-  `HR-<msg-id>.md` with his wording and point `top_model` at it. Until then the
-  gap is provenance, not configuration — the box is not blocked.
+- **W-11 — CLOSED 2026-07-31** by `instance/decisions/HR-269.md` (his verbatim
+  ruling; delete this row next pass). Rest on `claude-sonnet-5`, lanes to Codex,
+  GPT top-orchestrator armed as fallback, Fable escalation-only. Two things this
+  row had WRONG and that the closure corrects: it stated "the box now runs
+  `claude-fable-5`" — the host actually pinned `claude-opus-5`
+  (`bash orchestrator/launch.sh model` → `claude_model=claude-opus-5`), so the
+  thin posture was never in force; and it treated Vova's «на Fable» as the
+  answer, when his own usage evidence shows Fable is his tightest bucket (79%
+  used) and therefore the wrong place to rest. Applies at the next relaunch.
 
 - **W-14 — make /status human-useful** (`instance/decisions/HR-150.md`): the
   command currently prints raw daemon JSON + `plan: n/a`; Vova gets zero value

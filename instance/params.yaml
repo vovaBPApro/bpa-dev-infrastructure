@@ -58,23 +58,25 @@ orchestrator:
   # Pinned in source (orchestrator/launch.sh CLAUDE_MODEL) for the same reason
   # as fallback_model below: an unpinned claude launch emits no --model and the
   # top orchestrator silently becomes the account default.
-  top_model: claude-fable-5        # AS RUN on this box: ORCH_CLAUDE_MODEL in runtime.env.
-  # Ruling of 2026-07-31 (old orchestrator, /root/orch-mailbox/from-oldorch.md).
-  # The source default is claude-opus-5, and an unpinned launch resolves to it —
-  # which is a value nobody chose and the heaviest of the three positions on
-  # record (Vova: thin top on Fable; old orch: lean at rest, Fable on escalation;
-  # the tree: Opus). Pinned per-host so the relaunch cannot land on the default
-  # and page him about a configuration no one decided.
-  # Confirmed by the launcher itself, not by inference:
-  #   `bash orchestrator/launch.sh model` -> claude_model=claude-fable-5
+  top_model: claude-sonnet-5       # HUMAN RULING: instance/decisions/HR-269.md (Vova, 2026-07-31).
+  # Rest on Sonnet — NOT Fable, NOT Opus. Fable is escalation-only because his own
+  # usage screenshots show it is his TIGHTEST bucket (79% used), so resting there
+  # would eat the reserve he wants kept for hard problems. This SUPERSEDES his
+  # 2026-07-30 "thin top on Fable" position by his own evidence, same goal.
+  # CORRECTION 2026-07-31: this key previously read `claude-fable-5` and claimed
+  # "AS RUN ... confirmed by the launcher -> claude_model=claude-fable-5". That was
+  # FALSE. The host pinned ORCH_CLAUDE_MODEL=claude-opus-5, so the thin posture was
+  # never in force and the heaviest tier was burning the scarcest quota.
+  # Ground truth at the time of correction, re-run rather than trusted:
+  #   `bash orchestrator/launch.sh model` -> claude_model=claude-opus-5
+  # Applies at the next relaunch; runtime.env is the host pin that enforces it.
   top_model_source: runtime.env    # host pin; orchestrator/launch.sh CLAUDE_MODEL is the fallback default
   top_model_status: pinned         # orchestrator/model-command.test.sh locks the emitted --model;
   # ORCH_CLAUDE_MODEL in runtime.env overrides the source default per host, and
   # the Telegram /model command writes that same name, so an operator switch and
   # this pin cannot disagree.
-  # OPEN: this records what the box runs, not a Human ruling. Vova has not been
-  # asked to confirm the resting tier. Replace with an HR row citing his words
-  # when he does — the three positions above still do not agree.
+  # CLOSED 2026-07-31: he was asked and he ruled — instance/decisions/HR-269.md
+  # carries his verbatim words. This is now a Human ruling, not an as-run record.
   # Escalation tier reachable from Telegram (`/model fable`); switch up for a
   # hairy incident, back down after. Selectable set: daemon/model-registry.ts.
   escalation_model: claude-fable-5 # instance/handoff-oldorch-2026-07-30.md §1; verified runnable 2026-07-30

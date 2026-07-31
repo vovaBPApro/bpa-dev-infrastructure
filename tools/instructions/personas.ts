@@ -58,7 +58,6 @@ const KNOWN_KEYS = new Set([
   "persona",
   "role",
   "role-mapping",
-  "role-agnostic",
   "proposed-role",
   "status",
   "summary",
@@ -95,7 +94,6 @@ export type PersonaProfile = {
   name: string;
   role: PersonaRole;
   roleMapping: (typeof ROLE_MAPPINGS)[number];
-  roleAgnostic?: true;
   proposedRole?: string;
   status: string;
   summary: string;
@@ -138,10 +136,6 @@ export function validatePersona(
   const mapping = frontmatter["role-mapping"];
   if (!ROLE_MAPPINGS.includes(mapping as (typeof ROLE_MAPPINGS)[number])) {
     errors.push(`role-mapping must be one of ${ROLE_MAPPINGS.join("|")} (got '${String(mapping)}')`);
-  }
-  const roleAgnostic = frontmatter["role-agnostic"];
-  if (roleAgnostic !== undefined && roleAgnostic !== true) {
-    errors.push(`role-agnostic, when present, must be boolean true (got '${String(roleAgnostic)}')`);
   }
   const proposedRole = frontmatter["proposed-role"];
   if (mapping === "proposed") {
@@ -259,7 +253,6 @@ export function validatePersona(
       name: name as string,
       role: role as PersonaRole,
       roleMapping: mapping as (typeof ROLE_MAPPINGS)[number],
-      ...(roleAgnostic === true ? { roleAgnostic: true as const } : {}),
       ...(typeof proposedRole === "string" ? { proposedRole } : {}),
       status: status as string,
       summary: summary as string,

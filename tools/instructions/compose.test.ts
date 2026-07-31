@@ -303,8 +303,6 @@ describe("compose.ts", () => {
       .replace("persona: denys", "persona: bohdan")
       .replace("role: coder", "role: reviewer")
       .replace("Simplicity-first coder.", "Adversarial reviewer.");
-  const PERSONA_AGNOSTIC =
-    PERSONA_REVIEWER.replace("role-mapping: real", "role-mapping: real\nrole-agnostic: true");
 
   test("without --persona the coder output is byte-identical to the committed pre-feature golden", () => {
     const bare = repoWith({ docs: DOCS, tags: TAGS, packs: PACKS });
@@ -386,18 +384,6 @@ describe("compose.ts", () => {
     const result = runCompose(repo, ["--role", "coder", "--persona", "denys"]);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("## PERSONA (behavior only)");
-  });
-
-  test("--persona accepts explicit role-agnostic: true across roles", () => {
-    const repo = repoWith({
-      docs: DOCS,
-      tags: TAGS,
-      packs: PACKS,
-      personas: { "bohdan.md": PERSONA_AGNOSTIC },
-    });
-    const result = runCompose(repo, ["--role", "coder", "--persona", "bohdan"]);
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain("- bohdan  sha256:");
   });
 
   test("unknown persona is a hard error, non-zero exit", () => {

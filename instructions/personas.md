@@ -69,10 +69,8 @@ Frontmatter (closed key set, validated):
 
 - `persona:` kebab-case name, must equal the filename.
 - `role:` a REAL infra role — orchestrator | manager | coder | reviewer
-  (`instructions/roles.md`). Nothing else exists.
-- `role-agnostic:` optional; the only accepted value is boolean `true`, which
-  explicitly permits attachment across real roles. When absent, `role:` must
-  match the compose `--role`.
+  (`instructions/roles.md`). Nothing else exists. The declared role must match
+  the compose `--role`.
 - `role-mapping:` `real`, or `proposed` when the roster wants a role the infra
   lacks (architect, researcher, operations, PM, UX…). `proposed` requires
   `proposed-role:`; compose still matches the declared real `role:`. Extending

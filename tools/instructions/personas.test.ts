@@ -57,7 +57,6 @@ describe("validatePersona", () => {
     expect(parsed!.name).toBe("denys");
     expect(parsed!.role).toBe("coder");
     expect(parsed!.roleMapping).toBe("real");
-    expect(parsed!.roleAgnostic).toBeUndefined();
     expect(parsed!.status).toBe("draft-for-discussion");
   });
 
@@ -204,19 +203,6 @@ describe("validatePersona", () => {
     expect(forbidden.errors.join("; ")).toContain("only allowed with role-mapping: proposed");
   });
 
-  test("role-agnostic accepts only explicit boolean true", () => {
-    const allowed = validatePersona(profile({ "role-agnostic": true }));
-    expect(allowed.errors).toEqual([]);
-    expect(allowed.profile!.roleAgnostic).toBe(true);
-
-    for (const value of [false, "yes"]) {
-      const { errors } = validatePersona(profile({ "role-agnostic": value }));
-      expect(errors.join("; ")).toContain(
-        "role-agnostic, when present, must be boolean true",
-      );
-    }
-  });
-
   test("status outside draft-for-discussion is a failure (phase-1 closed enum)", () => {
     const { errors } = validatePersona(profile({ status: "approved" }));
     expect(errors.join("; ")).toContain("status must be one of");
@@ -225,6 +211,12 @@ describe("validatePersona", () => {
   test("an unknown frontmatter key is a failure", () => {
     const { errors } = validatePersona(profile({ "trust-score": "0.9" }));
     expect(errors.join("; ")).toContain("unknown frontmatter key 'trust-score'");
+  });
+
+  test("the removed cross-role escape key is rejected by the closed key set", () => {
+    const removedKey = ["role", "agnostic"].join("-");
+    const { errors } = validatePersona(profile({ [removedKey]: true }));
+    expect(errors.join("; ")).toContain(`unknown frontmatter key '${removedKey}'`);
   });
 
   test("no frontmatter block is a failure", () => {

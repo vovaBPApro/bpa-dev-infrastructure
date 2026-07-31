@@ -514,21 +514,25 @@ export function queryOrchestratorHost(root: string): OrchestratorHostState {
 }
 
 export function countOpenWorkboardRows(source: string): number {
-  const lines = source.split('\n');
-  const start = lines.findIndex((line) => /^## Open(?:\s|$)/.test(line));
-  if (start < 0) {
-    throw new Error('instance/workboard.md has no ## Open section');
+  const row = /^- <!-- status: (open|done|blocked|superseded) --> \*\*([A-Z]+-(?:[0-9]+|GOV))\s+—/;
+  const candidate = /^- (?:<!-- status: [^>]+ --> )?\*\*[A-Z]+-(?:[0-9]+|GOV)\s+—/;
+  const seen = new Set<string>();
+  let rows = 0;
+  let open = 0;
+  for (const [index, line] of source.split('\n').entries()) {
+    if (!candidate.test(line)) continue;
+    rows++;
+    const match = line.match(row);
+    if (!match) {
+      throw new Error(`malformed workboard row at line ${index + 1}`);
+    }
+    const [, status, id] = match;
+    if (seen.has(id)) throw new Error(`duplicate workboard id: ${id}`);
+    seen.add(id);
+    if (status === 'open') open++;
   }
-  const nextSection = lines.findIndex(
-    (line, index) => index > start && /^##(?:\s|$)/.test(line),
-  );
-  return lines
-    .slice(start + 1, nextSection < 0 ? undefined : nextSection)
-    .filter(
-      (line) =>
-        /^- \*\*/.test(line) &&
-        !/^- \*\*[^*]*\bCLOSED\b/.test(line),
-    ).length;
+  if (rows === 0) throw new Error('instance/workboard.md has no parseable rows');
+  return open;
 }
 
 export function checkFleetIdle(

@@ -18,16 +18,56 @@ BOARD=/root/bpa-dev-infrastructure/instance/workboard.md
 DAEMON=http://127.0.0.1:4822
 LOGFILE=/root/.cache/infra-lanes/fleet-nudge.log
 
+count_open_rows() { # board
+  awk '
+    BEGIN { open = 0; rows = 0; bad = 0 }
+    /^- / && /\*\*[A-Z]+-([0-9]+|GOV)[[:space:]]+—/ {
+      rows++
+      line = $0
+      if (line !~ /^- <!-- status: (open|done|blocked|superseded) --> \*\*[A-Z]+-([0-9]+|GOV)[[:space:]]+—/) {
+        printf "fleet-nudge: malformed workboard row at line %d: %s\n", NR, $0 > "/dev/stderr"
+        bad = 1
+        next
+      }
+      id = line
+      sub(/^- <!-- status: (open|done|blocked|superseded) --> \*\*/, "", id)
+      sub(/[[:space:]]+—.*/, "", id)
+      if (seen[id]++) {
+        printf "fleet-nudge: duplicate workboard id at line %d: %s\n", NR, id > "/dev/stderr"
+        bad = 1
+      }
+      if (line ~ /^- <!-- status: open -->/) open++
+    }
+    END {
+      if (rows == 0) {
+        print "fleet-nudge: no parseable workboard rows" > "/dev/stderr"
+        exit 2
+      }
+      if (bad) exit 2
+      print open
+    }
+  ' "$1"
+}
+
+if [ "${1:-}" = "--count-open" ]; then
+  [ "$#" -eq 2 ] || { echo "usage: $0 --count-open WORKBOARD" >&2; exit 2; }
+  count_open_rows "$2"
+  exit $?
+fi
+
 notify() { # text
   curl -s -m 10 -X POST "$DAEMON/notify" -H 'Content-Type: application/json' \
     --data "$(printf '{"text":%s}' "$(printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')")" \
     >/dev/null 2>&1
 }
 
+if ! open=$(count_open_rows "$BOARD"); then
+  echo "fleet-nudge: refusing to run with an unparseable workboard: $BOARD" >&2
+  exit 2
+fi
+
 running=$(systemctl list-units --type=service --state=running --no-legend 'lane-*' 2>/dev/null | wc -l)
 [ "$running" -ge "$FLOOR" ] && exit 0
-
-open=$(grep -cE '^- \*\*(W|ML|NI|P)-[0-9]+' "$BOARD" 2>/dev/null || echo 0)
 
 # Every firing is recorded. This log is the honest metric of whether the
 # orchestrator holds the fleet by ITSELF: a nudge that fires often means the

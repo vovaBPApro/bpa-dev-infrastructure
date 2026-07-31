@@ -80,7 +80,8 @@ Four steps, in order:
 | `land-branch.sh` | landing guard — refuses worktree merges, silent no-ops, and unpushed "landed" claims |
 | `launch-lane.test.sh` | real compose/gate/worktree dispatch proof with a mocked system manager boundary |
 | `as-run-*.sh` | superseded, host-bound historical wave evidence |
-| `fleet-nudge.sh` | STOPGAP watchdog — wakes the orchestrator when lanes fall below floor while the workboard has open rows; asks the Human when the board is empty or the orchestrator is down |
+| `fleet-nudge.sh` | STOPGAP watchdog — validates explicit workboard statuses, counts only `open` rows, and refuses malformed/duplicate rows |
+| `fleet-nudge.test.sh` | regression lock for honest open-row counting and fail-closed parsing |
 | `orch-fleet-nudge.service` / `.timer` | systemd units for the above (installed to `/etc/systemd/system/`, 10-minute interval) |
 
 `fleet-nudge.sh` is explicitly temporary: ML-2 (`ag-ml2-autonomy-keepalive`)

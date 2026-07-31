@@ -186,7 +186,15 @@ if (hostReason) {
         'Привіт! Це тестове голосове повідомлення для оркестратора.',
         raw,
       );
-      const result = await transcribeAudio(raw, { ...cfg, language: 'uk' });
+      // This is an engine acceptance test, not the production latency SLA.
+      // A constrained isolated lane can need more than the 180 s runtime
+      // budget for large-v3-turbo; keep the real model assertion and give the
+      // fixture an explicit test-only resource budget.
+      const result = await transcribeAudio(raw, {
+        ...cfg,
+        language: 'uk',
+        timeoutMs: 300_000,
+      });
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.text.length).toBeGreaterThan(0);
@@ -195,7 +203,7 @@ if (hostReason) {
         expect(/[А-Яа-яІіЇїЄєҐґ]/.test(result.text)).toBe(true);
       }
     },
-    240_000,
+    330_000,
   );
 
   test(

@@ -89,7 +89,7 @@ function shortHash(contents: string): string {
 }
 
 function repositorySha(repo: string): string {
-  return execFileSync("git", ["-C", repo, "rev-parse", "--short", "HEAD"], {
+  return execFileSync("git", ["-C", repo, "rev-parse", "--short=8", "HEAD"], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
   }).trim();

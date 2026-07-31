@@ -106,6 +106,26 @@ const TAGS = "lane\nverification\nsecurity\nreview\n";
 const PACKS = "[coder]\nlane-lifecycle\nverification-and-locks\n\n[reviewer]\nreview-policy\n";
 
 describe("compose.ts", () => {
+  test("stamps a deterministic eight-character SHA regardless of local core.abbrev", () => {
+    const repo = repoWith({ docs: DOCS, tags: TAGS, packs: PACKS });
+    const git = (...args: string[]) => spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+    expect(git("init").status).toBe(0);
+    expect(git("config", "user.name", "Compose Test").status).toBe(0);
+    expect(git("config", "user.email", "compose-test@example.invalid").status).toBe(0);
+    expect(git("add", ".").status).toBe(0);
+    expect(git("commit", "-m", "fixture").status).toBe(0);
+    expect(git("config", "core.abbrev", "7").status).toBe(0);
+    const expected = git("rev-parse", "--short=8", "HEAD").stdout.trim();
+
+    const result = runCompose(repo, ["--role", "coder"]);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.split("\n", 1)[0]).toBe(
+      `${PACK_MARKER_PREFIX} role=coder l1=${expected} -->`,
+    );
+    expect(expected).toHaveLength(8);
+  });
+
   test("baseline pack for the role is always present, marker header stamped", () => {
     const repo = repoWith({ docs: DOCS, tags: TAGS, packs: PACKS });
     const result = runCompose(repo, ["--role", "coder"]);

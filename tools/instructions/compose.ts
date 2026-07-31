@@ -186,7 +186,7 @@ export function readPacks(repo: string): PackConfig {
 // git is unavailable (e.g. an exported tree) so the composer still runs.
 function gitSha(repo: string): string {
   try {
-    return execFileSync("git", ["-C", repo, "rev-parse", "--short", "HEAD"], {
+    return execFileSync("git", ["-C", repo, "rev-parse", "--short=8", "HEAD"], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();

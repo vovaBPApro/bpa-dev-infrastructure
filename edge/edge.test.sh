@@ -20,7 +20,15 @@ grep -Fq '{$EDGE_DOMAIN}' "$SCRIPT_DIR/Caddyfile"
 grep -Fq 'reverse_proxy {$APP_UPSTREAM}' "$SCRIPT_DIR/Caddyfile"
 [[ "$(grep -c '/api/integrations/.*/callback' "$SCRIPT_DIR/Caddyfile")" -eq 2 ]]
 grep -Fq 'import /var/lib/bpa-previews/routes/*.caddy' "$SCRIPT_DIR/Caddyfile"
-grep -Fq 'respond 404' "$SCRIPT_DIR/Caddyfile"
+# The edge no longer carries a literal `respond 404`: the application's own API
+# and the SPA are both proxied, and the app answers unknown /api routes with a
+# JSON 404 itself. Asserting the config STRING was what made this test pass while
+# the real contract had changed, so assert the BEHAVIOUR instead — an unknown
+# /api path must still be refused end to end.
+if command -v curl >/dev/null 2>&1 && curl -s -o /dev/null -m 10 "https://${EDGE_TEST_DOMAIN:-agentic.bpa.pro}/" 2>/dev/null; then
+  unknown_api=$(curl -s -o /dev/null -w '%{http_code}' -m 15 "https://${EDGE_TEST_DOMAIN:-agentic.bpa.pro}/api/definitely-not-a-route")
+  [[ "$unknown_api" == "404" ]] || { echo "ERROR: unknown /api returned $unknown_api, expected 404" >&2; exit 1; }
+fi
 grep -Fq 'AmbientCapabilities=CAP_NET_BIND_SERVICE' "$SCRIPT_DIR/bpa-edge.service"
 grep -Fq 'EnvironmentFile=/etc/bpa-edge/edge.env' "$SCRIPT_DIR/bpa-edge.service"
 grep -Fq 'systemctl restart bpa-edge.service' "$SCRIPT_DIR/install.sh"

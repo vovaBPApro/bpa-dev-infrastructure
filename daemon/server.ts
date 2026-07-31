@@ -1924,13 +1924,67 @@ function commandToProviderCmd(cmd: string): string {
   return ORCHESTRATOR_CLAUDE_CMD;
 }
 
-function wrappedTelegramPrompt(
+function encodeChannelControls(
+  value: string,
+  preserveBodyLayout: boolean,
+): string {
+  const controls = preserveBodyLayout
+    ? /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g
+    : /[\u0000-\u001f\u007f-\u009f]/g;
+  return value.replace(
+    controls,
+    (char) =>
+      `\\u${char.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')}`,
+  );
+}
+
+/**
+ * Channel-body escaping is the terminal/model trust boundary.
+ *
+ * - `&`, `<`, and `>` become `&amp;`, `&lt;`, and `&gt;`.
+ * - C0 controls other than body-layout LF/TAB, plus DEL/C1 controls, become
+ *   visible fixed-width `\uNNNN` text (for example ESC becomes `\u001B`).
+ * - Attribute values use the same rules, encode every control including
+ *   LF/TAB, and additionally encode both quote characters.
+ *
+ * Ampersand is escaped first, so attacker-supplied entity text remains data
+ * (`&lt;` becomes `&amp;lt;`). The terminal therefore receives no body byte
+ * sequence that can terminate the daemon-authored `<channel>` structure.
+ */
+function sanitizeChannelBody(value: string): string {
+  return encodeChannelControls(value, true)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function sanitizeChannelAttribute(value: string): string {
+  return encodeChannelControls(value, false)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function serializeTelegramChannel(
   content: string,
   meta: Record<string, string>,
 ): string {
   const attrs = Object.entries(meta)
-    .map(([k, v]) => `${k}="${String(v).replace(/"/g, '&quot;')}"`)
+    .map(
+      ([key, value]) =>
+        `${key}="${sanitizeChannelAttribute(String(value))}"`,
+    )
     .join(' ');
+  const opening = `<channel source="telegram"${attrs ? ` ${attrs}` : ''}>`;
+  return `${opening}\n${sanitizeChannelBody(content)}\n</channel>`;
+}
+
+function wrappedTelegramPrompt(
+  content: string,
+  meta: Record<string, string>,
+): string {
   const binding = currentBinding();
   const hint =
     meta.chat_id && binding?.provider === 'codex'
@@ -1938,7 +1992,7 @@ function wrappedTelegramPrompt(
       : meta.chat_id
         ? ` [reply via mcp__telegram-daemon__reply chat_id=${meta.chat_id}]`
         : '';
-  return `<channel source="telegram" ${attrs}>\n${content}\n</channel>${hint}`;
+  return `${serializeTelegramChannel(content, meta)}${hint}`;
 }
 
 async function flushBufferedMessagesToTmux(): Promise<number> {
@@ -2119,7 +2173,12 @@ async function handleSessionCommand(
   text: string,
   chat_id: string,
 ): Promise<boolean> {
-  const cmd = text.trim().split(/\s+/)[0]?.toLowerCase();
+  const normalized = text.trim();
+  // Only a single-line caption is command syntax. Multiline slash-prefixed
+  // input is forwarded as untrusted channel data, never partly executed as a
+  // command while its remaining lines are sent to the model.
+  if (normalized.includes('\n') || normalized.includes('\r')) return false;
+  const cmd = normalized.split(/\s+/)[0]?.toLowerCase();
   if (!cmd?.startsWith('/')) return false;
 
   // Commands that don't need tmux
@@ -2947,10 +3006,7 @@ bot.on('callback_query:data', async (ctx) => {
     // model sees it via terminal regardless of MCP transport state.
     const tmuxLiveForDecision = TMUX_SESSION ? await tmuxAlive() : false;
     if (tmuxLiveForDecision) {
-      const decisionAttrs = Object.entries(meta)
-        .map(([k, v]) => `${k}="${String(v).replace(/"/g, '&quot;')}"`)
-        .join(' ');
-      const decisionWrapped = `<channel source="telegram" ${decisionAttrs}>\n${content}\n</channel>`;
+      const decisionWrapped = serializeTelegramChannel(content, meta);
       void tmuxPasteText(decisionWrapped).catch((err) => {
         process.stderr.write(
           `${LOG_PREFIX} tmux decision paste failed: ${err}\n`,

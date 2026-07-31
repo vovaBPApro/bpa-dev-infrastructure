@@ -13,7 +13,9 @@
 #   $PREFIX/.version                   marker for idempotent rebuild skips
 #
 # Everything is checksum-verified and the script is safe to re-run: completed
-# steps are detected and skipped. Run as root (or with a writable PREFIX).
+# steps are detected and skipped. Every run verifies that the release tag still
+# resolves to the pinned commit before source/model download or installed-binary
+# execution. Run as root (or with a writable PREFIX).
 #
 # Env overrides:
 #   WHISPER_PREFIX      install root            (default /opt/whisper.cpp)
@@ -38,8 +40,9 @@ VERSION="${WHISPER_VERSION:-v1.9.1}"
 #       "f049fff" in its build info.
 # The source below is fetched BY THIS SHA, not by the tag — git content
 # addressing makes the SHA the identity of the code. A moved or deleted tag
-# cannot substitute different code: it trips the moved-tag check and the
-# post-checkout rev-parse check, and the install refuses to build.
+# cannot substitute different code: on every invocation it trips the moved-tag
+# check before install-state handling, and a fresh build also retains the
+# post-checkout rev-parse check.
 DEFAULT_COMMIT="f049fff95a089aa9969deb009cdd4892b3e74916"
 COMMIT="${WHISPER_COMMIT:-}"
 if [[ -z "$COMMIT" ]]; then
@@ -88,7 +91,16 @@ if ((${#need_pkgs[@]})); then
     || die "apt-get install ${need_pkgs[*]} failed"
 fi
 
-# ── 2. Build whisper-cli (skipped when the pinned version is already there) ──
+# ── 2. Verify release provenance on every invocation ─────────────────────────
+# Query both the tag and its peeled form. git prints the peeled annotated-tag
+# row last for these two patterns, while lightweight tags have only one row, so
+# awk END preserves the required "prefer peeled commit" semantics.
+tag_sha="$(git ls-remote "$REPO_URL" "refs/tags/$VERSION" "refs/tags/$VERSION^{}" | awk 'END{print $1}')"
+[[ -n "$tag_sha" ]] || die "cannot resolve tag $VERSION on $REPO_URL"
+[[ "$tag_sha" == "$COMMIT" ]] \
+  || die "tag $VERSION moved: remote says $tag_sha, pinned $COMMIT — refusing to build"
+
+# ── 3. Build whisper-cli (skipped when the pinned version is already there) ──
 mkdir -p "$PREFIX/bin" "$PREFIX/models"
 
 # The marker records tag AND commit: changing the pin (same tag) must trigger
@@ -103,14 +115,6 @@ if [[ -x "$PREFIX/bin/whisper-cli" ]] \
 else
   build_dir="$(mktemp -d /tmp/whisper-build.XXXXXX)"
   trap 'rm -rf "$build_dir"' EXIT
-
-  # Moved-tag tripwire: if the release tag no longer points at the pinned
-  # commit, upstream history was rewritten or the tag was re-pointed. That is
-  # a hard failure — never silently build different code than the pin.
-  tag_sha="$(git ls-remote "$REPO_URL" "refs/tags/$VERSION" "refs/tags/$VERSION^{}" | awk 'END{print $1}')"
-  [[ -n "$tag_sha" ]] || die "cannot resolve tag $VERSION on $REPO_URL"
-  [[ "$tag_sha" == "$COMMIT" ]] \
-    || die "tag $VERSION moved: remote says $tag_sha, pinned $COMMIT — refusing to build"
 
   # Fetch BY the pinned SHA (not the tag) and verify the checkout matches it.
   log "fetching $REPO_URL @ pinned commit $COMMIT (tag $VERSION)"
@@ -140,7 +144,7 @@ else
   log "installed $PREFIX/bin/whisper-cli ($MARKER)"
 fi
 
-# ── 3. Models (checksum-verified, idempotent) ────────────────────────────────
+# ── 4. Models (checksum-verified, idempotent) ────────────────────────────────
 fetch_model() {
   local name="$1" sha="$2" dest="$PREFIX/models/$1"
   if [[ -f "$dest" ]]; then
@@ -169,7 +173,7 @@ if [[ "${WHISPER_SKIP_MEDIUM:-0}" != "1" ]]; then
   fetch_model "ggml-medium.bin" "$MEDIUM_SHA256"
 fi
 
-# ── 4. Smoke transcription (fail-closed: installer only reports success when
+# ── 5. Smoke transcription (fail-closed: installer only reports success when
 #      a real end-to-end transcription ran) ──────────────────────────────────
 smoke_dir="$(mktemp -d /tmp/whisper-smoke.XXXXXX)"
 trap 'rm -rf "$smoke_dir"' EXIT

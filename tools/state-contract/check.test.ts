@@ -5,9 +5,16 @@
 // that assertion ever passes trivially the checker is decoration.
 
 import { expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { isolatedTestEnv } from '../../daemon/test-env';
 import {
   type Artifact,
   KNOWN_GAPS,
@@ -16,7 +23,6 @@ import {
   checkFleetIdle,
   collapseAtomicTempSiblings,
   normalizeInterpolation,
-  queryOrchestratorHost,
   stripComments,
   sweepArtifacts,
 } from './check';
@@ -76,19 +82,28 @@ test('FLEET-IDLE locks open work against the measured system lane fleet', () => 
   });
 });
 
-test('FLEET-IDLE is not applicable without positive orchestrator runtime evidence', () => {
-  const priorPath = process.env.PATH;
-  const emptyPath = mkdtempSync(join(tmpdir(), 'state-contract-path-'));
+test('CLI reports FLEET-IDLE not applicable without positive orchestrator runtime evidence', () => {
+  const ciPath = mkdtempSync(join(tmpdir(), 'state-contract-ci-path-'));
   try {
-    process.env.PATH = emptyPath;
-    expect(queryOrchestratorHost(import.meta.dir)).toEqual({
-      applicable: false,
-      reason:
-        'live orchestrator tmux session is not observable (tmux unavailable)',
+    symlinkSync(process.execPath, join(ciPath, 'bun'));
+    symlinkSync('/usr/bin/git', join(ciPath, 'git'));
+    const proc = Bun.spawnSync([
+      process.execPath,
+      join(import.meta.dir, 'check.ts'),
+      join(import.meta.dir, '../..'),
+    ], {
+      env: isolatedTestEnv({ PATH: ciPath, HOME: tmpdir() }),
     });
+    const output =
+      new TextDecoder().decode(proc.stdout) +
+      new TextDecoder().decode(proc.stderr);
+    expect(proc.exitCode).toBe(0);
+    expect(output).toContain(
+      'NOT-APPLICABLE FLEET-IDLE: live bpa-orchestrator tmux session ' +
+        'is not observable (tmux unavailable)',
+    );
   } finally {
-    process.env.PATH = priorPath;
-    rmSync(emptyPath, { recursive: true, force: true });
+    rmSync(ciPath, { recursive: true, force: true });
   }
 });
 

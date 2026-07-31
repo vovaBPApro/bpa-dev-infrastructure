@@ -1,12 +1,12 @@
 # Independent review — ag-ml2-autonomy-keepalive
 
-reviewer: Codex reviewer lane `ag-ml2-autonomy-keepalive` (independent of coder)
-independence: independent reviewer session; this reviewer did not author the implementation commit
-tier: Tier A — daemon/orchestrator core and fail-closed evidence/runtime guarantee
-reviewed-sha: 60a5d96624563a7dee0d7fea2fd45d95a9172853
+reviewer: Codex reviewer lane `ag-ml2-autonomy-keepalive`
+independence: independent reviewer session; reviewer did not author the implementation
+tier: Tier A — orchestrator core and fail-closed delivery
+reviewed-sha: a6ed8eeeadd258e176213c6d2e089aee4a40cbba
 base-sha: 62eb1717b068895fa60dc2ed918581689a587b03 (`origin/main`)
-diff: `git diff origin/main...HEAD`
-verdict: REJECT
+diff: `git diff origin/main...a6ed8eeeadd258e176213c6d2e089aee4a40cbba`
+verdict: ACCEPT
 
 ## Manifest consumption check
 
@@ -16,153 +16,118 @@ verification-and-locks sha256:b13ed13070c1 # Verification and Regression Locks
 roles sha256:cd4c40c4e640 # Roles
 instruction-layers sha256:f9a51936be92 # Instruction Layers
 tool-permissions sha256:6c7b9f57fbbd # Tool Permissions
+reproducible-from-git sha256:822d9efe694b # Reproducible From Git
 ```
 
-## Findings
+## Findings and prior-blocker disposition
 
-1. **BLOCKER — the event-level path silently consumes a failed delivery.**
-   `daemon/server.ts:1515-1525` returns normally both when tmux is unavailable
-   and when `tmuxPasteText()` returns `false`. `daemon/autonomy-keepalive.ts:67-73`
-   consequently advances `previousRunning` after that unresolved delivery. On
-   the next poll the stopped lane is no longer a transition, so the event nudge
-   is never retried. This is a fail-open result: the checker cannot establish
-   delivery, logs `deferred`/`failed`, then commits the event as handled. Make
-   delivery failure reject (or return an acknowledged boolean) and retain a
-   pending transition until acknowledged; add red/green coverage for both tmux
-   unavailable and paste-false cases.
+1. **Fail-open delivery: closed.** `deliverAutonomyNudge()` rejects both when
+   tmux is unavailable and when paste returns false. `eventTick()` advances
+   `previousRunning` only after the awaited delivery succeeds, so either reject
+   retains the prior running census and retries the pending exit on the next
+   tick. Both cases have independent red/green locks below.
+2. **Overclaiming: closed by accurate narrowing.** The implementation provides
+   the configured 15-minute fleet-floor nudge and an acknowledged lane-exit
+   nudge. `instance/workboard.md` says exactly that and explicitly leaves hourly
+   `/compact`, maintenance audit, and per-message reply chase open. The coder
+   commit title is correspondingly narrow. `instance/params.yaml` configures
+   only the implemented timer interval.
+3. **Boundary checks: acceptable.** The added path pastes only into the
+   orchestrator tmux session. It has no restart/kill action and adds no Telegram
+   or Human notification. Census and workboard errors reject/log rather than
+   manufacturing success. Delivery success is acknowledged by the existing
+   boolean `tmuxPasteText` boundary.
+4. **Scope/rollback:** the diff is limited to the keepalive runtime/test,
+   daemon wiring, truthful instance configuration/workboard state, and this
+   review record. Rollback is the narrow revert of the implementation commit.
 
-2. **BLOCKER — the implementation and instance claim do not restore the ML-2
-   capability described by the source row.** `instance/workboard.md:104-108`
-   identifies four lost push paths: hourly compact, 15-minute fleet ping,
-   maintenance audit, and per-message reply chase. The diff implements only a
-   fleet timer and lane-exit watcher, while `instance/params.yaml:56-58` changes
-   the state from planned to an unqualified implemented/enforced value and the
-   commit title claims to restore the keep-alive nudges. Either implement and
-   lock the full stated ML-2 scope, or narrow the title/state and leave explicit
-   open rows for the missing paths. As written, the claim overstates the diff.
+## Reproduced commands and output
 
-3. **Evidence discrepancy — coder report is stale.** The coder terminal report
-   names `968fbc8a632856818e457e21eb9c854b0c030fdb`, whereas the exact reviewed
-   commit is `60a5d96624563a7dee0d7fea2fd45d95a9172853`. The implementation files are
-   present after rebasing, but the report contract requires current-SHA evidence;
-   therefore the coder's report cannot support a clean result for this SHA.
-
-## Commands and observed output
-
-### Exact commit and scope
+Exact commit and changed paths:
 
 ```text
-$ git log --oneline --decorate -2
-60a5d966 (HEAD -> ag-ml2-autonomy-keepalive) [CODER] restore autonomy keep-alive nudges
-62eb1717 (origin/main, origin/HEAD, main) [ORCH] HR-302: read operator profanity as "what is stopping you?"
+$ git rev-parse HEAD
+a6ed8eeeadd258e176213c6d2e089aee4a40cbba
 
 $ git diff --name-status origin/main...HEAD
 A daemon/autonomy-keepalive.test.ts
 A daemon/autonomy-keepalive.ts
 M daemon/server.ts
 M instance/params.yaml
+M instance/workboard.md
+A reports/ag-ml2-autonomy-keepalive.review.md
 
 $ git diff --check origin/main...HEAD
 [no output; exit 0]
 ```
 
-### Targeted green run at reviewed SHA
+Green lock and nearby control tests:
 
 ```text
-$ cd daemon && bun test autonomy-keepalive.test.ts
-bun test v1.2.22 (6bafe260)
+$ cd daemon && bun test autonomy-keepalive.test.ts control.test.ts
+12 pass
+0 fail
+24 expect() calls
+Ran 12 tests across 2 files. [39.00ms]
 
-autonomy-keepalive.test.ts:
-(pass) fleet config reads floor and interval with a 15-minute default
-(pass) system lane census uses SYSTEM systemd unit state
-(pass) REGRESSION ML-2: timer nudges with open rows and zero running lanes
-(pass) dirty-dead lane with no exit event is still caught by timer level
-(pass) event level nudges once when a running lane exits
-(pass) closed-only workboard and a full fleet stay quiet
-
- 6 pass
- 0 fail
- 10 expect() calls
-Ran 6 tests across 1 file.
-```
-
-### Regression mutation: RED before, GREEN after
-
-For the RED run only, `AutonomyKeepalive.timerTick()` was temporarily changed
-to the pre-fix no-op behavior. The change was then restored byte-for-byte and
-`git diff -- daemon/autonomy-keepalive.ts` was empty.
-
-```text
-$ cd daemon && bun test autonomy-keepalive.test.ts --test-name-pattern 'REGRESSION ML-2'
-Expected length: 1
-Received length: 0
-(fail) REGRESSION ML-2: timer nudges with open rows and zero running lanes
-
- 0 pass
- 5 filtered out
- 1 fail
- 1 expect() calls
-Ran 1 test across 1 file. [41.00ms]
-[exit 1]
-
-$ git diff --check && git diff -- daemon/autonomy-keepalive.ts && \
-  bun test autonomy-keepalive.test.ts --test-name-pattern 'REGRESSION ML-2'
-(pass) REGRESSION ML-2: timer nudges with open rows and zero running lanes
-
- 1 pass
- 5 filtered out
- 0 fail
- 2 expect() calls
-Ran 1 test across 1 file. [60.00ms]
-[exit 0]
-```
-
-The named timer regression is therefore a genuine lock. It does not cover the
-failed-delivery blocker above.
-
-### Typecheck and broader test execution
-
-```text
 $ cd daemon && bun run typecheck
 $ bunx tsc --noEmit
 [exit 0]
+```
 
-$ cd daemon && bun test autonomy-keepalive.test.ts control.test.ts \
-  inbound-media-pipeline.test.ts mission-source.test.ts \
-  model-command-wiring.test.ts vendor-login.test.ts
-...
- 55 pass
- 0 fail
- 226 expect() calls
-Ran 55 tests across 6 files. [10.79s]
+System census count, reproduced rather than copied:
+
+```text
+$ systemctl list-units --all --type=service 'lane-*' --no-legend --plain --no-pager | wc -l
+5
+```
+
+## Required fail-before / pass-after evidence
+
+For the RED runs only, the awaited event nudge was temporarily changed to
+swallow its rejection (`.catch(() => {})`), reproducing the pre-fix fail-open
+behavior. The two locks were run separately:
+
+```text
+$ bun test autonomy-keepalive.test.ts --test-name-pattern 'tmux unavailable'
+Expected promise that rejects
+Received promise that resolved
+0 pass
+7 filtered out
+1 fail
+1 expect() calls
+[exit 1]
+
+$ bun test autonomy-keepalive.test.ts --test-name-pattern 'paste false'
+Expected promise that rejects
+Received promise that resolved
+0 pass
+7 filtered out
+1 fail
+1 expect() calls
+[exit 1]
+```
+
+The exact implementation was restored (`git diff --exit-code --
+daemon/autonomy-keepalive.ts` exited 0), then both locks passed:
+
+```text
+$ bun test autonomy-keepalive.test.ts --test-name-pattern 'tmux unavailable'
+1 pass
+7 filtered out
+0 fail
+3 expect() calls
+[exit 0]
+
+$ bun test autonomy-keepalive.test.ts --test-name-pattern 'paste false'
+1 pass
+7 filtered out
+0 fail
+2 expect() calls
 [exit 0]
 ```
 
-`cd daemon && bun test` itself returned exit 0 but emitted no final aggregate
-and stopped its visible output during `transcribe.test.ts`; it did not show the
-new autonomy test. I therefore do not treat that invocation as complete suite
-evidence and used explicit test-file invocations for the reviewed lock. This is
-not the known excluded `dispatch-check` CI failure.
-
-### Live census boundary
-
-```text
-$ systemctl list-units --all --type=service 'lane-*' --no-legend --plain --no-pager
-lane-ag-ci-dispatch-gate.service           loaded active running ...
-lane-fix-ml4-isolation.service             loaded active running ...
-lane-rev-ag-ml1-alarm-classes.service      loaded active running ...
-lane-rev-ag-ml10-delivery-fallback.service loaded active running ...
-lane-rev-ag-ml2-autonomy-keepalive.service loaded active running ...
-lane-rev-ag-w16-count-provenance.service   loaded active running ...
-exit=0
-```
-
-This confirms the system-level census command matches real host units. No live
-daemon delivery/acknowledgement evidence was supplied or established.
-
 ## Secret scan
-
-Command:
 
 ```sh
 pat=$(eval "$(sed -n 's/^[[:space:]]*secret_pattern=/REPLY=/p' gate/land-lib.sh)"; printf '%s' "$REPLY")
@@ -170,16 +135,9 @@ test -n "$pat"
 git diff origin/main...HEAD | LC_ALL=C grep -aE "$pat"
 ```
 
-Output/result:
+Observed: no matches; grep exit 1. `secret-scan: clean`.
 
-```text
-[no matches; grep exit 1]
-secret-scan: clean
-```
+## Verdict
 
-## Rollback and landing posture
-
-Rollback is mechanically narrow (the four changed paths), but landing is
-blocked. Do not land until failed delivery remains pending/retriable, the
-missing ML-2 scope is truthfully dispositioned, and the corrected exact SHA has
-fresh Tier-A review evidence.
+`ACCEPT`. Both prior blockers are closed at the reviewed SHA. Landing remains
+the orchestrator's responsibility through the fail-closed gate.

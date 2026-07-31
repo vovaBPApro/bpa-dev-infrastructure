@@ -65,12 +65,19 @@ Four steps, in order:
   the wave with it silently. Split the declarations.
 - **Never pipe a `git` command into `tail` inside an `&&` chain** — the pipeline
   exit status becomes `tail`'s, so a failed merge or push reports success.
+- **Never run `git merge` from inside a lane worktree.** Git merges the branch
+  into itself, reports success, and main never moves — work then gets reported as
+  landed when it is not. This happened THREE times on 2026-07-31 and was caught
+  each time only by re-reading the resulting SHA. `land-branch.sh` now makes it
+  impossible: it refuses to run outside the canonical checkout, and fails if HEAD
+  did not move or origin/main does not match after the push.
 
 ## Files
 
 | file | what it is |
 | --- | --- |
 | `launch-lane.sh` | supported portable one-lane dispatch entry point |
+| `land-branch.sh` | landing guard — refuses worktree merges, silent no-ops, and unpushed "landed" claims |
 | `launch-lane.test.sh` | real compose/gate/worktree dispatch proof with a mocked system manager boundary |
 | `as-run-*.sh` | superseded, host-bound historical wave evidence |
 | `fleet-nudge.sh` | STOPGAP watchdog — wakes the orchestrator when lanes fall below floor while the workboard has open rows; asks the Human when the board is empty or the orchestrator is down |

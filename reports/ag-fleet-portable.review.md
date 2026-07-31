@@ -1,10 +1,10 @@
 # Independent review: ag-fleet-portable
 
-reviewed-sha: d38e440f9cc98616807907cababe9506cfcc50c3
+reviewed-sha: 379d2d3904e0ffbebe47b98f67bae2384e6d7c18
 reviewer: Codex reviewer lane `/root`
-independence: reviewer did not author commit d38e440f9cc98616807907cababe9506cfcc50c3
+independence: reviewer did not author the reviewed implementation commits
 tier: Tier A — fleet/orchestrator dispatch and evidence-gate behavior
-verdict: REJECT
+verdict: ACCEPT
 
 ## Manifest consumption check
 
@@ -15,28 +15,57 @@ verdict: REJECT
 - tool-permissions sha256:6c7b9f57fbbd (baseline) # Tool Permissions
 - reproducible-from-git sha256:822d9efe694b (baseline) # Reproducible From Git
 
-## Scope and counts reproduced
+## Rebase, scope, and reproduced counts
 
-Command:
+The branch was rebased onto the fetched `origin/main` before review. Rebase
+output:
+
+```text
+Rebasing (1/5)
+Rebasing (2/5)
+Rebasing (3/5)
+Rebasing (4/5)
+Rebasing (5/5)
+Successfully rebased and updated refs/heads/ag-fleet-portable.
+```
+
+Commands:
 
 ```sh
-git diff --name-status origin/main...d38e440f9cc98616807907cababe9506cfcc50c3
+git rev-parse HEAD
+git diff --name-status origin/main...HEAD
+git diff --numstat origin/main...HEAD
+git diff --name-only origin/main...HEAD | wc -l
+git rev-list --count origin/main..HEAD
 ```
 
 Output:
 
 ```text
+379d2d3904e0ffbebe47b98f67bae2384e6d7c18
 M	orchestrator/fleet/README.md
 A	orchestrator/fleet/launch-lane.sh
 A	orchestrator/fleet/launch-lane.test.sh
+A	reports/ag-fleet-portable.coder.md
+A	reports/ag-fleet-portable.review.md
+31	14	orchestrator/fleet/README.md
+97	0	orchestrator/fleet/launch-lane.sh
+96	0	orchestrator/fleet/launch-lane.test.sh
+47	0	reports/ag-fleet-portable.coder.md
+125	0	reports/ag-fleet-portable.review.md
+5
+5
 ```
 
-The reviewed diff contains exactly 3 changed paths, all within
-`orchestrator/fleet/`. `git diff --check origin/main...HEAD` exited 0.
+Thus the candidate has exactly 5 changed paths, 5 commits ahead, 396 added
+lines, and 14 deleted lines. The implementation itself remains the claimed
+portable one-lane launcher plus its executable lock and documentation; the two
+report paths are review-chain evidence. No added launcher line contains a
+literal `/root` or `/home` path (`LITERAL_ROOT_HOME_COUNT=0`).
 
-## Commands and evidence
+## Positive verification
 
-The positive lock passed at the reviewed SHA:
+Command:
 
 ```sh
 bash orchestrator/fleet/launch-lane.test.sh
@@ -45,81 +74,74 @@ bash orchestrator/fleet/launch-lane.test.sh
 Output:
 
 ```text
-compose: wrote 9 docs + 0 interim to /root/.cache/lane-tmp/tmp.flmgSxWptG/lanes/pack-proof
+compose: wrote 9 docs + 0 interim to /root/.cache/lane-tmp/tmp.KmfL62BVPh/lanes/pack-proof
 launch-lane dispatch proof: PASS
+TEST_EXIT=0
 ```
 
-A fresh local clone with an empty environment except explicit `HOME`, `PATH`,
-and `BUN_BIN` also passed, proving Bun does not depend on an interactive shell
-profile:
+The success path passed through the mocked SYSTEM-manager boundary, executed
+the submitted shell payload, and produced an observable Codex marker and argv.
+The assertions also confirm `--unit lane-proof`, no `--user`, the isolated
+worktree branch, composed pack marker, mission body, working directory, and
+append-log properties.
+
+A fresh shared clone with an otherwise empty environment also passed:
 
 ```sh
-tmp=$(mktemp -d)
-git clone --quiet --shared --branch ag-fleet-portable . "$tmp/repo"
-env -i HOME="$tmp/home" PATH="/usr/local/bin:/usr/bin:/bin" \
+env -i HOME="$scratch/home" PATH="/usr/local/bin:/usr/bin:/bin" \
   BUN_BIN=/usr/local/bin/bun \
-  bash "$tmp/repo/orchestrator/fleet/launch-lane.test.sh"
+  bash "$scratch/repo/orchestrator/fleet/launch-lane.test.sh"
 ```
 
 Output:
 
 ```text
-compose: wrote 9 docs + 0 interim to /tmp/tmp.LXRcrvqcxV/lanes/pack-proof
+compose: wrote 9 docs + 0 interim to /tmp/tmp.Y4KTbCWTt8/lanes/pack-proof
 launch-lane dispatch proof: PASS
+FRESH_ENV_EXIT=0
 ```
 
-The captured `systemd-run` argv contains `--unit` and `lane-proof` and contains
-no `--user`, so the implementation targets the SYSTEM manager. The new launcher
-contains no literal `/root` or `/home` path. Its repository, worktree, prompt,
-log, Bun, Codex, HOME, and TMPDIR inputs are derived or parameterized.
+`bash -n` and `shellcheck` both exited 0 for `launch-lane.sh` and
+`launch-lane.test.sh`. `git diff --check origin/main...HEAD` exited 0.
 
-## Blocking finding: the regression lock does not bite
+## Red-before / green-after regression evidence
 
-I repeated the fresh-clone test after deleting only the launcher's marker-gate
-call in that disposable clone:
+In a disposable clone at the candidate SHA, I removed only this production
+line from `launch-lane.sh`:
 
 ```sh
-sed -i '/bash "\$repo\/orchestrator\/dispatch-lane.sh" "\$prompt"/d' \
-  "$tmp/repo/orchestrator/fleet/launch-lane.sh"
-env -i HOME="$tmp/home" PATH="/usr/local/bin:/usr/bin:/bin" \
-  BUN_BIN=/usr/local/bin/bun \
-  bash "$tmp/repo/orchestrator/fleet/launch-lane.test.sh"
+BUN_BIN="$BUN_BIN" bash "$repo/orchestrator/dispatch-lane.sh" "$prompt" >/dev/null
 ```
 
-Output:
+I then ran the replacement lock unchanged:
+
+```sh
+bash orchestrator/fleet/launch-lane.test.sh
+```
+
+Real output:
 
 ```text
-compose: wrote 9 docs + 0 interim to /tmp/tmp.EDiFL59Gq7/lanes/pack-proof
-launch-lane dispatch proof: PASS
-MUTATION_RESULT=PASS_WITH_MARKER_GATE_REMOVED
+compose: wrote 9 docs + 0 interim to /root/.cache/lane-tmp/tmp.jO9VPcdXOz/lanes/pack-proof
+marker-gate refusal incorrectly dispatched the lane
+FAIL_BEFORE_EXIT=1
 ```
 
-This is a false-green regression lock. The test never supplies a marker-less
-prompt and never proves that `systemd-run` remains untouched when the marker
-gate refuses dispatch. Therefore it does not lock requirement 2.
+Restoring the candidate implementation and running the same test produced the
+positive output above with exit 0. The lock therefore fails without the marker
+gate and passes with it; it does not pass both ways.
 
-The test also does not actually execute a lane payload: its `systemd-run` mock
-only writes its argument strings and exits 0, while the fake `codex` executable
-has no observable side effect and is never invoked. Assertions on the recorded
-argv do not satisfy the explicit requirement that the test actually dispatch
-something.
+## Fail-open, rollback, and verdict
 
-## Fail-open and rollback posture
+The launcher validates prerequisites, composes and checks the materialized pack,
+and only then creates the worktree and submits the SYSTEM unit. Injected gate
+refusal exits non-zero and leaves no worktree, system-manager call, or Codex
+execution. Submission failure exits non-zero and retains the isolated worktree
+for diagnosis rather than claiming launch completion. Existing lane artifacts
+are refused. I found no path in the reviewed diff that converts unknown or
+failed dispatch state into success.
 
-The production ordering is gate, worktree creation, then SYSTEM-unit submission,
-which is fail-closed in the implementation itself. A failed `systemd-run` keeps
-the worktree for diagnosis and exits non-zero. No secret-like material or
-out-of-scope changed path was found in the reviewed diff.
-
-However, because the executable lock passes when the decisive marker gate is
-removed, future bypass of that gate would be reported green. This evidence-gate
-false open is blocking. Rollback is the removal/revert of the three-path coder
-commit; no persistent migration or data mutation is involved.
-
-## Required disposition
-
-Add a lock that (1) injects a marker-gate refusal or marker-less/tampered prompt,
-(2) proves the system manager boundary and Codex payload are not invoked on
-refusal, (3) executes an observable payload through the mocked SYSTEM manager on
-success, and (4) demonstrates red-before/green-after against the relevant fix.
-Then request a new independent review of the replacement SHA.
+Rollback is a revert/removal of the launcher, test, and documentation changes;
+there is no migration, production data mutation, or persistent service install
+in this diff. The prior false-green finding is resolved by an independently
+reproduced biting lock. Verdict: **ACCEPT**.

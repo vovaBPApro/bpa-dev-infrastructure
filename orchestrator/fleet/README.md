@@ -1,22 +1,40 @@
-# Fleet mechanism — captured as-run (2026-07-31)
+# Fleet lane launcher
 
 This directory exists because these files were running the entire parallel lane
 fleet from a **temporary directory** and would have been lost on a re-clone. That
 violates Hard Floor 5 (`instructions/reproducible-from-git.md`): a mechanism that
 lives only on the host is already a regression.
 
-**Status: captured as-run, NOT yet productized.** These are the exact scripts
-used on 2026-07-31, committed verbatim so the mechanism survives. Lane
-`ag-onboarding-truth` owns turning them into a single tested, parameterized
-entry point with a rehearsal. Do not treat this README as the finished design.
+`launch-lane.sh` is the supported, parameterized entry point. The `as-run-*.sh`
+files are retained only as historical evidence of the 2026-07-31 fleet waves;
+they are host-bound transcripts and are superseded by this mechanism.
 
-## How a lane is actually launched
+## Launch one lane
+
+Write the mission body to a file, then run:
+
+    orchestrator/fleet/launch-lane.sh \
+      --name my-mission --role coder --task-file /path/to/task.md
+
+The default source repository is derived from the script location, the default
+worktree branch is `ag-<name>` at `origin/main`, and artifacts go below
+`${XDG_CACHE_HOME:-$HOME/.cache}/infra-lanes`. Use `--repo`, `--lanes-dir`,
+`--base`, or `--branch` to override those inputs. Run `--help` for the complete
+interface.
+
+The launcher resolves Bun through `BUN_BIN`, then `$HOME/.bun/bin/bun`, then
+`PATH`, using `orchestrator/lib.sh`. A fresh host therefore gets Bun from the
+documented `bootstrap/install.sh` step; no interactive shell profile is needed.
+Codex is resolved through `--codex-bin`, `CODEX_BIN`, or `PATH` and fails closed
+when absent.
+
+## What the entry point does
 
 Four steps, in order:
 
 1. **Compose the role context pack** — never hand-assemble a prompt:
 
-       bun tools/instructions/compose.ts --role <coder|reviewer|orchestrator|manager> \
+       "$BUN_BIN" tools/instructions/compose.ts --role <coder|reviewer|orchestrator|manager> \
          --repo <repo> --out <packdir>
 
 2. **Build the prompt** as the pack preamble followed by the task body. The
@@ -26,12 +44,10 @@ Four steps, in order:
 
        bash orchestrator/dispatch-lane.sh <prompt-file>
 
-4. **Run it as a transient SYSTEM unit** in the lane's own worktree:
+4. **Create a branch and isolated worktree**, then run Codex as a transient
+   SYSTEM unit. Unit output is appended to the reported `lane-<name>.log` path.
 
-       systemd-run --collect --unit lane-<name> \
-         --setenv=HOME=/root --setenv=TMPDIR=/root/.cache/lane-tmp \
-         --setenv=PATH=... --working-directory=<worktree> \
-         bash -lc "codex exec --dangerously-bypass-approvals-and-sandbox \"\$(cat <prompt>)\" > <log> 2>&1"
+       systemd-run --collect --unit lane-<name> ...
 
 ## Host facts that are easy to get wrong
 
@@ -54,8 +70,9 @@ Four steps, in order:
 
 | file | what it is |
 | --- | --- |
-| `as-run-review-wave.sh` | as-run: one independent review lane per open branch |
-| `as-run-mixed-wave.sh` | as-run: review lanes + a targeted coder lane |
+| `launch-lane.sh` | supported portable one-lane dispatch entry point |
+| `launch-lane.test.sh` | real compose/gate/worktree dispatch proof with a mocked system manager boundary |
+| `as-run-*.sh` | superseded, host-bound historical wave evidence |
 | `fleet-nudge.sh` | STOPGAP watchdog — wakes the orchestrator when lanes fall below floor while the workboard has open rows; asks the Human when the board is empty or the orchestrator is down |
 | `orch-fleet-nudge.service` / `.timer` | systemd units for the above (installed to `/etc/systemd/system/`, 10-minute interval) |
 

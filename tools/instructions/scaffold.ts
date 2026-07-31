@@ -259,6 +259,7 @@ function scaffold(options: Options): number {
   // 3. Generate the index + Hard Floor from the (empty) instruction set so both
   // generated surfaces are born fresh — never hand-written.
   const instructionsRoot = join(outDir, "instructions");
+  // Fresh scaffold repos have no instance packability config; discovery stays instructions-only.
   const docs = collectDocs(instructionsRoot);
   writeFileSync(join(instructionsRoot, INDEX_FILENAME), renderIndex(docs));
   const claudePath = join(outDir, CLAUDE_FILENAME);

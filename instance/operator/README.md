@@ -25,10 +25,11 @@ Do not edit either original body here (updates come from him).
   He rates this document MORE valuable than the profile (HR-189). Notably, its
   §11.4 completion-reporting and fail-closed language independently match this
   repo's own Report Contract — the two sources agree.
-- `instructions/operator-collaboration.md` — repo-authored, compact behavioral
+- `How-to-Work-With-Vova-CORE.md` — repo-authored, compact behavioral
   directives for typical turns, packed to coder, reviewer, orchestrator, and
   manager. It points to binding instruction owners instead of copying their
   rules; use the full How-to only when deeper context is needed.
 
-Current delivery: the compact core is composed into all four role packs. The two
-full source documents remain on-demand references and are not packed.
+Current delivery: the compact core keeps its operator-specific instance home and
+is explicitly admitted to the instruction corpus for all four role packs. The
+two full source documents remain on-demand references and are not packed.

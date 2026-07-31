@@ -71,6 +71,11 @@ lanes never chase foreign-repo paths. The preamble's manifest (id, hash, source
 SHA) is echoed by the lane and diffed by the landing gate — a wrong echo is NO-GO;
 break-glass (`DISPATCH_OVERRIDE`) is only for lanes repairing the tooling.
 
+An `instance/` document is pack-delivered only when explicitly listed in
+`instance/packable-docs.conf`; nothing else under `instance/` is collected.
+Listed entries must be regular files inside `instance/`, with symlinks and path
+escapes refused.
+
 ## Capture — mechanical at the source
 
 Every Human directive is recorded in the decisions ledger as

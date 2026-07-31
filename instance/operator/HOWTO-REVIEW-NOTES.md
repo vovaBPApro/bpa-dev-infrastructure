@@ -33,8 +33,10 @@
 
 ## 4. Already enforced mechanically
 
-- The full guide and CORE are not in any pack today. Discovery walks only the supplied `instructions/` root (`tools/instructions/docs.ts:23`), and compose sets that root before collection (`tools/instructions/compose.ts:465`, `tools/instructions/compose.ts:476`). The premise that the 27 KB guide is injected into every pack is false.
-- SessionStart reads params, pending ledger input, runtime state, and an index of binding docs collected from `instructions/`; it does not collect `instance/operator/` (`tools/instructions/session-load.ts:224`, `tools/instructions/session-load.ts:238`, `tools/instructions/session-load.ts:284`).
+- The full guide is not packed. The compact CORE is explicitly admitted from
+  its instance home and included in all four role baselines.
+- SessionStart reads params, pending ledger input, runtime state, and the same
+  cross-root index of binding documents used by the other instruction tools.
 - Pack reachability, closed tag/baseline configuration, Hard Floor drift, and the SessionStart budget are checker gates (`tools/instructions/check.ts:174`, `tools/instructions/check.ts:214`, `tools/instructions/check.ts:252`).
 - Completion evidence, review, secret scanning, and report-SHA equality are landing gates (`gate/land.sh:144`, `gate/land.sh:151`, `gate/land.sh:157`, `gate/land.sh:160`). The secret scanner also checks decoded bounded base64 candidates (`gate/land-lib.sh:217`, `gate/land-lib.sh:226`).
 - Independent-review identity and reviewed-SHA freshness are checked mechanically (`gate/land-lib.sh:132`, `gate/land-lib.sh:136`).
@@ -42,9 +44,10 @@
 
 ## 5. Attachment and token cost
 
-Nothing is wired by this change. The current loader accepts Markdown discovered under `instructions/` only, so the CORE cannot attach from `instance/operator/` today. To preserve the instance-fact home required by `instructions/instruction-layers.md:45`, the preferred wiring is a pack-visible symlink such as `instructions/operator-collaboration.md` pointing to `../instance/operator/How-to-Work-With-Vova-CORE.md`, followed by changing the CORE status to binding. This avoids a second text copy while giving the composer an `instructions/` entry.
-
-Because the required `operator-profile` tag is not currently in the closed vocabulary, `instance/tags.conf` would add it. For universal delivery, `instance/packs.conf` would add `operator-howto-core` to coder, reviewer, orchestrator, and manager baselines. For selective delivery, baselines would stay unchanged and dispatches would request `--tags operator-profile` for the approved roles. The Human must choose universal versus selective delivery before either config changes.
+The collector admits only instance Markdown files explicitly configured for
+packability, validates them through the instruction schema, and refuses
+symlinks or path escapes. The CORE is configured and universally delivered by
+the four role baselines; the full reference remains on demand.
 
 Measured with `wc -l -c -w` after this refactor. No repository tokenizer is available, so token counts use a byte-based estimate of UTF-8 bytes ÷ 4, a rough assumption for mostly English Markdown:
 
@@ -58,12 +61,10 @@ If the alternative were attaching the full reference, the CORE saves 24,434 byte
 ## 6. Resolution
 
 - Universal delivery to coder, reviewer, orchestrator, and manager was chosen.
-- The symlink was rejected because the landing payload guard rejects modified
-  symlinks; the compact file was moved into `instructions/` instead.
-- Short chat and quick answers are answer-first; substantive escalations,
-  decisions, and design proposals use Problem → Analysis → Tradeoffs →
-  Recommendation, with an optional alternative.
-- Chat follows `instructions/operator-feedback.md`; depth and evidence stay in
-  durable artifacts and are offered rather than sent.
-- Escalation follows only `instructions/autonomy-and-capacity.md`; binding
-  instructions take precedence over a conflicting full reference.
+- The compact file remains at its operator-specific home under
+  `instance/operator/`; explicit packability admits it without walking
+  `instance/` generally.
+- A symlink remains refused because the landing payload guard rejects mode
+  `120000`; the packability reader likewise accepts regular files only.
+- Response order is channel-first, while chat depth, execution authority, and
+  escalation remain with their existing binding instruction owners.

@@ -18,7 +18,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { validateFrontmatter } from "./schema.ts";
-import { collectDocs, INDEX_FILENAME, INDEX_MARKER, type InstructionDoc } from "./docs.ts";
+import { collectRepoDocs, INDEX_FILENAME, INDEX_MARKER, type InstructionDoc } from "./docs.ts";
 import { renderIndex } from "./index.ts";
 import { readTagVocabulary, readPacks } from "./compose.ts";
 import {
@@ -88,7 +88,7 @@ if (!existsSync(instructionsRoot)) {
   report();
 }
 
-const docs = collectDocs(instructionsRoot);
+const docs = collectRepoDocs(options.repo);
 
 // (a) frontmatter present + schema-valid; collect ids for later checks.
 type IdEntry = { id: string; file: string };

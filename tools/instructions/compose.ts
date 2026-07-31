@@ -27,7 +27,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, rmSync
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { resolve, join } from "node:path";
-import { collectDocs, type InstructionDoc } from "./docs.ts";
+import { collectRepoDocs, type InstructionDoc } from "./docs.ts";
 import { AUDIENCES, type Audience } from "./schema.ts";
 
 export const PACK_MARKER_PREFIX = "<!-- compose.ts pack v1";
@@ -473,7 +473,7 @@ export function compose(options: Options): ComposeResult {
     fail(`no baseline pack defined for role '${options.role}' in instance/packs.conf`);
   }
 
-  const docs = collectDocs(instructionsRoot);
+  const docs = collectRepoDocs(options.repo);
   const entries = selectDocs(options.role, options.tags, docs, vocabulary, baseline);
   const decisions = collectPendingDecisions(options.repo);
   const instanceFacts = readInstanceFacts(options.repo);

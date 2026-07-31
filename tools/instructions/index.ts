@@ -8,7 +8,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
-import { collectDocs, INDEX_FILENAME, INDEX_MARKER, type InstructionDoc } from "./docs.ts";
+import { collectRepoDocs, INDEX_FILENAME, INDEX_MARKER, type InstructionDoc } from "./docs.ts";
 import { renderFloor, replaceFloorSection, CLAUDE_FILENAME, FloorError } from "./floor.ts";
 
 type Options = { repo: string; write: boolean };
@@ -73,7 +73,7 @@ export function renderIndex(docs: InstructionDoc[]): string {
 if (import.meta.main) {
   const options = parseArgs(process.argv.slice(2));
   const instructionsRoot = resolve(options.repo, "instructions");
-  const docs = collectDocs(instructionsRoot);
+  const docs = collectRepoDocs(options.repo);
   const rendered = renderIndex(docs);
 
   if (options.write) {

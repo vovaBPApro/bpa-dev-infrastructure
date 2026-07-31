@@ -12,7 +12,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
-import { collectDocs, type InstructionDoc } from "./docs.ts";
+import { collectRepoDocs, type InstructionDoc } from "./docs.ts";
 
 export const FLOOR_BEGIN = "<!-- hard-floor:begin -->";
 export const FLOOR_END = "<!-- hard-floor:end -->";
@@ -154,7 +154,7 @@ function parseArgs(args: string[]): Options {
 if (import.meta.main) {
   const options = parseArgs(process.argv.slice(2));
   const instructionsRoot = resolve(options.repo, "instructions");
-  const docs = collectDocs(instructionsRoot);
+  const docs = collectRepoDocs(options.repo);
   try {
     const rendered = renderFloor(docs);
     if (!options.write) {

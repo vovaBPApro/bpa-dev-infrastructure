@@ -42,7 +42,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { PACK_MARKER_PREFIX, readPacks } from "./compose.ts";
-import { collectDocs } from "./docs.ts";
+import { collectRepoDocs } from "./docs.ts";
 import { AUDIENCES } from "./schema.ts";
 
 // The ops journal is a runtime artifact: gitignored, host-only. Overridable via
@@ -149,7 +149,7 @@ export function validateComposePack(contents: string, repo: string): PackValidat
   }
 
   const docs = new Map(
-    collectDocs(join(repo, "instructions"))
+    collectRepoDocs(repo)
       .filter((doc) => doc.valid)
       .map((doc) => [doc.valid!.id, doc]),
   );

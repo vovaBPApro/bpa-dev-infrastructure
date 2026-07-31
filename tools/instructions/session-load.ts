@@ -35,7 +35,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
-import { collectDocs, type InstructionDoc } from "./docs.ts";
+import { collectRepoDocs, type InstructionDoc } from "./docs.ts";
 import { admitsAudience } from "./compose.ts";
 import { latestHandoffPath } from "./handoff.ts";
 
@@ -284,7 +284,7 @@ export function collectSessionLoad(repo: string): SessionLoad {
   // 5. Orchestrator-audience binding docs, as one-line summaries (id + summary
   // + path). Full bodies are delivered on demand by compose; this is the
   // always-on standing index, kept small by construction.
-  const docs = existsSync(instructionsRoot) ? collectDocs(instructionsRoot) : [];
+  const docs = existsSync(instructionsRoot) ? collectRepoDocs(root) : [];
   const bindingDocs = collectOrchestratorBindingDocs(docs);
   const docLines: string[] = [];
   if (bindingDocs.length === 0) {

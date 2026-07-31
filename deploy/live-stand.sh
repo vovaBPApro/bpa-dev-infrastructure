@@ -14,7 +14,10 @@ SERVICE_ROOT_ENV=${SERVICE_ROOT_ENV:-APP_ROOT}
 SYSTEMD_SYSTEM_DIR=${SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}
 [[ "$SERVICE_ROOT_ENV" =~ ^[A-Z_][A-Z0-9_]*$ ]] || { echo 'DEPLOY ERROR: invalid service root environment name' >&2; exit 2; }
 HEALTH_TIMEOUT_SECONDS=${HEALTH_TIMEOUT_SECONDS:-30}
+POST_ACTIVATING_DELAY_SECONDS=${POST_ACTIVATING_DELAY_SECONDS:-2}
+MIGRATION_PATH_PATTERN=${MIGRATION_PATH_PATTERN:-'(^|/)migrations?/.*\.(sql|ts|js|mjs|cjs)$'}
 [[ "$HEALTH_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo 'DEPLOY ERROR: invalid health timeout' >&2; exit 2; }
+[[ "$POST_ACTIVATING_DELAY_SECONDS" =~ ^[0-9]+$ ]] || { echo 'DEPLOY ERROR: invalid post-activating delay' >&2; exit 2; }
 [[ "$CURRENT_LINK" == "$RELEASE_ROOT"/* ]] || { echo 'DEPLOY ERROR: current link must be below release root' >&2; exit 2; }
 DEPLOY_EVENT_DIR=${DEPLOY_EVENT_DIR:-$RELEASE_ROOT/deploy-events}
 PROTECTED_PATH_PATTERN=${PROTECTED_PATH_PATTERN:-'(^|/)(auth|oauth|token-store|startup-preflight)(/|\.|$)|(^|/)systemd(/|$)'}
@@ -38,23 +41,6 @@ deliver_event() {
 commit=$(git -C "$REPO_ROOT" rev-parse --verify "$REQUESTED_COMMIT^{commit}") || {
   echo "DEPLOY ERROR: unknown commit: $REQUESTED_COMMIT" >&2; exit 2;
 }
-release="$RELEASE_ROOT/$commit"
-mkdir -p "$RELEASE_ROOT"
-if [[ ! -d "$release/.git" && ! -f "$release/.git" ]]; then
-  git -C "$REPO_ROOT" worktree add --detach "$release" "$commit"
-fi
-[[ "$(git -C "$release" rev-parse HEAD)" == "$commit" ]] || {
-  echo "DEPLOY ERROR: release path contains the wrong commit: $release" >&2; exit 1;
-}
-
-echo "DEPLOY build=$commit release=$release"
-(cd "$release" && bash -o pipefail -c "$BUILD_COMMAND")
-
-# A root build may recreate dist under mode 0700. Apply service-readable and
-# traversable permissions after the build while preserving executable bits.
-chmod -R a+rX "$release"
-find "$release" -type d -exec chmod a+rx {} +
-
 previous=
 if [[ -L "$CURRENT_LINK" ]]; then
   previous=$(readlink -f "$CURRENT_LINK")
@@ -76,22 +62,58 @@ if git -C "$REPO_ROOT" diff --name-only "$previous_commit..$commit" | LC_ALL=C g
   exit 1
 fi
 
-# This command must create a disposable database, copy the live schema into it,
-# apply the candidate migrations, and destroy only that database. It runs before
-# the symlink, unit drop-in, daemon-reload, or service are touched.
-echo "DEPLOY migration-preflight=$commit"
-if ! (cd "$release" && bash -o pipefail -c "$MIGRATION_PREFLIGHT_COMMAND"); then
-  detail="migration preflight failed candidate=$commit previous=$previous_commit; live service untouched"
-  echo "DEPLOY ERROR: $detail" >&2
-  deliver_event refused "$detail" || true
-  exit 1
+# Migration safety is decided before creating or building a release. The
+# configured command owns a disposable copy of the live schema; it receives the
+# exact comparison through environment variables and must leave live data alone.
+migration_files=$(git -C "$REPO_ROOT" diff --name-only "$previous_commit..$commit" | LC_ALL=C grep -E "$MIGRATION_PATH_PATTERN" || true)
+if [[ -n "$migration_files" ]]; then
+  echo "DEPLOY migration-preflight=$commit files=$(printf '%s' "$migration_files" | tr '\n' ',')"
+  if ! (cd "$REPO_ROOT" && DEPLOYED_COMMIT="$previous_commit" TARGET_COMMIT="$commit" MIGRATION_FILES="$migration_files" bash -o pipefail -c "$MIGRATION_PREFLIGHT_COMMAND"); then
+    detail="migration preflight failed candidate=$commit previous=$previous_commit; live service untouched"
+    echo "DEPLOY ERROR: $detail" >&2
+    deliver_event refused "$detail" || true
+    exit 1
+  fi
+else
+  echo "DEPLOY migration-preflight=skipped reason=no-migration-changes"
 fi
+
+release="$RELEASE_ROOT/$commit"
+mkdir -p "$RELEASE_ROOT"
+if [[ ! -d "$release/.git" && ! -f "$release/.git" ]]; then
+  git -C "$REPO_ROOT" worktree add --detach "$release" "$commit"
+fi
+[[ "$(git -C "$release" rev-parse HEAD)" == "$commit" ]] || {
+  echo "DEPLOY ERROR: release path contains the wrong commit: $release" >&2; exit 1;
+}
+
+echo "DEPLOY build=$commit release=$release"
+(cd "$release" && bash -o pipefail -c "$BUILD_COMMAND")
+
+# Build tools recreate dist with restrictive modes, so permission repair must
+# be the final release mutation before activation.
+chmod -R a+rX "$release"
 
 activate() {
   local target=$1 temporary="$CURRENT_LINK.next.$$"
   ln -s "$target" "$temporary"
   mv -Tf "$temporary" "$CURRENT_LINK"
   systemctl restart "$SERVICE_NAME"
+}
+
+wait_until_probe_safe() {
+  local deadline state
+  deadline=$((SECONDS + HEALTH_TIMEOUT_SECONDS))
+  while ((SECONDS < deadline)); do
+    state=$(systemctl show --property=ActiveState --value "$SERVICE_NAME") || state=unknown
+    [[ "$state" != activating ]] && break
+    sleep 1
+  done
+  [[ "$state" != activating ]] || {
+    echo "DEPLOY ERROR: service remained activating: $SERVICE_NAME" >&2
+    return 1
+  }
+  sleep "$POST_ACTIVATING_DELAY_SECONDS"
 }
 
 health_commit() {
@@ -146,7 +168,7 @@ mv -Tf "$temporary_dropin" "$dropin"
 systemctl daemon-reload
 
 activate "$release"
-if wait_for_commit "$commit"; then
+if wait_until_probe_safe && wait_for_commit "$commit"; then
   :
 else
   health_result=$?
@@ -155,7 +177,7 @@ else
   else
     echo "DEPLOY ALARM: health did not report deployed commit=$commit; rolling back to $previous" >&2
   fi
-  if activate "$previous" && wait_for_commit "$previous_commit"; then
+  if activate "$previous" && wait_until_probe_safe && wait_for_commit "$previous_commit"; then
     detail="deploy failed candidate=$commit; rollback healthy exact-sha=$previous_commit"
     echo "DEPLOY rollback=healthy commit=$previous_commit" >&2
     deliver_event rolled-back "$detail" || true

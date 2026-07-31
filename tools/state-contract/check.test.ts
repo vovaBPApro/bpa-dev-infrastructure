@@ -13,6 +13,7 @@ import {
   KNOWN_GAPS,
   REGISTRY,
   checkStateContract,
+  checkFleetIdle,
   collapseAtomicTempSiblings,
   normalizeInterpolation,
   stripComments,
@@ -32,6 +33,47 @@ function fixture(files: Record<string, string>): {
 }
 
 const trackedAlways = () => true;
+
+test('FLEET-IDLE locks open work against the measured system lane fleet', () => {
+  const openWorkboard = `# Workboard
+
+## Open
+
+- **W-01 — first open row**: pending.
+- **W-02 — CLOSED 2026-07-31**: retained until the next pass.
+- **W-03 — second open row**: pending.
+
+## Parked
+
+- **P-01 — not active**: parked.
+`;
+  const emptyWorkboard = `# Workboard
+
+## Open
+
+- **W-02 — CLOSED 2026-07-31**: retained until the next pass.
+`;
+
+  expect(checkFleetIdle(openWorkboard, { running: 0 })).toEqual({
+    level: 'FAIL',
+    id: 'FLEET-IDLE',
+    detail: '2 open workboard row(s), 0 running lane unit(s)',
+  });
+  expect(checkFleetIdle(openWorkboard, { running: 3 })).toBeUndefined();
+  expect(checkFleetIdle(emptyWorkboard, { running: 0 })).toBeUndefined();
+  expect(
+    checkFleetIdle(openWorkboard, {
+      running: null,
+      reason: 'systemctl exited 1: system bus unavailable',
+    }),
+  ).toEqual({
+    level: 'FAIL',
+    id: 'FLEET-IDLE',
+    detail:
+      '2 open workboard row(s), running lane unit(s) unknown/degraded: ' +
+      'systemctl exited 1: system bus unavailable',
+  });
+});
 
 test('HISTORICAL: a reader whose writer never migrated is a FAIL', () => {
   const { root, names } = fixture({

@@ -472,6 +472,112 @@ export function sweepArtifacts(
 
 export type Finding = { level: 'FAIL' | 'GAP'; id: string; detail: string };
 
+export type RunningLaneState =
+  | { running: number; reason?: never }
+  | { running: null; reason: string };
+
+export function countOpenWorkboardRows(source: string): number {
+  const lines = source.split('\n');
+  const start = lines.findIndex((line) => /^## Open(?:\s|$)/.test(line));
+  if (start < 0) {
+    throw new Error('instance/workboard.md has no ## Open section');
+  }
+  const nextSection = lines.findIndex(
+    (line, index) => index > start && /^##(?:\s|$)/.test(line),
+  );
+  return lines
+    .slice(start + 1, nextSection < 0 ? undefined : nextSection)
+    .filter(
+      (line) =>
+        /^- \*\*/.test(line) &&
+        !/^- \*\*[^*]*\bCLOSED\b/.test(line),
+    ).length;
+}
+
+export function checkFleetIdle(
+  workboardSource: string,
+  lanes: RunningLaneState,
+): Finding | undefined {
+  let openRows: number;
+  try {
+    openRows = countOpenWorkboardRows(workboardSource);
+  } catch (error) {
+    return {
+      level: 'FAIL',
+      id: 'FLEET-IDLE',
+      detail:
+        'open workboard row count unknown/degraded: ' +
+        (error instanceof Error ? error.message : String(error)),
+    };
+  }
+
+  if (lanes.running === null) {
+    return {
+      level: 'FAIL',
+      id: 'FLEET-IDLE',
+      detail:
+        `${openRows} open workboard row(s), running lane unit(s) ` +
+        `unknown/degraded: ${lanes.reason}`,
+    };
+  }
+  if (openRows > 0 && lanes.running === 0) {
+    return {
+      level: 'FAIL',
+      id: 'FLEET-IDLE',
+      detail:
+        `${openRows} open workboard row(s), ` +
+        `${lanes.running} running lane unit(s)`,
+    };
+  }
+  return undefined;
+}
+
+export function queryRunningSystemLanes(): RunningLaneState {
+  const command = [
+    'systemctl',
+    'list-units',
+    'lane-*.service',
+    '--type=service',
+    '--state=running',
+    '--no-legend',
+    '--no-pager',
+    '--plain',
+  ];
+  let proc: ReturnType<typeof Bun.spawnSync>;
+  try {
+    proc = Bun.spawnSync(command);
+  } catch (error) {
+    return {
+      running: null,
+      reason:
+        `could not execute system systemctl: ` +
+        (error instanceof Error ? error.message : String(error)),
+    };
+  }
+  const stderr = new TextDecoder().decode(proc.stderr).trim();
+  if (proc.exitCode !== 0) {
+    return {
+      running: null,
+      reason:
+        `system systemctl exited ${proc.exitCode}` +
+        (stderr ? `: ${stderr}` : ''),
+    };
+  }
+
+  const output = new TextDecoder().decode(proc.stdout);
+  const lines = output.split('\n').map((line) => line.trim()).filter(Boolean);
+  const unexpected = lines.find(
+    (line) => !/^lane-[^\s]+\.service(?:\s|$)/.test(line),
+  );
+  if (unexpected) {
+    return {
+      running: null,
+      reason: `unexpected systemctl output: ${unexpected}`,
+    };
+  }
+  return { running: lines.length };
+}
+
 export function checkStateContract(
   root: string,
   files: string[],
@@ -622,6 +728,27 @@ if (import.meta.main) {
     KNOWN_GAPS,
     (p) => tracked.has(p),
   );
+  let workboardSource: string;
+  try {
+    workboardSource = readFileSync(join(root, 'instance/workboard.md'), 'utf8');
+  } catch (error) {
+    workboardSource = '';
+    findings.push({
+      level: 'FAIL',
+      id: 'FLEET-IDLE',
+      detail:
+        'open workboard row count unknown/degraded: cannot read ' +
+        `instance/workboard.md: ` +
+        (error instanceof Error ? error.message : String(error)),
+    });
+  }
+  if (workboardSource) {
+    const fleetFinding = checkFleetIdle(
+      workboardSource,
+      queryRunningSystemLanes(),
+    );
+    if (fleetFinding) findings.push(fleetFinding);
+  }
   const fails = findings.filter((f) => f.level === 'FAIL');
   for (const f of findings) {
     console.log(`${f.level} ${f.id}: ${f.detail}`);

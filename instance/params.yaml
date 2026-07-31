@@ -52,12 +52,9 @@ fleet:
   floor: 6                         # while the workboard has open rows, >= 6 lanes should be running
   ceiling: 15                      # upper bound; raise only with measured host headroom
   status: active
-  # Enforcement so this stops depending on orchestrator discipline. NOT YET
-  # IMPLEMENTED — dispatched as lane `ag-fleet-idle-check`, which must make the
-  # checker report a FLEET-IDLE failure when the workboard has open rows and zero
-  # lanes are running. Do not read this key as an existing guarantee until the
-  # lane lands and this comment is replaced with the landed SHA.
-  fleet_idle_check: planned:ag-fleet-idle-check
+  # Enforced by the state-contract checker: open work plus zero measured system
+  # lane units is FLEET-IDLE; an unavailable system lane count also fails closed.
+  fleet_idle_check: tools/state-contract/check.ts:FLEET-IDLE
 
 orchestrator:
   # A doc in THIS repo now states the vendor shape, so the long-standing "no

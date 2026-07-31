@@ -20,6 +20,7 @@
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 
 export const INBOX_TRIAGE_SLA_MS = 24 * 60 * 60 * 1000; // 24h
 export const HR_PENDING_SLA_MS = 72 * 60 * 60 * 1000; // 72h
@@ -35,6 +36,7 @@ type TriageRow = {
   reason: string;
   triaged_by: string;
   triaged_at: string;
+  quote: string;
   [key: string]: unknown;
 };
 
@@ -45,9 +47,26 @@ const TRIAGE_FIELDS = new Set([
   "reason",
   "triaged_by",
   "triaged_at",
+  "quote",
 ]);
 const CATEGORY_VALUE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const PROVENANCE_VALUE = /^[a-z0-9]+(?:[-_.][a-z0-9]+)*$/i;
+
+function canonicalSecretPattern(repo: string): string | undefined {
+  const gate = join(repo, "gate", "land-lib.sh");
+  if (!existsSync(gate)) return undefined;
+  const assignment = readFileSync(gate, "utf8")
+    .split(/\r?\n/)
+    .find((line) => /^\s*secret_pattern=/.test(line))
+    ?.replace(/^\s*secret_pattern=/, "");
+  if (!assignment) return undefined;
+  const result = spawnSync(
+    "bash",
+    ["-c", 'eval "REPLY=$1"; printf "%s" "$REPLY"', "ledger-secret-pattern", assignment],
+    { encoding: "utf8" },
+  );
+  return result.status === 0 && result.stdout ? result.stdout : undefined;
+}
 
 function validateTriageRow(row: TriageRow, line: number): LedgerFinding | undefined {
   const file = `instance/decisions/triage.jsonl:${line}`;
@@ -67,6 +86,9 @@ function validateTriageRow(row: TriageRow, line: number): LedgerFinding | undefi
     (typeof row.msg_id === "string" && row.msg_id !== "");
   if (!validId || !["chatter", "directive"].includes(row.verdict)) {
     return { level: "FAIL", file, detail: "invalid triage row: msg_id and chatter/directive verdict are required" };
+  }
+  if (typeof row.quote !== "string" || row.quote.length === 0) {
+    return { level: "FAIL", file, detail: "invalid triage row: non-empty verbatim quote is required" };
   }
   if (!CATEGORY_VALUE.test(row.category) || !CATEGORY_VALUE.test(row.reason)) {
     return {
@@ -172,12 +194,18 @@ export function checkInboxAging(
   const decisionsDir = join(repo, "instance", "decisions");
   const triagePath = join(decisionsDir, "triage.jsonl");
   const triaged = new Set<string>();
+  const secretPattern = canonicalSecretPattern(repo);
   if (existsSync(triagePath)) {
     const triage = readJsonl<TriageRow>(triagePath, "instance/decisions/triage.jsonl");
     findings.push(...triage.findings);
     for (const { line, value: row } of triage.rows) {
       const invalid = validateTriageRow(row, line);
       if (invalid) findings.push(invalid);
+      else if (!secretPattern) {
+        findings.push({ level: "FAIL", file: `instance/decisions/triage.jsonl:${line}`, detail: "canonical secret scanner missing" });
+      } else if (new RegExp(secretPattern).test(row.quote)) {
+        findings.push({ level: "FAIL", file: `instance/decisions/triage.jsonl:${line}`, detail: "verbatim quote contains secret-shaped content" });
+      }
       else triaged.add(String(row.msg_id));
     }
   }

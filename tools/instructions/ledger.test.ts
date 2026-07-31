@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -31,6 +31,9 @@ function repo(files: Record<string, string> = {}): string {
   temporaryDirectories.push(root);
   const dir = join(root, "instance", "decisions");
   mkdirSync(dir, { recursive: true });
+  const gateDir = join(root, "gate");
+  mkdirSync(gateDir, { recursive: true });
+  writeFileSync(join(gateDir, "land-lib.sh"), readFileSync(join(import.meta.dir, "../../gate/land-lib.sh")));
   for (const [name, contents] of Object.entries(files)) {
     writeFileSync(join(dir, name), contents);
   }
@@ -102,7 +105,7 @@ describe("checkInboxAging", () => {
   test("a row triaged as chatter is not aged", () => {
     const root = repo({
       "inbox.jsonl": jsonl([{ msg_id: 503, chat_id: 1, ts: hoursAgo(48), text: "lol ok" }]),
-      "triage.jsonl": jsonl([{ msg_id: 503, verdict: "chatter", category: "channel-check", reason: "liveness-ping", triaged_by: "orchestrator", triaged_at: "2026-07-29" }]),
+      "triage.jsonl": jsonl([{ msg_id: 503, verdict: "chatter", category: "channel-check", reason: "liveness-ping", quote: "ти тут?", triaged_by: "orchestrator", triaged_at: "2026-07-29" }]),
     });
     expect(checkInboxAging(root, NOW, true).some((f) => f.level === "FAIL")).toBe(false);
   });
@@ -110,12 +113,12 @@ describe("checkInboxAging", () => {
   test("a row triaged as directive is also cleared from aging", () => {
     const root = repo({
       "inbox.jsonl": jsonl([{ msg_id: 504, chat_id: 1, ts: hoursAgo(48), text: "please do" }]),
-      "triage.jsonl": jsonl([{ msg_id: 504, verdict: "directive", category: "product-input", reason: "open-follow-up", triaged_by: "orchestrator", triaged_at: "2026-07-29" }]),
+      "triage.jsonl": jsonl([{ msg_id: 504, verdict: "directive", category: "product-input", reason: "open-follow-up", quote: "Мені абсолютно окей, якщо мої слова потраплять в гід.", triaged_by: "orchestrator", triaged_at: "2026-07-29" }]),
     });
     expect(checkInboxAging(root, NOW, true).some((f) => f.level === "FAIL")).toBe(false);
   });
 
-  test("a triage row with verbatim message text FAILs", () => {
+  test("a triage row with an unapproved extra field FAILs", () => {
     const root = repo({
       "triage.jsonl": jsonl([{
         msg_id: 508,
@@ -124,11 +127,20 @@ describe("checkInboxAging", () => {
         reason: "liveness-ping",
         triaged_by: "orchestrator",
         triaged_at: "2026-07-29",
+        quote: "verbatim Human message",
         text: "verbatim Human message",
       }]),
     });
     const findings = checkInboxAging(root, NOW, true);
     expect(findings.some((f) => f.level === "FAIL" && f.detail.includes("forbidden free-text field(s): text"))).toBe(true);
+  });
+
+  test("a triage row with a secret-shaped quote FAILs", () => {
+    const root = repo({
+      "triage.jsonl": jsonl([{ msg_id: 509, verdict: "directive", category: "security", reason: "credential", quote: ["PRIVATE", "KEY"].join(" "), triaged_by: "orchestrator", triaged_at: "2026-07-29" }]),
+    });
+    const findings = checkInboxAging(root, NOW, true);
+    expect(findings.some((f) => f.level === "FAIL" && f.detail.includes("secret-shaped content"))).toBe(true);
   });
 
   test("torn/garbled jsonl lines are skipped, not crashed on", () => {

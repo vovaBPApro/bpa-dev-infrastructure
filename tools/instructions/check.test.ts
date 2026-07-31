@@ -21,6 +21,9 @@ function repoWith(files: Record<string, string>): string {
   temporaryDirectories.push(repo);
   const root = join(repo, "instructions");
   mkdirSync(root, { recursive: true });
+  const gate = join(repo, "gate");
+  mkdirSync(gate, { recursive: true });
+  writeFileSync(join(gate, "land-lib.sh"), readFileSync(join(import.meta.dir, "../../gate/land-lib.sh")));
   for (const [name, contents] of Object.entries(files)) {
     const full = join(root, name);
     mkdirSync(join(full, ".."), { recursive: true });
@@ -276,6 +279,7 @@ describe("check.ts ledger aging", () => {
         verdict: "chatter",
         category: "channel-check",
         reason: "liveness-ping",
+        quote: "hey",
         triaged_by: "orchestrator",
         triaged_at: "2026-07-29",
       }) + "\n",

@@ -54,6 +54,24 @@ checks. On the current SHA:
 
 No row is skipped, weakened, or relabelled green by this report.
 
+## After remediation
+
+Verified at `af78f866ab1a40554332979475337c5f62a876dc`:
+
+- `bun test`: `473 pass, 0 fail, 0 skip` across 45 files (83.62 s);
+- `bash orchestrator/full-suite.test.sh`: PASS;
+- `bash orchestrator/full-suite-envrobust.test.sh`: PASS;
+- `bash orchestrator/full-suite-freshness.test.sh`: PASS.
+
+The state-contract registry now declares all five observed accesses and its
+self-sweep passes. The FLEET-IDLE test asserts its focused NOT-APPLICABLE result
+without treating unrelated CLI failures as a failure of that result. The
+Ukrainian real-engine test retains the real model and Cyrillic assertions, but
+uses an explicit 300 s test-only resource budget; the production 180 s timeout
+is unchanged. Its fail-before duration was 180.412 s and its focused pass-after
+duration was 47.60 s, consistent with transient full-suite resource contention
+rather than a missing dependency.
+
 ## Context pack consumption check
 
 - `lane-lifecycle` `sha256:84d3db25d785` — Lane Lifecycle

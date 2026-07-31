@@ -83,6 +83,7 @@ Four steps, in order:
 | `fleet-nudge.sh` | STOPGAP watchdog — validates explicit workboard statuses, counts only `open` rows, and refuses malformed/duplicate rows |
 | `fleet-nudge.test.sh` | regression locks for honest counting, fail-loud parsing, HR-281 notification, and deployed identity |
 | `orch-fleet-nudge.service` / `.timer` | systemd units for the above (installed to `/etc/systemd/system/`, 10-minute interval) |
+| `fleet-nudge-liveness.sh` + units | independent alert-only heartbeat monitor; never kills or restarts anything |
 
 `fleet-nudge.sh` is explicitly temporary: ML-2 (`ag-ml2-autonomy-keepalive`)
 moves this inside the daemon, event-driven plus timer-backed. Remove the units
@@ -93,10 +94,21 @@ once ML-2 is deployed.
     bootstrap/deploy-host-mechanism.sh orchestrator/fleet/fleet-nudge.sh
     DEPLOY_DRIFT_MODE=644 bootstrap/deploy-host-mechanism.sh orchestrator/fleet/orch-fleet-nudge.service
     DEPLOY_DRIFT_MODE=644 bootstrap/deploy-host-mechanism.sh orchestrator/fleet/orch-fleet-nudge.timer
-    systemctl daemon-reload && systemctl enable --now orch-fleet-nudge.timer
-    systemctl list-timers orch-fleet-nudge.timer   # verify
+    bootstrap/deploy-host-mechanism.sh orchestrator/fleet/fleet-nudge-liveness.sh
+    DEPLOY_DRIFT_MODE=644 bootstrap/deploy-host-mechanism.sh orchestrator/fleet/orch-fleet-nudge-liveness.service
+    DEPLOY_DRIFT_MODE=644 bootstrap/deploy-host-mechanism.sh orchestrator/fleet/orch-fleet-nudge-liveness.timer
+    systemctl daemon-reload
+    systemctl enable --now orch-fleet-nudge.timer orch-fleet-nudge-liveness.timer
+    systemctl list-timers orch-fleet-nudge.timer orch-fleet-nudge-liveness.timer
     bootstrap/check-deployed-drift.sh
 
 The deploy wrapper refuses a mechanism or declared companion that differs from
 `main`. The scheduled `bpa-deploy-drift-guard.timer` repeats the complete
 manifest check so later host edits fail loudly without relying on memory.
+
+The watchdog writes `/run/bpa-orchestrator/fleet-nudge.heartbeat` on every run,
+success or failure. The independent timer checks every minute and alerts once it
+is older than 720 seconds. Including `AccuracySec=5s`, silence is reported no
+later than **12 minutes 5 seconds after the last completed watchdog run**. A
+fresh heartbeat sends one recovery notification and clears the deduplication
+state. The monitor is alert-only and does not depend on the orchestrator session.

@@ -17,6 +17,27 @@ FLOOR=${FLEET_NUDGE_FLOOR:-10}
 BOARD=${FLEET_NUDGE_BOARD:-/root/bpa-dev-infrastructure/instance/workboard.md}
 DAEMON=${FLEET_NUDGE_DAEMON:-http://127.0.0.1:4822}
 LOGFILE=${FLEET_NUDGE_LOGFILE:-/root/.cache/infra-lanes/fleet-nudge.log}
+HEARTBEAT=${FLEET_NUDGE_HEARTBEAT:-/run/bpa-orchestrator/fleet-nudge.heartbeat}
+
+write_heartbeat() { # exit_status
+  local heartbeat_dir heartbeat_tmp
+  heartbeat_dir=$(dirname "$HEARTBEAT")
+  mkdir -p "$heartbeat_dir" || return 1
+  heartbeat_tmp="$HEARTBEAT.$$"
+  printf 'epoch=%s\nstatus=%s\n' "$(date +%s)" "$1" >"$heartbeat_tmp" &&
+    mv -f "$heartbeat_tmp" "$HEARTBEAT"
+}
+
+finish_with_heartbeat() {
+  local watchdog_status=$?
+  trap - EXIT
+  if ! write_heartbeat "$watchdog_status"; then
+    echo "fleet-nudge: cannot write heartbeat: $HEARTBEAT" >&2
+    exit 4
+  fi
+  exit "$watchdog_status"
+}
+trap finish_with_heartbeat EXIT
 
 count_open_rows() { # board
   awk '

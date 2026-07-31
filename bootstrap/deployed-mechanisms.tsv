@@ -1,4 +1,7 @@
 # source<TAB>deployed target<TAB>companion tracked paths (comma-separated; - for none)
-orchestrator/fleet/fleet-nudge.sh	${LOCAL_BIN_DIR}/orch-fleet-nudge.sh	instance/workboard.md
+orchestrator/fleet/fleet-nudge.sh	${LOCAL_BIN_DIR}/orch-fleet-nudge.sh	instance/workboard.md,orchestrator/fleet/fleet-nudge-liveness.sh
 orchestrator/fleet/orch-fleet-nudge.service	${SYSTEMD_SYSTEM_DIR}/orch-fleet-nudge.service	orchestrator/fleet/fleet-nudge.sh,instance/workboard.md
 orchestrator/fleet/orch-fleet-nudge.timer	${SYSTEMD_SYSTEM_DIR}/orch-fleet-nudge.timer	orchestrator/fleet/orch-fleet-nudge.service
+orchestrator/fleet/fleet-nudge-liveness.sh	${LOCAL_BIN_DIR}/orch-fleet-nudge-liveness.sh	orchestrator/fleet/fleet-nudge.sh
+orchestrator/fleet/orch-fleet-nudge-liveness.service	${SYSTEMD_SYSTEM_DIR}/orch-fleet-nudge-liveness.service	orchestrator/fleet/fleet-nudge-liveness.sh
+orchestrator/fleet/orch-fleet-nudge-liveness.timer	${SYSTEMD_SYSTEM_DIR}/orch-fleet-nudge-liveness.timer	orchestrator/fleet/orch-fleet-nudge-liveness.service

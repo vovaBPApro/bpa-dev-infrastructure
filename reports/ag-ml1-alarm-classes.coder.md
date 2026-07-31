@@ -1,6 +1,6 @@
 # Coder terminal report: ag-ml1-alarm-classes
 
-commit: ec90b0e9abcf5ac28488149d4fb39a305ca662b6 `[CODER] route terminal alarms internally fail closed`
+commit: b926baef398b604c1e4071f339922a56b77caf02 `[CODER] route terminal alarms internally fail closed`
 
 ## Consumption check
 
@@ -29,7 +29,7 @@ error: Cannot find module './notify-handler' from '.../daemon/notify-handler.tes
 0 pass
 1 fail
 1 error
-Ran 1 test across 1 file. [13.00ms]
+Ran 1 test across 1 file. [9.00ms]
 ```
 
 Command:
@@ -61,7 +61,7 @@ Exit 0:
 15 pass
 0 fail
 22 expect() calls
-Ran 15 tests across 2 files. [56.00ms]
+Ran 15 tests across 2 files. [57.00ms]
 ```
 
 Command:

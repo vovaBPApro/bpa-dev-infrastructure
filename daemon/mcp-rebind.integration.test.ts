@@ -7,6 +7,10 @@ import { join } from 'node:path';
 type DaemonProcess = ReturnType<typeof Bun.spawn>;
 const temporaryPaths: string[] = [];
 const childProcesses: DaemonProcess[] = [];
+const mcpHealthCheck = new URL(
+  '../orchestrator/health-checks/telegram-daemon-mcp.sh',
+  import.meta.url,
+).pathname;
 
 async function listen(server: Server): Promise<number> {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -33,6 +37,21 @@ async function waitFor(url: string): Promise<Response> {
     await Bun.sleep(20);
   }
   throw new Error(`timed out waiting for ${url}`);
+}
+
+async function runMcpHealthCheck(healthUrl: string): Promise<string> {
+  const check = Bun.spawn(['bash', mcpHealthCheck], {
+    env: {
+      ...process.env,
+      TELEGRAM_DAEMON_HEALTH_URL: healthUrl,
+    },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  const output = await new Response(check.stdout).text();
+  const error = await new Response(check.stderr).text();
+  expect(await check.exited, error).toBe(0);
+  return output.trim();
 }
 
 afterAll(async () => {
@@ -112,9 +131,8 @@ test('detached Claude MCP raises an alarm and /reply still delivers through Tele
   });
   childProcesses.push(daemon);
 
-  const health = (await (await waitFor(
-    `http://127.0.0.1:${daemonPort}/health`,
-  )).json()) as {
+  const healthUrl = `http://127.0.0.1:${daemonPort}/health`;
+  const health = (await (await waitFor(healthUrl)).json()) as {
     connected: boolean;
     mcp_detached: boolean;
     direct_reply_endpoint: string;
@@ -124,6 +142,9 @@ test('detached Claude MCP raises an alarm and /reply still delivers through Tele
     mcp_detached: true,
     direct_reply_endpoint: '/reply',
   });
+  expect(await runMcpHealthCheck(healthUrl)).toMatch(
+    /^WARN telegram-daemon-mcp: mcp_detached:true for \d+s$/,
+  );
   const rebind = await fetch(`http://127.0.0.1:${daemonPort}/mcp/rebind`, {
     method: 'POST',
   });

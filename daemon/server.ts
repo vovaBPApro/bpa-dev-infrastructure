@@ -821,6 +821,7 @@ function bufferMsg(content: string, meta: Record<string, string>) {
 // Active MCP session (replaced on each Claude reconnect).
 let activeServer: Server | null = null;
 let activeTransport: SSEServerTransport | null = null;
+let mcpDetachedSince: number | null = null;
 
 // ── MCP server factory ────────────────────────────────────────────────────────
 
@@ -2728,6 +2729,15 @@ function isConnectionAlive(): boolean {
   return !r.destroyed && !(r.socket?.destroyed ?? true);
 }
 
+function mcpDetachedDurationSeconds(isDetached: boolean): number | null {
+  if (!isDetached) {
+    mcpDetachedSince = null;
+    return null;
+  }
+  mcpDetachedSince ??= Date.now();
+  return Math.floor((Date.now() - mcpDetachedSince) / 1000);
+}
+
 // /status is fail-closed: an SDK transport without an inspectable response is
 // not evidence of a live connection.
 function isConnectionAliveForStatus(): boolean {
@@ -2788,6 +2798,11 @@ const httpServer = createServer(
       const alive = isConnectionAlive();
       const connected = transportConnected && alive;
       const tmuxLive = binding?.tmux_session ? await tmuxAlive() : false;
+      const mcpDetached = isMcpChannelDetached({
+        provider: binding?.provider,
+        connected,
+        tmuxAlive: tmuxLive,
+      });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(
         JSON.stringify({
@@ -2796,11 +2811,9 @@ const httpServer = createServer(
           connected,
           alive,
           transport_connected: transportConnected,
-          mcp_detached: isMcpChannelDetached({
-            provider: binding?.provider,
-            connected,
-            tmuxAlive: tmuxLive,
-          }),
+          mcp_detached: mcpDetached,
+          mcp_detached_duration_seconds:
+            mcpDetachedDurationSeconds(mcpDetached),
           direct_reply_endpoint: '/reply',
           buffered: msgBuffer.length,
           pid: process.pid,

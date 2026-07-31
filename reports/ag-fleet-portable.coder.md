@@ -1,9 +1,9 @@
 # Fleet portable coder report
 
-commit: 6f98b0199b4e1463d6ae63b77f70f43586aa7f68 [CODER] Lock fleet launcher marker refusal
+commit: 6f98b01e26ef4d64f044c08e0dfffa6d6e3e5240 [CODER] Lock fleet launcher marker refusal
 verify: bash orchestrator/fleet/launch-lane.test.sh && git diff --check origin/main...HEAD
 result: NO-GO
-blocker: Tier A fleet/evidence-gate change requires independent re-review of replacement SHA 6f98b0199b4e1463d6ae63b77f70f43586aa7f68
+blocker: Tier A fleet/evidence-gate change requires independent re-review of replacement SHA 6f98b01e26ef4d64f044c08e0dfffa6d6e3e5240
 secret-scan: clean
 remaining: independent re-review and landing
 

@@ -40,6 +40,7 @@ import {
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { Subprocess } from 'bun';
+import { isolatedTestEnv } from './test-env';
 // NOTE: import only symbols that exist BEFORE the fix. This file must load —
 // and its behavioural tests must actually run and fail — against the regressed
 // tree, otherwise the "fail-before" evidence is just a missing export. In
@@ -69,18 +70,8 @@ const OPERATOR_CHAT_ID = '83769716';
 // instance lock, the real lease DB, the real bound chat id, the real bot
 // token. Spreading that into a daemon under test makes it talk to the
 // operator's Telegram and stomp live state. Scrub the whole prefix surface and
-// re-add only what this test owns. (Copied from restart-armed.test.ts.)
-function isolatedEnv(overrides: Record<string, string>): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (key.startsWith('ORCH_')) continue;
-    if (key.startsWith('TELEGRAM_')) continue;
-    if (key.startsWith('INFRA_')) continue;
-    if (value !== undefined) env[key] = value;
-  }
-  return { ...env, ...overrides };
-}
-
+// re-add only what this test owns. The shared helper has a regression lock so
+// future ORCH_* names are scrubbed without another hand-maintained path list.
 type SentMessage = { chat_id: string; text: string };
 
 type Harness = {
@@ -266,7 +257,7 @@ exit 0
 
   const child = Bun.spawn(['bun', join(import.meta.dir, 'server.ts')], {
     cwd: import.meta.dir,
-    env: isolatedEnv({
+    env: isolatedTestEnv({
       HOME: homeDir,
       PATH: `${binDir}:${process.env.PATH ?? ''}`,
       TELEGRAM_BOT_TOKEN: BOT_TOKEN,

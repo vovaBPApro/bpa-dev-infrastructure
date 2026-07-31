@@ -15,6 +15,7 @@
 // week-old snapshot as current.
 
 import { expect, test } from 'bun:test';
+import { isolatedTestEnv } from './test-env';
 import {
   RELOGIN_WARNING,
   VENDOR_SNAPSHOT_FRESHNESS_MS,
@@ -31,18 +32,7 @@ import {
 // because a coder lane runs inside the operator's own orchestrator process tree
 // and therefore inherits the LIVE pointers (ORCH_STATE_DB, ORCH_LEASE_FILE,
 // ORCH_INSTANCE_LOCK_FILE, ORCH_HEARTBEAT_FILE ...). Six lanes have been bitten
-// by that inheritance. Copied from daemon/restart-armed.test.ts.
-function isolatedEnv(overrides: Record<string, string>): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (key.startsWith('ORCH_')) continue;
-    if (key.startsWith('TELEGRAM_')) continue;
-    if (key.startsWith('INFRA_')) continue;
-    if (value !== undefined) env[key] = value;
-  }
-  return { ...env, ...overrides };
-}
-
+// by that inheritance. The shared helper scrubs prefixes, not a drifting list.
 const NOW = Date.parse('2026-07-30T12:00:00.000Z');
 
 // A synthetic snapshot line in the exact shape the live scraper appended to
@@ -469,7 +459,7 @@ test('verdicts are identical under a fully scrubbed ORCH_/TELEGRAM_/INFRA_ env',
     console.log(JSON.stringify({ state: v.state }));
   `;
   const child = Bun.spawn(['bun', '-e', driver], {
-    env: isolatedEnv({}),
+    env: isolatedTestEnv({}),
     stdout: 'pipe',
     stderr: 'inherit',
   });

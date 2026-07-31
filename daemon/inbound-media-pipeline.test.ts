@@ -26,8 +26,8 @@
 // is red (attachments never pasted, mirror rows have no file_id, voice was a
 // dead "(voice message)" placeholder).
 //
-// Harness copied from watchdog-turnend-a1.test.ts (which copied it from
-// restart-armed.test.ts) — kept inline in the .test.ts on purpose: the
+// Harness copied from watchdog-turnend-a1.test.ts — kept inline in the
+// .test.ts on purpose: the
 // state-contract sweep skips test files, so naming inbox.jsonl here does not
 // require registry churn.
 import { afterEach, expect, test } from 'bun:test';
@@ -45,22 +45,12 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import type { Subprocess } from 'bun';
 import type { PersistedBinding } from './reliability';
+import { isolatedTestEnv } from './test-env';
 
 const BOT_TOKEN = '123456:test-token';
 
 // The operator's real chat. Nothing in this suite may ever address it.
 const OPERATOR_CHAT_ID = '83769716';
-
-function isolatedEnv(overrides: Record<string, string>): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (key.startsWith('ORCH_')) continue;
-    if (key.startsWith('TELEGRAM_')) continue;
-    if (key.startsWith('INFRA_')) continue;
-    if (value !== undefined) env[key] = value;
-  }
-  return { ...env, ...overrides };
-}
 
 type SentMessage = { chat_id: string; text: string };
 
@@ -331,7 +321,7 @@ exit 1
 
   const child = Bun.spawn(['bun', join(import.meta.dir, 'server.ts')], {
     cwd: import.meta.dir,
-    env: isolatedEnv({
+    env: isolatedTestEnv({
       HOME: homeDir,
       PATH: `${binDir}:${process.env.PATH ?? ''}`,
       TELEGRAM_BOT_TOKEN: BOT_TOKEN,

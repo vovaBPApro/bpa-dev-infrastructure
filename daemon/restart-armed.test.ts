@@ -10,6 +10,7 @@ import {
 } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { isolatedTestEnv } from './test-env';
 
 const children: ReturnType<typeof Bun.spawn>[] = [];
 
@@ -20,17 +21,6 @@ const children: ReturnType<typeof Bun.spawn>[] = [];
 // directory — the test then fails, and worse, the daemon under test is one
 // wrong branch away from writing to it. Every ORCH_* is dropped here and the
 // suite passes back only what it means to set.
-function isolatedEnv(overrides: Record<string, string>): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (key.startsWith('ORCH_')) continue;
-    if (key.startsWith('TELEGRAM_')) continue;
-    if (key.startsWith('INFRA_')) continue;
-    if (value !== undefined) env[key] = value;
-  }
-  return { ...env, ...overrides };
-}
-
 afterEach(() => {
   for (const child of children.splice(0)) child.kill();
 });
@@ -135,7 +125,7 @@ esac
   // whole prefix and re-add exactly what the test owns.
   const child = Bun.spawn(['bun', join(import.meta.dir, 'server.ts')], {
     cwd: import.meta.dir,
-    env: isolatedEnv({
+    env: isolatedTestEnv({
       HOME: homeDir,
       PATH: `${binDir}:${process.env.PATH ?? ''}`,
       TELEGRAM_BOT_TOKEN: '123456:test-token',

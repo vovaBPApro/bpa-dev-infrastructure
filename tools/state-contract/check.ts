@@ -88,10 +88,11 @@ export const REGISTRY: Artifact[] = [
   {
     id: 'state.db',
     kind: 'internal',
-    writers: ['core/mission-cli.ts'],
+    writers: ['core/mission-cli.ts', 'orchestrator/full-suite.sh'],
     readers: [
       'bootstrap/install.sh',
       'daemon/mission-source.ts',
+      'orchestrator/full-suite.sh',
       'orchestrator/launch.sh',
       'orchestrator/morning.sh',
       'orchestrator/status.sh',
@@ -125,7 +126,11 @@ export const REGISTRY: Artifact[] = [
   {
     id: 'inbox.jsonl',
     kind: 'internal',
-    writers: ['daemon/inbox-mirror.ts', 'tools/instructions/memory-sweep.ts'],
+    writers: [
+      'daemon/inbox-mirror.ts',
+      'daemon/server.ts',
+      'tools/instructions/memory-sweep.ts',
+    ],
     readers: ['tools/instructions/ledger.ts', 'tools/instructions/session-load.ts'],
     note:
       'Append-only capture of inbound Human directives (the B276 fix) plus filed ' +
@@ -311,6 +316,34 @@ export const REGISTRY: Artifact[] = [
     writers: ['tools/instructions/scaffold.ts'],
     readers: ['tools/instructions/scaffold.ts'],
     note: 'Scaffolded L1 pin for a downstream repo.',
+  },
+  {
+    id: 'messages-VAR.jsonl',
+    kind: 'internal',
+    writers: ['daemon/history-logger.ts'],
+    readers: ['daemon/history-logger.ts'],
+    note:
+      'Monthly Telegram delivery metadata history. The interpolated YYYY-MM ' +
+      'basename normalizes to VAR; the logger owns writes, retention, and reads.',
+  },
+  {
+    id: 'record.json',
+    kind: 'internal',
+    writers: ['preview/preview.ts'],
+    readers: ['preview/preview.ts'],
+    note:
+      'Per-lane preview lifecycle record under PREVIEW_STATE_ROOT. The preview ' +
+      'tool creates, reads, and removes it with the named disposable preview.',
+  },
+  {
+    id: 'unit-drift-exemptions.tsv',
+    kind: 'repo-file',
+    trackedPath: 'instance/unit-drift-exemptions.tsv',
+    writers: [],
+    readers: ['bootstrap/check-unit-drift.sh', 'bootstrap/install.sh'],
+    note:
+      'Versioned unit-drift exemption policy consumed by bootstrap install and ' +
+      'the standalone drift checker.',
   },
   {
     id: '.claude.json',

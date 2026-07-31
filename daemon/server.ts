@@ -112,6 +112,11 @@ import {
   type JsonReader,
   type JsonReadResult,
 } from './status';
+import { installStderrSecretMasker } from './secret-masker';
+
+// Install before configuration and network startup: every daemon diagnostic
+// crosses this sink, including errors from future call sites.
+installStderrSecretMasker();
 
 // ── Config ────────────────────────────────────────────────────────────────────
 

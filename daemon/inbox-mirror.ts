@@ -17,6 +17,7 @@
 
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
+import { maskSecrets } from "./secret-masker";
 
 // One raw inbound row. `text` may contain newlines, emoji, or other Human input;
 // JSON.stringify escapes all of it into a single safe line.
@@ -83,7 +84,7 @@ export function serializeInboxLine(record: InboxRecord): string {
   if (record.transcript !== undefined) row.transcript = record.transcript;
   if (record.transcript_error !== undefined)
     row.transcript_error = record.transcript_error;
-  return JSON.stringify(row) + "\n";
+  return maskSecrets(JSON.stringify(row)) + "\n";
 }
 
 // Appends one mirror row to the inbox file, creating the file (and its parent

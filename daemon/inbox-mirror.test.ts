@@ -9,6 +9,13 @@ import {
   serializeInboxLine,
 } from "./inbox-mirror";
 
+test("raw inbox sink masks credential assignments", () => {
+  const value = `left-${"z".repeat(24)}-right`;
+  const line = serializeInboxLine({ msg_id: 1, chat_id: 2, ts: "now", text: `ACCESS_TOKEN=${value}` });
+  expect(line).not.toContain(value);
+  expect(line).toContain("********");
+});
+
 const temporaryDirectories: string[] = [];
 
 afterEach(() => {

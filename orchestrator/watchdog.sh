@@ -126,6 +126,7 @@ fi
 # (which is how every hermetic suite keeps this tick off the network) instead of
 # silently falling back to the default URL.
 DAEMON_HEALTH_URL="${ORCH_DAEMON_HEALTH_URL-http://127.0.0.1:${TELEGRAM_DAEMON_PORT:-4822}/health}"
+DAEMON_MCP_HEALTH_CHECK="${ORCH_DAEMON_MCP_HEALTH_CHECK:-$SCRIPT_DIR/health-checks/telegram-daemon-mcp.sh}"
 
 log() { mkdir -p "$RUNTIME_DIR"; printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$LOG_FILE"; }
 # Bounded validation through the ONE central parser (knobs.sh) shared with
@@ -621,17 +622,17 @@ for (const mission of status.missions) {
 # supervisor. The nudge is durable: it sits in the outbox until the daemon
 # returns to drain it.
 check_daemon_health() {
-  local now
+  local now verdict
   [[ -n "$DAEMON_HEALTH_URL" ]] || { log "SKIP reason=daemon-health-disabled"; return 0; }
-  command -v curl >/dev/null 2>&1 || { log "SKIP reason=daemon-health-no-curl url=$DAEMON_HEALTH_URL"; return 0; }
-  if curl -s -m 5 -o /dev/null "$DAEMON_HEALTH_URL"; then
+  if verdict="$(TELEGRAM_DAEMON_HEALTH_URL="$DAEMON_HEALTH_URL" "$DAEMON_MCP_HEALTH_CHECK" 2>&1)"; then
     return 0
   fi
-  log "WATCHDOG daemon-unreachable url=$DAEMON_HEALTH_URL"
+  verdict="$(printf '%s' "$verdict" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/ $//')"
+  log "WATCHDOG daemon-mcp-unhealthy url=$DAEMON_HEALTH_URL verdict=$verdict"
   now="${ORCH_WATCHDOG_NOW_MS:-$(( $(date +%s) * 1000 ))}"
-  if nudge_due daemon "$DAEMON_HEALTH_URL" "$now"; then
-    append_nudge "NUDGE daemon-unreachable url=$DAEMON_HEALTH_URL"
-    record_nudge daemon "$DAEMON_HEALTH_URL" "$now"
+  if nudge_due daemon-mcp "$DAEMON_HEALTH_URL" "$now"; then
+    append_nudge "NUDGE daemon-mcp-unhealthy url=$DAEMON_HEALTH_URL verdict=$verdict"
+    record_nudge daemon-mcp "$DAEMON_HEALTH_URL" "$now"
   fi
   return 0
 }

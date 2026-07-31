@@ -39,7 +39,9 @@ async function waitFor(url: string): Promise<Response> {
   throw new Error(`timed out waiting for ${url}`);
 }
 
-async function runMcpHealthCheck(healthUrl: string): Promise<string> {
+async function runMcpHealthCheck(
+  healthUrl: string,
+): Promise<{ output: string; status: number }> {
   const check = Bun.spawn(['bash', mcpHealthCheck], {
     env: {
       ...process.env,
@@ -50,8 +52,7 @@ async function runMcpHealthCheck(healthUrl: string): Promise<string> {
   });
   const output = await new Response(check.stdout).text();
   const error = await new Response(check.stderr).text();
-  expect(await check.exited, error).toBe(0);
-  return output.trim();
+  return { output: `${output}${error}`.trim(), status: await check.exited };
 }
 
 afterAll(async () => {
@@ -142,7 +143,9 @@ test('detached Claude MCP raises an alarm and /reply still delivers through Tele
     mcp_detached: true,
     direct_reply_endpoint: '/reply',
   });
-  expect(await runMcpHealthCheck(healthUrl)).toMatch(
+  const detachedCheck = await runMcpHealthCheck(healthUrl);
+  expect(detachedCheck.status).toBe(1);
+  expect(detachedCheck.output).toMatch(
     /^WARN telegram-daemon-mcp: mcp_detached:true for \d+s$/,
   );
   const rebind = await fetch(`http://127.0.0.1:${daemonPort}/mcp/rebind`, {

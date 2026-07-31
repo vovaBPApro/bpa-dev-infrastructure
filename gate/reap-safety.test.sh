@@ -34,4 +34,46 @@ fi
 grep -Fq 'safety=refused branch=unique detail=unique-content' "$fixture/unique.out"
 git -C "$fixture" show-ref --verify --quiet refs/heads/unique
 
+# A patch carried by a different commit is safe even though the lane commit is
+# not an ancestor of main (the historical fix-import-signs shape).
+git -C "$fixture" checkout -qb equivalent merged
+printf 'equivalent\n' > "$fixture/equivalent.txt"
+git -C "$fixture" add equivalent.txt
+git -C "$fixture" commit -qm lane-equivalent
+equivalent_sha=$(git -C "$fixture" rev-parse HEAD)
+git -C "$fixture" checkout -q main
+git -C "$fixture" cherry-pick "$equivalent_sha" >/dev/null
+main_sha=$(git -C "$fixture" rev-parse main)
+if git -C "$fixture" merge-base --is-ancestor equivalent "$main_sha"; then
+  echo 'equivalent fixture unexpectedly became an ancestor' >&2
+  exit 1
+fi
+land_assert_reap_safe "$fixture" equivalent "$main_sha" TEST > "$fixture/equivalent.out"
+grep -Fq 'safety=pass branch=equivalent carried-by=' "$fixture/equivalent.out"
+
+# Uncommitted and untracked lane work must block deletion.
+dirty_worktree="$fixture-dirty"
+git -C "$fixture" worktree add -q "$dirty_worktree" equivalent
+printf 'uncommitted\n' > "$dirty_worktree/uncommitted.txt"
+if land_assert_reap_safe "$fixture" equivalent "$main_sha" TEST > "$fixture/dirty.out" 2>&1; then
+  echo 'dirty worktree was incorrectly declared safe to reap' >&2
+  exit 1
+fi
+grep -Fq 'safety=refused branch=equivalent detail=dirty-worktree' "$fixture/dirty.out"
+git -C "$fixture" worktree remove --force "$dirty_worktree"
+
+# A remote branch without a local ref cannot be inspected completely and is
+# retained fail-closed.
+remote="$fixture-remote.git"
+git init -q --bare "$remote"
+git -C "$fixture" remote add origin "$remote"
+git -C "$fixture" push -q origin unique
+git -C "$fixture" branch -D unique >/dev/null
+if land_assert_reap_safe "$fixture" unique "$main_sha" TEST > "$fixture/remote-only.out" 2>&1; then
+  echo 'remote-only branch was incorrectly declared safe to reap' >&2
+  exit 1
+fi
+grep -Fq 'safety=refused branch=unique detail=remote-only' "$fixture/remote-only.out"
+git --git-dir="$remote" show-ref --verify --quiet refs/heads/unique
+
 echo 'reap safety tests: pass'

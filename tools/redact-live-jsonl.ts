@@ -46,7 +46,16 @@ try {
   const encodedValues = credentialValues.flatMap((value) => {
     const raw = Buffer.from(value);
     const json = Buffer.from(JSON.stringify(value).slice(1, -1));
-    return raw.equals(json) ? [raw] : [raw, json];
+    const unicodeText = [...value].map((character) => {
+      const units: string[] = [];
+      for (let index = 0; index < character.length; index += 1) units.push(`\\u${character.charCodeAt(index).toString(16).padStart(4, '0')}`);
+      return units.join('');
+    }).join('');
+    const unicode = Buffer.from(unicodeText);
+    const unicodeUpper = Buffer.from(unicodeText.toUpperCase().replaceAll('\\U', '\\u'));
+    const url = Buffer.from(encodeURIComponent(value));
+    const base64 = Buffer.from(raw.toString('base64'));
+    return [...new Map([raw, json, unicode, unicodeUpper, url, base64].map((candidate) => [candidate.toString('hex'), candidate])).values()];
   });
   for (const value of encodedValues) {
     let offset = 0;

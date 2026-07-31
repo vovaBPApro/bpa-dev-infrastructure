@@ -44,6 +44,27 @@ test('regression lock: a credential split across stream chunks is masked', () =>
   expect(output).toContain('next line');
 });
 
+test('regression lock: installed stderr sink masks a credential split across many writes', () => {
+  const script = `
+    const { installStderrSecretMasker } = await import(${JSON.stringify(import.meta.dir + '/secret-masker.ts')});
+    installStderrSecretMasker();
+    for (const chunk of ['ACCESS_', 'TOKEN=', 'edge-', 'cccccc', 'cccccc', 'cccccc', '-edge', '\\n']) process.stderr.write(chunk);
+  `;
+  const child = Bun.spawnSync(['bun', '-e', script], { stdout: 'pipe', stderr: 'pipe' });
+  const output = child.stderr.toString();
+  expect(child.exitCode).toBe(0);
+  expect(output.includes('edge-' + 'c'.repeat(18) + '-edge')).toBeFalse();
+  expect(output).toContain('*'.repeat(12));
+});
+
+test('encoded credentials and exception-shaped output are masked at the sink', () => {
+  const value = `edge-${'z'.repeat(18)}-edge`;
+  for (const encoded of [Buffer.from(value).toString('base64'), encodeURIComponent(value)]) {
+    const output = maskSecrets(`Error retry failed: {\\"ACCESS_TOKEN\\":\\"${encoded}\\"}`);
+    expect(output.includes(encoded)).toBeFalse();
+  }
+});
+
 test('regression lock: short credential values disclose no original bytes', () => {
   const value = 'a1b2c3d4';
   expect(maskSecrets(`PASSWORD=${value}`)).toBe('PASSWORD=********');

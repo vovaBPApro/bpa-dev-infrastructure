@@ -16,6 +16,19 @@ note. Derived-work items live here; Human directives stay in
 
 ## Open
 
+- **W-17 — the live daemon unit lost its security hardening** (found 2026-07-31
+  by diffing deployed units against their templates for the first time).
+  `bootstrap/units/bpa-telegram-daemon.service.in` sets `NoNewPrivileges=true`
+  and `PrivateTmp=true`; the deployed
+  `/etc/systemd/system/bpa-telegram-daemon.service` has NEITHER. Evidence and the
+  full drift table: `instance/as-built-units/README.md`. NOT fixed in passing —
+  restoring these changes the running daemon's behaviour (`PrivateTmp` gives it a
+  private `/tmp`, which can break anything sharing paths through it) and the
+  daemon is the Human's only channel, so it needs a lane with a restart plan and
+  an external recovery backstop. Also decide the general question this exposes:
+  nothing compares deployed units against templates, so this drift was invisible
+  — that check belongs in the gate or the state contract.
+
 - **W-08 — memory-sweep defect triage**: live sweep + triage DONE (proposal at
   `.cache/infra-lanes/diag/ag-memory-sweep-triage.report.md`: 38 memory entries
   + 3 oversized `.mdc` rules files). APPLICATION pending — adding `home:` anchors

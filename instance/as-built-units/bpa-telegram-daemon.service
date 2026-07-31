@@ -1,0 +1,21 @@
+[Unit]
+Description=BPA Telegram daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/root/bpa-dev-infrastructure/daemon
+Environment=HOME=/root
+Environment=PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=TELEGRAM_STATE_DIR=/root/.claude/channels/telegram
+EnvironmentFile=/root/.config/bpa/orchestrator.env
+ExecStart=/usr/local/bin/bun server.ts
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

@@ -27,9 +27,18 @@ case "$1" in
     printf '%s\n' "${MOCK_PANE_PID:-$$}" > "$state/pid"
     printf 'tmux new-session %s\n' "$*" >> "$state/calls"
     ;;
-  pipe-pane) printf 'tmux pipe-pane %s\n' "$*" >> "$state/calls" ;;
+  pipe-pane)
+    printf 'tmux pipe-pane %s\n' "$*" >> "$state/calls"
+    [[ "${MOCK_PIPE_DETACH:-0}" == 1 ]] || touch "$state/pipe"
+    ;;
   kill-session) rm -f "$state/session"; printf 'tmux kill-session %s\n' "$*" >> "$state/calls" ;;
-  list-panes) cat "$state/pid" ;;
+  list-panes)
+    if [[ "$*" == *'#{pane_pipe}'* ]]; then
+      [[ -f "$state/pipe" ]] && printf '1\n' || printf '0\n'
+    else
+      cat "$state/pid"
+    fi
+    ;;
   *) printf 'unexpected tmux: %s\n' "$*" >&2; exit 2 ;;
 esac
 EOF
@@ -133,5 +142,11 @@ touch -d '@995' "$heartbeat"
 assert "$SCRIPT_DIR/watchdog.sh"
 [[ "$(calls 'tmux kill-session')" == 1 ]] || fail 'healthy session was killed'
 [[ "$(calls 'tmux new-session')" == 3 ]] || fail 'healthy session was relaunched'
+
+rm -f "$STATE/session" "$STATE/pipe"
+export MOCK_PIPE_DETACH=1
+assert_not "$SCRIPT_DIR/launch.sh" start
+[[ ! -f "$STATE/session" ]] || fail 'detached terminal alert pipe left session running'
+unset MOCK_PIPE_DETACH
 
 printf 'runtime tests: PASS\n'

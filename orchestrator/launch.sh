@@ -342,7 +342,7 @@ start() {
   if [[ "$PROVIDER" == codex ]] && ! codex_trust_preflight; then
     return 2
   fi
-  local command provider_bin singleton_command startup_file pane_pid terminal_alert_bun terminal_alert_command
+  local command provider_bin singleton_command startup_file pane_pid pane_pipe terminal_alert_bun terminal_alert_command
   command="$(build_command)"
   provider_bin="${command#exec }"; provider_bin="${provider_bin%% *}"
   command -v "$provider_bin" >/dev/null 2>&1 || { printf 'provider not found: %s\n' "$provider_bin" >&2; return 2; }
@@ -374,6 +374,17 @@ start() {
     tmux kill-session -t "$SESSION" 2>/dev/null || true
     return 1
   fi
+  # pipe-pane reports only that its child was spawned. The child can fail
+  # immediately and tmux then silently detaches it.
+  for _ in 1 2 3 4 5; do
+    sleep 0.1
+    pane_pipe="$(tmux list-panes -t "$SESSION" -F '#{pane_pipe}' | head -n 1)"
+    if [[ "$pane_pipe" != 1 ]]; then
+      printf 'ERROR terminal-alert-pipe-detached session=%s\n' "$SESSION" >&2
+      tmux kill-session -t "$SESSION" 2>/dev/null || true
+      return 1
+    fi
+  done
   # tmux reports success before the pane command can reject a held flock.
   # Give that command a bounded window to exit, then fail the launch loudly.
   sleep 0.1

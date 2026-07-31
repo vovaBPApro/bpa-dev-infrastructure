@@ -14,6 +14,9 @@ Report the current branch.
 EOF
 cat >"$SCRATCH/bin/codex" <<'EOF'
 #!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$@" >"$MOCK_CODEX_ARGS"
+touch "$MOCK_CODEX_EXECUTED"
 exit 0
 EOF
 cat >"$SCRATCH/bin/systemctl" <<'EOF'
@@ -24,11 +27,23 @@ cat >"$SCRATCH/bin/systemd-run" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$@" >"$MOCK_SYSTEMD_ARGS"
-exit 0
+while (($#)); do
+  case "$1" in
+    --collect) shift ;;
+    --unit) shift 2 ;;
+    --setenv=*) export "${1#--setenv=}"; shift ;;
+    --working-directory=*) cd "${1#--working-directory=}"; shift ;;
+    --property=*) shift ;;
+    *) break ;;
+  esac
+done
+exec "$@"
 EOF
 chmod +x "$SCRATCH/bin/"*
 
-PATH="$SCRATCH/bin:$PATH" CODEX_BIN="$SCRATCH/bin/codex" MOCK_SYSTEMD_ARGS="$SCRATCH/systemd.args" \
+PATH="$SCRATCH/bin:$PATH" CODEX_BIN="$SCRATCH/bin/codex" \
+  MOCK_SYSTEMD_ARGS="$SCRATCH/systemd.args" MOCK_CODEX_ARGS="$SCRATCH/codex.args" \
+  MOCK_CODEX_EXECUTED="$SCRATCH/codex.executed" \
   "$SCRIPT_DIR/launch-lane.sh" --name proof --role coder --task-file "$SCRATCH/task.md" \
   --repo "$REPO_DIR" --lanes-dir "$SCRATCH/lanes" --base HEAD --branch ag-fleet-launch-proof \
   >"$SCRATCH/output"
@@ -46,5 +61,36 @@ if grep -Fxq -- '--user' "$SCRATCH/systemd.args"; then
 fi
 grep -Fq -- '--working-directory=' "$SCRATCH/systemd.args"
 grep -Fq 'StandardOutput=append:' "$SCRATCH/systemd.args"
+test -f "$SCRATCH/codex.executed"
+grep -Fxq 'exec' "$SCRATCH/codex.args"
+grep -Fxq -- '--dangerously-bypass-approvals-and-sandbox' "$SCRATCH/codex.args"
+grep -Fq '# Dispatch proof' "$SCRATCH/codex.args"
+
+# Refusal lock: make the real marker gate reject after composition. No worktree,
+# SYSTEM-manager call, or Codex payload may occur after that refusal.
+REAL_BUN="${BUN_BIN:-$(command -v bun)}"
+cat >"$SCRATCH/bin/refusing-bun" <<EOF
+#!/usr/bin/env bash
+if [[ "\${1:-}" == */dispatch-check.ts ]]; then
+  printf 'injected marker refusal\n' >&2
+  exit 17
+fi
+exec "$REAL_BUN" "\$@"
+EOF
+chmod +x "$SCRATCH/bin/refusing-bun"
+rm -f "$SCRATCH/systemd.args" "$SCRATCH/codex.executed" "$SCRATCH/codex.args"
+if PATH="$SCRATCH/bin:$PATH" BUN_BIN="$SCRATCH/bin/refusing-bun" \
+  CODEX_BIN="$SCRATCH/bin/codex" MOCK_SYSTEMD_ARGS="$SCRATCH/systemd.args" \
+  MOCK_CODEX_ARGS="$SCRATCH/codex.args" MOCK_CODEX_EXECUTED="$SCRATCH/codex.executed" \
+  "$SCRIPT_DIR/launch-lane.sh" --name refused --role coder --task-file "$SCRATCH/task.md" \
+  --repo "$REPO_DIR" --lanes-dir "$SCRATCH/lanes" --base HEAD --branch ag-fleet-launch-refused \
+  >"$SCRATCH/refused.output" 2>"$SCRATCH/refused.error"; then
+  printf 'marker-gate refusal incorrectly dispatched the lane\n' >&2
+  exit 1
+fi
+grep -Fq 'injected marker refusal' "$SCRATCH/refused.error"
+test ! -e "$SCRATCH/lanes/refused"
+test ! -e "$SCRATCH/systemd.args"
+test ! -e "$SCRATCH/codex.executed"
 
 printf 'launch-lane dispatch proof: PASS\n'

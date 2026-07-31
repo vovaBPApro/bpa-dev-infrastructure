@@ -7,127 +7,115 @@ consumed:
 - instruction-layers sha256:f9a51936be92 # Instruction Layers
 - tool-permissions sha256:6c7b9f57fbbd # Tool Permissions
 
-reviewer: Codex reviewer lane `lane-review-fleet-idle`
-independence: independent session; did not author the reviewed branch
+reviewer: Codex reviewer lane `lane-rev-ag-fleet-idle-check`
+independence: independent session; did not author the coder commits
 tier: Tier A — evidence-gate logic
-reviewed-sha: 8e9ccff01e14ce1671ef35dc6d4f571889ad3b5c
-reviewed-diff: `origin/main...8e9ccff01e14ce1671ef35dc6d4f571889ad3b5c`
-verdict: REJECT
+reviewed-sha: 70d862c0a77defed3cb3b3873ce7b4272f64aa20
+reviewed-diff: `origin/main...70d862c0a77defed3cb3b3873ce7b4272f64aa20`
+verdict: ACCEPT
 
-## Scope and evidence inspected
+## Scope and claims
 
-Reviewed:
+The two coder titles are accurate: `12198baf` adds the open-work/zero-lane
+failure and `70d862c0` closes the empty-readable-workboard bypass. The intervening
+review commit records the earlier rejection; this report supersedes that verdict
+for the corrected SHA. Changed implementation scope is limited to the fleet
+instance fact, its binding Human decision, and the state-contract checker/tests.
 
-- `instance/params.yaml`
-- `tools/state-contract/check.ts`
-- `tools/state-contract/check.test.ts`
-- `/root/.cache/infra-lanes/ag-fleet-idle-check.report.md`
-- `instance/workboard.md`
-- `instance/decisions/HR-281.md`
+No blocking finding remains. The checker fails closed when the workboard cannot
+be read or parsed, when system lane state cannot be queried or parsed, and when
+open rows coexist with zero running lanes. `instance/params.yaml` and
+`instance/decisions/HR-281.md` now consistently name the active enforcement.
 
-The coder's `result: NO-GO` is honest caution about the mandatory independent
-review. It is not itself evidence of a functional defect.
-
-## Commands and results
-
-Exact reviewed SHA and diff:
+## Commands and actual output
 
 ```sh
 git rev-parse HEAD
-git diff --stat origin/main...HEAD
-git diff origin/main...HEAD -- instance/params.yaml tools/state-contract/check.ts tools/state-contract/check.test.ts
+git log --oneline origin/main..HEAD
+git diff --name-status origin/main...HEAD
 ```
 
-Result: HEAD was
-`8e9ccff01e14ce1671ef35dc6d4f571889ad3b5c`; the reviewed diff changed only the
-three listed files.
-
-Host lane discovery:
-
-```sh
-systemctl list-units 'lane-*.service' --type=service --state=running --no-legend --no-pager --plain
-```
-
-Result: exit 0 and five running `lane-*` system services, including this review
-lane. The implementation invokes system `systemctl`; it does not use or assume
-a user bus.
-
-Idle-fleet reproduction used a PATH-scoped review fixture named `systemctl`
-which exited 0 with no output:
-
-```sh
-REVIEW_PATH="$PWD/.review-bin:$PATH"
-PATH="$REVIEW_PATH" REVIEW_SYSTEMCTL_MODE=idle bun tools/state-contract/check.ts .
-```
-
-Result: exit 1:
-
-```text
-FAIL FLEET-IDLE: 24 open workboard row(s), 0 running lane unit(s)
-```
-
-Unavailable lane-state reproduction used the same fixture exiting 1 with
-`review fixture: system bus unavailable` on stderr:
-
-```sh
-PATH="$REVIEW_PATH" REVIEW_SYSTEMCTL_MODE=unavailable bun tools/state-contract/check.ts .
-```
-
-Result: exit 1:
-
-```text
-FAIL FLEET-IDLE: 24 open workboard row(s), running lane unit(s) unknown/degraded: system systemctl exited 1: review fixture: system bus unavailable
-```
-
-Tests and live checker:
+Output identified reviewed HEAD
+`70d862c0a77defed3cb3b3873ce7b4272f64aa20`, the two coder commits and prior
+review commit, and these paths: `instance/decisions/HR-281.md`,
+`instance/params.yaml`, `reports/ag-fleet-idle-check.review.md`,
+`tools/state-contract/check.test.ts`, and `tools/state-contract/check.ts`.
 
 ```sh
 bun test tools/state-contract/check.test.ts
+```
+
+Output (exit 0):
+
+```text
+(pass) FLEET-IDLE locks open work against the measured system lane fleet
+(pass) CLI fails closed when the readable workboard is empty
+...
+17 pass
+0 fail
+48 expect() calls
+Ran 17 tests across 1 file. [157.00ms]
+```
+
+```sh
 bun tools/state-contract/check.ts .
 ```
 
-Result: tests exited 0 with 16 pass, 0 fail, 46 expectations. The live checker
-exited 0 with 29 artifacts, 0 FAIL, and 3 declared gaps while five system lane
-units were running.
+Output (exit 0) contained the three declared `GAP` records and ended:
 
-## Blocking finding
-
-`tools/state-contract/check.ts` fails open for a readable but empty
-`instance/workboard.md`.
-
-The read succeeds and assigns the empty string to `workboardSource`. The CLI
-then guards the fleet check with:
-
-```ts
-if (workboardSource) {
-  // checkFleetIdle(...)
-}
+```text
+29 artifacts declared, 0 FAIL, 3 known gap(s)
 ```
 
-Therefore an empty workboard skips `checkFleetIdle` entirely and emits no
-`FLEET-IDLE` finding. The helper itself would correctly treat the missing
-`## Open` section as degraded, but the CLI prevents the helper from seeing this
-input. This is the mission's highest-priority defect class: the checker silently
-passes when it cannot determine whether work is open.
+```sh
+(cd daemon && bunx tsc --noEmit)
+git diff --check origin/main...HEAD
+```
 
-The new test exercises `checkFleetIdle` directly, so it cannot detect this CLI
-fail-open branch. Add a CLI regression lock using an empty readable workboard,
-prove it fails before the fix, and require non-zero exit plus a
-`FLEET-IDLE ... unknown/degraded` finding after the fix.
+Both commands exited 0 with no output.
 
-## Additional consistency finding
+```sh
+systemctl list-units 'lane-*.service' --type=service --state=running \
+  --no-legend --no-pager --plain
+```
 
-`instance/params.yaml` now claims this enforcement is active, but the binding
-`instance/decisions/HR-281.md` enforcement section still says “not yet landed”
-and still names `planned:ag-fleet-idle-check`. Update the routed binding text
-when the functional fix is ready so the repository does not carry contradictory
-status claims.
+Output (exit 0): seven running `lane-*.service` units, including
+`lane-rev-ag-fleet-idle-check.service`. This confirms the checker is exercising
+the system service manager used by the live lane fleet.
 
-## Rollback and disposition
+## Regression red-before / green-after
 
-Do not land reviewed SHA
-`8e9ccff01e14ce1671ef35dc6d4f571889ad3b5c`. No production/runtime mutation was
-performed during review. The PATH fixture was local to the review worktree and
-removed before commit. Fix the empty-readable-workboard fail-open path, add the
-CLI regression lock with red-before/green-after evidence, reconcile the binding
-decision status, and request independent review of the new SHA.
+I created a disposable detached worktree at reviewed HEAD, restored only
+`tools/state-contract/check.ts` from pre-fix commit `4f6058f5`, retained the new
+test, and ran:
+
+```sh
+bun test "$review_tmp/tools/state-contract/check.test.ts" \
+  --test-name-pattern 'CLI fails closed when the readable workboard is empty'
+```
+
+Pre-fix output (exit 1):
+
+```text
+Expected to contain: "FAIL FLEET-IDLE: open workboard row count unknown/degraded: instance/workboard.md has no ## Open section"
+Received: "FAIL state.db: declared in the registry but referenced by no source file\n...\n29 artifacts declared, 32 FAIL, 0 known gap(s)\n"
+(fail) CLI fails closed when the readable workboard is empty
+0 pass
+16 filtered out
+1 fail
+FAIL_BEFORE_EXIT=1
+```
+
+The received output lacks `FLEET-IDLE`, reproducing the silent bypass. At the
+reviewed SHA the full test command above passes the same lock. The disposable
+worktree was then removed.
+
+## Secrets, rollback, and disposition
+
+The canonical diff signature scan reported no hit. No credential material or
+out-of-scope runtime mutation was found. Rollback is the ordinary revert of the
+two coder commits; no persistent service, data, dependency, or schema mutation
+was performed. The known unrelated `dispatch-check` CI failure was excluded as
+directed and was not used as positive evidence.
+
+blockers: none

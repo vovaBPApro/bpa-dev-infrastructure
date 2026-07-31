@@ -1,24 +1,6 @@
 #!/usr/bin/env bun
-import { maskSecrets } from './secret-masker';
-
-export class SecretMaskStream {
-  private pending = '';
-
-  push(chunk: string): string {
-    this.pending += chunk;
-    const boundary = this.pending.lastIndexOf('\n');
-    if (boundary < 0) return '';
-    const complete = this.pending.slice(0, boundary + 1);
-    this.pending = this.pending.slice(boundary + 1);
-    return maskSecrets(complete);
-  }
-
-  end(): string {
-    const complete = this.pending;
-    this.pending = '';
-    return maskSecrets(complete);
-  }
-}
+import { SecretMaskStream } from './secret-masker';
+export { SecretMaskStream } from './secret-masker';
 
 if (import.meta.main) {
   const reader = Bun.stdin.stream().getReader();

@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 
-const CREDENTIAL_ASSIGNMENT = /((?:client[_-]?(?:id|secret)|(?:refresh|access)[_-]?token|(?:[A-Z][A-Z0-9_]*_)?(?:SECRET|TOKEN|PASSWORD|API_KEY))\s*[:=]\s*)([^\s"']{8,})/gim;
+const CREDENTIAL_ASSIGNMENT = /((?:client[_-]?(?:id|secret)|(?:refresh|access)[_-]?token|(?:[A-Z][A-Z0-9_]*_)?(?:SECRET|TOKEN|PASSWORD|API_KEY))(?:\\?["'])?\s*[:=]\s*(?:\\?["'])?)([^\s"']{8,})/gim;
 const BEARER = /(\bBearer\s+)([0-9A-Za-z._~+/-]{8,})/gi;
 const PRIVATE_KEY = /(-----BEGIN\s+(?:[A-Z0-9]+\s+)?PRIVATE\s+KEY-----)([\s\S]*?)(-----END\s+(?:[A-Z0-9]+\s+)?PRIVATE\s+KEY-----)/g;
 
@@ -41,10 +41,41 @@ export function maskSecrets(input: string): string {
     .replace(canonicalPattern(), (value) => categoryMask(value));
 }
 
+export class SecretMaskStream {
+  private pending = '';
+
+  push(chunk: string): string {
+    this.pending += chunk;
+    const boundary = this.pending.lastIndexOf('\n');
+    if (boundary < 0) return '';
+    const complete = this.pending.slice(0, boundary + 1);
+    this.pending = this.pending.slice(boundary + 1);
+    return maskSecrets(complete);
+  }
+
+  end(): string {
+    const complete = this.pending;
+    this.pending = '';
+    return maskSecrets(complete);
+  }
+}
+
 export function installStderrSecretMasker(): void {
   const write = process.stderr.write.bind(process.stderr);
+  const masker = new SecretMaskStream();
   process.stderr.write = ((chunk: string | Uint8Array, ...args: unknown[]) => {
     const text = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
-    return write(maskSecrets(text), ...(args as [BufferEncoding?, ((error?: Error | null) => void)?]));
+    const masked = masker.push(text);
+    if (!masked) {
+      const callback = args.find((arg) => typeof arg === 'function') as ((error?: Error | null) => void) | undefined;
+      callback?.();
+      return true;
+    }
+    return write(masked, ...(args as [BufferEncoding?, ((error?: Error | null) => void)?]));
   }) as typeof process.stderr.write;
+
+  process.once('beforeExit', () => {
+    const masked = masker.end();
+    if (masked) write(masked);
+  });
 }

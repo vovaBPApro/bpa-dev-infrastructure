@@ -32,3 +32,20 @@ test('regression lock: replaces a JSON-escaped credential with equal-length byte
   expect(statSync(target).size).toBe(size);
   expect(JSON.parse(readFileSync(target, 'utf8')).message).not.toContain(value);
 });
+
+test('regression lock: replaces a unicode-escaped credential with equal-length bytes', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'redact-jsonl-unicode-'));
+  const value = `left-${'u'.repeat(16)}-right`;
+  const store = join(dir, 'runtime.json');
+  const target = join(dir, 'live.jsonl');
+  const escaped = [...value].map((character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`).join('');
+  writeFileSync(store, JSON.stringify({ ACCESS_TOKEN: value }));
+  writeFileSync(target, `{"message":"${escaped}"}\n`);
+  const size = statSync(target).size;
+  const result = Bun.spawnSync(['bun', join(import.meta.dir, 'redact-live-jsonl.ts'), '--values-file', store, '--target', target]);
+  expect(result.exitCode).toBe(0);
+  expect(statSync(target).size).toBe(size);
+  const text = readFileSync(target, 'utf8');
+  expect(text.includes(escaped)).toBeFalse();
+  expect(text.split('\n').filter(Boolean).map(JSON.parse)).toHaveLength(1);
+});

@@ -1,8 +1,8 @@
 # Coder terminal report: ag-ml10-delivery-fallback
 
-commit: d6561bd88b687a168995331da2420a43a0dc61f4 [CODER] refresh MCP fallback proof after rebase
+commit: 0e8557397fc48f7104bc1b7c8612d25122ea63a9 [CODER] fail closed MCP connectivity health
 verify: orchestrator/telegram-daemon-mcp.test.sh >/dev/null && cd daemon && bun test && bun run typecheck
-verify-count: 164/0
+verify-count: 182/0
 result: NO-GO
 blocker: Tier A orchestrator runtime and health/evidence-gate change requires independent re-review of the replacement SHA.
 secret-scan: clean
@@ -10,18 +10,19 @@ remaining: independent re-review and landing
 
 ## Approach assessment
 
-The rejected approach was wrong in two material ways: its health probe converted
-unknown and detached states into success, and executable mode was mistaken for
-runtime wiring. The replacement uses the existing watchdog as the consumer,
-preserves its durable rate-limited nudge path, and makes unavailable, invalid,
-and detached health nonzero. This closes the mechanism gap rather than adding a
-second scheduler or treating warning text as evidence.
+The rejected approach was wrong in three material ways: its daemon health oracle
+treated an uninspectable SDK transport as alive, its shell probe accepted
+`mcp_detached:false` without positive connectivity evidence, and executable mode
+was mistaken for runtime wiring. The replacement uses the fail-closed status
+oracle for `/health`, requires both `mcp_detached:false` and `connected:true`,
+and keeps the existing watchdog as the consumer of the durable alarm path.
 
 ## Review blockers closed
 
 - The daemon integration lock fails on current `origin/main`, whose health
   response lacks the detach fields and direct fallback endpoint.
-- Detached, unavailable, and invalid health responses return nonzero.
+- Detached, unavailable, invalid, contradictory, and connectivity-omitting
+  health responses return nonzero.
 - The installed watchdog executes the MCP probe and puts its exact failing
   verdict in the durable nudge outbox.
 - The complete daemon suite reached its terminal summary and typecheck exited
@@ -31,26 +32,18 @@ second scheduler or treating warning text as evidence.
 
 ## FAIL-BEFORE
 
-Commands, run in a disposable worktree at `origin/main` with only the two locks
-and the health probe materialized from the lane SHA:
+The new contradictory/missing-connectivity fixtures were run before the shell
+probe fix in this lane:
 
 ```sh
-cd "$red_tree/daemon" && timeout 40s bun test ./mcp-rebind.integration.test.ts
-cd "$red_tree" && timeout 40s bash orchestrator/telegram-daemon-mcp.test.sh
+orchestrator/telegram-daemon-mcp.test.sh
 ```
 
 Real output:
 
 ```text
-error: expect(received).toMatchObject(expected)
--   "direct_reply_endpoint": "/reply",
--   "mcp_detached": true,
-(fail) detached Claude MCP raises an alarm and /reply still delivers through Telegram
-Ran 1 test across 1 file.
-ts_red_before_rc=1
-grep: .../runtime/nudges.outbox: No such file or directory
-FAIL: watchdog did not route failed MCP health into durable nudge outbox
-watchdog_red_before_rc=1
+FAIL: contradictory returned success
+fail_before_rc=1
 ```
 
 ## PASS-AFTER
@@ -67,12 +60,13 @@ Real output:
 
 ```text
 telegram daemon MCP health/wiring regression: PASS
-(pass) detached Claude MCP raises an alarm and /reply still delivers through Telegram
-Ran 1 test across 1 file. [267.01ms]
-...
-(pass) transcribes an English .oga opus voice message (the Telegram wire format) [38254.89ms]
-(pass) transcribes a Ukrainian sample to Cyrillic text (forced -l uk; see fixture note) [20897.03ms]
-Ran 164 tests across 16 files. [70.31s]
+(pass) detached Claude MCP raises an alarm and /reply still delivers through Telegram [251.01ms]
+1 pass
+0 fail
+9 expect() calls
+Ran 1 test across 1 file. [299.00ms]
+Ran 182 tests across 18 files. [62.71s]
+577 expect() calls
 $ bunx tsc --noEmit
 pass_after_rc=0
 ```

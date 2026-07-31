@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   RULES_BODY_LINE_BUDGET,
   hasBindingVerb,
+  memoryRootForRepo,
   readHomeField,
   runMemorySweep,
   scanMemoryDir,
@@ -46,6 +47,11 @@ function fixture(opts: {
 }
 
 describe("text helpers", () => {
+  test("derives the live Claude memory directory from the repository path", () => {
+    expect(memoryRootForRepo("/root/bpa-dev-infrastructure", "/root")).toBe(
+      "/root/.claude/projects/-root-bpa-dev-infrastructure/memory",
+    );
+  });
   test("stripFrontmatter removes a leading --- block", () => {
     // The fence match consumes up to one trailing newline; the blank line that
     // separated frontmatter from body remains, which is fine for verb scanning.

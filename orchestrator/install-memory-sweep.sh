@@ -10,7 +10,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# A lane installer must point the persistent unit at the canonical checkout,
+# not at its short-lived worktree. git-common-dir is the canonical .git dir for
+# both ordinary clones and linked worktrees.
+GIT_COMMON_DIR="$(git -C "$SCRIPT_DIR/.." rev-parse --path-format=absolute --git-common-dir)"
+REPO_DIR="${ORCH_REPO_DIR:-$(dirname "$GIT_COMMON_DIR")}"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib.sh"
 
@@ -20,15 +24,24 @@ MARKER='# managed by orchestrator/install-memory-sweep.sh'
 SERVICE="$UNIT_DIR/$UNIT_NAME.service"
 TIMER="$UNIT_DIR/$UNIT_NAME.timer"
 SWEEP_TS="${ORCH_MEMORY_SWEEP_TS:-tools/instructions/memory-sweep.ts}"
-ON_CALENDAR="${ORCH_MEMORY_SWEEP_ONCALENDAR:-*-*-* 04:30:00 Europe/Warsaw}"
+ON_CALENDAR="${ORCH_MEMORY_SWEEP_ONCALENDAR:-*-*-* 04:30:00}"
+SYSTEMCTL_BIN="${ORCH_SYSTEMCTL_BIN:-$(command -v systemctl || true)}"
+
+# Non-login automation may not inherit the user-bus environment even while the
+# user manager is live. Reconstruct the standard local address when available.
+runtime_dir="/run/user/$(id -u)"
+if [[ -S "$runtime_dir/bus" ]]; then
+  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-$runtime_dir}"
+  export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$runtime_dir/bus}"
+fi
 
 usage() { printf '%s\n' 'Usage: install-memory-sweep.sh [install|uninstall|--help]'; }
 case "${1:-install}" in
   -h|--help|help) usage; exit 0 ;;
   uninstall)
-    if command -v systemctl >/dev/null 2>&1; then systemctl --user disable --now "$UNIT_NAME.timer" 2>/dev/null || true; fi
+    if [[ -n "$SYSTEMCTL_BIN" ]]; then "$SYSTEMCTL_BIN" --user disable --now "$UNIT_NAME.timer" 2>/dev/null || true; fi
     rm -f "$SERVICE" "$TIMER"
-    if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then systemctl --user daemon-reload; fi
+    if [[ -n "$SYSTEMCTL_BIN" ]] && "$SYSTEMCTL_BIN" --user show-environment >/dev/null 2>&1; then "$SYSTEMCTL_BIN" --user daemon-reload; fi
     printf 'uninstalled: %s\n' "$UNIT_NAME"; exit 0 ;;
   install) ;;
   *) usage >&2; exit 2 ;;
@@ -44,9 +57,9 @@ printf '%s\n[Unit]\nDescription=Timer for BPA memory / rules governance sweep\n\
   "$MARKER" "$ON_CALENDAR" > "$tmp_timer"
 mv -f "$tmp_service" "$SERVICE"
 mv -f "$tmp_timer" "$TIMER"
-if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
-  systemctl --user daemon-reload
-  systemctl --user enable --now "$UNIT_NAME.timer"
+if [[ -n "$SYSTEMCTL_BIN" ]] && "$SYSTEMCTL_BIN" --user show-environment >/dev/null 2>&1; then
+  "$SYSTEMCTL_BIN" --user daemon-reload
+  "$SYSTEMCTL_BIN" --user enable --now "$UNIT_NAME.timer"
   printf 'installed: %s (%s)\n' "$UNIT_NAME" "$ON_CALENDAR"
 else
   printf 'rendered: %s and %s\n' "$SERVICE" "$TIMER"

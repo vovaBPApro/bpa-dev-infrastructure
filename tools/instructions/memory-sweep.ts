@@ -249,15 +249,16 @@ function fail(message: string): never {
 // Default live memory dir for this deployment. Kept as a function so tests never
 // resolve it (they pass --memory-root). Matches the orchestrator's project
 // memory path under the home dir.
-function defaultMemoryRoot(): string {
-  return join(homedir(), ".claude", "projects", "-home-bpa-shell", "memory");
+export function memoryRootForRepo(repo: string, home = homedir()): string {
+  const projectKey = resolve(repo).replaceAll(/[^A-Za-z0-9]/g, "-");
+  return join(home, ".claude", "projects", projectKey, "memory");
 }
 
 function parseArgs(args: string[]): Options {
   const options: Options = {
     repo: process.cwd(),
     rulesRoot: join(homedir(), ".claude", "rules"),
-    memoryRoot: defaultMemoryRoot(),
+    memoryRoot: "",
     dryRun: false,
   };
   for (let index = 0; index < args.length; index += 1) {
@@ -277,6 +278,7 @@ function parseArgs(args: string[]): Options {
     }
     usage(2);
   }
+  if (options.memoryRoot === "") options.memoryRoot = memoryRootForRepo(options.repo);
   return options;
 }
 

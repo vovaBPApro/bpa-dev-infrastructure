@@ -1,6 +1,8 @@
 import { expect, test } from 'bun:test';
 import {
   canSendWatchdogNotice,
+  buildProgressSignature,
+  WATCHDOG_ALERT_CLASSES,
   classifyTurn,
   codexPasteMarker,
   decideRelay,
@@ -615,12 +617,7 @@ test('evaluateStall returns idle when done_cmd reports completed', () => {
   expect(stall.shouldAlert).toBe(true);
 });
 
-// REGRESSION (fail-open alarm): a bound provider session whose tmux is gone is
-// a fault whether or not mission bookkeeping exists. Requiring an active
-// mission on this branch is how the operator got silence from a dead
-// orchestrator — the mission input had no writer, so `mission` was always null
-// and the dead branch was unreachable.
-test('evaluateStall alerts on a dead bound session even with no mission record', () => {
+test('REGRESSION ML-12: HAS_TASK keeps an idle bound session passive', () => {
   const dead = evaluateStall({
     hasBinding: true,
     providerKnown: true,
@@ -629,36 +626,95 @@ test('evaluateStall alerts on a dead bound session even with no mission record',
     now: 1000,
     thresholdMs: 100,
   });
-  expect(dead.state).toBe('dead');
-  expect(dead.shouldAlert).toBe(true);
-  expect(dead.reason).toBe('tmux_missing');
+  expect(dead.state).toBe('idle');
+  expect(dead.reason).toBe('no_task');
 
-  // Repeat ticks must not re-notify.
-  expect(
-    evaluateStall({
-      hasBinding: true,
-      providerKnown: true,
-      mission: null,
-      tmuxAlive: false,
-      now: 2000,
-      thresholdMs: 100,
-      lastAlertKey: dead.alertKey,
-    }).shouldAlert,
-  ).toBe(false);
-
-  // A live session with no mission is legitimate idling, not a stall.
+  // An explicit task makes the missing session actionable even if the durable
+  // mission record has not caught up yet.
   const quiet = evaluateStall({
     hasBinding: true,
     providerKnown: true,
     mission: null,
+    tmuxAlive: false,
+    now: 10_000,
+    thresholdMs: 100,
+    hasTask: true,
+  });
+  expect(quiet.state).toBe('dead');
+  expect(quiet.reason).toBe('tmux_missing');
+});
+
+test('REGRESSION ML-12: multi-signal progress resets the stall ladder', () => {
+  const mission = { desc: 'ship', created_at: 'now', status: 'active' };
+  const before = buildProgressSignature({
+    pane: 'working',
+    gitSha: 'aaa',
+    taskState: 'open',
+  });
+  const after = buildProgressSignature({
+    pane: 'working',
+    gitSha: 'bbb',
+    taskState: 'open',
+  });
+  expect(before).not.toBe(after);
+  expect(
+    evaluateStall({
+      hasBinding: true,
+      providerKnown: true,
+      mission,
+      tmuxAlive: true,
+      now: 10_000,
+      thresholdMs: 100,
+      lastPaneProgressAt: 1,
+      progressSignature: after,
+      previousProgressSignature: before,
+      stallTicks: 2,
+      escalationTicks: 3,
+    }).reason,
+  ).toBe('progress');
+});
+
+test('REGRESSION ML-12: early stalls nudge, third tick alerts, and suppression keys by signature', () => {
+  const mission = { desc: 'ship', created_at: 'now', status: 'active' };
+  const base = {
+    hasBinding: true,
+    providerKnown: true,
+    mission,
     tmuxAlive: true,
     now: 10_000,
-    lastPaneProgressAt: 1,
-    lastGitProgressAt: 1,
     thresholdMs: 100,
+    lastPaneProgressAt: 1,
+    progressSignature: 'frozen',
+    previousProgressSignature: 'frozen',
+    escalationTicks: 3,
+  };
+  const early = evaluateStall({ ...base, stallTicks: 0 });
+  if (early.state !== 'stall') throw new Error('expected early stall');
+  expect(early.shouldNudge).toBe(true);
+  expect(early.shouldAlert).toBe(false);
+  const hard = evaluateStall({ ...base, stallTicks: 2 });
+  if (hard.state !== 'stall') throw new Error('expected hard stall');
+  expect(hard.shouldAlert).toBe(true);
+  const repeat = evaluateStall({
+    ...base,
+    stallTicks: 3,
+    lastAlertKey: hard.alertKey,
   });
-  expect(quiet.state).toBe('idle');
-  expect(quiet.reason).toBe('no_active_mission');
+  if (repeat.state !== 'stall') throw new Error('expected repeated stall');
+  expect(repeat.shouldAlert).toBe(false);
+  const changed = evaluateStall({
+    ...base,
+    stallTicks: 3,
+    progressSignature: 'new-frozen',
+    previousProgressSignature: 'new-frozen',
+  });
+  if (changed.state !== 'stall') throw new Error('expected changed stall');
+  expect(changed.alertKey).not.toBe(hard.alertKey);
+});
+
+test('REGRESSION ML-12: all six watchdog alert classes have signature-keyed identities', () => {
+  expect(WATCHDOG_ALERT_CLASSES).toHaveLength(6);
+  expect(new Set(WATCHDOG_ALERT_CLASSES.map((kind) => `${kind}:sig`)).size).toBe(6);
 });
 
 test('evaluateStall distinguishes idle, dead, and stall with alert dedupe', () => {

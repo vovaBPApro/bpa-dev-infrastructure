@@ -61,6 +61,7 @@ import {
   decideRelay,
   detectCodexPasteDeliveryState,
   evaluateStall,
+  buildProgressSignature,
   getWatchdogTimeoutConfig,
   isMcpChannelDetached,
   isPendingReplyTimedOut,
@@ -610,6 +611,8 @@ let lastPaneProgressAt = 0;
 let lastGitProgressAt = 0;
 let lastGitSha = '';
 let lastWatchdogAlertKey: string | null = null;
+let lastWatchdogProgressSignature = '';
+let watchdogStallTicks = 0;
 const missionGitBaselines = new Map<string, string>();
 // Watchdog timing knobs: ORCH_PENDING_REPLY_TIMEOUT_MS (default 300000),
 // ORCH_CODEX_FALLBACK_TIMEOUT_MS (default 90000), and
@@ -3965,9 +3968,11 @@ async function livenessWatchdogTick(): Promise<void> {
   const providerKnown = Boolean(binding?.provider && binding.session_id);
   const tmuxIsAlive = await tmuxAlive();
 
+  let paneSnapshot = lastPaneSnapshot;
   if (binding?.provider && tmuxIsAlive) {
     const pane = await tmuxCapture(400);
     const snapshot = sanitizeChatRegion(binding.provider, pane);
+    paneSnapshot = snapshot;
     if (snapshot && snapshot !== lastPaneSnapshot) {
       lastPaneSnapshot = snapshot;
       lastPaneProgressAt = Date.now();
@@ -3987,6 +3992,11 @@ async function livenessWatchdogTick(): Promise<void> {
   }
 
   const doneCmdResult = await evaluateDoneCmd(mission);
+  const progressSignature = buildProgressSignature({
+    pane: paneSnapshot,
+    gitSha: sha ?? '',
+    taskState: mission ? `${buildMissionKey(mission)}:${mission.status}` : '',
+  });
   const decision = evaluateStall({
     hasBinding: Boolean(binding),
     providerKnown,
@@ -3998,10 +4008,25 @@ async function livenessWatchdogTick(): Promise<void> {
     lastAlertKey: lastWatchdogAlertKey,
     thresholdMs: STALL_THRESHOLD_MS,
     doneCmdResult,
+    hasTask: missionIsActive(mission),
+    progressSignature,
+    previousProgressSignature: lastWatchdogProgressSignature,
+    stallTicks: watchdogStallTicks,
+    escalationTicks: 3,
   });
   if (decision.state === 'idle') {
-    lastWatchdogAlertKey = null;
+    if (decision.reason === 'progress') {
+      watchdogStallTicks = 0;
+      lastWatchdogProgressSignature = progressSignature;
+    }
     return;
+  }
+  lastWatchdogProgressSignature = progressSignature;
+  watchdogStallTicks = decision.stallTicks ?? watchdogStallTicks;
+  if (decision.shouldNudge && binding) {
+    await tmuxSend(
+      '[watchdog] No progress since the last tick. Continue the active mission or surface the concrete blocker.',
+    );
   }
   if (!decision.shouldAlert || !binding) return;
   lastWatchdogAlertKey = decision.alertKey;

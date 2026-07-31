@@ -1,4 +1,5 @@
 import { readFileSync } from 'fs';
+import { createHash } from 'node:crypto';
 
 export type Provider = 'claude' | 'codex';
 export type TurnSource = 'claude_stop_hook' | 'codex_notify';
@@ -224,7 +225,31 @@ export type StallInputs = {
   lastAlertKey?: string | null;
   thresholdMs: number;
   doneCmdResult?: DoneCmdResult;
+  /** Explicit task gate. False makes the watchdog completely passive. */
+  hasTask?: boolean;
+  /** Stable, multi-signal snapshot of real progress. */
+  progressSignature?: string;
+  previousProgressSignature?: string;
+  stallTicks?: number;
+  escalationTicks?: number;
 };
+
+export type WatchdogAlertClass =
+  | 'session-dead'
+  | 'mission-stalled'
+  | 'delivery-detached'
+  | 'binding-stale'
+  | 'restart-failed'
+  | 'restart-suppressed';
+
+export const WATCHDOG_ALERT_CLASSES: readonly WatchdogAlertClass[] = [
+  'session-dead',
+  'mission-stalled',
+  'delivery-detached',
+  'binding-stale',
+  'restart-failed',
+  'restart-suppressed',
+];
 
 export type StallEvaluation =
   | { state: 'idle'; shouldAlert: false; reason: string; alertKey: null }
@@ -233,7 +258,33 @@ export type StallEvaluation =
       shouldAlert: boolean;
       reason: string;
       alertKey: string;
+      alertClass?: WatchdogAlertClass;
+      stallTicks?: number;
+      shouldNudge?: boolean;
     };
+
+export function buildProgressSignature(signals: {
+  pane?: string;
+  gitSha?: string;
+  taskState?: string;
+  agentExit?: string;
+}): string {
+  return createHash('sha256')
+    .update(JSON.stringify({
+      pane: signals.pane ?? '',
+      gitSha: signals.gitSha ?? '',
+      taskState: signals.taskState ?? '',
+      agentExit: signals.agentExit ?? '',
+    }))
+    .digest('hex');
+}
+
+export function watchdogAlertKey(
+  alertClass: WatchdogAlertClass,
+  progressSignature: string,
+): string {
+  return `${alertClass}:${progressSignature}`;
+}
 
 const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]/g;
 const OSC_RE = /\x1b\][^\x07]*(\x07|\x1b\\)/g;
@@ -791,6 +842,11 @@ export function evaluateStall(inputs: StallInputs): StallEvaluation {
     lastAlertKey,
     thresholdMs,
     doneCmdResult,
+    hasTask = missionIsActive(mission),
+    progressSignature,
+    previousProgressSignature,
+    stallTicks = 0,
+    escalationTicks = 1,
   } = inputs;
   // No bound provider session at all: there is nothing the operator asked to
   // be running, so silence is correct.
@@ -802,6 +858,14 @@ export function evaluateStall(inputs: StallInputs): StallEvaluation {
       alertKey: null,
     };
   }
+  if (!hasTask) {
+    return {
+      state: 'idle',
+      shouldAlert: false,
+      reason: 'no_task',
+      alertKey: null,
+    };
+  }
   if (doneCmdResult?.state === 'completed') {
     return {
       state: 'idle',
@@ -810,27 +874,26 @@ export function evaluateStall(inputs: StallInputs): StallEvaluation {
       alertKey: null,
     };
   }
-  const missionActive = missionIsActive(mission);
-  // A bound provider session whose tmux is gone is a fault in every case, and
-  // it is the exact case the operator cannot see from Telegram. Requiring an
-  // active mission record here made the alarm fail OPEN: absence of mission
-  // bookkeeping silenced a real death. Death does not need a mission; a stall
-  // does, because "bound, alive and quiet" is legitimate idling.
-  const keyBase = mission ? buildMissionKey(mission) : 'bound-session';
+  // Alert identities include the frozen progress signature: repeats suppress,
+  // while any genuine progress arms the same alert class again.
+  const keyBase =
+    progressSignature ||
+    (mission ? buildMissionKey(mission) : 'bound-session');
   if (!tmuxAlive) {
-    const alertKey = `dead:${keyBase}`;
+    const alertKey = watchdogAlertKey('session-dead', keyBase);
     return {
       state: 'dead',
       shouldAlert: lastAlertKey !== alertKey,
       reason: 'tmux_missing',
       alertKey,
+      alertClass: 'session-dead',
     };
   }
-  if (!missionActive) {
+  if (progressSignature && progressSignature !== previousProgressSignature) {
     return {
       state: 'idle',
       shouldAlert: false,
-      reason: 'no_active_mission',
+      reason: 'progress',
       alertKey: null,
     };
   }
@@ -846,12 +909,16 @@ export function evaluateStall(inputs: StallInputs): StallEvaluation {
       alertKey: null,
     };
   }
-  const alertKey = `stall:${keyBase}`;
+  const nextStallTicks = stallTicks + 1;
+  const alertKey = watchdogAlertKey('mission-stalled', keyBase);
   return {
     state: 'stall',
-    shouldAlert: lastAlertKey !== alertKey,
+    shouldAlert: nextStallTicks >= escalationTicks && lastAlertKey !== alertKey,
     reason: 'no_progress',
     alertKey,
+    alertClass: 'mission-stalled',
+    stallTicks: nextStallTicks,
+    shouldNudge: nextStallTicks < escalationTicks,
   };
 }
 

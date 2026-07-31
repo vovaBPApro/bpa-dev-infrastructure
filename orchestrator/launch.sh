@@ -26,6 +26,7 @@ SINGLETON_LOCK_FILE="${ORCH_SINGLETON_LOCK_FILE:-$REPO_DIR/runtime/orchestrator.
 MISSION_CLI="${ORCH_MISSION_CLI:-$REPO_DIR/core/mission-cli.ts}"
 STATE_DB="${ORCH_STATE_DB:-$REPO_DIR/runtime/state.db}"
 TERMINAL_ALERT="${ORCH_TERMINAL_ALERT:-$REPO_DIR/daemon/terminal-alert.ts}"
+TERMINAL_ALERT_READY_FILE="${ORCH_TERMINAL_ALERT_READY_FILE:-$RUNTIME_DIR/terminal-alert.ready}"
 # One number, shared with watchdog.sh, which is the only renewer. 180000 is
 # three ticks at the 60s default watchdog interval; watchdog.sh explains why two
 # ticks EXACTLY is not enough. Keep the two defaults identical — cadence-knob.test.sh
@@ -342,7 +343,7 @@ start() {
   if [[ "$PROVIDER" == codex ]] && ! codex_trust_preflight; then
     return 2
   fi
-  local command provider_bin singleton_command startup_file pane_pid pane_pipe terminal_alert_bun terminal_alert_command
+  local command provider_bin singleton_command startup_file pane_pid pane_pipe terminal_alert_bun terminal_alert_command terminal_alert_ready
   command="$(build_command)"
   provider_bin="${command#exec }"; provider_bin="${provider_bin%% *}"
   command -v "$provider_bin" >/dev/null 2>&1 || { printf 'provider not found: %s\n' "$provider_bin" >&2; return 2; }
@@ -367,24 +368,28 @@ start() {
   exec 9>&-
   tmux new-session -d -s "$SESSION" -c "$WORK_DIR" "sh -c $(printf '%q' "$singleton_command")" || return 1
   terminal_alert_bun="$(command -v bun)"
-  printf -v terminal_alert_command 'exec %q %q --session %q' \
-    "$terminal_alert_bun" "$TERMINAL_ALERT" "$SESSION"
+  terminal_alert_ready="$TERMINAL_ALERT_READY_FILE"
+  rm -f "$terminal_alert_ready"
+  printf -v terminal_alert_command 'exec %q %q --session %q --ready-file %q' \
+    "$terminal_alert_bun" "$TERMINAL_ALERT" "$SESSION" "$terminal_alert_ready"
   if ! tmux pipe-pane -o -t "$SESSION" "$terminal_alert_command"; then
     printf 'ERROR terminal-alert-pipe-failed session=%s\n' "$SESSION" >&2
     tmux kill-session -t "$SESSION" 2>/dev/null || true
     return 1
   fi
-  # pipe-pane reports only that its child was spawned. The child can fail
-  # immediately and tmux then silently detaches it.
-  for _ in 1 2 3 4 5; do
+  # pipe-pane reports only that its child was spawned. Require an affirmative
+  # readiness handshake from the classifier, not merely a briefly live pipe.
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
     sleep 0.1
     pane_pipe="$(tmux list-panes -t "$SESSION" -F '#{pane_pipe}' | head -n 1)"
-    if [[ "$pane_pipe" != 1 ]]; then
-      printf 'ERROR terminal-alert-pipe-detached session=%s\n' "$SESSION" >&2
-      tmux kill-session -t "$SESSION" 2>/dev/null || true
-      return 1
-    fi
+    [[ "$pane_pipe" == 1 && -f "$terminal_alert_ready" ]] && break
   done
+  if [[ "$pane_pipe" != 1 || ! -f "$terminal_alert_ready" ]]; then
+    printf 'ERROR terminal-alert-not-ready session=%s\n' "$SESSION" >&2
+    tmux kill-session -t "$SESSION" 2>/dev/null || true
+    rm -f "$terminal_alert_ready"
+    return 1
+  fi
   # tmux reports success before the pane command can reject a held flock.
   # Give that command a bounded window to exit, then fail the launch loudly.
   sleep 0.1

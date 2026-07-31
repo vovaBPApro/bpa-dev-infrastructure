@@ -29,7 +29,10 @@ case "$1" in
     ;;
   pipe-pane)
     printf 'tmux pipe-pane %s\n' "$*" >> "$state/calls"
-    [[ "${MOCK_PIPE_DETACH:-0}" == 1 ]] || touch "$state/pipe"
+    if [[ "${MOCK_PIPE_DETACH:-0}" != 1 ]]; then
+      touch "$state/pipe"
+      [[ "${MOCK_CLASSIFIER_NOT_READY:-0}" == 1 ]] || touch "${ORCH_TERMINAL_ALERT_READY_FILE:?}"
+    fi
     ;;
   kill-session) rm -f "$state/session"; printf 'tmux kill-session %s\n' "$*" >> "$state/calls" ;;
   list-panes)
@@ -85,6 +88,7 @@ export ORCH_DAEMON_HEALTH_URL=""
 # build cache and dangling images while asserting relaunch behaviour.
 export DOCKER_PRUNE_ENABLED=0
 export ORCH_RESTART_STATE_FILE="$STATE/watchdog-restart-state"
+export ORCH_TERMINAL_ALERT_READY_FILE="$STATE/terminal-alert.ready"
 # This suite asserts the recovery ACTIONS (relaunch, kill-relaunch) back to
 # back, which the production restart cooldown would legitimately suppress on
 # the second one. A zero cooldown is no longer a legal knob (knob-bounds.test.sh
@@ -107,6 +111,8 @@ assert "$SCRIPT_DIR/launch.sh" start
 [[ "$(calls 'tmux pipe-pane')" == 1 ]] || fail 'launch did not wire terminal alerts'
 grep -q 'terminal-alert.ts --session test-orch' "$STATE/calls" ||
   fail 'terminal alert pipe did not carry its classifier and session'
+grep -q -- '--ready-file' "$STATE/calls" ||
+  fail 'terminal alert pipe did not carry its readiness handshake path'
 assert_not "$SCRIPT_DIR/launch.sh" start
 [[ "$(calls 'tmux new-session')" == 1 ]] || fail 'double launch created another session'
 
@@ -148,5 +154,11 @@ export MOCK_PIPE_DETACH=1
 assert_not "$SCRIPT_DIR/launch.sh" start
 [[ ! -f "$STATE/session" ]] || fail 'detached terminal alert pipe left session running'
 unset MOCK_PIPE_DETACH
+
+rm -f "$STATE/session" "$STATE/pipe" "$ORCH_TERMINAL_ALERT_READY_FILE"
+export MOCK_CLASSIFIER_NOT_READY=1
+assert_not "$SCRIPT_DIR/launch.sh" start
+[[ ! -f "$STATE/session" ]] || fail 'unready terminal classifier left session running'
+unset MOCK_CLASSIFIER_NOT_READY
 
 printf 'runtime tests: PASS\n'

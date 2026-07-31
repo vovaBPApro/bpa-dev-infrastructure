@@ -1,3 +1,5 @@
+import { unlinkSync } from 'node:fs';
+
 export type TerminalFailureClass =
   | 'usage-limit'
   | '429/overload'
@@ -131,8 +133,24 @@ export async function relayTerminalAlert(
 async function run(): Promise<void> {
   const sessionIndex = Bun.argv.indexOf('--session');
   const session = Bun.argv[sessionIndex + 1] || 'unknown';
+  const readyIndex = Bun.argv.indexOf('--ready-file');
+  const readyFile = readyIndex >= 0 ? Bun.argv[readyIndex + 1] : '';
   const port = process.env.TELEGRAM_DAEMON_PORT || '4822';
   const seen = new Set<string>();
+
+  if (readyIndex >= 0 && !readyFile) {
+    throw new Error('--ready-file requires a path');
+  }
+  if (readyFile) {
+    await Bun.write(readyFile, `${process.pid}\n`);
+    process.on('exit', () => {
+      try {
+        unlinkSync(readyFile);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    });
+  }
 
   for await (const raw of console) {
     const line = stripTerminalNoise(raw);

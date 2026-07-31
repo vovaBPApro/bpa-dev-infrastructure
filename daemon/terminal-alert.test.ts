@@ -1,4 +1,7 @@
 import { expect, test } from 'bun:test';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   classifyTerminalFailure,
   formatTerminalAlert,
@@ -56,4 +59,24 @@ test('REGRESSION ML-1: a rejected notify response is a delivery failure', async 
       rejectedFetch,
     ),
   ).rejects.toThrow('notify returned HTTP 503');
+});
+
+test('REGRESSION ML-1: classifier proves process readiness to its launcher', async () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'terminal-alert-ready-'));
+  const readyFile = join(scratch, 'ready');
+  const child = Bun.spawn(
+    [process.execPath, 'terminal-alert.ts', '--session', 'fixture', '--ready-file', readyFile],
+    { cwd: import.meta.dir, stdin: 'pipe', stdout: 'ignore', stderr: 'ignore' },
+  );
+  try {
+    const deadline = Date.now() + 2_000;
+    while (!existsSync(readyFile) && Date.now() < deadline) {
+      await Bun.sleep(20);
+    }
+    expect(existsSync(readyFile)).toBe(true);
+  } finally {
+    child.kill();
+    await child.exited;
+    rmSync(scratch, { recursive: true, force: true });
+  }
 });

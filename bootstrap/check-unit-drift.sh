@@ -10,6 +10,7 @@ ENV_FILE="${ENV_FILE:-$INSTALL_ROOT/.env}"
 BUN_BIN="${BUN_BIN:-$HOME/.bun/bin/bun}"
 FULL_SUITE_ON_CALENDAR="${FULL_SUITE_ON_CALENDAR:-*-*-* 03:30:00}"
 ORCH_WATCHDOG_INTERVAL="${ORCH_WATCHDOG_INTERVAL:-60}"
+EXEMPTIONS_FILE="${EXEMPTIONS_FILE:-$SCRIPT_DIR/../instance/unit-drift-exemptions.tsv}"
 export INSTALL_ROOT ENV_FILE BUN_BIN FULL_SUITE_ON_CALENDAR ORCH_WATCHDOG_INTERVAL
 
 command -v envsubst >/dev/null 2>&1 || {
@@ -21,6 +22,21 @@ scratch="$(mktemp -d "${TMPDIR:-/tmp}/bpa-unit-drift.XXXXXX")"
 trap 'rm -rf "$scratch"' EXIT
 
 result=0
+declare -A missing_exemptions=()
+if [[ -f "$EXEMPTIONS_FILE" ]]; then
+  while IFS=$'\t' read -r unit disposition evidence extra; do
+    [[ -z "$unit" || "$unit" == \#* ]] && continue
+    if [[ -n "${extra:-}" || "$unit" != *.service && "$unit" != *.timer || "$disposition" != deliberately-absent || -z "$evidence" ]]; then
+      printf 'ERROR invalid unit-drift exemption: %s\n' "$unit" >&2
+      exit 2
+    fi
+    if [[ -n "${missing_exemptions[$unit]+x}" ]]; then
+      printf 'ERROR duplicate unit-drift exemption: %s\n' "$unit" >&2
+      exit 2
+    fi
+    missing_exemptions["$unit"]="$evidence"
+  done < "$EXEMPTIONS_FILE"
+fi
 for template in "$TEMPLATE_DIR"/*.in; do
   [[ -f "$template" ]] || continue
   unit="$(basename "${template%.in}")"
@@ -28,8 +44,12 @@ for template in "$TEMPLATE_DIR"/*.in; do
   expected="$scratch/$unit"
   envsubst < "$template" > "$expected"
   if [[ ! -f "$deployed" ]]; then
-    printf 'DRIFT %s: deployed unit missing at %s\n' "$unit" "$deployed" >&2
-    result=1
+    if [[ -n "${missing_exemptions[$unit]+x}" ]]; then
+      printf 'EXEMPT %s: deliberately absent (%s)\n' "$unit" "${missing_exemptions[$unit]}"
+    else
+      printf 'DRIFT %s: deployed unit missing at %s\n' "$unit" "$deployed" >&2
+      result=1
+    fi
   elif ! cmp -s "$expected" "$deployed"; then
     printf 'DRIFT %s: deployed unit differs from rendered template\n' "$unit" >&2
     diff -u --label "deployed/$unit" --label "tracked/$unit" "$deployed" "$expected" >&2 || true

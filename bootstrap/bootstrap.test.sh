@@ -187,6 +187,36 @@ printf '%s\n' 'FAIL-BEFORE missing morning timer'
 grep '^FAIL morning timer' <<<"$missing_morning_output"
 render_fixture_unit "$SCRIPT_DIR/units/orch-morning-report.timer.in"
 
+# A missing unit is tolerated only through an explicit, evidence-bearing
+# exemption. Every other missing unit remains drift.
+rm "$verify_fixture/systemd/system/bpa-orchestrator-watchdog.service"
+exemptions="$verify_fixture/unit-drift-exemptions.tsv"
+printf '%s\t%s\t%s\n' \
+  'bpa-orchestrator-watchdog.service' 'deliberately-absent' 'operator-presence-required' > "$exemptions"
+exempt_output="$(PATH="$verify_fixture/bin:$PATH" \
+  TEMPLATE_DIR="$SCRIPT_DIR/units" \
+  SYSTEMD_SYSTEM_DIR="$verify_fixture/systemd/system" \
+  INSTALL_ROOT="$verify_fixture/root" \
+  ENV_FILE="$verify_fixture/root/.env" \
+  BUN_BIN="$verify_fixture/bin/bun" \
+  EXEMPTIONS_FILE="$exemptions" \
+  "$SCRIPT_DIR/check-unit-drift.sh")"
+grep -Fq 'EXEMPT bpa-orchestrator-watchdog.service: deliberately absent (operator-presence-required)' <<<"$exempt_output"
+rm "$verify_fixture/systemd/system/bpa-full-suite.service"
+if PATH="$verify_fixture/bin:$PATH" \
+  TEMPLATE_DIR="$SCRIPT_DIR/units" \
+  SYSTEMD_SYSTEM_DIR="$verify_fixture/systemd/system" \
+  INSTALL_ROOT="$verify_fixture/root" \
+  ENV_FILE="$verify_fixture/root/.env" \
+  BUN_BIN="$verify_fixture/bin/bun" \
+  EXEMPTIONS_FILE="$exemptions" \
+  "$SCRIPT_DIR/check-unit-drift.sh" >/dev/null 2>&1; then
+  echo 'ERROR: an undocumented missing unit passed drift verification' >&2
+  exit 1
+fi
+render_fixture_unit "$SCRIPT_DIR/units/bpa-orchestrator-watchdog.service.in"
+render_fixture_unit "$SCRIPT_DIR/units/bpa-full-suite.service.in"
+
 chmod 644 "$verify_fixture/root/.env"
 printf '%s\n' 'FAIL-BEFORE loose environment permissions'
 [[ "$(stat -c '%a' "$verify_fixture/root/.env")" == 644 ]]

@@ -1,6 +1,6 @@
 # Coder terminal report: ag-ml1-alarm-classes
 
-commit: ec90b0ecadcbcaea69722223150920dc1546acdb `[CODER] route terminal alarms internally fail closed`
+commit: ec90b0e9abcf5ac28488149d4fb39a305ca662b6 `[CODER] route terminal alarms internally fail closed`
 
 ## Consumption check
 
@@ -89,7 +89,7 @@ The known fresh-clone `dispatch-check` CI failure is external and owned by
 
 verify: `(cd daemon && bun test notify-handler.test.ts terminal-alert.test.ts && bunx tsc --noEmit) && (cd orchestrator && ORCH_SKIP_TRUST_CHECK=1 ./runtime.test.sh)`
 
-result: clean
+result: NO-GO — blocker fixes are green, but Tier A independent re-review and landing evidence are not yet present
 
 secret-scan: clean
 

@@ -75,6 +75,29 @@ test('FLEET-IDLE locks open work against the measured system lane fleet', () => 
   });
 });
 
+test('CLI fails closed when the readable workboard is empty', () => {
+  const { root } = fixture({
+    'instance/workboard.md': '',
+  });
+  try {
+    const proc = Bun.spawnSync([
+      process.execPath,
+      join(import.meta.dir, 'check.ts'),
+      root,
+    ]);
+    const output =
+      new TextDecoder().decode(proc.stdout) +
+      new TextDecoder().decode(proc.stderr);
+    expect(proc.exitCode).not.toBe(0);
+    expect(output).toContain(
+      'FAIL FLEET-IDLE: open workboard row count unknown/degraded: ' +
+        'instance/workboard.md has no ## Open section',
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('HISTORICAL: a reader whose writer never migrated is a FAIL', () => {
   const { root, names } = fixture({
     'daemon/server.ts': `

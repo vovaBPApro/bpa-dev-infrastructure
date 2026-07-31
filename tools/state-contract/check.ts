@@ -728,11 +728,10 @@ if (import.meta.main) {
     KNOWN_GAPS,
     (p) => tracked.has(p),
   );
-  let workboardSource: string;
+  let workboardSource: string | undefined;
   try {
     workboardSource = readFileSync(join(root, 'instance/workboard.md'), 'utf8');
   } catch (error) {
-    workboardSource = '';
     findings.push({
       level: 'FAIL',
       id: 'FLEET-IDLE',
@@ -742,7 +741,7 @@ if (import.meta.main) {
         (error instanceof Error ? error.message : String(error)),
     });
   }
-  if (workboardSource) {
+  if (workboardSource !== undefined) {
     const fleetFinding = checkFleetIdle(
       workboardSource,
       queryRunningSystemLanes(),

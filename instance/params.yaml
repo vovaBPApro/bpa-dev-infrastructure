@@ -44,7 +44,9 @@ vm:
   # (msg 11555) was Vova's sizing FLOOR, not this box; the delivered machine exceeds it.
 
 fleet:
-  # ACTIVE as of 2026-07-31 — instance/decisions/HR-275.md (Vova, verbatim).
+  # ACTIVE as of 2026-07-31 — instance/decisions/HR-281.md (Vova, verbatim; the
+  # row covers his Telegram 275 + 281 together, so cite 281 — HR-275.md does not
+  # exist and an earlier version of this comment pointed at it).
   # This band was marked `suspended` as a leftover of the legacy control plane,
   # and the orchestrator used that as licence to work single-threaded on a
   # 12-core / 251 GB box while Codex sat at 92% unused quota. He called that out

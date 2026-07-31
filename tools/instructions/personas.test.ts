@@ -31,8 +31,8 @@ function repoWithPersonas(files: Record<string, string>): string {
   return repo;
 }
 
-function profile(overrides: Partial<Record<string, string>> = {}, body?: string): string {
-  const front: Record<string, string> = {
+function profile(overrides: Record<string, unknown> = {}, body?: string): string {
+  const front: Record<string, unknown> = {
     persona: "denys",
     role: "coder",
     "role-mapping": "real",
@@ -57,7 +57,24 @@ describe("validatePersona", () => {
     expect(parsed!.name).toBe("denys");
     expect(parsed!.role).toBe("coder");
     expect(parsed!.roleMapping).toBe("real");
+    expect(parsed!.roleAgnostic).toBeUndefined();
     expect(parsed!.status).toBe("draft-for-discussion");
+  });
+
+  test("missing summary is a concrete failure", () => {
+    const { errors } = validatePersona(profile({ summary: undefined }));
+    expect(errors).toContain("missing or empty required field: summary");
+  });
+
+  test("an empty body is a concrete failure", () => {
+    const { errors } = validatePersona(profile({}, ""));
+    expect(errors).toContain("persona body is empty");
+  });
+
+  test("a header-only body is a concrete failure without tripping the content lint", () => {
+    const { errors } = validatePersona(profile({}, `${PERSONA_HEADER}\n`));
+    expect(errors).toContain("persona body contains only the mandatory BEHAVIOR ONLY header");
+    expect(errors.some((error) => error.includes("forbidden behavior-only phrase"))).toBe(false);
   });
 
   test("missing mandatory BEHAVIOR ONLY header is a failure", () => {
@@ -84,6 +101,90 @@ describe("validatePersona", () => {
     expect(errors.join("; ")).toContain("missing required section '## Blind spots'");
   });
 
+  test("required sections in the wrong order are a failure", () => {
+    const reversed = [...PERSONA_SECTIONS].reverse();
+    const body =
+      `${PERSONA_HEADER}\n\n# Denys\n\n` +
+      reversed.map((section) => `${section}\n\nText.\n`).join("\n");
+    const { errors } = validatePersona(profile({}, body));
+    expect(errors.some((error) => error.startsWith("required sections are out of order"))).toBe(true);
+  });
+
+  test("a duplicate required section is a failure", () => {
+    const body =
+      `${PERSONA_HEADER}\n\n# Denys\n\n` +
+      PERSONA_SECTIONS.map((section) => `${section}\n\nText.\n`).join("\n") +
+      `\n${PERSONA_SECTIONS[0]}\n\nMore text.\n`;
+    const { errors } = validatePersona(profile({}, body));
+    expect(errors).toContain(
+      "duplicate required section '## Optimization target' (found 2)",
+    );
+  });
+
+  test("an empty required section is a failure", () => {
+    const body =
+      `${PERSONA_HEADER}\n\n# Denys\n\n` +
+      PERSONA_SECTIONS.map((section) =>
+        section === "## Review & communication style"
+          ? `${section}\n\n`
+          : `${section}\n\nText.\n`
+      ).join("\n");
+    const { errors } = validatePersona(profile({}, body));
+    expect(errors).toContain(
+      "required section '## Review & communication style' has no content",
+    );
+  });
+
+  test("an unexpected extra section is a failure", () => {
+    const body =
+      `${PERSONA_HEADER}\n\n# Denys\n\n` +
+      PERSONA_SECTIONS.map((section) => `${section}\n\nText.\n`).join("\n") +
+      "\n## Hidden powers\n\nNo.\n";
+    const { errors } = validatePersona(profile({}, body));
+    expect(errors).toContain("unexpected section heading '## Hidden powers'");
+  });
+
+  test("the explicit authority vocabulary reports persona, line, and matched phrase", () => {
+    const phrases = [
+      "veto",
+      "mandatory seat",
+      "mandatory",
+      "may skip",
+      "can skip",
+      "skips review",
+      "sufficient alone",
+      "sufficient without",
+      "barred",
+      "never joins",
+      "picks the sub-team",
+      "composes the topic sub-team",
+      "selects the sub-team",
+      "vote",
+      "seat",
+      "must be present",
+      "required reviewer",
+      "has authority",
+      "grants",
+      "review tier",
+      "Tier-A",
+      "Tier-B",
+    ];
+    for (const phrase of phrases) {
+      const body =
+        `${PERSONA_HEADER}\n\n# Denys\n\n` +
+        PERSONA_SECTIONS.map((section, index) =>
+          `${section}\n\n${index === 0 ? `Forbidden: ${phrase}.` : "Text."}\n`
+        ).join("\n");
+      const { errors } = validatePersona(profile({}, body));
+      expect(errors.some((error) =>
+        new RegExp(
+          `persona 'denys' line \\d+: forbidden behavior-only phrase '${phrase}'`,
+          "i",
+        ).test(error)
+      ), phrase).toBe(true);
+    }
+  });
+
   test("role outside the real infra roles is a failure", () => {
     const { errors } = validatePersona(profile({ role: "architect" }));
     expect(errors.join("; ")).toContain("role must be one of");
@@ -101,6 +202,19 @@ describe("validatePersona", () => {
 
     const forbidden = validatePersona(profile({ "proposed-role": "architect" }));
     expect(forbidden.errors.join("; ")).toContain("only allowed with role-mapping: proposed");
+  });
+
+  test("role-agnostic accepts only explicit boolean true", () => {
+    const allowed = validatePersona(profile({ "role-agnostic": true }));
+    expect(allowed.errors).toEqual([]);
+    expect(allowed.profile!.roleAgnostic).toBe(true);
+
+    for (const value of [false, "yes"]) {
+      const { errors } = validatePersona(profile({ "role-agnostic": value }));
+      expect(errors.join("; ")).toContain(
+        "role-agnostic, when present, must be boolean true",
+      );
+    }
   });
 
   test("status outside draft-for-discussion is a failure (phase-1 closed enum)", () => {
@@ -168,6 +282,18 @@ describe("personas.ts CLI", () => {
     expect(result.status).toBe(1);
     expect(result.stdout).toContain("FAIL broken.md");
     expect(result.stdout).toContain("PASS denys.md");
+  });
+
+  test("duplicate persona identities are an explicit registry failure", () => {
+    const repo = repoWithPersonas({
+      "denys.md": profile(),
+      "denys-copy.md": profile(),
+    });
+    const result = spawnSync("bun", [cli, "--repo", repo], { encoding: "utf8" });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain(
+      "duplicate persona identity 'denys' declared by denys.md, denys-copy.md",
+    );
   });
 
   test("the REAL repo roster validates clean (0 FAIL) and is the full 10", () => {

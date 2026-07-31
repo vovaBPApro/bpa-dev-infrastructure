@@ -21,31 +21,29 @@ convergence in `hr-161`).
 «Поведінку, а не повноваження.» A persona NEVER changes authority, permissions,
 review tiers, reviewer independence, capabilities, or evidence gates. Confirmed
 by the operator (Telegram 203): behavior never weakens review tiers or gates.
-Concretely:
+The canonical authority, verdict, independence, and evidence contracts remain
+in `instructions/roles.md`, `instructions/review-policy.md`,
+`instructions/vendor-routing.md`, and `instructions/verification-and-locks.md`;
+this profile mechanism creates no exception to them.
 
-- A persona "veto" is expressed only through the existing ACCEPT/REJECT/NO-GO
-  verdicts and the landing gate — no new authority channel, no vote weights,
-  no trust-based check skipping.
-- Personas are vendor-neutral text. The same persona on two sessions is still
-  two independent reviewers; persona reuse never substitutes for cross-vendor
-  review independence.
-- Every profile MUST begin (first body line, exact match, validator-enforced)
-  with:
+Every profile MUST begin (first body line, exact match, validator-enforced) with:
 
   > BEHAVIOR ONLY: this persona changes how a lane reasons and communicates.
   > It NEVER changes authority, permissions, review tiers, capabilities, or
   > evidence gates.
 
-- On any conflict, the pack's instruction documents and interim directives win.
+On any conflict, the pack's instruction documents and interim directives win.
 
-## The model (decided, Telegram 203)
+## Intended model / future phase (decided, Telegram 203)
 
 Personas are a PERSISTENT roster of named individuals, stable across missions.
 Per mission or consilium, a sub-team is selected from that roster and each
-selected lane gets its persona attached at compose time. Phase 1 implements
-exactly this: persistent profile files + compose-time selection. The QA and
-Security personas exist now as review-lens personas — human qualities layered
-on the existing reviewer role's review passes (Telegram 210).
+selected lane gets its persona attached at compose time. That is the intended
+direction, not a phase-1 implementation claim. Phase 1 is exactly manual
+attachment of one named profile by the orchestrator with `--persona` at compose
+time: nothing self-selects, nothing composes a sub-team, and no roster state
+exists at runtime. The QA and Security profiles exist now as human
+characterizations for the reviewer role (Telegram 210).
 
 ## What phase 1 is NOT
 
@@ -72,19 +70,21 @@ Frontmatter (closed key set, validated):
 - `persona:` kebab-case name, must equal the filename.
 - `role:` a REAL infra role — orchestrator | manager | coder | reviewer
   (`instructions/roles.md`). Nothing else exists.
+- `role-agnostic:` optional; the only accepted value is boolean `true`, which
+  explicitly permits attachment across real roles. When absent, `role:` must
+  match the compose `--role`.
 - `role-mapping:` `real`, or `proposed` when the roster wants a role the infra
   lacks (architect, researcher, operations, PM, UX…). `proposed` requires
-  `proposed-role:` and grants NOTHING — the persona rides the named real
-  role's ordinary authority. Extending the role model itself is wanted but is
-  a separate, later, evidence-based step gated on observed persona usage
-  (Telegram 203).
+  `proposed-role:`; compose still matches the declared real `role:`. Extending
+  the role model itself is a separate, later, evidence-based step gated on
+  observed persona usage (Telegram 203).
 - `status:` `draft-for-discussion` — every phase-1 profile is draft data
   awaiting the three-way finalization (`hr-161`).
 - `summary:` one line.
 
 Body: the mandatory BEHAVIOR ONLY header line, then exactly these sections:
 `## Optimization target`, `## Strengths`, `## Review & communication style`,
-`## Consilium participation`, `## Blind spots`. Communication styles are
+`## Discussion contribution`, `## Blind spots`. Communication styles are
 grounded in the operator collaboration guide
 (`instance/operator/How-to-Work-With-Vova.md`).
 
@@ -99,6 +99,8 @@ grounded in the operator collaboration guide
   non-zero on any invalid profile. This is standalone by design:
   `bun tools/instructions/check.ts` walks `instructions/` docs, and the roster
   deliberately lives in `instance/` with its own schema.
+- Validation also applies the bounded behavior-only content lint defined by
+  `tools/instructions/personas.ts`.
 
 ## The five open questions from the study — and their answers
 
@@ -111,11 +113,13 @@ Copied from the NI-1 study (top-★ set); answered by the operator on 2026-07-30
    model is a separate evidence-based later step.*
 2. **Persistent individuals vs lane flavors.** Stable named team members
    re-cast into every mission, or reusable profiles with no cross-mission
-   identity? — *Answered: a persistent roster of named individuals; sub-teams
-   composed from it per mission/consilium.*
+   identity? — *Answered direction: a persistent roster of named individuals
+   with per-mission/consilium sub-teams. Implementation status: phase 1 attaches
+   one profile manually with `--persona`; selection and runtime roster state are
+   future-phase work.*
 3. **Authority boundary.** Do personas ever relax review tiers, reviewer
-   independence, evidence gates, or fail-closed rules? — *Answered: never;
-   veto stays expressed only through the existing verdicts + gate.*
+   independence, evidence gates, or fail-closed rules? — *Answered: never; the
+   canonical contracts referenced above remain unchanged.*
 4. **Scope and trigger.** Static hand-authored profiles only — and when does
    implementation start? — *Answered: phase 1 static, implemented
    immediately.*

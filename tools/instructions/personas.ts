@@ -11,7 +11,8 @@
 // Fail-closed contract:
 //   - Unknown persona name → error (compose hard-fails, exit 2).
 //   - A profile missing the mandatory BEHAVIOR-ONLY header line, a required
-//     section, or a valid frontmatter field → error.
+//     section, exact body structure, behavior-only vocabulary, or a valid
+//     frontmatter field → error.
 //   - The registry is validated standalone (this file's CLI), NOT via
 //     tools/instructions/check.ts: check.ts walks instructions/ docs and the
 //     persona roster deliberately lives in instance/ with its own schema.
@@ -49,7 +50,7 @@ export const PERSONA_SECTIONS = [
   "## Optimization target",
   "## Strengths",
   "## Review & communication style",
-  "## Consilium participation",
+  "## Discussion contribution",
   "## Blind spots",
 ] as const;
 
@@ -57,15 +58,44 @@ const KNOWN_KEYS = new Set([
   "persona",
   "role",
   "role-mapping",
+  "role-agnostic",
   "proposed-role",
   "status",
   "summary",
 ]);
 
+// Small, explicit content lock for authority/participation language. It is
+// intentionally phrase-based rather than a broad semantic heuristic.
+const FORBIDDEN_PERSONA_PHRASES = [
+  /\bveto\b/i,
+  /\bmandatory seat\b/i,
+  /\bmandatory\b/i,
+  /\bmay skip\b/i,
+  /\bcan skip\b/i,
+  /\bskips review\b/i,
+  /\bsufficient alone\b/i,
+  /\bsufficient without\b/i,
+  /\bbarred\b/i,
+  /\bnever joins\b/i,
+  /\bpicks the sub-team\b/i,
+  /\bcomposes the\b[^.\n]*\bsub-team\b/i,
+  /\bselects the sub-team\b/i,
+  /\bvote\b/i,
+  /\bseat\b/i,
+  /\bmust be present\b/i,
+  /\brequired reviewer\b/i,
+  /\bhas authority\b/i,
+  /\bgrants\b/i,
+  /\breview tiers?\b/i,
+  /\btier-a\b/i,
+  /\btier-b\b/i,
+] as const;
+
 export type PersonaProfile = {
   name: string;
   role: PersonaRole;
   roleMapping: (typeof ROLE_MAPPINGS)[number];
+  roleAgnostic?: true;
   proposedRole?: string;
   status: string;
   summary: string;
@@ -109,6 +139,10 @@ export function validatePersona(
   if (!ROLE_MAPPINGS.includes(mapping as (typeof ROLE_MAPPINGS)[number])) {
     errors.push(`role-mapping must be one of ${ROLE_MAPPINGS.join("|")} (got '${String(mapping)}')`);
   }
+  const roleAgnostic = frontmatter["role-agnostic"];
+  if (roleAgnostic !== undefined && roleAgnostic !== true) {
+    errors.push(`role-agnostic, when present, must be boolean true (got '${String(roleAgnostic)}')`);
+  }
   const proposedRole = frontmatter["proposed-role"];
   if (mapping === "proposed") {
     if (typeof proposedRole !== "string" || proposedRole.trim() === "") {
@@ -126,18 +160,97 @@ export function validatePersona(
     errors.push("missing or empty required field: summary");
   }
 
+  const bodyLines = body.split(/\r?\n/);
+  const meaningfulBodyLines = bodyLines.filter((line) => line.trim() !== "");
+  if (meaningfulBodyLines.length === 0) {
+    errors.push("persona body is empty");
+  } else if (
+    meaningfulBodyLines.length === 1 &&
+    meaningfulBodyLines[0].trim() === PERSONA_HEADER
+  ) {
+    errors.push("persona body contains only the mandatory BEHAVIOR ONLY header");
+  }
+
   // Mandatory header: the FIRST non-blank body line, exactly.
-  const firstBodyLine = body.split(/\r?\n/).find((line) => line.trim() !== "");
+  const firstBodyLine = meaningfulBodyLines[0];
   if (firstBodyLine?.trim() !== PERSONA_HEADER) {
     errors.push("first body line must be the mandatory BEHAVIOR ONLY header (exact match)");
   }
 
-  for (const section of PERSONA_SECTIONS) {
-    const present = body
-      .split(/\r?\n/)
-      .some((line) => line.trim() === section);
-    if (!present) errors.push(`missing required section '${section}'`);
+  const headings = bodyLines
+    .map((line, index) => ({ line: line.trim(), index }))
+    .filter(({ line }) => /^#{1,6}\s+/.test(line));
+  const titles = headings.filter(({ line }) => /^#\s+/.test(line));
+  if (titles.length !== 1) {
+    errors.push(`expected exactly one '# ' profile title (found ${titles.length})`);
   }
+
+  const sectionHeadings = headings.filter(({ line }) => /^##\s+/.test(line));
+  const expectedSections = new Set<string>(PERSONA_SECTIONS);
+  for (const { line } of sectionHeadings) {
+    if (!expectedSections.has(line)) {
+      errors.push(`unexpected section heading '${line}'`);
+    }
+  }
+  for (const { line } of headings) {
+    if (!/^#\s+/.test(line) && !/^##\s+/.test(line)) {
+      errors.push(`unexpected heading '${line}'`);
+    }
+  }
+
+  const requiredInBody = sectionHeadings.filter(({ line }) => expectedSections.has(line));
+  for (const section of PERSONA_SECTIONS) {
+    const occurrences = requiredInBody.filter(({ line }) => line === section);
+    if (occurrences.length === 0) {
+      errors.push(`missing required section '${section}'`);
+    } else if (occurrences.length > 1) {
+      errors.push(`duplicate required section '${section}' (found ${occurrences.length})`);
+    }
+    for (const occurrence of occurrences) {
+      const nextHeading = headings.find(({ index }) => index > occurrence.index);
+      const content = bodyLines
+        .slice(occurrence.index + 1, nextHeading?.index ?? bodyLines.length)
+        .some((line) => line.trim() !== "" && !/^#{1,6}\s+/.test(line.trim()));
+      if (!content) {
+        errors.push(`required section '${section}' has no content`);
+      }
+    }
+  }
+
+  if (requiredInBody.length === PERSONA_SECTIONS.length) {
+    const actualOrder = requiredInBody.map(({ line }) => line);
+    if (actualOrder.some((line, index) => line !== PERSONA_SECTIONS[index])) {
+      errors.push(`required sections are out of order (expected ${PERSONA_SECTIONS.join(" -> ")})`);
+    }
+  }
+  if (
+    titles.length === 1 &&
+    requiredInBody.length > 0 &&
+    titles[0].index > requiredInBody[0].index
+  ) {
+    errors.push("profile title must appear before the required sections");
+  }
+
+  // Lint body lines only, and explicitly exempt the required header because it
+  // names the authority surface that personas cannot alter.
+  const frontmatterMatch = contents.replace(/^﻿/, "").match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/);
+  const bodyStartLine = frontmatterMatch
+    ? frontmatterMatch[0].split(/\r?\n/).length
+    : 1;
+  const profileLabel =
+    typeof name === "string" && name.trim() !== "" ? name : "(unknown persona)";
+  bodyLines.forEach((line, index) => {
+    if (line.trim() === PERSONA_HEADER) return;
+    for (const pattern of FORBIDDEN_PERSONA_PHRASES) {
+      const match = line.match(pattern);
+      if (match) {
+        errors.push(
+          `persona '${profileLabel}' line ${bodyStartLine + index}: ` +
+            `forbidden behavior-only phrase '${match[0]}'`,
+        );
+      }
+    }
+  });
 
   if (errors.length > 0) return { errors };
   return {
@@ -146,6 +259,7 @@ export function validatePersona(
       name: name as string,
       role: role as PersonaRole,
       roleMapping: mapping as (typeof ROLE_MAPPINGS)[number],
+      ...(roleAgnostic === true ? { roleAgnostic: true as const } : {}),
       ...(typeof proposedRole === "string" ? { proposedRole } : {}),
       status: status as string,
       summary: summary as string,
@@ -187,6 +301,50 @@ export function listPersonaNames(repo: string): string[] {
     .sort();
 }
 
+export type PersonaRegistryEntry = {
+  filename: string;
+  errors: string[];
+  profile?: PersonaProfile;
+};
+
+// Validates the complete registry, including identity uniqueness across files.
+export function validatePersonaRegistry(repo: string): PersonaRegistryEntry[] {
+  const entries = listPersonaNames(repo).map((filename): PersonaRegistryEntry => {
+    const relative = join("instance", "personas", `${filename}.md`);
+    const contents = readFileSync(join(repo, relative), "utf8");
+    const result = validatePersona(contents);
+    const errors = [...result.errors];
+    if (result.profile && result.profile.name !== filename) {
+      errors.push(
+        `persona name '${result.profile.name}' does not match filename '${filename}.md'`,
+      );
+    }
+    return {
+      filename,
+      errors,
+      ...(result.profile
+        ? { profile: { ...result.profile, relative } }
+        : {}),
+    };
+  });
+
+  const identities = new Map<string, PersonaRegistryEntry[]>();
+  for (const entry of entries) {
+    if (!entry.profile) continue;
+    const group = identities.get(entry.profile.name) ?? [];
+    group.push(entry);
+    identities.set(entry.profile.name, group);
+  }
+  for (const [identity, group] of identities) {
+    if (group.length < 2) continue;
+    const files = group.map((entry) => `${entry.filename}.md`).join(", ");
+    for (const entry of group) {
+      entry.errors.push(`duplicate persona identity '${identity}' declared by ${files}`);
+    }
+  }
+  return entries;
+}
+
 if (import.meta.main) {
   let repo = process.cwd();
   const args = process.argv.slice(2);
@@ -199,23 +357,22 @@ if (import.meta.main) {
     process.exit(2);
   }
 
-  const names = listPersonaNames(repo);
-  if (names.length === 0) {
+  const entries = validatePersonaRegistry(repo);
+  if (entries.length === 0) {
     console.log("personas: no registry at instance/personas/ (nothing to validate)");
     process.exit(0);
   }
   let failures = 0;
-  for (const name of names) {
-    const result = loadPersona(repo, name);
-    if ("errors" in result) {
+  for (const entry of entries) {
+    if (entry.errors.length > 0 || !entry.profile) {
       failures += 1;
-      console.log(`FAIL ${name}.md  ${result.errors.join("; ")}`);
+      console.log(`FAIL ${entry.filename}.md  ${entry.errors.join("; ")}`);
     } else {
-      const p = result.profile;
+      const p = entry.profile;
       const mapping = p.roleMapping === "proposed" ? `proposed:${p.proposedRole}` : "real";
-      console.log(`PASS ${name}.md  role=${p.role} mapping=${mapping} status=${p.status}`);
+      console.log(`PASS ${entry.filename}.md  role=${p.role} mapping=${mapping} status=${p.status}`);
     }
   }
-  console.log(`\nsummary: ${failures} FAIL, ${names.length - failures} PASS (${names.length} profiles)`);
+  console.log(`\nsummary: ${failures} FAIL, ${entries.length - failures} PASS (${entries.length} profiles)`);
   process.exit(failures > 0 ? 1 : 0);
 }

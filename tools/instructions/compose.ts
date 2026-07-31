@@ -537,6 +537,12 @@ export function compose(options: Options): ComposeResult {
       fail(`--persona ${options.persona}: ${loaded.errors.join("; ")}`);
     }
     const profile = loaded.profile;
+    if (profile.role !== options.role && profile.roleAgnostic !== true) {
+      fail(
+        `--persona ${options.persona}: persona '${profile.name}' declares role ` +
+          `'${profile.role}', requested role '${options.role}'`,
+      );
+    }
     persona = {
       name: profile.name,
       relative: profile.relative,

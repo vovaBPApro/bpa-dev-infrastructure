@@ -8,6 +8,7 @@ import { PERSONA_HEADER, PERSONA_SECTIONS } from "./personas.ts";
 
 const composer = join(import.meta.dir, "compose.ts");
 const checker = join(import.meta.dir, "check.ts");
+const coderGolden = join(import.meta.dir, "__fixtures__", "compose-coder-golden.json");
 const temporaryDirectories: string[] = [];
 
 afterEach(() => {
@@ -297,8 +298,33 @@ describe("compose.ts", () => {
     "---\npersona: denys\nrole: coder\nrole-mapping: real\n" +
     "status: draft-for-discussion\nsummary: Simplicity-first coder.\n---\n\n" +
     PERSONA_BODY;
+  const PERSONA_REVIEWER =
+    PERSONA_OK
+      .replace("persona: denys", "persona: bohdan")
+      .replace("role: coder", "role: reviewer")
+      .replace("Simplicity-first coder.", "Adversarial reviewer.");
+  const PERSONA_AGNOSTIC =
+    PERSONA_REVIEWER.replace("role-mapping: real", "role-mapping: real\nrole-agnostic: true");
 
-  test("without --persona the output is byte-identical whether or not a persona registry exists", () => {
+  test("without --persona the coder output is byte-identical to the committed pre-feature golden", () => {
+    const bare = repoWith({ docs: DOCS, tags: TAGS, packs: PACKS });
+    const result = runCompose(bare, ["--role", "coder"]);
+    expect(result.status).toBe(0);
+    const golden = JSON.parse(readFileSync(coderGolden, "utf8")).preamble as string;
+    if (result.stdout !== golden) {
+      const firstDifference = [...result.stdout].findIndex(
+        (character, index) => character !== golden[index],
+      );
+      throw new Error(
+        "persona-less coder preamble differs from the committed pre-feature golden; " +
+          "regenerate the fixture only for an intentional, separately reviewed default-render change " +
+          `(first differing byte ${firstDifference}; actual=${result.stdout.length}, ` +
+          `golden=${golden.length})`,
+      );
+    }
+  });
+
+  test("without --persona registry presence does not change any output byte", () => {
     const bare = repoWith({ docs: DOCS, tags: TAGS, packs: PACKS });
     const withRegistry = repoWith({
       docs: DOCS,
@@ -336,6 +362,44 @@ describe("compose.ts", () => {
     expect(result.stdout).toContain("lane-lifecycle  sha256:");
   });
 
+  test("--persona refuses a role mismatch with exit 2", () => {
+    const repo = repoWith({
+      docs: DOCS,
+      tags: TAGS,
+      packs: PACKS,
+      personas: { "bohdan.md": PERSONA_REVIEWER },
+    });
+    const result = runCompose(repo, ["--role", "coder", "--persona", "bohdan"]);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain(
+      "persona 'bohdan' declares role 'reviewer', requested role 'coder'",
+    );
+  });
+
+  test("--persona accepts a matching declared role", () => {
+    const repo = repoWith({
+      docs: DOCS,
+      tags: TAGS,
+      packs: PACKS,
+      personas: { "denys.md": PERSONA_OK },
+    });
+    const result = runCompose(repo, ["--role", "coder", "--persona", "denys"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("## PERSONA (behavior only)");
+  });
+
+  test("--persona accepts explicit role-agnostic: true across roles", () => {
+    const repo = repoWith({
+      docs: DOCS,
+      tags: TAGS,
+      packs: PACKS,
+      personas: { "bohdan.md": PERSONA_AGNOSTIC },
+    });
+    const result = runCompose(repo, ["--role", "coder", "--persona", "bohdan"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("- bohdan  sha256:");
+  });
+
   test("unknown persona is a hard error, non-zero exit", () => {
     const repo = repoWith({
       docs: DOCS,
@@ -362,6 +426,78 @@ describe("compose.ts", () => {
     const result = runCompose(repo, ["--role", "coder", "--persona", "denys"]);
     expect(result.status).toBe(2);
     expect(result.stderr).toContain("mandatory BEHAVIOR ONLY header");
+  });
+
+  test("all malformed profile structures fail --persona with exit 2 and concrete errors", () => {
+    const validBody = PERSONA_BODY;
+    const front =
+      "---\npersona: denys\nrole: coder\nrole-mapping: real\n" +
+      "status: draft-for-discussion\nsummary: Simplicity-first coder.\n---\n\n";
+    const rows = [
+      {
+        name: "missing summary",
+        contents: PERSONA_OK.replace("summary: Simplicity-first coder.\n", ""),
+        error: "missing or empty required field: summary",
+      },
+      {
+        name: "empty body",
+        contents: front,
+        error: "persona body is empty",
+      },
+      {
+        name: "header-only body",
+        contents: front + PERSONA_HEADER + "\n",
+        error: "persona body contains only the mandatory BEHAVIOR ONLY header",
+      },
+      {
+        name: "wrong section order",
+        contents:
+          front + `${PERSONA_HEADER}\n\n# Denys\n\n` +
+          [...PERSONA_SECTIONS].reverse()
+            .map((section) => `${section}\n\nText.\n`)
+            .join("\n"),
+        error: "required sections are out of order",
+      },
+      {
+        name: "duplicate section",
+        contents:
+          front + validBody + `\n${PERSONA_SECTIONS[0]}\n\nMore text.\n`,
+        error: "duplicate required section '## Optimization target' (found 2)",
+      },
+      {
+        name: "empty section",
+        contents:
+          front + `${PERSONA_HEADER}\n\n# Denys\n\n` +
+          PERSONA_SECTIONS.map((section) =>
+            section === "## Review & communication style"
+              ? `${section}\n\n`
+              : `${section}\n\nText.\n`
+          ).join("\n"),
+        error: "required section '## Review & communication style' has no content",
+      },
+      {
+        name: "unexpected section",
+        contents: front + validBody + "\n## Extra\n\nText.\n",
+        error: "unexpected section heading '## Extra'",
+      },
+      {
+        name: "filename/frontmatter mismatch",
+        contents: PERSONA_OK.replace("persona: denys", "persona: bohdan"),
+        error: "persona name 'bohdan' does not match filename 'denys.md'",
+      },
+    ];
+
+    for (const row of rows) {
+      const repo = repoWith({
+        docs: DOCS,
+        tags: TAGS,
+        packs: PACKS,
+        personas: { "denys.md": row.contents },
+      });
+      const result = runCompose(repo, ["--role", "coder", "--persona", "denys"]);
+      expect(result.status, row.name).toBe(2);
+      expect(result.stderr, row.name).toContain(row.error);
+    }
   });
 
   test("--out with a persona writes the profile and records it in manifest.json", () => {
@@ -513,6 +649,14 @@ describe("compose.ts against the real repo", () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("## PERSONA (behavior only)");
     expect(result.stdout).toContain(PERSONA_HEADER);
+  });
+
+  test("real repo: --role coder --persona orest is refused", () => {
+    const result = runCompose(repoRoot, ["--role", "coder", "--persona", "orest"]);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain(
+      "persona 'orest' declares role 'orchestrator', requested role 'coder'",
+    );
   });
 
   test("real repo check --strict is clean (0 FAIL)", () => {

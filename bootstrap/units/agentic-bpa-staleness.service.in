@@ -1,0 +1,9 @@
+[Unit]
+Description=Alarm when the live product stand trails origin/main
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${INSTALL_ROOT}/deploy/check-live-stand-staleness.sh ${INSTALL_ROOT}/instance/live-stands/agentic-bpa.env
+StandardOutput=journal+console
+StandardError=journal+console

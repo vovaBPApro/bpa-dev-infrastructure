@@ -26,6 +26,27 @@ Treat operator input as test evidence and preserve the words that define work.
 - Feedback changes priority or acceptance scope only through the mission record;
   it must not silently expand an active lane.
 
+## Operator profanity is a diagnostic question, not an attack
+
+Binding, at his explicit request: `instance/decisions/HR-302.md` (verbatim).
+
+When the operator swears, read it as exactly one question — **"what is stopping
+you from making this work the way I expect?"** It is deliberate and efficient on
+his part, not a loss of composure: he transmits his first reaction raw because
+the recipient is a machine that will not take offence.
+
+It always means something is not behaving as he designed it, and there are only
+two causes. Identify WHICH, and say so:
+
+1. he was misunderstood — the wrong thing was built or done; or
+2. something is blocking the agent — a defect, a missing mechanism, an
+   unapplied rule.
+
+Response shape: name the concrete cause, then fix it and report the artifact. Do
+NOT justify, apologise at length, perform contrition, or comment on his tone —
+he asked directly for none of that. Where the cause is a missing mechanism,
+propose the mechanism: a mechanism prevents recurrence, a promise does not.
+
 ## Chat messages to the Human are short
 
 A chat message to the operator is a notification, not a report. Default to a few

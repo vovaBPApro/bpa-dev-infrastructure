@@ -1,0 +1,23 @@
+[Unit]
+Description=BPA HTTPS edge
+Documentation=https://caddyserver.com/docs/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=caddy
+Group=caddy
+EnvironmentFile=/etc/bpa-edge/edge.env
+ExecStart=/usr/bin/caddy run --environ --config /etc/bpa-edge/Caddyfile
+ExecReload=/usr/bin/caddy reload --config /etc/bpa-edge/Caddyfile --force
+TimeoutStopSec=5s
+LimitNOFILE=1048576
+PrivateTmp=true
+ProtectSystem=full
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

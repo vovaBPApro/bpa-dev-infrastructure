@@ -1,0 +1,15 @@
+{
+	admin off
+}
+
+{$EDGE_DOMAIN} {
+	@oauth_callbacks path \
+ /api/integrations/qbo/callback \
+ /api/integrations/gmail/callback \
+ /api/integrations/drive/callback
+
+	header @oauth_callbacks X-BPA-Edge callback-proxy
+	reverse_proxy @oauth_callbacks {$APP_UPSTREAM}
+
+	respond 404
+}

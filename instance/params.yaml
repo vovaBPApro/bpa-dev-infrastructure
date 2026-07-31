@@ -53,6 +53,7 @@ fleet:
   # directly: parallelism is the reason the server is paid for.
   floor: 6                         # while the workboard has open rows, >= 6 lanes should be running
   ceiling: 15                      # upper bound; raise only with measured host headroom
+  keepalive_interval_minutes: 15   # daemon timer backstop; independent of lane exit events
   status: active
   # Enforced by the state-contract checker: open work plus zero measured system
   # lane units is FLEET-IDLE; an unavailable system lane count also fails closed.

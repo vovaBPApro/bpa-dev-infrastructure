@@ -84,6 +84,11 @@ import {
 import { appendInboxLine } from './inbox-mirror';
 import { resolveWhisperConfig, transcribeAudio } from './transcribe';
 import {
+  AutonomyKeepalive,
+  parseFleetConfig,
+  parseSystemdLaneUnits,
+} from './autonomy-keepalive';
+import {
   buildAgentLines,
   buildDaemonHealth,
   buildRuntimeStatus,
@@ -163,6 +168,26 @@ const CANONICAL_REPO =
   (GIT_STALL_REPO_PATH || join(homedir(), 'bpa-dev-infrastructure'));
 const CONFIGURED_BOUND_CHAT_ID =
   process.env.TELEGRAM_BOUND_CHAT_ID ?? process.env.TELEGRAM_CHAT_ID ?? null;
+const PARAMS_FILE = join(INSTALL_ROOT, 'instance', 'params.yaml');
+const WORKBOARD_FILE = join(INSTALL_ROOT, 'instance', 'workboard.md');
+let fleetParams = '';
+try {
+  fleetParams = readFileSync(PARAMS_FILE, 'utf8');
+} catch {
+  process.stderr.write(
+    `${LOG_PREFIX} fleet params unavailable; using fail-closed floor/default interval\n`,
+  );
+}
+const FLEET_CONFIG = parseFleetConfig(fleetParams);
+const FLEET_KEEPALIVE_INTERVAL_MS = parseInt(
+  process.env.ORCH_FLEET_KEEPALIVE_INTERVAL_MS ??
+    String(FLEET_CONFIG.intervalMs),
+  10,
+);
+const LANE_EVENT_POLL_MS = parseInt(
+  process.env.ORCH_LANE_EVENT_POLL_MS ?? '5000',
+  10,
+);
 
 // tmux session name where the orchestrator runs. ORCH_SESSION is the single
 // session setting shared with orchestrator/launch.sh and watchdog.sh.
@@ -1462,6 +1487,71 @@ async function tmuxPasteText(text: string): Promise<boolean> {
     return false;
   } finally {
     rmSync(tmpFile, { force: true });
+  }
+}
+
+// SYSTEM units are intentional: this host has no user systemd bus. The timer
+// census is independent of the transition watcher, so a dirty death missed by
+// the event path still wakes the orchestrator on the next fleet interval.
+function listSystemLaneUnits() {
+  const result = Bun.spawnSync(
+    [
+      'systemctl',
+      'list-units',
+      '--all',
+      '--type=service',
+      'lane-*',
+      '--no-legend',
+      '--plain',
+      '--no-pager',
+    ],
+    { stdout: 'pipe', stderr: 'pipe', timeout: 10_000 },
+  );
+  if (result.exitedDueToTimeout || result.exitCode !== 0) {
+    throw new Error(`system lane census failed (exit ${result.exitCode})`);
+  }
+  return parseSystemdLaneUnits(result.stdout.toString());
+}
+
+async function autonomyNudge(message: string): Promise<void> {
+  if (!TMUX_SESSION || !(await tmuxAlive())) {
+    process.stderr.write(`${LOG_PREFIX} autonomy nudge deferred: tmux unavailable\n`);
+    return;
+  }
+  const ok = await tmuxPasteText(
+    `<channel source="autonomy" audience="orchestrator">${message}</channel>`,
+  );
+  process.stderr.write(
+    `${LOG_PREFIX} autonomy nudge ${ok ? 'delivered' : 'failed'}: ${message}\n`,
+  );
+}
+
+const autonomyKeepalive = new AutonomyKeepalive({
+  floor: FLEET_CONFIG.floor,
+  readWorkboard: () => readFileSync(WORKBOARD_FILE, 'utf8'),
+  listUnits: listSystemLaneUnits,
+  nudge: autonomyNudge,
+});
+
+let laneEventTickRunning = false;
+async function laneEventTick(): Promise<void> {
+  if (laneEventTickRunning) return;
+  laneEventTickRunning = true;
+  try {
+    await autonomyKeepalive.eventTick();
+  } finally {
+    laneEventTickRunning = false;
+  }
+}
+
+let fleetTimerTickRunning = false;
+async function fleetTimerTick(): Promise<void> {
+  if (fleetTimerTickRunning) return;
+  fleetTimerTickRunning = true;
+  try {
+    await autonomyKeepalive.timerTick();
+  } finally {
+    fleetTimerTickRunning = false;
   }
 }
 
@@ -3855,6 +3945,24 @@ async function scanStuck(): Promise<void> {
 setInterval(() => {
   void scanStuck();
 }, WATCHDOG_INTERVAL_MS);
+
+setInterval(() => {
+  void laneEventTick().catch((err) => {
+    process.stderr.write(`${LOG_PREFIX} lane event watch failed: ${err}\n`);
+  });
+}, LANE_EVENT_POLL_MS).unref();
+void laneEventTick().catch((err) => {
+  process.stderr.write(`${LOG_PREFIX} initial lane event census failed: ${err}\n`);
+});
+
+setInterval(() => {
+  void fleetTimerTick().catch((err) => {
+    process.stderr.write(`${LOG_PREFIX} fleet timer check failed: ${err}\n`);
+  });
+}, FLEET_KEEPALIVE_INTERVAL_MS).unref();
+void fleetTimerTick().catch((err) => {
+  process.stderr.write(`${LOG_PREFIX} initial fleet timer check failed: ${err}\n`);
+});
 
 // Start Telegram polling with exponential backoff.
 // NOTE: onStart fires before the first getUpdates call, which means `attempt`

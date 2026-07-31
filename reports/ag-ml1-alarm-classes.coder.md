@@ -1,10 +1,10 @@
 # Coder terminal report: ag-ml1-alarm-classes
 
-commit: 33277f91a231693985f8af2c2138602e6e5ca0b4 [CODER] require terminal classifier readiness
+commit: e3f4479a174228628051954e2293007c6aa321ff [CODER] record alarm readiness evidence
 verify: (cd daemon && bun test notify-handler.test.ts terminal-alert.test.ts && bun run typecheck) && (cd orchestrator && ORCH_SKIP_TRUST_CHECK=1 ./runtime.test.sh) && git diff --check origin/main...HEAD
 verify-count: 16/0
 result: NO-GO
-blocker: Tier A orchestrator-core change requires independent re-review at 33277f91a231693985f8af2c2138602e6e5ca0b4; the retained REJECT reviews a superseded SHA
+blocker: Tier A orchestrator-core change requires independent re-review; the retained REJECT reviews a superseded SHA
 secret-scan: clean
 remaining: independent re-review and landing evidence
 

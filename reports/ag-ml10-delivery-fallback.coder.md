@@ -1,6 +1,7 @@
 # Coder terminal report: ag-ml10-delivery-fallback
 
-delivery-commit: `1ae06ff` (`[CODER] close MCP fallback review blockers`)
+delivery-head: `528bc60` (`[CODER] isolate MCP fallback regression process env`)
+base: `fd8ac29` (rebased `origin/main`)
 
 ## Manifest consumption
 
@@ -22,29 +23,32 @@ delivery-commit: `1ae06ff` (`[CODER] close MCP fallback review blockers`)
 - The existing runtime watchdog executes the MCP check and routes its failing
   verdict into the durable, rate-limited nudge outbox.
 - The full daemon suite terminates when allowed to finish the installed real
-  Whisper engine tests. Those two tests took 53.8s and 35.0s; the full run
-  completed in 100.81s rather than leaking an open handle.
+  Whisper engine tests. The final run completed in 66.77s rather than leaking
+  an open handle.
+- All spawned test children use the shared `daemon/test-env.ts` isolation helper
+  landed by ML-4; the lock does not inherit live control-plane state.
 
 ## FAIL-BEFORE
 
-Command (disposable worktree at `origin/main`, with only replacement tests
-materialized from `1ae06ff`):
+Command (disposable worktree at `origin/main`, with the replacement locks and
+health probe materialized from `528bc60`; production files remain at base):
 
 ```sh
-cd "$red_tree/daemon" && timeout 30s bun test mcp-rebind.integration.test.ts
-cd "$red_tree" && timeout 30s bash orchestrator/telegram-daemon-mcp.test.sh
+cd "$red_tree/daemon" && timeout 40s bun test ./mcp-rebind.integration.test.ts
+cd "$red_tree" && timeout 40s bash orchestrator/telegram-daemon-mcp.test.sh
 ```
 
 Real result:
 
 ```text
 error: expect(received).toMatchObject(expected)
-- "direct_reply_endpoint": "/reply",
-- "mcp_detached": true,
+-   "direct_reply_endpoint": "/reply",
+-   "mcp_detached": true,
 0 pass
 1 fail
 ts_red_before_rc=1
-FAIL: detached omitted verdict: .../health-checks/telegram-daemon-mcp.sh: No such file or directory
+grep: .../runtime/nudges.outbox: No such file or directory
+FAIL: watchdog did not route failed MCP health into durable nudge outbox
 watchdog_red_before_rc=1
 ```
 
@@ -62,31 +66,26 @@ $ cd daemon && timeout 30s bun test mcp-rebind.integration.test.ts
 9 expect() calls
 
 $ timeout 600s bash -lc 'cd daemon && bun test && bun run typecheck'
-153 pass
+156 pass
 0 fail
-525 expect() calls
-Ran 153 tests across 14 files. [100.81s]
+533 expect() calls
+Ran 156 tests across 15 files. [66.77s]
 $ bunx tsc --noEmit
 full_suite_rc=0
 ```
 
 ## Rollback evidence
 
-In a disposable worktree at `1ae06ff`:
+In a disposable worktree at `528bc60`:
 
 ```text
-$ git revert --no-commit 1ae06ff a85e4e0e dc679c7b
+$ git revert --no-commit 528bc60 3e3de9e f6139a2 74aa966
 rollback_apply_rc=0
 ```
 
 The resulting scoped rollback removes the two new locks and MCP health check,
 and reverts only `daemon/reliability.ts`, `daemon/server.ts`, and
 `orchestrator/watchdog.sh`; the disposable worktree was then removed.
-
-## External exclusion
-
-CI `dispatch-check` in a fresh clone remains externally red and is owned by
-`ag-ci-dispatch-gate`; it was not chased in this lane.
 
 secret-scan: clean
 remaining: independent re-review and landing

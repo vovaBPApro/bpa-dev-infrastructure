@@ -22,6 +22,7 @@ grep -Fq 'reverse_proxy {$APP_UPSTREAM}' "$SCRIPT_DIR/Caddyfile"
 grep -Fq 'respond 404' "$SCRIPT_DIR/Caddyfile"
 grep -Fq 'AmbientCapabilities=CAP_NET_BIND_SERVICE' "$SCRIPT_DIR/bpa-edge.service"
 grep -Fq 'EnvironmentFile=/etc/bpa-edge/edge.env' "$SCRIPT_DIR/bpa-edge.service"
+grep -Fq 'systemctl restart bpa-edge.service' "$SCRIPT_DIR/install.sh"
 
 "$SCRIPT_DIR/install.sh" --help >/dev/null
 if "$SCRIPT_DIR/install.sh" --domain 'bad domain' --upstream http://127.0.0.1:3000 >/dev/null 2>&1; then

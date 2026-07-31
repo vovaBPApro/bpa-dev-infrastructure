@@ -62,6 +62,7 @@ EDGE_DOMAIN="$DOMAIN" APP_UPSTREAM="$UPSTREAM" caddy validate --config /etc/bpa-
 # Never allow both to compete for ports 80/443.
 systemctl disable --now caddy.service >/dev/null 2>&1 || true
 systemctl daemon-reload
-systemctl enable --now bpa-edge.service
+systemctl enable bpa-edge.service
+systemctl restart bpa-edge.service
 
 echo "READY: https://$DOMAIN (certificate issuance is automatic; inspect with journalctl -u bpa-edge.service)"

@@ -40,6 +40,11 @@ pointers: `instance/product-docs-index.md`. Evidence:
   ONE-TO-ONE with QuickBooks. Reports themselves come later; statutory (the
   second double-entry layer) is designed later still.
 - **PR-4 — Mila is a dumb empty stub.** Nobody ever tested it.
+- **PR-7 — email means GMAIL** (confirmed 2026-07-31: «Gmail а під Outlook там затичка»).
+  Port the Gmail path, which is the proven one — `packages/integrations/src/gmail/`
+  (~7,129 LOC with tests, history checkpoints, attachment materialization).
+  The MS Graph/Outlook code under `packages/integrations/src/email/msgraph/`
+  stays a STUB and is explicitly out of scope.
 - **PR-5 — shell first**: chat properly connected and the agent switcher, with
   ALL shell functionality carried over before Bill work starts.
 - **PR-6 — storage layout**: `/srv/projects/<product>/` for repos and

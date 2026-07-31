@@ -139,6 +139,16 @@ describe("completion guard", () => {
     expect(result.stdout).toContain("FAIL verify-count test-count-claim-must-use-verify-count-field");
   });
 
+  test("rejects a prose count outside the provenance-checked field", () => {
+    const item = fixture();
+    const body = valid(item.sha, "clean", "printf '2 pass\\n0 fail\\n'")
+      .replace("remaining: none", "remaining: claimed 999 tests passed, 0 failed");
+    const result = run(report(item.directory, body), item.repo);
+    expect(result.status).toBe(2);
+    expect(result.stdout).toContain("FAIL verify-count test-count-claim-must-use-verify-count-field");
+    expect(result.stdout).toContain("GUARD verdict=violation");
+  });
+
   test("rejects a claimed count when verify output has no parseable count", () => {
     const item = fixture();
     const body = valid(item.sha)

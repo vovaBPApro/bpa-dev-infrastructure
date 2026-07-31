@@ -91,12 +91,15 @@ function lineValue(contents: string, label: string): string | undefined {
 }
 
 function hasUnstructuredCountClaim(contents: string): boolean {
+  const countClaimPatterns = [
+    /\b[0-9]+\s*(?:pass(?:ed)?)?\s*\/\s*[0-9]+\s*(?:fail(?:ed)?)?\b/i,
+    /\b[0-9]+\s+(?:tests?\s+)?pass(?:ed)?\b[^\r\n]{0,40}\b[0-9]+\s+(?:tests?\s+)?fail(?:ed)?\b/i,
+    /\b[0-9]+\s+(?:tests?\s+)?fail(?:ed)?\b[^\r\n]{0,40}\b[0-9]+\s+(?:tests?\s+)?pass(?:ed)?\b/i,
+  ];
   return contents
     .split(/\r?\n/)
     .filter((line) => !/^verify(?:-count)?:/.test(line))
-    .some((line) =>
-      /\b[0-9]+\s*(?:pass(?:ed)?)?\s*\/\s*[0-9]+\s*(?:fail(?:ed)?)?\b/i.test(line),
-    );
+    .some((line) => countClaimPatterns.some((pattern) => pattern.test(line)));
 }
 
 function git(repo: string, args: string[]) {

@@ -1,8 +1,8 @@
 # Coder terminal report: ag-ml10-delivery-fallback
 
-commit: f38baf4922772742f491609ecb6cd8b60292a99f [CODER] refresh MCP fallback terminal evidence
+commit: d6561bd88b687a168995331da2420a43a0dc61f4 [CODER] refresh MCP fallback proof after rebase
 verify: orchestrator/telegram-daemon-mcp.test.sh >/dev/null && cd daemon && bun test && bun run typecheck
-verify-count: 156/0
+verify-count: 164/0
 result: NO-GO
 blocker: Tier A orchestrator runtime and health/evidence-gate change requires independent re-review of the replacement SHA.
 secret-scan: clean
@@ -68,11 +68,11 @@ Real output:
 ```text
 telegram daemon MCP health/wiring regression: PASS
 (pass) detached Claude MCP raises an alarm and /reply still delivers through Telegram
-Ran 1 test across 1 file. [297.00ms]
+Ran 1 test across 1 file. [267.01ms]
 ...
-(pass) transcribes an English .oga opus voice message (the Telegram wire format) [64720.21ms]
-(pass) transcribes a Ukrainian sample to Cyrillic text (forced -l uk; see fixture note) [36865.83ms]
-Ran 156 tests across 15 files. [112.23s]
+(pass) transcribes an English .oga opus voice message (the Telegram wire format) [38254.89ms]
+(pass) transcribes a Ukrainian sample to Cyrillic text (forced -l uk; see fixture note) [20897.03ms]
+Ran 164 tests across 16 files. [70.31s]
 $ bunx tsc --noEmit
 pass_after_rc=0
 ```
@@ -84,22 +84,21 @@ The machine-checkable reproduced aggregate is recorded only in `verify-count`.
 In a disposable worktree at the reported implementation SHA:
 
 ```sh
-git revert --no-commit $(git rev-list origin/main..HEAD)
+git diff --binary origin/main...HEAD | git apply --reverse --index
 ```
 
 Real result:
 
 ```text
 rollback_rc=0
-D  daemon/mcp-rebind.integration.test.ts
-M  daemon/reliability.ts
-M  daemon/server.ts
-D  orchestrator/health-checks/telegram-daemon-mcp.sh
-D  orchestrator/telegram-daemon-mcp.test.sh
-M  orchestrator/watchdog.sh
+git diff --cached --quiet origin/main
+matches_base_rc=0
 ```
 
-The disposable worktree was removed after the scoped revert applied cleanly.
+The disposable worktree was removed after the aggregate mission rollback matched
+`origin/main` exactly. Commit-by-commit revert is intentionally not claimed:
+post-review changes on `main` overlap the oldest lane commit, while reversing the
+landed aggregate diff is conflict-free and restores the current base.
 
 ## Manifest consumption
 

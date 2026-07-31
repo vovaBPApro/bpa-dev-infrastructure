@@ -111,6 +111,15 @@ export const REGISTRY: Artifact[] = [
     note: 'Turn-end liveness signal. A forged write here hides a dead session.',
   },
   {
+    id: 'fleet-nudge.heartbeat',
+    kind: 'internal',
+    writers: ['orchestrator/fleet/fleet-nudge.sh'],
+    readers: ['orchestrator/fleet/fleet-nudge-liveness.sh'],
+    note:
+      'Positive completion signal from every fleet watchdog run, including ' +
+      'failed runs. An independent system timer alerts when it goes stale.',
+  },
+  {
     id: 'inbox.jsonl',
     kind: 'internal',
     writers: [

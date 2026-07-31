@@ -361,15 +361,14 @@ test('a known gap that has been fixed must be removed, not left to rot', () => {
 // contract in KNOWN_GAPS requires editing this assertion too, which is a
 // review event rather than a silent waiver.
 test('KNOWN_GAPS is exactly the frozen set', () => {
-  // quota-latest.jsonl and triage.jsonl were added when the sweep was widened
+  // quota-latest.jsonl and triage.jsonl were found when the sweep was widened
   // to .jsonl (see the EXT note in check.ts). Neither is a new breakage: both
   // readers already existed and the extension was simply invisible to the
-  // regex. quota-latest.jsonl is declared by the lane that restored its reader
-  // (daemon/vendor-login.ts); triage.jsonl was uncovered by the same widening.
+  // regex. quota-latest.jsonl remains a credential-bound gap; triage.jsonl is
+  // now explicitly a tracked, hand-appended orchestration contract.
   expect(Object.keys(KNOWN_GAPS).sort()).toEqual([
     'orchestrator-state.json',
     'quota-latest.jsonl',
-    'triage.jsonl',
   ]);
   for (const reason of Object.values(KNOWN_GAPS)) {
     expect(reason.length).toBeGreaterThan(80);
@@ -521,4 +520,10 @@ test('this repository passes its own state contract', () => {
   const stateDb = REGISTRY.find((a) => a.id === 'state.db');
   expect(stateDb?.writers).toContain('core/mission-cli.ts');
   expect(stateDb?.readers).toContain('daemon/mission-source.ts');
+
+  const triage = REGISTRY.find((a) => a.id === 'triage.jsonl');
+  expect(triage).toMatchObject({
+    kind: 'repo-file',
+    trackedPath: 'instance/decisions/triage.jsonl',
+  });
 });

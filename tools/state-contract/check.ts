@@ -69,19 +69,6 @@ export const KNOWN_GAPS: Record<string, string> = {
     'the reader is built for it — with no producer every verdict degrades to ' +
     '"unknown" with a reason, never to a confident "logged in". Closing it needs a ' +
     'credential decision about a browser profile, which is the Human\'s call.',
-  'triage.jsonl':
-    'Read by tools/instructions/ledger.ts (triage-verdict lookup for inbox aging) ' +
-    'and tools/instructions/session-load.ts, written by nothing in this repository ' +
-    '— triage verdicts are appended by hand during orchestrator triage. Surfaced ' +
-    'by widening the sweep to .jsonl for quota-latest.jsonl; it was invisible ' +
-    'before, not absent. Not fixed here because it belongs to the instructions ' +
-    'ledger, not to this lane: it needs a triage-writing path or an explicit ' +
-    'decision that hand-appended rows are the contract. THE MISSING WRITER IS A ' +
-    'HUMAN — triage verdicts are appended by the orchestrator during triage, so ' +
-    'unlike the missions ledger and orchestrator-state.json this is very likely ' +
-    'hand-maintained BY DESIGN rather than a writer that failed to migrate. Do ' +
-    'not spend an hour hunting for the lost writer; the open question is only ' +
-    'whether hand-appending should stay the contract or be given a tool.',
 };
 
 export const REGISTRY: Artifact[] = [
@@ -96,6 +83,7 @@ export const REGISTRY: Artifact[] = [
       'orchestrator/morning.sh',
       'orchestrator/status.sh',
       'orchestrator/watchdog.sh',
+      'orchestrator/full-suite.sh',
       'tools/instructions/session-load.ts',
     ],
     note:
@@ -125,7 +113,11 @@ export const REGISTRY: Artifact[] = [
   {
     id: 'inbox.jsonl',
     kind: 'internal',
-    writers: ['daemon/inbox-mirror.ts', 'tools/instructions/memory-sweep.ts'],
+    writers: [
+      'daemon/inbox-mirror.ts',
+      'daemon/server.ts',
+      'tools/instructions/memory-sweep.ts',
+    ],
     readers: ['tools/instructions/ledger.ts', 'tools/instructions/session-load.ts'],
     note:
       'Append-only capture of inbound Human directives (the B276 fix) plus filed ' +
@@ -347,6 +339,49 @@ export const REGISTRY: Artifact[] = [
       'for affirmative subscription OAuth evidence (claudeAiOauth.accessToken); ' +
       'missing or unverifiable is a refusal. This repo must never write it, ' +
       'and nothing from it may ever be printed.',
+  },
+  {
+    id: 'unit-drift-exemptions.tsv',
+    kind: 'repo-file',
+    trackedPath: 'instance/unit-drift-exemptions.tsv',
+    writers: [],
+    readers: ['bootstrap/check-unit-drift.sh', 'bootstrap/install.sh'],
+    note:
+      'Tracked operator decisions for deliberately absent systemd units. The ' +
+      'repository is the durable writer; bootstrap consumes the committed file.',
+  },
+  {
+    id: 'messages-VAR.jsonl',
+    kind: 'internal',
+    writers: ['daemon/history-logger.ts'],
+    readers: ['daemon/history-logger.ts'],
+    note:
+      'Monthly Telegram metadata history. history-logger appends records and ' +
+      'reads/rewrites the same file when enforcing its bounded size.',
+  },
+  {
+    id: 'record.json',
+    kind: 'internal',
+    writers: ['preview/preview.ts'],
+    readers: ['preview/preview.ts'],
+    note:
+      'Per-lane preview allocation record. preview.ts writes it before startup ' +
+      'and reads it for listing, port allocation, and teardown.',
+  },
+  {
+    id: 'triage.jsonl',
+    kind: 'repo-file',
+    trackedPath: 'instance/decisions/triage.jsonl',
+    writers: [],
+    readers: [
+      'tools/instructions/ledger.ts',
+      'tools/instructions/session-load.ts',
+    ],
+    note:
+      'Hand-appending by the orchestrator is the intentional writing contract: ' +
+      'triage is a Human-judgment workflow, and each verdict becomes durable ' +
+      'when committed as this tracked repository file. No automated producer ' +
+      'is implied or missing.',
   },
   {
     id: 'package.json',

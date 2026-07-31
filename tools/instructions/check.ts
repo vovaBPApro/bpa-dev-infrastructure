@@ -211,7 +211,34 @@ if (!existsSync(tagsPath) || !existsSync(packsPath)) {
   }
 }
 
-// (f) Hard Floor drift: the section between the markers in CLAUDE.md must be
+// (f) floor coverage: every `floor: true` doc must ship in at least one role's
+// baseline. A floor rule delivered only as a generated CLAUDE.md summary line
+// does not deliver its binding body to dispatched agents. This check is always
+// FAIL (never gated by --strict), like the absolute HR-pending ledger check.
+// Runs only when packs.conf exists so fixture repos without instance/ SKIP.
+if (!existsSync(packsPath)) {
+  record("SKIP", "instance/packs.conf", "floor-coverage", "no instance/packs.conf");
+} else {
+  const packs = readPacks(options.repo);
+  for (const doc of docs) {
+    if (!doc.valid || doc.valid.floor !== true) continue;
+    const roles = [...packs.entries()]
+      .filter(([, ids]) => ids.includes(doc.valid!.id))
+      .map(([role]) => role);
+    if (roles.length > 0) {
+      record("PASS", doc.relative, "floor-coverage", `in baseline roles: ${roles.join(", ")}`);
+    } else {
+      record(
+        "FAIL",
+        doc.relative,
+        "floor-coverage",
+        `floor doc ships in no baseline pack — add '${doc.valid.id}' to instance/packs.conf`,
+      );
+    }
+  }
+}
+
+// (g) Hard Floor drift: the section between the markers in CLAUDE.md must be
 // byte-identical to what floor.ts generates from `floor: true` docs. A hand-edit
 // (drift), a missing marker, or a floor doc without its floor-line all FAIL —
 // this is what makes the generated section un-forgeable by hand. Runs only when
@@ -241,7 +268,7 @@ if (!existsSync(claudePath)) {
   }
 }
 
-// (g) ledger aging (§2.4): untriaged inbox.jsonl rows >24h and pending HR files
+// (h) ledger aging (§2.4): untriaged inbox.jsonl rows >24h and pending HR files
 // >72h. The inbox check honours --strict (FAIL vs WARN) like the other
 // transition-mode checks; HR pending aging is always a FAIL (the SLA is
 // absolute — a pending row past its window is a defect regardless of mode).
@@ -249,7 +276,7 @@ for (const finding of runLedgerChecks(options.repo, options.strict)) {
   record(finding.level, finding.file, "ledger", finding.detail);
 }
 
-// (h) session-load budget (§2.3): the orchestrator SessionStart load (params +
+// (i) session-load budget (§2.3): the orchestrator SessionStart load (params +
 // open ledger + orchestrator binding docs) is line-capped so growth forces
 // demotion to summaries. Always reports the measured size (never SKIPs) so the
 // cap bites as the corpus grows.
@@ -258,7 +285,7 @@ for (const finding of runLedgerChecks(options.repo, options.strict)) {
   record(finding.level, finding.file, "session-load", finding.detail);
 }
 
-// (i) Referenced command readiness: executable commands in backticks are part
+// (j) Referenced command readiness: executable commands in backticks are part
 // of the binding contract. Check only the two canonical repository command
 // forms, and only the command's first path token, so prose/code fragments and
 // arguments cannot make the parser greedy.

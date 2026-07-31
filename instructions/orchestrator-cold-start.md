@@ -3,7 +3,7 @@ id: orchestrator-cold-start
 layer: L1
 status: binding
 audience: orchestrator
-tags: [orchestrator, playbook, landing, review]
+tags: [orchestrator, playbook, landing, runbook]
 summary: Exact cold-start path from a durable mission through dispatch, review, gated landing, and the final report.
 ---
 

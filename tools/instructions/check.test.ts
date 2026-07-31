@@ -200,6 +200,54 @@ describe("check.ts", () => {
   });
 });
 
+describe("floor-coverage", () => {
+  const floorDoc = doc({
+    ...VALID,
+    id: "floor-rule",
+    floor: "true",
+    "floor-line": "A floor rule must ship with its full binding body.",
+  });
+
+  function writePacks(repo: string, contents: string): void {
+    const instance = join(repo, "instance");
+    mkdirSync(instance, { recursive: true });
+    writeFileSync(join(instance, "packs.conf"), contents);
+    writeFileSync(join(instance, "tags.conf"), "hygiene\n");
+  }
+
+  test("FAIL-WHEN-SHOULD: a floor doc absent from every baseline fails", () => {
+    const repo = repoWith({ "floor.md": floorDoc });
+    writePacks(repo, "[coder]\n");
+    const result = runCheck(repo);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain("FAIL floor.md [floor-coverage]");
+  });
+
+  test("PASS-WHEN-COVERED: a floor doc in one baseline passes", () => {
+    const repo = repoWith({ "floor.md": floorDoc });
+    writePacks(repo, "[coder]\nfloor-rule\n");
+    const result = runCheck(repo);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("PASS floor.md [floor-coverage]");
+    expect(result.stdout).toContain("in baseline roles: coder");
+  });
+
+  test("SKIP: missing packs.conf does not crash", () => {
+    const repo = repoWith({ "floor.md": floorDoc });
+    const result = runCheck(repo);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("SKIP instance/packs.conf [floor-coverage]");
+  });
+
+  test("a non-floor doc absent from every baseline does not trigger floor-coverage", () => {
+    const repo = repoWith({ "regular.md": doc(VALID) });
+    writePacks(repo, "[coder]\n");
+    const result = runCheck(repo);
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain("regular.md [floor-coverage]");
+  });
+});
+
 // Fixed clock for deterministic aging via the LEDGER_NOW_MS test seam.
 const LEDGER_NOW = Date.parse("2026-07-29T12:00:00.000Z");
 

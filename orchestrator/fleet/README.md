@@ -90,9 +90,13 @@ once ML-2 is deployed.
 
 ## Installing the nudge watchdog on a fresh host
 
-    install -m 755 orchestrator/fleet/fleet-nudge.sh /root/.local/bin/orch-fleet-nudge.sh
-    install -m 644 orchestrator/fleet/orch-fleet-nudge.service /etc/systemd/system/
-    install -m 644 orchestrator/fleet/orch-fleet-nudge.timer   /etc/systemd/system/
+    bootstrap/deploy-host-mechanism.sh orchestrator/fleet/fleet-nudge.sh
+    DEPLOY_DRIFT_MODE=644 bootstrap/deploy-host-mechanism.sh orchestrator/fleet/orch-fleet-nudge.service
+    DEPLOY_DRIFT_MODE=644 bootstrap/deploy-host-mechanism.sh orchestrator/fleet/orch-fleet-nudge.timer
     systemctl daemon-reload && systemctl enable --now orch-fleet-nudge.timer
     systemctl list-timers orch-fleet-nudge.timer   # verify
-    cmp -s orchestrator/fleet/fleet-nudge.sh /root/.local/bin/orch-fleet-nudge.sh
+    bootstrap/check-deployed-drift.sh
+
+The deploy wrapper refuses a mechanism or declared companion that differs from
+`main`. The scheduled `bpa-deploy-drift-guard.timer` repeats the complete
+manifest check so later host edits fail loudly without relying on memory.

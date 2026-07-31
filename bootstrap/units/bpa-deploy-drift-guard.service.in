@@ -1,0 +1,8 @@
+[Unit]
+Description=Fail loudly when deployed host mechanisms diverge from tracked main
+
+[Service]
+Type=oneshot
+ExecStart=${INSTALL_ROOT}/bootstrap/check-deployed-drift.sh
+StandardOutput=journal+console
+StandardError=journal+console

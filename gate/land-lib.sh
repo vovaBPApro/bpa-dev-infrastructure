@@ -272,6 +272,24 @@ land_remote_reap() {
   echo "$prefix reap remote=deleted branch=$branch"
 }
 
+# Ref deletion is allowed only after the landed integration tip contains every
+# commit reachable from the lane. This is deliberately checked immediately
+# before reap instead of being inferred from an earlier successful merge: a
+# hook, interrupted retry, or future landing-flow change must not turn branch
+# cleanup into loss of unmerged work.
+land_assert_reap_safe() {
+  local repo="$1" branch="$2" landed_tip="$3" prefix="$4"
+  if ! git -C "$repo" merge-base --is-ancestor "$branch" "$landed_tip"; then
+    echo "$prefix reap safety=refused branch=$branch detail=unique-content" >&2
+    return 1
+  fi
+  if ! git -C "$repo" diff --quiet "$landed_tip...$branch"; then
+    echo "$prefix reap safety=refused branch=$branch detail=nonempty-diff" >&2
+    return 1
+  fi
+  echo "$prefix reap safety=pass branch=$branch carried-by=$landed_tip"
+}
+
 # Compare an optional report claim with the output of the verify command that
 # the gate itself just ran. The completion guard validates the claim's syntax.
 land_verify_count() {

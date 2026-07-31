@@ -226,6 +226,9 @@ landing_complete=true
 if [ "$merged" != true ]; then
   land_reap_fail
 fi
+if ! land_assert_reap_safe "$repo" "$branch" "$merge_sha" LAND; then
+  land_reap_fail
+fi
 if [ -n "$worktree" ] && ! git -C "$repo" worktree remove "$worktree"; then
   land_reap_fail
 fi

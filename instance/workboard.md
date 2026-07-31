@@ -24,10 +24,10 @@ pointers: `instance/product-docs-index.md`. Evidence:
   contradicted the initial plan). He first chose `bpa-shell-v2` / `bpa-bill-v2` /
   `bpa-mila-v2`; `reports/stack-postmortem.md` theme 2 identifies the multi-repo,
   independently-versioned topology as a root cause in its own right. Surfaced to
-  him, and he agreed to consolidate. Named by him: **`agentic-bpa`** (spelling confirmation pending). Layout: `apps/shell`,
-  `apps/bill`, `apps/mila`, shared `packages/` — one lockfile, one React version,
-  one routing tree, one CI graph. AWAITING his confirmation of the name; he must
-  create the empty repo (an SSH key cannot create repos on GitHub, only push).
+  him, and he agreed to consolidate. Named by him and CONFIRMED 2026-07-31: **`agentic-bpa`**. Layout: `apps/shell`,
+  `apps/bill`, `apps/mila` (no `bpa-` prefixes inside — his call), shared `packages/` — one lockfile, one React version,
+  one routing tree, one CI graph. He creates the empty repo (an SSH key can push
+  but cannot CREATE a repo on GitHub); porting starts the moment it exists.
 - **PR-2 — kill iframes, keep the feel.** Post-mortem theme 1, confirmed against
   commit history: iframes bought instant switching by keeping apps mounted but
   exported browser boundaries into product behaviour. Replacement: one SPA

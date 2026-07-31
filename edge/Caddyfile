@@ -11,7 +11,9 @@
 
 	handle @oauth_callbacks {
 		header X-BPA-Edge callback-proxy
-		reverse_proxy {$APP_UPSTREAM}
+		reverse_proxy {$APP_UPSTREAM} {
+			header_up Host {upstream_hostport}
+		}
 	}
 
 	handle {

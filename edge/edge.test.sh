@@ -71,6 +71,9 @@ Bun.serve({
   hostname: "127.0.0.1",
   port,
   fetch(request) {
+    if (request.headers.get("host") !== `127.0.0.1:${port}`) {
+      return new Response("unexpected upstream Host", { status: 421 });
+    }
     return new Response(new URL(request.url).pathname, {
       status: 409,
       headers: { "X-Stub-Upstream": "reached" },

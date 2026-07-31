@@ -71,6 +71,11 @@ test('snapshot envelope time cannot hide an auth error newer than fetchedAt', ()
   expect(parseClaudeQuotaJsonl([expired, snapshot], NOW).claudeLogin).toBe('relogin-needed');
 });
 
+test('an undated explicit session-expired error still warns', () => {
+  const expired = JSON.stringify({ error: 'Session expired; re-login required' });
+  expect(parseClaudeQuotaJsonl([expired], NOW).claudeLogin).toBe('relogin-needed');
+});
+
 test('stale, future, and reset Codex windows are unknown with reasons', () => {
   const cases = [
     { line: event('2026-07-31T10:00:00Z', { primary: { used_percent: 10, window_minutes: 300 } }), reason: 'stale' },

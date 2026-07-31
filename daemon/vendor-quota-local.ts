@@ -113,7 +113,10 @@ export function parseClaudeQuotaJsonl(contents: readonly string[], now = Date.no
     fetchedAt <= now + LOCAL_QUOTA_FUTURE_SKEW_MS &&
     now - fetchedAt <= LOCAL_QUOTA_FRESHNESS_MS,
   );
-  const authFailure = loginState === 'relogin-needed' || latestAuthFailureAt > fetchedAt;
+  const authFailure =
+    loginState === 'relogin-needed' ||
+    latestAuthFailureAt === Number.POSITIVE_INFINITY ||
+    latestAuthFailureAt > fetchedAt;
   const unavailable = !latest
     ? noSnapshot
     : !complete

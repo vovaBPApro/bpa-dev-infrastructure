@@ -1,5 +1,10 @@
-import { readdirSync, readFileSync, statSync } from 'fs';
+import { closeSync, openSync, readSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
+
+export const LOCAL_QUOTA_MAX_FILES = 64;
+export const LOCAL_QUOTA_MAX_BYTES_PER_FILE = 1024 * 1024;
+const LOCAL_QUOTA_FRESHNESS_MS = 30 * 60 * 1000;
+const LOCAL_QUOTA_FUTURE_SKEW_MS = 2 * 60 * 1000;
 
 export type QuotaField =
   | { state: 'known'; usedPercent: number; resetsAt: number | null }
@@ -54,15 +59,19 @@ export function parseCodexQuotaJsonl(contents: readonly string[]): Pick<LocalVen
   };
 }
 
-export function parseClaudeQuotaJsonl(contents: readonly string[]): Pick<LocalVendorQuota, 'claudeWeekly' | 'claudeCredits' | 'claudeLogin' | 'claudeReason'> {
-  let authFailure = false;
+export function parseClaudeQuotaJsonl(contents: readonly string[], now = Date.now()): Pick<LocalVendorQuota, 'claudeWeekly' | 'claudeCredits' | 'claudeLogin' | 'claudeReason'> {
+  let latestAuthFailureAt = Number.NEGATIVE_INFINITY;
   let latest: { timestamp: number; quota: Record<string, unknown> } | null = null;
   for (const content of contents) {
     for (const line of content.split('\n')) {
       try {
         const event = JSON.parse(line) as Record<string, any>;
         const error = event?.message?.error ?? event?.error;
-        if (typeof error === 'string' && /session expired|re-?login|unauthorized|authentication.+(?:expired|failed)/i.test(error)) authFailure = true;
+        const eventAt = Date.parse(event?.timestamp);
+        if (
+          typeof error === 'string' &&
+          /session expired|re-?login|unauthorized|authentication.+(?:expired|failed)/i.test(error)
+        ) latestAuthFailureAt = Number.isFinite(eventAt) ? Math.max(latestAuthFailureAt, eventAt) : Number.POSITIVE_INFINITY;
         const quota = event?.payload?.vendor_quotas?.claude;
         const timestamp = Date.parse(event?.timestamp);
         if (
@@ -81,27 +90,51 @@ export function parseClaudeQuotaJsonl(contents: readonly string[]): Pick<LocalVe
   const weekly = latest?.quota.weeklyUsedPercent;
   const credits = latest?.quota.creditsLabel;
   const loginState = latest?.quota.loginState;
-  if (loginState === 'relogin-needed') authFailure = true;
   const noSnapshot = 'no local Claude vendor_quota_snapshot event';
+  const required = ['creditsLabel', 'fableUsedPercent', 'fetchedAt', 'loginState', 'sessionUsedPercent', 'weeklyUsedPercent'];
+  const complete = Boolean(latest && required.every((key) => key in latest.quota));
+  const fetchedAtRaw = latest?.quota.fetchedAt;
+  const fetchedAt = typeof fetchedAtRaw === 'string' ? Date.parse(fetchedAtRaw) : Number.NaN;
+  const fresh = Boolean(
+    latest &&
+    complete &&
+    Number.isFinite(fetchedAt) &&
+    fetchedAt <= now + LOCAL_QUOTA_FUTURE_SKEW_MS &&
+    now - fetchedAt <= LOCAL_QUOTA_FRESHNESS_MS,
+  );
+  const authFailure = loginState === 'relogin-needed' || latestAuthFailureAt > (latest?.timestamp ?? Number.NEGATIVE_INFINITY);
+  const unavailable = !latest
+    ? noSnapshot
+    : !complete
+      ? 'latest local Claude snapshot is partial'
+      : !Number.isFinite(fetchedAt)
+        ? 'latest local Claude snapshot has no valid fetchedAt'
+        : fetchedAt > now + LOCAL_QUOTA_FUTURE_SKEW_MS
+          ? 'latest local Claude snapshot is future-dated'
+          : now - fetchedAt > LOCAL_QUOTA_FRESHNESS_MS
+            ? 'latest local Claude snapshot is stale'
+            : 'field absent from latest local Claude snapshot';
   return {
-    claudeWeekly: typeof weekly === 'number'
+    claudeWeekly: fresh && typeof weekly === 'number'
       ? { state: 'known', usedPercent: weekly, resetsAt: null }
-      : unknown(latest ? 'weekly usage absent from latest local Claude snapshot' : noSnapshot),
-    claudeCredits: typeof credits === 'string' && credits.trim() ? credits.trim() : null,
+      : unknown(unavailable),
+    claudeCredits: fresh && typeof credits === 'string' && credits.trim() ? credits.trim() : null,
     claudeLogin: authFailure
       ? 'relogin-needed'
-      : loginState === 'authenticated'
+      : fresh && loginState === 'authenticated'
         ? 'authenticated'
         : 'unknown',
     claudeReason: authFailure
       ? 'local Claude JSONL contains an authentication-expired reading'
-      : latest
-        ? 'latest local Claude snapshot reports authenticated'
-        : noSnapshot,
+      : fresh && latest
+        ? 'latest fresh local Claude snapshot reports authenticated'
+        : unavailable,
   };
 }
 
-function recentJsonl(root: string, cutoff: number, out: string[], depth = 0): void {
+type RecentCandidate = { path: string; mtimeMs: number };
+
+function recentJsonl(root: string, cutoff: number, out: RecentCandidate[], depth = 0): void {
   if (depth > 6) return;
   let entries;
   try { entries = readdirSync(root, { withFileTypes: true }); } catch { return; }
@@ -109,25 +142,50 @@ function recentJsonl(root: string, cutoff: number, out: string[], depth = 0): vo
     const path = join(root, entry.name);
     if (entry.isDirectory()) recentJsonl(path, cutoff, out, depth + 1);
     else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
-      try { if (statSync(path).mtimeMs >= cutoff) out.push(readFileSync(path, 'utf8')); } catch { /* raced with session cleanup */ }
+      try {
+        const mtimeMs = statSync(path).mtimeMs;
+        if (mtimeMs >= cutoff) out.push({ path, mtimeMs });
+      } catch { /* raced with session cleanup */ }
     }
   }
 }
 
-function recentFile(path: string, cutoff: number, out: string[]): void {
+function recentFile(path: string, cutoff: number, out: RecentCandidate[]): void {
   try {
-    if (statSync(path).mtimeMs >= cutoff) out.push(readFileSync(path, 'utf8'));
+    const mtimeMs = statSync(path).mtimeMs;
+    if (mtimeMs >= cutoff) out.push({ path, mtimeMs });
   } catch { /* optional local state, or raced with replacement */ }
 }
 
+function readBounded(candidates: RecentCandidate[]): string[] {
+  return candidates
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+    .slice(0, LOCAL_QUOTA_MAX_FILES)
+    .flatMap(({ path }) => {
+      let fd: number | null = null;
+      try {
+        const size = statSync(path).size;
+        const length = Math.min(size, LOCAL_QUOTA_MAX_BYTES_PER_FILE);
+        const buffer = Buffer.alloc(length);
+        fd = openSync(path, 'r');
+        readSync(fd, buffer, 0, length, Math.max(0, size - length));
+        return [buffer.toString('utf8')];
+      } catch { return []; }
+      finally { if (fd !== null) closeSync(fd); }
+    });
+}
+
 export function readLocalVendorQuota(home: string, now = Date.now()): LocalVendorQuota {
-  const codex: string[] = [];
-  const claude: string[] = [];
+  const codexCandidates: RecentCandidate[] = [];
+  const claudeCandidates: RecentCandidate[] = [];
   const cutoff = now - 14 * 24 * 60 * 60 * 1000;
-  recentJsonl(join(home, '.codex', 'sessions'), cutoff, codex);
-  recentFile(join(home, '.codex', 'quota-latest.jsonl'), cutoff, claude);
-  recentJsonl(join(home, '.claude', 'projects'), cutoff, claude);
-  return { ...parseCodexQuotaJsonl(codex), ...parseClaudeQuotaJsonl(claude) };
+  recentJsonl(join(home, '.codex', 'sessions'), cutoff, codexCandidates);
+  recentFile(join(home, '.codex', 'quota-latest.jsonl'), cutoff, claudeCandidates);
+  recentJsonl(join(home, '.claude', 'projects'), cutoff, claudeCandidates);
+  return {
+    ...parseCodexQuotaJsonl(readBounded(codexCandidates)),
+    ...parseClaudeQuotaJsonl(readBounded(claudeCandidates), now),
+  };
 }
 
 function field(label: string, value: QuotaField): string {

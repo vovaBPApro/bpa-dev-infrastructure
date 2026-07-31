@@ -2,9 +2,22 @@ import { expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { formatLocalVendorQuota, parseClaudeQuotaJsonl, parseCodexQuotaJsonl, readLocalVendorQuota } from './vendor-quota-local';
+import { LOCAL_QUOTA_MAX_BYTES_PER_FILE, formatLocalVendorQuota, parseClaudeQuotaJsonl, parseCodexQuotaJsonl, readLocalVendorQuota } from './vendor-quota-local';
 
 const event = (timestamp: string, rate_limits: unknown) => JSON.stringify({ type: 'event_msg', timestamp, payload: { type: 'token_count', rate_limits } });
+const NOW = Date.parse('2026-07-31T12:05:00Z');
+const claudeQuota = (over: Record<string, unknown> = {}) => ({
+  creditsLabel: '$17.00',
+  fableUsedPercent: null,
+  fetchedAt: '2026-07-31T12:00:00Z',
+  loginState: 'authenticated',
+  sessionUsedPercent: 10,
+  weeklyUsedPercent: 61,
+  ...over,
+});
+const claudeSnapshot = (quota: Record<string, unknown>, timestamp = '2026-07-31T12:00:00Z') => JSON.stringify({
+  type: 'event_msg', timestamp, payload: { type: 'vendor_quota_snapshot', vendor_quotas: { claude: quota } },
+});
 
 test('REGRESSION ML-6: local Codex JSONL exposes merged 5h/7d totals without a browser', () => {
   const parsed = parseCodexQuotaJsonl([
@@ -26,21 +39,8 @@ test('a genuinely absent local window is unknown with a reason, never guessed', 
 });
 
 test('REGRESSION ML-6: local snapshot exposes Claude weekly/credits and re-login warning', () => {
-  const snapshot = JSON.stringify({
-    type: 'event_msg',
-    timestamp: '2026-07-31T12:00:00Z',
-    payload: {
-      type: 'vendor_quota_snapshot',
-      vendor_quotas: {
-        claude: {
-          weeklyUsedPercent: 61,
-          creditsLabel: '$17.00',
-          loginState: 'relogin-needed',
-        },
-      },
-    },
-  });
-  const claude = parseClaudeQuotaJsonl([snapshot]);
+  const snapshot = claudeSnapshot(claudeQuota({ loginState: 'relogin-needed' }));
+  const claude = parseClaudeQuotaJsonl([snapshot], NOW);
   expect(claude.claudeLogin).toBe('relogin-needed');
   expect(claude.claudeWeekly).toEqual({ state: 'known', usedPercent: 61, resetsAt: null });
   expect(claude.claudeCredits).toBe('$17.00');
@@ -53,26 +53,49 @@ test('REGRESSION ML-6: local snapshot exposes Claude weekly/credits and re-login
 });
 
 test('Claude fields are unknown with a concrete reason when no local snapshot exists', () => {
-  const claude = parseClaudeQuotaJsonl([]);
+  const claude = parseClaudeQuotaJsonl([], NOW);
   expect(claude.claudeWeekly).toEqual({ state: 'unknown', reason: 'no local Claude vendor_quota_snapshot event' });
   expect(claude.claudeCredits).toBeNull();
   expect(claude.claudeLogin).toBe('unknown');
+});
+
+test('a newer authenticated snapshot clears an older session-expired error', () => {
+  const expired = JSON.stringify({ timestamp: '2026-07-31T11:00:00Z', error: 'Session expired; re-login required' });
+  const claude = parseClaudeQuotaJsonl([expired, claudeSnapshot(claudeQuota())], NOW);
+  expect(claude.claudeLogin).toBe('authenticated');
+});
+
+test('stale, future, and partial snapshots never report known quota or authenticated', () => {
+  const cases = [
+    claudeSnapshot(claudeQuota({ fetchedAt: '2026-07-31T10:00:00Z' }), '2026-07-31T10:00:00Z'),
+    claudeSnapshot(claudeQuota({ fetchedAt: '2099-01-01T00:00:00Z' }), '2099-01-01T00:00:00Z'),
+    claudeSnapshot({ loginState: 'authenticated', weeklyUsedPercent: 61 }),
+  ];
+  for (const snapshot of cases) {
+    const claude = parseClaudeQuotaJsonl([snapshot], NOW);
+    expect(claude.claudeWeekly.state).toBe('unknown');
+    expect(claude.claudeCredits).toBeNull();
+    expect(claude.claudeLogin).toBe('unknown');
+    expect(claude.claudeReason).toMatch(/stale|future-dated|partial/);
+  }
 });
 
 test('the reader consumes only the local quota snapshot path, with no browser or API dependency', () => {
   const home = mkdtempSync(join(tmpdir(), 'ml6-local-quota-'));
   try {
     mkdirSync(join(home, '.codex'), { recursive: true });
-    writeFileSync(join(home, '.codex', 'quota-latest.jsonl'), JSON.stringify({
-      type: 'event_msg',
-      timestamp: new Date().toISOString(),
-      payload: {
-        type: 'vendor_quota_snapshot',
-        vendor_quotas: { claude: { weeklyUsedPercent: 44, creditsLabel: '12 left', loginState: 'authenticated' } },
-      },
-    }));
+    const now = Date.now();
+    const snapshot = claudeSnapshot(claudeQuota({
+      weeklyUsedPercent: 44,
+      creditsLabel: '12 left',
+      fetchedAt: new Date(now).toISOString(),
+    }), new Date(now).toISOString());
+    writeFileSync(
+      join(home, '.codex', 'quota-latest.jsonl'),
+      `${'discarded-prefix\n'.repeat(Math.ceil(LOCAL_QUOTA_MAX_BYTES_PER_FILE / 17))}${snapshot}\n`,
+    );
 
-    const quota = readLocalVendorQuota(home);
+    const quota = readLocalVendorQuota(home, now);
     expect(quota.claudeWeekly).toEqual({ state: 'known', usedPercent: 44, resetsAt: null });
     expect(quota.claudeCredits).toBe('12 left');
     expect(quota.claudeLogin).toBe('authenticated');

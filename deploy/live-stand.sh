@@ -96,14 +96,24 @@ activate() {
 
 health_commit() {
   curl --silent --show-error --fail --max-time 5 "$HEALTH_URL" |
-    node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{const x=JSON.parse(s);if(x.status!=="ok"||typeof x.build?.commit!=="string")process.exit(1);process.stdout.write(x.build.commit)}catch{process.exit(1)}})'
+    node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{let x;try{x=JSON.parse(s)}catch{process.exit(1)}if(x.status!=="ok")process.exit(1);if(typeof x.build?.commit!=="string"||x.build.commit.length===0){process.stdout.write("__HEALTH_CONTRACT_DRIFT__");return}process.stdout.write(x.build.commit)})'
 }
 
 wait_for_commit() {
-  local expected=$1 deadline observed=
+  local expected=$1 deadline observed= rc
   deadline=$((SECONDS + HEALTH_TIMEOUT_SECONDS))
   while ((SECONDS < deadline)); do
-    observed=$(health_commit 2>/dev/null || true)
+    if observed=$(health_commit); then
+      :
+    else
+      rc=$?
+      [[ "$rc" -eq 4 ]] && return 4
+      observed=
+    fi
+    if [[ "$observed" == '__HEALTH_CONTRACT_DRIFT__' ]]; then
+      echo 'DEPLOY ERROR: health contract drift: /healthz status=ok but build.commit is missing' >&2
+      return 4
+    fi
     [[ "$observed" == "$expected" ]] && return 0
     sleep 1
   done
@@ -112,8 +122,13 @@ wait_for_commit() {
 
 # Establish the exact healthy rollback identity before activation. systemd's
 # unit state is deliberately irrelevant: only /healthz identity is accepted.
-if ! wait_for_commit "$previous_commit"; then
+if wait_for_commit "$previous_commit"; then
+  :
+else
+  health_result=$?
+  [[ "$health_result" -eq 4 ]] && contract_detail='; /healthz is missing required build.commit'
   detail="current stand is not healthy at expected rollback SHA=$previous_commit; candidate=$commit untouched"
+  detail+="${contract_detail:-}"
   echo "DEPLOY ERROR: $detail" >&2
   deliver_event refused "$detail" || true
   exit 1
@@ -131,8 +146,15 @@ mv -Tf "$temporary_dropin" "$dropin"
 systemctl daemon-reload
 
 activate "$release"
-if ! wait_for_commit "$commit"; then
-  echo "DEPLOY ALARM: health did not report deployed commit=$commit; rolling back to $previous" >&2
+if wait_for_commit "$commit"; then
+  :
+else
+  health_result=$?
+  if [[ "$health_result" -eq 4 ]]; then
+    echo "DEPLOY ALARM: health contract drift for candidate=$commit; rolling back to $previous" >&2
+  else
+    echo "DEPLOY ALARM: health did not report deployed commit=$commit; rolling back to $previous" >&2
+  fi
   if activate "$previous" && wait_for_commit "$previous_commit"; then
     detail="deploy failed candidate=$commit; rollback healthy exact-sha=$previous_commit"
     echo "DEPLOY rollback=healthy commit=$previous_commit" >&2

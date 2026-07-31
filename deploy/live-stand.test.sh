@@ -89,6 +89,21 @@ grep -Fq '"outcome":"rolled-back"' "$TMP/notification.json"
 [[ "$(cat "$TMP/restart-attempts")" -ge 2 ]]
 echo 'FAIL-BEFORE app startup failure would remain active and immediate rollback probe false-alarmed; exact-SHA wait lock: PASS'
 
+# A ready response without build identity is contract drift, not an ordinary
+# failed health probe. Refuse it loudly and restore the proven previous SHA.
+printf four >"$repo/source" && git -C "$repo" commit -am four >/dev/null
+drift=$(git -C "$repo" rev-parse HEAD)
+git -C "$repo" push origin HEAD:main >/dev/null
+sed -i "s#BUILD_COMMAND=.*#BUILD_COMMAND='printf eyJzdGF0dXMiOiJvayJ9Cg== | base64 -d > health.json'#" "$TMP/config"
+rm -f "$TMP/restart-attempts"
+if PATH="$TMP/bin:$PATH" PREFLIGHT_MARKER="$TMP/preflight-passed" RESTART_MARKER="$TMP/restart-attempts" "$ROOT/deploy/live-stand.sh" "$TMP/config" "$drift" >"$TMP/drift.out" 2>"$TMP/drift.err"; then
+  echo 'FAIL: health response without build.commit was accepted' >&2; exit 1
+fi
+grep -Fq 'health contract drift: /healthz status=ok but build.commit is missing' "$TMP/drift.err"
+grep -Fq "rollback=healthy commit=$new" "$TMP/drift.err"
+[[ "$(readlink -f "$TMP/releases/current")" == "$TMP/releases/$new" ]]
+echo 'FAIL-BEFORE readiness-only health silently caused rollback; fail-loud contract lock: PASS'
+
 # A migration collision is rejected before any restart or activation.
 sed -i "s#MIGRATION_PREFLIGHT_COMMAND=.*#MIGRATION_PREFLIGHT_COMMAND='exit 42'#" "$TMP/config"
 rm -f "$TMP/preflight-passed"

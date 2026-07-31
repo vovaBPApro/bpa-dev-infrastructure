@@ -13,9 +13,9 @@ ARM_WATCHDOG=false
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-ENV_FILE="${ENV_FILE:-$INSTALL_ROOT/.env}"
+ENV_FILE="${ENV_FILE:-/root/.config/bpa/orchestrator.env}"
 SYSTEMD_SYSTEM_DIR="${SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
-BUN_BIN="${BUN_BIN:-$HOME/.bun/bin/bun}"
+BUN_BIN="${BUN_BIN:-/usr/local/bin/bun}"
 WHISPER_BIN="${WHISPER_BIN:-/opt/whisper.cpp/bin/whisper-cli}"
 RUNTIME_DIR="${RUNTIME_DIR:-$INSTALL_ROOT/runtime}"
 STATE_DB="${INFRA_STATE_DB:-$RUNTIME_DIR/state.db}"
@@ -183,8 +183,6 @@ verify() {
   fi
   check "orchestrator unit" test -f "$SYSTEMD_SYSTEM_DIR/bpa-orchestrator.service"
   check "daemon unit" test -f "$SYSTEMD_SYSTEM_DIR/bpa-telegram-daemon.service"
-  check "watchdog service" test -f "$SYSTEMD_SYSTEM_DIR/bpa-orchestrator-watchdog.service"
-  check "watchdog timer" test -f "$SYSTEMD_SYSTEM_DIR/bpa-orchestrator-watchdog.timer"
   check "full-suite service" test -f "$SYSTEMD_SYSTEM_DIR/bpa-full-suite.service"
   check "full-suite timer" test -f "$SYSTEMD_SYSTEM_DIR/bpa-full-suite.timer"
   check "morning service" test -f "$SYSTEMD_SYSTEM_DIR/orch-morning-report.service"
@@ -377,6 +375,12 @@ render_units() {
   fi
   for source in "$SOURCE_ROOT"/bootstrap/units/*.in; do
     destination="$SYSTEMD_SYSTEM_DIR/$(basename "${source%.in}")"
+    if awk -F '\t' -v unit="$(basename "${source%.in}")" \
+      '$1 == unit && $2 == "deliberately-absent" { found=1 } END { exit !found }' \
+      "$SOURCE_ROOT/instance/unit-drift-exemptions.tsv"; then
+      echo "Unit deliberately absent; not installing $(basename "${source%.in}")."
+      continue
+    fi
     INSTALL_ROOT="$INSTALL_ROOT" ENV_FILE="$ENV_FILE" BUN_BIN="$BUN_BIN" \
       FULL_SUITE_ON_CALENDAR="$FULL_SUITE_ON_CALENDAR" ORCH_WATCHDOG_INTERVAL="$ORCH_WATCHDOG_INTERVAL" \
       envsubst < "$source" > "$destination"
@@ -397,13 +401,11 @@ activate_units() {
     systemctl enable --now bpa-orchestrator.service
     systemctl enable --now bpa-full-suite.timer
     systemctl enable --now orch-morning-report.timer
-    # A configured token is NOT a watchdog opt-in. The standing deploy ruling
-    # keeps bpa-orchestrator-watchdog.timer unarmed; only the explicit
-    # --arm-watchdog flag may enable it.
     if "$ARM_WATCHDOG"; then
-      systemctl enable --now bpa-orchestrator-watchdog.timer
+      echo 'ERROR: watchdog units are deliberately absent because unattended lease-loss handling is not approved' >&2
+      return 1
     else
-      echo "Watchdog timer installed INERT (deploy ruling: stays unarmed). Arm deliberately with: bootstrap/install.sh --arm-watchdog"
+      echo 'Watchdog units remain deliberately absent.'
     fi
   else
     echo "Token remains a placeholder; units installed but not enabled. Edit $ENV_FILE, then re-run this installer."

@@ -6,8 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMPLATE_DIR="${TEMPLATE_DIR:-$SCRIPT_DIR/units}"
 SYSTEMD_SYSTEM_DIR="${SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
 INSTALL_ROOT="${INSTALL_ROOT:-/root/bpa-dev-infrastructure}"
-ENV_FILE="${ENV_FILE:-$INSTALL_ROOT/.env}"
-BUN_BIN="${BUN_BIN:-$HOME/.bun/bin/bun}"
+ENV_FILE="${ENV_FILE:-/root/.config/bpa/orchestrator.env}"
+BUN_BIN="${BUN_BIN:-/usr/local/bin/bun}"
 FULL_SUITE_ON_CALENDAR="${FULL_SUITE_ON_CALENDAR:-*-*-* 03:30:00}"
 ORCH_WATCHDOG_INTERVAL="${ORCH_WATCHDOG_INTERVAL:-60}"
 EXEMPTIONS_FILE="${EXEMPTIONS_FILE:-$SCRIPT_DIR/../instance/unit-drift-exemptions.tsv}"
@@ -22,6 +22,7 @@ scratch="$(mktemp -d "${TMPDIR:-/tmp}/bpa-unit-drift.XXXXXX")"
 trap 'rm -rf "$scratch"' EXIT
 
 result=0
+template_count=0
 declare -A missing_exemptions=()
 if [[ -f "$EXEMPTIONS_FILE" ]]; then
   while IFS=$'\t' read -r unit disposition evidence extra; do
@@ -39,6 +40,7 @@ if [[ -f "$EXEMPTIONS_FILE" ]]; then
 fi
 for template in "$TEMPLATE_DIR"/*.in; do
   [[ -f "$template" ]] || continue
+  ((template_count += 1))
   unit="$(basename "${template%.in}")"
   deployed="$SYSTEMD_SYSTEM_DIR/$unit"
   expected="$scratch/$unit"
@@ -58,5 +60,10 @@ for template in "$TEMPLATE_DIR"/*.in; do
     printf 'MATCH %s\n' "$unit"
   fi
 done
+
+if ((template_count == 0)); then
+  printf 'ERROR: no unit templates found in %s\n' "$TEMPLATE_DIR" >&2
+  exit 2
+fi
 
 exit "$result"

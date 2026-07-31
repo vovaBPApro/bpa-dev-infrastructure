@@ -271,6 +271,7 @@ process-local honesty relabel `fa2a974`.
   check then fail-closes) — needs the migration/cutover moment.
 
 - <!-- status: blocked --> **W-19 — rotate every credential transported through Telegram** (requires the Human's external provider-console rotation; candidate runbook commit `9d4f129` is not an ancestor of current `HEAD` and is not completion evidence). Opened
+- <!-- status: open --> **W-20 — lane merge conflicts are wasting a third of fleet output** (found 2026-08-01). Lanes are dispatched in waves from one base and several touch the same paths, so later merges conflict and the work is redone from scratch. Observed cost in a single cycle: 4 of 8 completed lanes conflicted (entries, counterparties, period-close, settings), each a full re-run. Rule 8 already says coder lanes touch only ASSIGNED paths; dispatch does not enforce it. Two candidate fixes: declare and check disjoint path ownership at dispatch, and land each lane as it finishes instead of batching so bases stay fresh. Not a correctness defect — a throughput one, which matters because the operator bought hardware specifically for parallelism.
   2026-07-31). During the live integration setup the operator sent, over
   Telegram: the QuickBooks client id + secret, the Google OAuth client secret,
   and two GCP service-account JSON keys. Each was moved to a mode-0600 file

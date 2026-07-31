@@ -222,10 +222,7 @@ ChatGPT share link (msg 144/59); Vova will send it as PDF — study on arrival.
   phased opinion given in reply 169: static personas as compose-pack profiles
   first, adaptive modeling as a separate metrics-backed RFC; finalize
   three-way before implementation).
-- <!-- status: blocked --> **NI-2 — Google Drive debug access**: the operator's one-time external connection is still required and no completion SHA exists; service account so the orchestrator and
-  any agent can read/verify Drive contents for debugging (e.g. QuickBooks/Gmail
-  import testing) without Vova screenshotting. He can do the one-time connect
-  himself. Detail: HR-146 §NI-2.
+- <!-- status: done --> **NI-2 — Google Drive debug access**: CLOSED 2026-07-31 by the operator, who stated the connection is already made: «Google Drive для дебагу - ьак ми вже все підключили, це ти якісь старі повідомлення витягнув». The row had been carried as blocked-on-him on the basis of a stale message; that was an orchestrator error, not an outstanding operator action.
 - <!-- status: open --> **NI-3 — local Whisper voice transcription — ORCHESTRATOR CONSUMER DONE
   2026-07-31; product consumer still open.** Live-proven on Vova's real voice
   (uk verbatim, incl. technical vocabulary: бранчі/рефактор/мерж/пул/пуш/рісет).

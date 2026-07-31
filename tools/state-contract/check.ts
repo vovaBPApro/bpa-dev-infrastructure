@@ -128,7 +128,11 @@ export const REGISTRY: Artifact[] = [
       'daemon/server.ts',
       'tools/instructions/memory-sweep.ts',
     ],
-    readers: ['tools/instructions/ledger.ts', 'tools/instructions/session-load.ts'],
+    readers: [
+      'tools/instructions/ledger.ts',
+      'tools/instructions/session-load.ts',
+      'tools/instructions/triage.ts',
+    ],
     note:
       'Append-only capture of inbound Human directives (the B276 fix) plus filed ' +
       'memory-sweep defects. Contract is closed: the daemon writes it, the ' +
@@ -315,34 +319,6 @@ export const REGISTRY: Artifact[] = [
     note: 'Scaffolded L1 pin for a downstream repo.',
   },
   {
-    id: 'messages-VAR.jsonl',
-    kind: 'internal',
-    writers: ['daemon/history-logger.ts'],
-    readers: ['daemon/history-logger.ts'],
-    note:
-      'Monthly Telegram delivery metadata history. The interpolated YYYY-MM ' +
-      'basename normalizes to VAR; the logger owns writes, retention, and reads.',
-  },
-  {
-    id: 'record.json',
-    kind: 'internal',
-    writers: ['preview/preview.ts'],
-    readers: ['preview/preview.ts'],
-    note:
-      'Per-lane preview lifecycle record under PREVIEW_STATE_ROOT. The preview ' +
-      'tool creates, reads, and removes it with the named disposable preview.',
-  },
-  {
-    id: 'unit-drift-exemptions.tsv',
-    kind: 'repo-file',
-    trackedPath: 'instance/unit-drift-exemptions.tsv',
-    writers: [],
-    readers: ['bootstrap/check-unit-drift.sh', 'bootstrap/install.sh'],
-    note:
-      'Versioned unit-drift exemption policy consumed by bootstrap install and ' +
-      'the standalone drift checker.',
-  },
-  {
     id: '.claude.json',
     kind: 'external',
     owner: 'Claude Code CLI',
@@ -426,16 +402,19 @@ export const REGISTRY: Artifact[] = [
     id: 'triage.jsonl',
     kind: 'repo-file',
     trackedPath: 'instance/decisions/triage.jsonl',
-    writers: [],
+    writers: ['tools/instructions/triage.ts'],
     readers: [
       'tools/instructions/ledger.ts',
       'tools/instructions/session-load.ts',
+      'tools/instructions/triage.ts',
     ],
     note:
-      'Hand-appending by the orchestrator is the intentional writing contract: ' +
-      'triage is a Human-judgment workflow, and each verdict becomes durable ' +
-      'when committed as this tracked repository file. No automated producer ' +
-      'is implied or missing.',
+      'Verdicts are appended by tools/instructions/triage.ts, which enforces the ' +
+      'row schema at write time. The JUDGMENT stays human — the orchestrator ' +
+      'decides what the operator meant (Rule 16) — but the recording is no ' +
+      'longer hand-edited JSONL. Added after the ledger aged out 18 of his ' +
+      'messages across two separate days, twice repaired by hand; two of those ' +
+      'were questions he asked that went unanswered for over a day.',
   },
   {
     id: 'package.json',

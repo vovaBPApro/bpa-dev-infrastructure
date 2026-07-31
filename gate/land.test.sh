@@ -481,6 +481,20 @@ assert_output_has "$verify_fail_output" 'merge reset to ORIG_HEAD'
 assert test "$(git -C "$fixture_root/verify-fail-repo" rev-parse HEAD)" = "$verify_fail_before"
 assert git -C "$fixture_root/verify-fail-repo" show-ref --verify --quiet refs/heads/ag-verify-fail
 
+# W-16 regression lock: the old gate landed this report because it accepted the
+# typed 168/168 claim without comparing it with the mandated command's output.
+make_fixture verify-count-mismatch
+verify_count_sha=$(make_lane "$fixture_root/verify-count-mismatch-repo" ag-verify-count-mismatch)
+verify_count_before=$(git -C "$fixture_root/verify-count-mismatch-repo" rev-parse HEAD)
+printf "commit: %s fixture\nverify: printf '162 pass\\\\n6 fail\\\\n'\nverify-count: 168/168\nresult: clean\nsecret-scan: clean\nremaining: none\n" "$verify_count_sha" > "$fixture_root/verify-count-mismatch-report.md"
+verify_count_output="$fixture_root/verify-count-mismatch-output.txt"
+if "$land" --branch ag-verify-count-mismatch --report "$fixture_root/verify-count-mismatch-report.md" --repo "$fixture_root/verify-count-mismatch-repo" --run-verify >"$verify_count_output" 2>&1; then exit 1; fi
+assert_output_has "$verify_count_output" 'LAND verify-count mismatch report=168/168 actual=162/6'
+assert_output_has "$verify_count_output" 'LAND step=post-merge-verify status=fail'
+assert_output_lacks "$verify_count_output" 'LAND step=push status=pass'
+assert test "$(git -C "$fixture_root/verify-count-mismatch-repo" rev-parse HEAD)" = "$verify_count_before"
+assert git -C "$fixture_root/verify-count-mismatch-repo" show-ref --verify --quiet refs/heads/ag-verify-count-mismatch
+
 make_fixture reap-fail
 reap_fail_sha=$(make_lane "$fixture_root/reap-fail-repo" ag-reap-fail)
 report "$fixture_root/reap-fail-report.md" "$reap_fail_sha"

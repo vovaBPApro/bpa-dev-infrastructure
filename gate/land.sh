@@ -182,11 +182,22 @@ land_pass merge
 if [ "$run_verify" = true ]; then
   # Trust model: report verify commands are coder-authored and guard-validated.
   verify_command=$(sed -n 's/^verify:[[:space:]]*//p' "$report" | head -n 1)
-  if [ -z "$verify_command" ] || ! (cd "$repo" && sh -c "$verify_command"); then
+  verify_output=$(mktemp)
+  if [ -z "$verify_command" ] || ! (cd "$repo" && sh -c "$verify_command") >"$verify_output" 2>&1; then
+    cat "$verify_output"
+    rm -f "$verify_output"
     git -C "$repo" reset --hard ORIG_HEAD >/dev/null
     echo "LAND post-merge-verify failure: merge reset to ORIG_HEAD" >&2
     land_fail post-merge-verify
   fi
+  cat "$verify_output"
+  if ! land_verify_count "$report" "$verify_output"; then
+    rm -f "$verify_output"
+    git -C "$repo" reset --hard ORIG_HEAD >/dev/null
+    echo "LAND post-merge-verify count mismatch: merge reset to ORIG_HEAD" >&2
+    land_fail post-merge-verify
+  fi
+  rm -f "$verify_output"
   land_pass post-merge-verify
 else
   land_skip post-merge-verify

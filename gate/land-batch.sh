@@ -155,10 +155,20 @@ batch_pass merge
 if [ "$run_verify" = true ]; then
   for index in "${!reports[@]}"; do
     verify_command=$(sed -n 's/^verify:[[:space:]]*//p' "${reports[$index]}" | head -n 1)
-    if [ -z "$verify_command" ] || ! (cd "$repo" && sh -c "$verify_command"); then
+    verify_output=$(mktemp)
+    if [ -z "$verify_command" ] || ! (cd "$repo" && sh -c "$verify_command") >"$verify_output" 2>&1; then
+      cat "$verify_output"
+      rm -f "$verify_output"
       integration_cleanup
       batch_fail "post-merge-verify branch=${branches[$index]}"
     fi
+    cat "$verify_output"
+    if ! land_verify_count "${reports[$index]}" "$verify_output"; then
+      rm -f "$verify_output"
+      integration_cleanup
+      batch_fail "post-merge-verify branch=${branches[$index]}"
+    fi
+    rm -f "$verify_output"
     batch_pass "post-merge-verify branch=${branches[$index]}"
   done
   batch_pass post-merge-verify

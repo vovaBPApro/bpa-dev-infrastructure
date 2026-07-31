@@ -14,6 +14,11 @@ that branch is checked out, the guard also rejects tracked uncommitted changes.
 `--run-verify` executes the report's `verify:` command in the supplied repo and
 requires it to exit successfully.
 
+A lane may claim a test count only with `verify-count: <pass>/<fail>`. The guard
+re-runs `verify:` at the reported SHA and derives the count from that command's
+unambiguous `N pass` and `N fail` output. A mismatch or missing count output is a
+contract violation; a typed count is never accepted on its own.
+
 Exit codes: `0` = pass; `2` = contract violation; `3` = valid report declaring
 `NO-GO` (`no-go-declared`). The final output is always `GUARD verdict=pass`,
 `GUARD verdict=violation`, or `GUARD verdict=no-go`.

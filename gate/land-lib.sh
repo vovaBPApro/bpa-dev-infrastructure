@@ -272,6 +272,25 @@ land_remote_reap() {
   echo "$prefix reap remote=deleted branch=$branch"
 }
 
+# Compare an optional report claim with the output of the verify command that
+# the gate itself just ran. The completion guard validates the claim's syntax.
+land_verify_count() {
+  local report="$1" output_file="$2" claim passed failed
+  claim=$(sed -n 's/^verify-count:[[:space:]]*//p' "$report")
+  [ -n "$claim" ] || return 0
+  passed=$(awk 'BEGIN { IGNORECASE=1 } /^[0-9]+ pass(ed)?$/ { count++; value=$1 } END { if (count == 1) print value }' "$output_file")
+  failed=$(awk 'BEGIN { IGNORECASE=1 } /^[0-9]+ fail(ed)?$/ { count++; value=$1 } END { if (count == 1) print value }' "$output_file")
+  if [ -z "$passed" ] || [ -z "$failed" ]; then
+    echo "LAND verify-count output=missing-unambiguous-pass/fail-count" >&2
+    return 1
+  fi
+  if [ "$claim" != "$passed/$failed" ]; then
+    echo "LAND verify-count mismatch report=$claim actual=$passed/$failed" >&2
+    return 1
+  fi
+  echo "LAND verify-count match=$passed/$failed"
+}
+
 land_payload_guard() {
   local repo="$1" branch="$2" merge_base raw_entry changed_file diff_file diff_fd
   local old_mode new_mode change_status

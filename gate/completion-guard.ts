@@ -16,6 +16,7 @@ type Options = {
 type Report = {
   commit: string;
   verify: string;
+  verifyCount?: string;
   result: string;
   secretScan: string;
   remaining: string;
@@ -89,6 +90,15 @@ function lineValue(contents: string, label: string): string | undefined {
   return matches[0].slice(label.length + 1).trim();
 }
 
+function hasUnstructuredCountClaim(contents: string): boolean {
+  return contents
+    .split(/\r?\n/)
+    .filter((line) => !/^verify(?:-count)?:/.test(line))
+    .some((line) =>
+      /\b[0-9]+\s*(?:pass(?:ed)?)?\s*\/\s*[0-9]+\s*(?:fail(?:ed)?)?\b/i.test(line),
+    );
+}
+
 function git(repo: string, args: string[]) {
   return spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" });
 }
@@ -96,6 +106,19 @@ function git(repo: string, args: string[]) {
 function outputTail(output: string): string {
   const lines = output.trim().split("\n").filter(Boolean);
   return lines.slice(-10).join(" | ").slice(-200) || "(no output)";
+}
+
+function parseReportedCount(value: string): { passed: number; failed: number } | undefined {
+  const match = value.match(/^([0-9]+)\/([0-9]+)$/);
+  if (!match) return undefined;
+  return { passed: Number(match[1]), failed: Number(match[2]) };
+}
+
+function parseVerificationCount(output: string): { passed: number; failed: number } | undefined {
+  const passed = [...output.matchAll(/^([0-9]+) pass(?:ed)?$/gim)];
+  const failed = [...output.matchAll(/^([0-9]+) fail(?:ed)?$/gim)];
+  if (passed.length !== 1 || failed.length !== 1) return undefined;
+  return { passed: Number(passed[0][1]), failed: Number(failed[0][1]) };
 }
 
 function runVerification(repo: string, sha: string, command: string) {
@@ -128,13 +151,16 @@ if (!existsSync(reportPath)) {
   } else {
     const commit = lineValue(contents, "commit");
     const verify = lineValue(contents, "verify");
+    const verifyCount = lineValue(contents, "verify-count");
     const result = lineValue(contents, "result");
     const secretScan = lineValue(contents, "secret-scan");
     const remaining = lineValue(contents, "remaining");
     if ([commit, verify, result, secretScan, remaining].some((value) => value === undefined)) {
       fail("report-shape", "required final-report lines missing or duplicated");
+    } else if (hasUnstructuredCountClaim(contents)) {
+      fail("verify-count", "test-count-claim-must-use-verify-count-field");
     } else {
-      report = { commit: commit!, verify: verify!, result: result!, secretScan: secretScan!, remaining: remaining! };
+      report = { commit: commit!, verify: verify!, verifyCount, result: result!, secretScan: secretScan!, remaining: remaining! };
       pass("report-shape");
     }
   }
@@ -181,11 +207,31 @@ if (report) {
     fail("verify", "empty");
   } else {
     pass("verify", "present");
+    const claimedCount = report.verifyCount === undefined ? undefined : parseReportedCount(report.verifyCount);
+    if (report.verifyCount !== undefined && !claimedCount) {
+      fail("verify-count", "must-use-<pass>/<fail>");
+    }
     if (!options.deferVerify && report.result === "clean" && repoCheck.status === 0 && /^[0-9a-f]{40}$/i.test(sha)) {
       const verification = runVerification(repoPath, sha, report.verify);
-      const evidence = outputTail(`${verification.stdout ?? ""}${verification.stderr ?? ""}`);
+      const verificationOutput = `${verification.stdout ?? ""}${verification.stderr ?? ""}`;
+      const evidence = outputTail(verificationOutput);
       if (verification.status !== 0) fail("verify-run", `exit=${verification.status ?? "signal"} tail=${evidence}`);
-      else pass("verify-run", `tail=${evidence}`);
+      else {
+        pass("verify-run", `tail=${evidence}`);
+        if (claimedCount) {
+          const actualCount = parseVerificationCount(verificationOutput);
+          if (!actualCount) {
+            fail("verify-count", "command-output-missing-unambiguous-pass/fail-count");
+          } else if (actualCount.passed !== claimedCount.passed || actualCount.failed !== claimedCount.failed) {
+            fail(
+              "verify-count",
+              `mismatch report=${claimedCount.passed}/${claimedCount.failed} actual=${actualCount.passed}/${actualCount.failed}`,
+            );
+          } else {
+            pass("verify-count", `${actualCount.passed}/${actualCount.failed}`);
+          }
+        }
+      }
     }
   }
 }

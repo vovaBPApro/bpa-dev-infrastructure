@@ -111,4 +111,41 @@ describe("completion guard", () => {
     expect(result.status).toBe(2);
     expect(result.stdout).toContain("FAIL verify-run");
   });
+
+  test("rejects a claimed count that disagrees with the verify command output", () => {
+    const item = fixture();
+    const body = valid(item.sha, "clean", "printf '162 pass\\n6 fail\\n'")
+      .replace("result:", "verify-count: 168/168\nresult:");
+    const result = run(report(item.directory, body), item.repo);
+    expect(result.status).toBe(2);
+    expect(result.stdout).toContain("FAIL verify-count mismatch report=168/168 actual=162/6");
+    expect(result.stdout).toContain("GUARD verdict=violation");
+  });
+
+  test("accepts a claimed count only when it matches the verify command output", () => {
+    const item = fixture();
+    const body = valid(item.sha, "clean", "printf '179 pass\\n0 fail\\n'")
+      .replace("result:", "verify-count: 179/0\nresult:");
+    const result = run(report(item.directory, body), item.repo);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("PASS verify-count 179/0");
+  });
+
+  test("rejects a typed count outside the provenance-checked field", () => {
+    const item = fixture();
+    const body = valid(item.sha).replace("remaining: none", "remaining: genuine 179/0");
+    const result = run(report(item.directory, body), item.repo);
+    expect(result.status).toBe(2);
+    expect(result.stdout).toContain("FAIL verify-count test-count-claim-must-use-verify-count-field");
+  });
+
+  test("rejects a claimed count when verify output has no parseable count", () => {
+    const item = fixture();
+    const body = valid(item.sha)
+      .replace("verify: true", "verify: printf 'tests succeeded\\n'")
+      .replace("result:", "verify-count: 1/0\nresult:");
+    const result = run(report(item.directory, body), item.repo);
+    expect(result.status).toBe(2);
+    expect(result.stdout).toContain("FAIL verify-count command-output-missing-unambiguous-pass/fail-count");
+  });
 });

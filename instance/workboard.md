@@ -14,6 +14,39 @@ in the row, then delete it next pass) or by an explicit dropped-with-reason
 note. Derived-work items live here; Human directives stay in
 `instance/decisions/` and are only referenced.
 
+## Product (HR-330) — the rebuild
+
+Directive and his verbatim words: `instance/decisions/HR-330.md`. Document
+pointers: `instance/product-docs-index.md`. Evidence:
+`reports/stack-postmortem.md`, `reports/product-docs-inventory.md`.
+
+- **PR-1 — ONE repo, not three** (decided 2026-07-31 after the post-mortem
+  contradicted the initial plan). He first chose `bpa-shell-v2` / `bpa-bill-v2` /
+  `bpa-mila-v2`; `reports/stack-postmortem.md` theme 2 identifies the multi-repo,
+  independently-versioned topology as a root cause in its own right. Surfaced to
+  him, and he agreed to consolidate. Named by him: **`agentic-bpa`** (spelling confirmation pending). Layout: `apps/shell`,
+  `apps/bill`, `apps/mila`, shared `packages/` — one lockfile, one React version,
+  one routing tree, one CI graph. AWAITING his confirmation of the name; he must
+  create the empty repo (an SSH key cannot create repos on GitHub, only push).
+- **PR-2 — kill iframes, keep the feel.** Post-mortem theme 1, confirmed against
+  commit history: iframes bought instant switching by keeping apps mounted but
+  exported browser boundaries into product behaviour. Replacement: one SPA
+  document, client-side routing, persistent shell chrome, route-level prefetch.
+  Prior art already exists — `docs/concepts/CONCEPT_spa_agent_modules.md` on
+  `bpa-shell` origin/main. Read it before designing.
+- **PR-3 — Bill's first scope is SOURCE DOCUMENTS, not reports.** Import ALL
+  QuickBooks transactions; import from email to supplement them with documents;
+  match and finalize. Acceptance bar, his words: reports must reconcile
+  ONE-TO-ONE with QuickBooks. Reports themselves come later; statutory (the
+  second double-entry layer) is designed later still.
+- **PR-4 — Mila is a dumb empty stub.** Nobody ever tested it.
+- **PR-5 — shell first**: chat properly connected and the agent switcher, with
+  ALL shell functionality carried over before Bill work starts.
+- **PR-6 — storage layout**: `/srv/projects/<product>/` for repos and
+  `/srv/lanes/<product>/` for lane worktrees. Isolation is between PRODUCTS, not
+  between repos of one product. Legacy repos (`bpa-shell`, `agent-bill`,
+  `agent-mila`) are READ-ONLY archives — never pushed to, never modified.
+
 ## Open
 
 - **W-17 — the live daemon unit lost its security hardening** (found 2026-07-31
@@ -37,42 +70,11 @@ note. Derived-work items live here; Human directives stay in
   (Sweep tool landed 05689cdd; daily timer installer exists, not yet installed.)
 - **W-10 — install memory-sweep daily timer** on the host once W-08 triage
   is done (orchestrator/install-memory-sweep.sh).
-- **W-11 — CLOSED 2026-07-31** by `instance/decisions/HR-269.md` (his verbatim
-  ruling; delete this row next pass). Rest on `claude-sonnet-5`, lanes to Codex,
-  GPT top-orchestrator armed as fallback, Fable escalation-only. Two things this
-  row had WRONG and that the closure corrects: it stated "the box now runs
-  `claude-fable-5`" — the host actually pinned `claude-opus-5`
-  (`bash orchestrator/launch.sh model` → `claude_model=claude-opus-5`), so the
-  thin posture was never in force; and it treated Vova's «на Fable» as the
-  answer, when his own usage evidence shows Fable is his tightest bucket (79%
-  used) and therefore the wrong place to rest. Applies at the next relaunch.
-
 - **W-14 — make /status human-useful** (`instance/decisions/HR-150.md`): the
   command currently prints raw daemon JSON + `plan: n/a`; Vova gets zero value
   from it. It should answer, in a few plain lines: what is being worked on, how
   many lanes and their states, last landed thing, anything blocked. Daemon
   runtime code → coder lane; keep the honest-fields work (W-13 relabel) intact.
-
-- **W-15 — CLOSED 2026-07-31** (landed `bfaf851a` + fixup `e898ac4e`; delete this
-  row next pass). Proven live, not by test alone: Vova's real voice messages (249,
-  256) arrived carrying `voice_transcribed="whisper-local"` with correct verbatim
-  Ukrainian, and his document (254, `How to Work With Vova.md`, 27843 bytes)
-  auto-downloaded and was read straight from the session. Both fix halves verified
-  live: the mirror now records `attachment_kind`/`file_id`/`mime`/`size` + the full
-  transcript (contrast msg 239 pre-fix, mirrored as the bare `"(voice message)"`),
-  and `server.ts:3288,3294` now guard the caption/permission early-return with
-  `if (!hasAttachment) return;` so a captioned attachment can no longer be
-  swallowed. Original row kept below for provenance:
-  (found 2026-07-30 ~21:02Z): Vova sent 4 photo documents + BPA_ROLES_AND_REVIEW.md
-  (inbox.jsonl msgs 156-160 record the filenames), but the `<channel>` tags with
-  `attachment_file_id` never surfaced in the orchestrator session — text
-  messages around them arrived fine. The file_ids are not recoverable from
-  inbox.jsonl (it stores no file_id), so the content was unretrievable and the
-  Human had to be asked to re-send. Two fixes to scope: (a) daemon-side — mirror
-  attachment file_ids (and ideally auto-download to a spool dir) into a durable
-  record the orchestrator can query later; (b) find and fix why the channel
-  delivery dropped them (concurrent-turn buffering?). Daemon runtime code →
-  coder lane; reproduce first with a test document before fixing.
 
 - **W-16 — lane-reported test counts are not trustworthy evidence** (found
   2026-07-31, three independent occurrences in one night): `ag-status-human`

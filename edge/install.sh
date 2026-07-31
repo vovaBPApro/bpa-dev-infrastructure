@@ -46,6 +46,7 @@ if ! command -v caddy >/dev/null 2>&1; then
 fi
 
 install -d -o root -g caddy -m 0750 /etc/bpa-edge
+install -d -o root -g caddy -m 0755 /var/lib/bpa-previews /var/lib/bpa-previews/routes
 install -o root -g root -m 0644 "$SCRIPT_DIR/Caddyfile" /etc/bpa-edge/Caddyfile
 install -o root -g root -m 0644 "$SCRIPT_DIR/bpa-edge.service" /etc/systemd/system/bpa-edge.service
 umask 027

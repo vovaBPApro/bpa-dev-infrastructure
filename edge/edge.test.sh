@@ -18,7 +18,8 @@ trap cleanup EXIT
 grep -Fq '{$EDGE_DOMAIN}' "$SCRIPT_DIR/Caddyfile"
 # shellcheck disable=SC2016 # these are literal Caddy placeholders
 grep -Fq 'reverse_proxy {$APP_UPSTREAM}' "$SCRIPT_DIR/Caddyfile"
-[[ "$(grep -c '/api/integrations/.*/callback' "$SCRIPT_DIR/Caddyfile")" -eq 3 ]]
+[[ "$(grep -c '/api/integrations/.*/callback' "$SCRIPT_DIR/Caddyfile")" -eq 2 ]]
+grep -Fq 'import /var/lib/bpa-previews/routes/*.caddy' "$SCRIPT_DIR/Caddyfile"
 grep -Fq 'respond 404' "$SCRIPT_DIR/Caddyfile"
 grep -Fq 'AmbientCapabilities=CAP_NET_BIND_SERVICE' "$SCRIPT_DIR/bpa-edge.service"
 grep -Fq 'EnvironmentFile=/etc/bpa-edge/edge.env' "$SCRIPT_DIR/bpa-edge.service"
@@ -103,7 +104,7 @@ if [[ "$ready" != true ]]; then
   exit 1
 fi
 
-for callback in qbo gmail drive; do
+for callback in qbo google; do
   headers="$TMP_DIR/$callback.headers"
   body="$TMP_DIR/$callback.body"
   status="$(curl --insecure --silent --show-error --dump-header "$headers" \
@@ -120,9 +121,9 @@ done
 
 status="$(curl --insecure --silent --show-error --output "$TMP_DIR/fallback.body" \
   --write-out '%{http_code}' "https://localhost:$EDGE_PORT/not-public")"
-[[ "$status" == 404 ]] || {
-  echo "ERROR: unmatched path returned $status instead of 404" >&2
+[[ "$status" == 409 ]] || {
+  echo "ERROR: UI fallback returned $status instead of upstream 409" >&2
   exit 1
 }
 
-echo 'PASS HTTPS edge routes exact callback allowlist and rejects unmatched paths'
+echo 'PASS HTTPS edge routes exact callback allowlist, preview imports, and UI fallback'

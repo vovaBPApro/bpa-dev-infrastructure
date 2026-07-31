@@ -40,6 +40,7 @@ filtered="$(printf '%s\n' "$current" | awk -v begin="$begin" -v end="$end" '
     printf '%s\n' "$begin"
     printf '%s\n' "19 * * * * $script_dir/reap.sh branches --repo $repo_dir --apply >> $log_dir/branches.log 2>&1"
     printf '%s\n' "29 * * * * $script_dir/reap.sh worktrees --repo $repo_dir --apply >> $log_dir/worktrees.log 2>&1"
+    printf '%s\n' "*/10 * * * * bun $repo_dir/preview/preview.ts reap >> $log_dir/previews.log 2>&1"
     printf '%s\n' "39 2 * * * $script_dir/reap.sh disk --root $repo_dir --apply >> $log_dir/disk.log 2>&1"
     printf '%s\n' "$end"
   fi

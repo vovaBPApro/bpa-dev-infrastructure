@@ -1,0 +1,14 @@
+{
+	admin off
+	http_port {$PREVIEW_EDGE_HTTP_PORT}
+}
+
+https://localhost:{$PREVIEW_EDGE_PORT} {
+	import {$PREVIEW_ROUTES_DIR}/*.caddy
+
+	# The acceptance edge retains an independent production route so the test can
+	# prove preview registration does not replace or intercept it.
+	handle {
+		reverse_proxy {$PREVIEW_PRODUCTION_UPSTREAM}
+	}
+}

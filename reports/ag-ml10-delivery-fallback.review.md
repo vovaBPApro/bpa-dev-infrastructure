@@ -3,10 +3,10 @@
 reviewer: Codex reviewer lane (independent of coder session)
 independence: reviewer did not author the candidate commits
 tier: A (orchestrator runtime, watchdog, and delivery evidence behavior)
-reviewed-sha: b0abb71960b1aaa8662b060c331f9ca1421d5166
-base-sha: f4741461c86a98b9fd9f4ad0fa8487aae2a068ba
-verdict: REJECT
-deferred-independent-review: not applicable; this is the independent review
+reviewed-sha: a92e6b2eeb99661a4fd90a87a4b0e1fc89275861
+base-sha: 78d51e4e5bed437d2fff83242437557402b77843
+verdict: ACCEPT
+deferred-independent-review: not required; this is the independent Tier-A review
 
 ## Manifest consumption
 
@@ -17,49 +17,34 @@ deferred-independent-review: not applicable; this is the independent review
 - tool-permissions sha256:6c7b9f57fbbd — Tool Permissions
 - reproducible-from-git sha256:822d9efe694b — Reproducible From Git
 
-## Scope and evidence inspected
+## Decision
 
-- `git fetch origin && git rebase origin/main` completed before review.
-- The exact reviewed diff has 736 insertions and 60 deletions across eight files.
-- I reviewed the daemon health oracle, fallback `/reply` acknowledgement path,
-  watchdog consumer, both submitted locks, prior verdict, and coder report.
-- `/reply` waits for Telegram `sendMessage`/attachment responses and returns 502
-  on rejection; it does not record `markReplied` before that evidence. This path
-  does not reproduce the ML-2 unacknowledged-send fault.
-- The healthy-path implementation invokes no automatic fallback, and the
-  integration lock observes exactly one Telegram delivery for an explicit
-  fallback call. That is useful evidence, but it does not cure the health
-  false-green below.
+ACCEPT. The blockers from the prior verdict are closed on the exact reviewed
+SHA. Detached Claude MCP state is fail-closed, produces a nonzero health verdict,
+and the installed watchdog routes that verdict to its durable alarm outbox. The
+direct `/reply` fallback waits for Telegram acknowledgement and returns the
+acknowledged message ids; the detached integration lock observes exactly one
+Telegram delivery.
 
-## Blocking findings
+The healthy probe requires both `mcp_detached:false` and `connected:true`. It
+returns success without invoking the fallback endpoint, so the fallback does not
+double-send on the healthy path. Contradictory and connectivity-omitting payloads
+both fail instead of manufacturing readiness.
 
-1. `daemon/server.ts` still computes `/health.connected` with
-   `activeServer !== null && isConnectionAlive()`. `isConnectionAlive()` returns
-   `true` when the SDK transport has no inspectable `_res`, while the existing
-   `isConnectionAliveForStatus()` is explicitly fail-closed. An unknown
-   transport can therefore be published as connected and suppress the detach
-   alarm. The submitted integration lock covers `activeServer === null`, not an
-   active transport with unknown response state.
-2. `orchestrator/health-checks/telegram-daemon-mcp.sh` still treats
-   `mcp_detached:false` as sufficient proof of connectivity and never parses
-   `connected`. With the contradictory payload
-   `{"mcp_detached":false,"connected":false}`, it prints
-   `OK telegram-daemon-mcp: MCP connected` and exits 0. The shell lock enshrines
-   this false green by using a `{"mcp_detached":false}` success fixture. Thus a
-   path can conclude healthy/delivered routing readiness without positive MCP
-   delivery evidence.
-3. The rebased coder report claims `verify-count: 164/0`; the independently
-   rerun current suite reports `182 pass`, `0 fail`, and `577 expect()` calls.
-   The required count claim does not equal the current reviewed state.
+The ML-2-shaped fail-open hunt found no delivered-without-evidence path in the
+new fallback: `sendTelegramReply()` awaits each Telegram API call and collects
+its returned `message_id`; `/reply` calls `markReplied(chat)` only after that
+promise resolves. A rejection takes the catch path, returns HTTP 502, and leaves
+the pending reply unacknowledged.
 
-## Commands and real output
+## Evidence rerun by reviewer
 
 ```text
 $ git fetch origin && git rebase origin/main
-Successfully rebased and updated refs/heads/ag-ml10-delivery-fallback.
+Current branch ag-ml10-delivery-fallback is up to date.
 
 $ git rev-parse HEAD
-b0abb71960b1aaa8662b060c331f9ca1421d5166
+a92e6b2eeb99661a4fd90a87a4b0e1fc89275861
 
 $ orchestrator/telegram-daemon-mcp.test.sh
 telegram daemon MCP health/wiring regression: PASS
@@ -70,39 +55,62 @@ $ cd daemon && timeout 40s bun test ./mcp-rebind.integration.test.ts
 9 expect() calls
 Ran 1 test across 1 file.
 
-$ printf '{"mcp_detached":false,"connected":false}\n' > "$probe_file"
-$ TELEGRAM_DAEMON_HEALTH_URL="file://$probe_file" orchestrator/health-checks/telegram-daemon-mcp.sh
-OK telegram-daemon-mcp: MCP connected
-contradictory_probe_rc=0
-
 $ timeout 600s bash -lc 'cd daemon && bun test && bun run typecheck'
 182 pass
 0 fail
 577 expect() calls
-Ran 182 tests across 18 files. [62.48s]
+Ran 182 tests across 18 files.
 $ bunx tsc --noEmit
 aggregate_rc=0
+
+$ TELEGRAM_DAEMON_HEALTH_URL=file://<contradictory.json> orchestrator/health-checks/telegram-daemon-mcp.sh
+WARN telegram-daemon-mcp: MCP connectivity not proven
+contradictory_rc=1
+
+$ TELEGRAM_DAEMON_HEALTH_URL=file://<missing-connected.json> orchestrator/health-checks/telegram-daemon-mcp.sh
+WARN telegram-daemon-mcp: MCP connectivity not proven
+missing_rc=1
+
+$ git diff --check origin/main...HEAD
+diff_check_rc=0
+
+$ bash -n orchestrator/health-checks/telegram-daemon-mcp.sh orchestrator/telegram-daemon-mcp.test.sh orchestrator/watchdog.sh
+bash_n_rc=0
 ```
 
-The submitted locks are green, but the direct contradictory probe proves that
-their success boundary is weaker than the required fail-closed behavior.
+The independently rerun merged-tree count is therefore exactly `182 pass`,
+`0 fail`, and `577 expect()` calls across 18 daemon test files.
+
+## Regression and rollback posture
+
+The submitted TypeScript lock fails when materialized against `origin/main`
+because the base health response lacks detach/fallback fields. The watchdog lock
+also fails against the base because the durable detach alarm is absent. Both pass
+at the reviewed SHA. The later contradictory and missing-connectivity fixtures
+were separately demonstrated red before the fail-closed probe fix and pass now.
+
+In a disposable worktree at the reviewed SHA, this aggregate rollback completed:
+
+```sh
+git diff --binary origin/main...HEAD | git apply --reverse --index
+git diff --cached --quiet origin/main
+```
+
+Both commands exited 0, proving the aggregate change reverses exactly to the
+current base. The disposable worktree was then removed.
 
 ## Secret scan
-
-Command:
 
 ```sh
 pat=$(eval "$(sed -n 's/^[[:space:]]*secret_pattern=/REPLY=/p' gate/land-lib.sh)"; printf '%s' "$REPLY")
 git diff origin/main...HEAD | LC_ALL=C grep -aE "$pat"
 ```
 
-Result: no output; grep exit 1 means no signature hit. `secret-scan: clean`.
+Result: no output; grep exit 1 means no signature hit.
+secret-scan: clean
 
-## Disposition required
+## Findings and disposition
 
-- Use the fail-closed connectivity oracle for `/health`; unknown transport state
-  must produce `connected:false`.
-- Require explicit `connected:true` in the watchdog MCP probe and add
-  fail-before/pass-after fixtures for contradictory and missing connectivity.
-- Refresh the aggregate count and rerun independent Tier A review on the
-  replacement SHA.
+No blocking finding remains. Scope is limited to the daemon MCP health and
+acknowledged fallback surface, its watchdog consumer, regression locks, and
+mission evidence. Landing may proceed through the Tier-A gate.

@@ -1,10 +1,10 @@
 # Independent review: ag-ml10-delivery-fallback
 
 reviewer: Codex reviewer lane (independent of coder session)
-independence: reviewer did not author commits dc679c7b or a85e4e0e
-tier: A (orchestrator runtime and health/evidence gate)
-reviewed-sha: a85e4e0e0d9c78bbfd02105056f572dae834bab5
-base-sha: 62eb1717
+independence: reviewer did not author the candidate commits
+tier: A (orchestrator runtime, watchdog, and evidence-gate behavior)
+reviewed-sha: e644f565a59ab7ad071a8c973f1c5fd70b19b826
+base-sha: 26b7f6d4c58ae9736ca8cc1297c816f33f7dc725
 verdict: REJECT
 deferred-independent-review: not applicable; this is the independent review
 
@@ -15,117 +15,133 @@ deferred-independent-review: not applicable; this is the independent review
 - roles sha256:cd4c40c4e640 — Roles
 - instruction-layers sha256:f9a51936be92 — Instruction Layers
 - tool-permissions sha256:6c7b9f57fbbd — Tool Permissions
+- reproducible-from-git sha256:822d9efe694b — Reproducible From Git
 
 ## Scope and evidence inspected
 
-- Commit titles: `[CODER] restore MCP detach fallback delivery` and `[CODER] make MCP detach alarm executable`.
-- Exact diff: `git diff origin/main...HEAD` (388 insertions, 53 deletions across four files).
-- Coder terminal report: absent; there was no `reports/` directory at the reviewed SHA.
-- Rollback posture: the two production commits are separable, but no supplied rollback evidence or terminal report was available.
+- Rebasing onto `origin/main` completed before review. The candidate became
+  `e644f565a59ab7ad071a8c973f1c5fd70b19b826` on base
+  `26b7f6d4c58ae9736ca8cc1297c816f33f7dc725`.
+- Exact diff: 719 insertions and 60 deletions across eight files.
+- The current coder report, production diff, both new locks, watchdog wiring,
+  fail-open behavior, aggregate test count, secret scan, and rollback were
+  independently checked.
+- Rollback of the aggregate candidate diff applies cleanly and matches
+  `origin/main`, but rollback safety does not cure the blocking runtime finding.
 
 ## Blocking findings
 
-1. `daemon/mcp-rebind.integration.test.ts:65` is a false-green regression lock. In a disposable worktree at `origin/main`, with only this test file checked out from the reviewed commit, it still reported `1 pass`, `0 fail`, and `red_before_rc=0`. It therefore does not demonstrate red-before/pass-after and cannot gate the claimed production fix.
-2. `orchestrator/health-checks/telegram-daemon-mcp.sh:8-12` explicitly returns success when the health endpoint is unavailable. Lines 17-27 also return success for detached MCP and invalid health data. Direct probes confirmed both unavailable and invalid responses exit 0. This manufactures a green executable health check when truth is unavailable or the fault is present.
-3. `orchestrator/health-checks/telegram-daemon-mcp.sh:1` is not wired into any runtime, scheduler, or existing health-check runner. `rg -n "telegram-daemon-mcp" .` found only the script and its integration test. The title `make MCP detach alarm executable` overclaims operational alarm delivery: executable mode alone does not execute or route the warning.
-4. The full declared daemon suite did not terminate. It printed 96 visible passes, then remained open without a summary or exit until interrupted; the resulting exit was 130. The narrow new test and typecheck pass, but partial output cannot establish a green suite.
+1. `daemon/server.ts:2769-2773` regresses `/health.connected` from the existing
+   fail-closed `isConnectionAliveForStatus()` oracle to
+   `activeServer !== null && isConnectionAlive()`. `isConnectionAlive()` at
+   `daemon/server.ts:2723-2728` explicitly returns `true` when the SDK transport
+   has no inspectable `_res`. Therefore an unknown transport state is published
+   as connected. This violates the standing fail-open bar and is not covered by
+   the new integration lock, whose detached fixture only covers the simple
+   `activeServer === null` state.
+2. `orchestrator/health-checks/telegram-daemon-mcp.sh:23-25` treats
+   `mcp_detached:false` as sufficient proof that MCP is connected and exits 0;
+   it never reads the health response's `connected` field. A direct probe with
+   `{\"mcp_detached\":false,\"connected\":false}` printed
+   `OK telegram-daemon-mcp: MCP connected` and returned 0. The green shell lock
+   itself uses the weaker `{\"mcp_detached\":false}` fixture, so it enshrines
+   this false green. States such as a dead/missing tmux session or non-Claude/no
+   binding produce `mcp_detached:false` without proving a live MCP channel.
 
 ## Commands and real output
 
-### Reviewed SHA and diff
+### Rebase, reviewed SHA, and diff count
 
 ```text
+$ git fetch origin && git rebase origin/main
+Successfully rebased and updated refs/heads/ag-ml10-delivery-fallback.
+
 $ git rev-parse HEAD
-a85e4e0e0d9c78bbfd02105056f572dae834bab5
+e644f565a59ab7ad071a8c973f1c5fd70b19b826
+
+$ git merge-base origin/main HEAD
+26b7f6d4c58ae9736ca8cc1297c816f33f7dc725
 
 $ git diff --stat origin/main...HEAD
- daemon/mcp-rebind.integration.test.ts             | 174 ++++++++++++++++
+ daemon/mcp-rebind.integration.test.ts             | 176 +++++++++++++++++
  daemon/reliability.ts                             |  10 +
  daemon/server.ts                                  | 230 +++++++++++++++++-----
- orchestrator/health-checks/telegram-daemon-mcp.sh |  27 +++
- 4 files changed, 388 insertions(+), 53 deletions(-)
+ orchestrator/health-checks/telegram-daemon-mcp.sh |  29 +++
+ orchestrator/telegram-daemon-mcp.test.sh          |  58 ++++++
+ orchestrator/watchdog.sh                          |  15 +-
+ reports/ag-ml10-delivery-fallback.coder.md        | 113 +++++++++++
+ reports/ag-ml10-delivery-fallback.review.md       | 148 ++++++++++++++
+ 8 files changed, 719 insertions(+), 60 deletions(-)
 ```
 
-### Full daemon suite and typecheck command
+### PASS-AFTER and independently rerun aggregate count
 
 ```text
-$ cd daemon && bun test && bun run typecheck
-bun test v1.2.22 (6bafe260)
-...
-96 visible `(pass)` rows; no terminal test summary; command remained running.
-Reviewer sent SIGINT.
-exit_code=130
-```
+$ orchestrator/telegram-daemon-mcp.test.sh
+telegram daemon MCP health/wiring regression: PASS
 
-Because `bun test` did not exit zero, the chained typecheck did not run in this command.
+$ cd daemon && timeout 40s bun test ./mcp-rebind.integration.test.ts
+(pass) detached Claude MCP raises an alarm and /reply still delivers through Telegram [264.01ms]
+1 pass
+0 fail
+9 expect() calls
+Ran 1 test across 1 file. [307.00ms]
 
-### Narrow reviewed lock
-
-```text
-$ cd daemon && timeout 30s bun test mcp-rebind.integration.test.ts
-bun test v1.2.22 (6bafe260)
-
-mcp-rebind.integration.test.ts:
-(pass) detached Claude MCP raises an alarm and /reply still delivers through Telegram [552.03ms]
-
- 1 pass
- 0 fail
- 9 expect() calls
-Ran 1 test across 1 file. [651.00ms]
-test_rc=0
-```
-
-### Typecheck
-
-```text
-$ cd daemon && timeout 30s bun run typecheck
+$ timeout 600s bash -lc 'bun test && bun run typecheck'
+164 pass
+0 fail
+548 expect() calls
+Ran 164 tests across 16 files. [64.18s]
 $ bunx tsc --noEmit
-typecheck_rc=0
+shell_rc=0 narrow_rc=0 full_rc=0
 ```
 
-### Required red-before regression proof
+### FAIL-BEFORE: locks materialized on `origin/main`
 
 ```text
-$ review_tmp=$(mktemp -d /tmp/ag-ml10-red.XXXXXX)
-$ git worktree add --detach "$review_tmp" origin/main
-Preparing worktree (detached HEAD 62eb1717)
-$ git -C "$review_tmp" checkout a85e4e0e -- daemon/mcp-rebind.integration.test.ts
-$ ln -s "$PWD/daemon/node_modules" "$review_tmp/daemon/node_modules"
-$ timeout 30s bun test mcp-rebind.integration.test.ts   # run in disposable worktree
-bun test v1.2.22 (6bafe260)
+$ cd "$review_tree/daemon" && timeout 40s bun test ./mcp-rebind.integration.test.ts
+error: expect(received).toMatchObject(expected)
+-   "direct_reply_endpoint": "/reply",
+-   "mcp_detached": true,
+(fail) detached Claude MCP raises an alarm and /reply still delivers through Telegram
+0 pass
+1 fail
+1 expect() calls
+Ran 1 test across 1 file. [259.00ms]
 
-daemon/mcp-rebind.integration.test.ts:
-(pass) detached Claude MCP raises an alarm and /reply still delivers through Telegram [580.03ms]
+$ cd "$review_tree" && timeout 40s bash orchestrator/telegram-daemon-mcp.test.sh
+grep: .../runtime/nudges.outbox: No such file or directory
+FAIL: watchdog did not route failed MCP health into durable nudge outbox
 
- 1 pass
- 0 fail
- 9 expect() calls
-Ran 1 test across 1 file. [688.00ms]
-red_before_rc=0
+candidate_sha=e644f565a59ab7ad071a8c973f1c5fd70b19b826 ts_red_rc=1 watchdog_red_rc=1
+red_worktree_removed=yes
 ```
 
-The disposable worktree was removed after the run.
+Both submitted locks bite against the base. The verdict is REJECT because their
+green assertions do not cover, and one lock affirmatively accepts, the separate
+fail-open state described above.
 
-### Fail-open probes
+### Direct fail-open proof
 
 ```text
-$ TELEGRAM_DAEMON_HEALTH_URL=file://<valid-temp-file-with-no-mcp-fields> bash orchestrator/health-checks/telegram-daemon-mcp.sh
-WARN telegram-daemon-mcp: invalid health response
-invalid_json_rc=0
-
-$ TELEGRAM_DAEMON_HEALTH_URL=http://127.0.0.1:1 TELEGRAM_DAEMON_HEALTH_TIMEOUT_SECONDS=1 bash orchestrator/health-checks/telegram-daemon-mcp.sh
-WARN telegram-daemon-mcp: health endpoint unavailable: curl: (7) Failed to connect to 127.0.0.1 port 1 after 0 ms: Couldn't connect to server
-unavailable_rc=0
+$ printf '{"mcp_detached":false,"connected":false}\n' > /tmp/ag-ml10-health-failopen.json
+$ TELEGRAM_DAEMON_HEALTH_URL=file:///tmp/ag-ml10-health-failopen.json orchestrator/health-checks/telegram-daemon-mcp.sh
+OK telegram-daemon-mcp: MCP connected
+probe_false_rc=0
 ```
 
-### Static checks
+### Static checks and rollback
 
 ```text
-$ git diff origin/main...HEAD --check
-<no output; exit 0>
+$ git diff --check origin/main...HEAD
+diff_check_rc=0
 
-$ bash -n orchestrator/health-checks/telegram-daemon-mcp.sh
-<no output; exit 0>
+$ bash -n orchestrator/health-checks/telegram-daemon-mcp.sh orchestrator/telegram-daemon-mcp.test.sh orchestrator/watchdog.sh
+bash_n_rc=0
+
+$ git diff --binary origin/main...e644f565 | git -C "$rollback_tree" apply --reverse --index
+$ git -C "$rollback_tree" diff --cached --quiet origin/main
+rollback_candidate=e644f565a59ab7ad071a8c973f1c5fd70b19b826 apply_reverse_rc=0 matches_origin_main_rc=0
 ```
 
 ## Secret scan
@@ -137,12 +153,13 @@ pat=$(eval "$(sed -n 's/^[[:space:]]*secret_pattern=/REPLY=/p' gate/land-lib.sh)
 git diff origin/main...HEAD | LC_ALL=C grep -aE "$pat"
 ```
 
-Result: no output / no hit. `secret-scan: clean`.
+Result: no output; grep exit 1 means no signature hit. `secret-scan: clean`.
 
 ## Disposition required
 
-- Make the regression lock demonstrably fail on `origin/main` and pass only with the fix.
-- Make failure/detachment machine-detectable with nonzero status, or document and test a separate consumer that turns WARN into a failing alarm signal.
-- Wire the check into the actual runtime monitoring path and test that boundary.
-- Diagnose the non-terminating full daemon suite and provide a fresh exit-0 run.
-- Supply the coder terminal report and rollback evidence on the replacement SHA.
+- Restore a fail-closed health connectivity oracle; an uninspectable transport
+  must not be reported connected.
+- Make the watchdog probe require positive `connected:true` evidence before it
+  returns success, and add red-before/pass-after coverage for contradictory and
+  unknown connectivity states.
+- Re-run independent Tier A review on the replacement SHA.

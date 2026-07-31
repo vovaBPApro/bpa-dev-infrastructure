@@ -12,22 +12,77 @@
 #   orchestrator not running      -> tell the HUMAN it needs starting
 set -uo pipefail
 
-SESSION=bpa-orchestrator
-FLOOR=10
-BOARD=/root/bpa-dev-infrastructure/instance/workboard.md
-DAEMON=http://127.0.0.1:4822
-LOGFILE=/root/.cache/infra-lanes/fleet-nudge.log
+SESSION=${FLEET_NUDGE_SESSION:-bpa-orchestrator}
+FLOOR=${FLEET_NUDGE_FLOOR:-10}
+BOARD=${FLEET_NUDGE_BOARD:-/root/bpa-dev-infrastructure/instance/workboard.md}
+DAEMON=${FLEET_NUDGE_DAEMON:-http://127.0.0.1:4822}
+LOGFILE=${FLEET_NUDGE_LOGFILE:-/root/.cache/infra-lanes/fleet-nudge.log}
+
+count_open_rows() { # board
+  awk '
+    BEGIN { open = 0; rows = 0; bad = 0 }
+    # A row-like bullet may not disappear merely because its ID or marker is
+    # malformed. The broad recognizer deliberately includes lowercase IDs.
+    /^- / && /\*\*[^*[:space:]]+-[^*[:space:]]+[[:space:]]+—/ {
+      rows++
+      line = $0
+      if (line !~ /^- <!-- status: (open|done|blocked|superseded) --> \*\*[A-Z]+-([0-9]+|GOV)[[:space:]]+—/) {
+        printf "fleet-nudge: malformed workboard row at line %d: %s\n", NR, $0 > "/dev/stderr"
+        bad = 1
+        next
+      }
+      id = line
+      sub(/^- <!-- status: (open|done|blocked|superseded) --> \*\*/, "", id)
+      sub(/[[:space:]]+—.*/, "", id)
+      if (seen[id]++) {
+        printf "fleet-nudge: duplicate workboard id at line %d: %s\n", NR, id > "/dev/stderr"
+        bad = 1
+      }
+      if (line ~ /^- <!-- status: open -->/) open++
+    }
+    END {
+      if (rows == 0) {
+        print "fleet-nudge: no parseable workboard rows" > "/dev/stderr"
+        exit 2
+      }
+      if (bad) exit 2
+      print open
+    }
+  ' "$1"
+}
+
+if [ "${1:-}" = "--count-open" ]; then
+  [ "$#" -eq 2 ] || { echo "usage: $0 --count-open WORKBOARD" >&2; exit 2; }
+  count_open_rows "$2"
+  exit $?
+fi
+
+if [ "${1:-}" = "--verify-deployed" ]; then
+  [ "$#" -eq 2 ] || { echo "usage: $0 --verify-deployed DEPLOYED_SCRIPT" >&2; exit 2; }
+  if ! cmp -s "$0" "$2"; then
+    echo "fleet-nudge: deployed script differs from tracked script: $2" >&2
+    exit 1
+  fi
+  exit 0
+fi
 
 notify() { # text
-  curl -s -m 10 -X POST "$DAEMON/notify" -H 'Content-Type: application/json' \
+  if ! curl -fsS -m 10 -X POST "$DAEMON/notify" -H 'Content-Type: application/json' \
     --data "$(printf '{"text":%s}' "$(printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')")" \
-    >/dev/null 2>&1
+    >/dev/null; then
+    echo "fleet-nudge: operator notification failed" >&2
+    return 1
+  fi
 }
+
+if ! open=$(count_open_rows "$BOARD"); then
+  echo "fleet-nudge: refusing to run with an unparseable workboard: $BOARD" >&2
+  notify "⚠️ Fleet watchdog не може прочитати workboard. Підрахунок зупинено; перевір $BOARD." || exit 3
+  exit 2
+fi
 
 running=$(systemctl list-units --type=service --state=running --no-legend 'lane-*' 2>/dev/null | wc -l)
 [ "$running" -ge "$FLOOR" ] && exit 0
-
-open=$(grep -cE '^- \*\*(W|ML|NI|P)-[0-9]+' "$BOARD" 2>/dev/null || echo 0)
 
 # Every firing is recorded. This log is the honest metric of whether the
 # orchestrator holds the fleet by ITSELF: a nudge that fires often means the
@@ -42,19 +97,19 @@ printf '%s fired running=%s floor=%s open_rows=%s\n' \
 if [ "$open" -eq 0 ]; then
   # Nothing left to dispatch. This is the ONE case that legitimately goes to the
   # Human, because only he can say what comes next.
-  notify "Дошка порожня, активних лейнів $running. Роботи для флоту не лишилось — скажи, що робимо далі."
+  notify "Дошка порожня, активних лейнів $running. Роботи для флоту не лишилось — скажи, що робимо далі." || exit 3
   exit 0
 fi
 
 if ! tmux has-session -t "$SESSION" 2>/dev/null; then
-  notify "Оркестратор не запущений, а на дошці $open відкритих рядків. Потрібен /start_codex або /start_claude."
+  notify "Оркестратор не запущений, а на дошці $open відкритих рядків. Потрібен /start_codex або /start_claude." || exit 3
   exit 0
 fi
 
 # Work remains but the fleet is idle => something on the orchestrator side is
 # wrong. Wake IT, not the Human.
 if [ "$running" -lt 3 ]; then
-  notify "⚠️ Лейнів лише $running (потрібно 10). На дошці $open відкритих рядків. Піднімаю."
+  notify "⚠️ Лейнів лише $running (потрібно 10). На дошці $open відкритих рядків. Піднімаю." || exit 3
 fi
 
 msg="[fleet-nudge] running lanes=$running (floor $FLOOR), workboard open rows=$open. Collect finished lane reports, land what is ACCEPTed, dispatch the next wave. Per HR-281 report the lane count to Vova unprompted."

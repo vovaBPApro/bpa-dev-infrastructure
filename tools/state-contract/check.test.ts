@@ -46,19 +46,19 @@ test('FLEET-IDLE locks open work against the measured system lane fleet', () => 
 
 ## Open
 
-- **W-01 — first open row**: pending.
-- **W-02 — CLOSED 2026-07-31**: retained until the next pass.
-- **W-03 — second open row**: pending.
+- <!-- status: open --> **W-01 — first open row**: pending.
+- <!-- status: done --> **W-02 — closed row**: landed at \`deadbee\`.
+- <!-- status: open --> **W-03 — second open row**: pending.
 
 ## Parked
 
-- **P-01 — not active**: parked.
+- <!-- status: blocked --> **P-01 — not active**: parked.
 `;
   const emptyWorkboard = `# Workboard
 
 ## Open
 
-- **W-02 — CLOSED 2026-07-31**: retained until the next pass.
+- <!-- status: done --> **W-02 — closed row**: landed at \`deadbee\`.
 `;
 
   expect(checkFleetIdle(openWorkboard, { running: 0 })).toEqual({
@@ -113,7 +113,40 @@ test('FLEET-IDLE fails closed when an applicable host workboard is empty', () =>
     id: 'FLEET-IDLE',
     detail:
       'open workboard row count unknown/degraded: ' +
-      'instance/workboard.md has no ## Open section',
+      'instance/workboard.md has no parseable rows',
+  });
+});
+
+test('FLEET-IDLE rejects missing statuses and duplicate row ids', () => {
+  expect(checkFleetIdle('- **W-01 — missing status**', { running: 0 })).toEqual({
+    level: 'FAIL',
+    id: 'FLEET-IDLE',
+    detail: 'open workboard row count unknown/degraded: malformed workboard row at line 1',
+  });
+  expect(
+    checkFleetIdle(
+      '- <!-- status: open --> **W-01 — first**\n' +
+        '- <!-- status: done --> **W-01 — duplicate**',
+      { running: 0 },
+    ),
+  ).toEqual({
+    level: 'FAIL',
+    id: 'FLEET-IDLE',
+    detail: 'open workboard row count unknown/degraded: duplicate workboard id: W-01',
+  });
+});
+
+test('FLEET-IDLE rejects a lowercase row id instead of undercounting it', () => {
+  expect(
+    checkFleetIdle(
+      '- <!-- status: open --> **W-01 — valid**\n' +
+        '- <!-- status: open --> **w-02 — malformed lowercase id**',
+      { running: 1 },
+    ),
+  ).toEqual({
+    level: 'FAIL',
+    id: 'FLEET-IDLE',
+    detail: 'open workboard row count unknown/degraded: malformed workboard row at line 2',
   });
 });
 

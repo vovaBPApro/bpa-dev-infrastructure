@@ -53,11 +53,20 @@ fleet:
 orchestrator:
   # A doc in THIS repo now states the vendor shape, so the long-standing "no
   # model/vendor map here" omission is lifted for these keys only.
-  top_provider: claude             # instance/handoff-oldorch-2026-07-30.md §1 (thin Claude top)
-  top_posture: thin                # ibid — routing/decisions/Human contact only, minimal Anthropic quota
+  top_provider: codex              # HUMAN RULING: instance/decisions/HR-271.md (Vova, 2026-07-31).
+  # The top orchestrator is Codex gpt-5.6-sol. Claude is reserved ENTIRELY: not
+  # spent on routing, only on short-lived Sonnet errand-agents for the claude.ai
+  # connectors (Drive/Gmail/QuickBooks) and Fable for real escalation. This
+  # replaces the "thin Claude top" shape from handoff-oldorch-2026-07-30.md §1.
+  top_posture: thin                # unchanged in KIND — routing/decisions/Human contact only
   # Pinned in source (orchestrator/launch.sh CLAUDE_MODEL) for the same reason
   # as fallback_model below: an unpinned claude launch emits no --model and the
   # top orchestrator silently becomes the account default.
+  # SUPERSEDED 2026-07-31 by HR-271: the top orchestrator is no longer Claude at
+  # all (see top_provider: codex above, and fallback_model: gpt-5.6-sol below,
+  # which is now the TOP model rather than the fallback). This key survives only
+  # as the tier to use IF a Claude top is ever run again, and as the tier for the
+  # Sonnet errand-agents. HR-269's reasoning below still explains why NOT Fable.
   top_model: claude-sonnet-5       # HUMAN RULING: instance/decisions/HR-269.md (Vova, 2026-07-31).
   # Rest on Sonnet — NOT Fable, NOT Opus. Fable is escalation-only because his own
   # usage screenshots show it is his TIGHTEST bucket (79% used), so resting there

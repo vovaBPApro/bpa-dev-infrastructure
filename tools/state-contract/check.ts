@@ -23,8 +23,8 @@
 // declaration, and the declaration is still verified for existence and for
 // continued reference, which is what catches a writer leaving.
 
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 
 export type ArtifactKind =
   // Runtime state this repository both owns and writes.
@@ -607,28 +607,164 @@ export function checkStateContract(
   return findings;
 }
 
-if (import.meta.main) {
-  const root = process.argv[2] ?? process.cwd();
-  const proc = Bun.spawnSync(['git', '-C', root, 'ls-files', '*.ts', '*.sh']);
-  const files = new TextDecoder().decode(proc.stdout).split('\n').filter(Boolean);
-  const trackedProc = Bun.spawnSync(['git', '-C', root, 'ls-files']);
-  const tracked = new Set(
-    new TextDecoder().decode(trackedProc.stdout).split('\n').filter(Boolean),
-  );
-  const findings = checkStateContract(
-    root,
-    files,
-    REGISTRY,
-    KNOWN_GAPS,
-    (p) => tracked.has(p),
-  );
-  const fails = findings.filter((f) => f.level === 'FAIL');
-  for (const f of findings) {
-    console.log(`${f.level} ${f.id}: ${f.detail}`);
+export class UsageError extends Error {}
+export class HelpRequested extends Error {}
+export class HardError extends Error {}
+
+export type GitResult = {
+  exitCode: number;
+  stdout: Uint8Array;
+  stderr: Uint8Array;
+};
+
+export type GitRunner = (args: string[]) => GitResult;
+export type MainDeps = {
+  runGit?: GitRunner;
+  stdout?: (text: string) => void;
+  stderr?: (text: string) => void;
+  cwd?: () => string;
+};
+
+const decoder = new TextDecoder();
+
+export function usage(): string {
+  return [
+    'Usage: bun tools/state-contract/check.ts [--repo <path> | <path>]',
+    '',
+    '  --repo <path>   Repository root to check (default: current directory)',
+    '  <path>          Repository root (backward-compatible positional form)',
+    '  -h, --help      Show this usage',
+    '',
+    'Exit codes:',
+    '  0  no FAIL findings',
+    '  1  one or more FAIL findings',
+    '  2  usage error (bad/unknown argument, bad root)',
+    '  3  hard error (git invocation failed, or empty sweep)',
+    '',
+  ].join('\n');
+}
+
+export function parseArgs(
+  args: string[],
+  cwd: () => string = process.cwd,
+): { repo: string } {
+  let repo: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '-h' || arg === '--help') throw new HelpRequested();
+    if (arg === '--repo') {
+      const value = args[index + 1];
+      if (!value || value.startsWith('--')) {
+        throw new UsageError('--repo requires a path value');
+      }
+      if (repo !== undefined) {
+        throw new UsageError('repository root was specified more than once');
+      }
+      repo = value;
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('-')) throw new UsageError(`unknown argument: ${arg}`);
+    if (repo !== undefined) {
+      throw new UsageError('repository root was specified more than once');
+    }
+    repo = arg;
   }
-  console.log(
-    `\n${REGISTRY.length} artifacts declared, ${fails.length} FAIL, ` +
-      `${findings.length - fails.length} known gap(s)`,
+  return { repo: repo ?? cwd() };
+}
+
+const defaultGitRunner: GitRunner = (args) => Bun.spawnSync(['git', ...args]);
+
+export function resolveRoot(
+  repo: string,
+  runGit: GitRunner = defaultGitRunner,
+): string {
+  const root = resolve(repo);
+  if (!existsSync(root)) {
+    throw new UsageError(`repository root does not exist: ${repo}`);
+  }
+  if (!statSync(root).isDirectory()) {
+    throw new UsageError(`repository root is not a directory: ${repo}`);
+  }
+  const result = runGit(['-C', root, 'rev-parse', '--show-toplevel']);
+  if (result.exitCode !== 0) {
+    throw new UsageError(`repository root is not inside a git work tree: ${repo}`);
+  }
+  return root;
+}
+
+function gitFailure(args: string[], result: GitResult): HardError {
+  const detail = decoder.decode(result.stderr).trim();
+  return new HardError(
+    `git ${args.join(' ')} failed with exit code ${result.exitCode}` +
+      (detail ? `: ${detail}` : ''),
   );
-  process.exit(fails.length === 0 ? 0 : 1);
+}
+
+export function collectFiles(
+  root: string,
+  runGit: GitRunner = defaultGitRunner,
+): { files: string[]; tracked: Set<string> } {
+  const sweepArgs = ['-C', root, 'ls-files', '*.ts', '*.sh'];
+  const sweep = runGit(sweepArgs);
+  if (sweep.exitCode !== 0) throw gitFailure(sweepArgs, sweep);
+  const files = decoder.decode(sweep.stdout).split('\n').filter(Boolean);
+  if (files.length === 0) {
+    throw new HardError(
+      'the sweep found no files — refusing to report a contract verdict',
+    );
+  }
+
+  const trackedArgs = ['-C', root, 'ls-files'];
+  const trackedResult = runGit(trackedArgs);
+  if (trackedResult.exitCode !== 0) throw gitFailure(trackedArgs, trackedResult);
+  const tracked = new Set(
+    decoder.decode(trackedResult.stdout).split('\n').filter(Boolean),
+  );
+  return { files, tracked };
+}
+
+export function main(argv: string[], deps: MainDeps = {}): number {
+  const writeOut = deps.stdout ?? ((text) => process.stdout.write(text));
+  const writeErr = deps.stderr ?? ((text) => process.stderr.write(text));
+  const runGit = deps.runGit ?? defaultGitRunner;
+  try {
+    const options = parseArgs(argv, deps.cwd);
+    const root = resolveRoot(options.repo, runGit);
+    const { files, tracked } = collectFiles(root, runGit);
+    const findings = checkStateContract(
+      root,
+      files,
+      REGISTRY,
+      KNOWN_GAPS,
+      (p) => tracked.has(p),
+    );
+    const fails = findings.filter((f) => f.level === 'FAIL');
+    for (const f of findings) {
+      writeOut(`${f.level} ${f.id}: ${f.detail}\n`);
+    }
+    writeOut(
+      `\n${REGISTRY.length} artifacts declared, ${fails.length} FAIL, ` +
+        `${findings.length - fails.length} known gap(s)\n`,
+    );
+    return fails.length === 0 ? 0 : 1;
+  } catch (error) {
+    if (error instanceof HelpRequested) {
+      writeOut(usage());
+      return 0;
+    }
+    if (error instanceof UsageError) {
+      writeErr(`Usage error: ${error.message}\n\n${usage()}`);
+      return 2;
+    }
+    if (error instanceof HardError) {
+      writeErr(`Hard error: ${error.message}\n`);
+      return 3;
+    }
+    throw error;
+  }
+}
+
+if (import.meta.main) {
+  process.exit(main(process.argv.slice(2)));
 }

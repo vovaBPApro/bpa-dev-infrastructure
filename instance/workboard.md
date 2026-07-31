@@ -73,6 +73,35 @@ note. Derived-work items live here; Human directives stay in
   typed. Same false-green class as the reap `status=pass` and the CI
   green-on-SKIP holes closed earlier tonight.
 
+- **W-17 — a checker manufactured a fully-formatted FALSE RED from a typo**
+  (found 2026-07-31, fixed on branch `ag-statecontract-argv`, UNLANDED —
+  evidence-gate logic is Tier A and needs independent review):
+  `bun tools/state-contract/check.ts --repo .` printed `29 artifacts declared,
+  32 FAIL, 0 known gap(s)` and exited 1. Every line of it was false. Three
+  stacked fail-open holes, each individually survivable, together a verdict
+  generator: (a) the repo root was `process.argv[2]`, positional, with no flag
+  parsing and no validation — `--repo .` set `root = "--repo"` and silently
+  discarded the real path (the flag exists in `tools/instructions/check.ts`,
+  which is exactly why the typo was natural); (b) the `git -C <root> ls-files`
+  calls via `Bun.spawnSync` never checked `exitCode`, so git's "cannot change to
+  '--repo'" came back as success-with-empty-stdout; (c) an empty sweep was
+  treated as evidence rather than an error — zero files swept means nothing
+  references anything, so all 29 declared artifacts reported "referenced by
+  nothing" and all 3 known gaps reported "the reader is gone". Internally
+  consistent, correctly formatted, and completely disconnected from the tree.
+  **The diagnosing insight, stated plainly: a result that is identical on two
+  different trees is a result that never read either tree, and that invariance
+  is the tell.** `--repo .`, `/nonexistent-xyz`, a non-git directory and an
+  empty git repo all produced the same byte-identical 32-FAIL verdict; the only
+  input that changed the output was the one spelling that happened to work.
+  Same false-evidence class as W-16 and as the reap `status=pass` and CI
+  green-on-SKIP holes: a report is accepted as evidence without anything forcing
+  it to have come from the thing it claims to describe. Generalization to sweep
+  for in a later pass: every checker in this repo that shells out and then reads
+  stdout — an unchecked exit status plus an empty-result-means-nothing-found
+  assumption is the same bug wherever it appears, and an empty input set must
+  never be allowed to reach a verdict.
+
 ### Migration-loss restore queue (2026-07-30)
 
 Source: parity audit against the **live** old daemon at

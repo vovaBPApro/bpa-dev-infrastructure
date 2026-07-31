@@ -14,7 +14,9 @@ import {
   REGISTRY,
   checkStateContract,
   collapseAtomicTempSiblings,
+  main,
   normalizeInterpolation,
+  parseArgs,
   stripComments,
   sweepArtifacts,
 } from './check';
@@ -32,6 +34,112 @@ function fixture(files: Record<string, string>): {
 }
 
 const trackedAlways = () => true;
+
+function captureMain(args: string[], deps: Parameters<typeof main>[1] = {}) {
+  let stdout = '';
+  let stderr = '';
+  const exitCode = main(args, {
+    ...deps,
+    stdout: (text) => {
+      stdout += text;
+    },
+    stderr: (text) => {
+      stderr += text;
+    },
+  });
+  return { exitCode, stdout, stderr };
+}
+
+test('--repo requires a value and never produces a contract verdict', () => {
+  const result = captureMain(['--repo']);
+  expect(result.exitCode).toBe(2);
+  expect(result.stderr).toContain('--repo requires a path value');
+  expect(result.stdout).not.toContain('FAIL ');
+  expect(result.stdout).not.toContain('artifacts declared');
+});
+
+test('a nonexistent root is a usage error that names the bad value', () => {
+  const badRoot = '/nonexistent-xyz';
+  const result = captureMain([badRoot]);
+  expect(result.exitCode).toBe(2);
+  expect(result.stderr).toContain(badRoot);
+  expect(result.stdout).not.toContain('artifacts declared');
+});
+
+test('unknown flags and multiple roots are usage errors', () => {
+  expect(captureMain(['--rep0', '.']).exitCode).toBe(2);
+  expect(captureMain(['--strict']).exitCode).toBe(2);
+  expect(() => parseArgs(['--repo', '.', 'extra'])).toThrow();
+  expect(() => parseArgs(['--repo', '.', '--repo', '.'])).toThrow();
+});
+
+test('a failed git sweep is a hard error, not a verdict', () => {
+  const encoded = new TextEncoder();
+  const failedSweep = captureMain(['.'], {
+    runGit: (args) =>
+      args.includes('rev-parse')
+        ? { exitCode: 0, stdout: encoded.encode('.'), stderr: encoded.encode('') }
+        : {
+            exitCode: 128,
+            stdout: encoded.encode(''),
+            stderr: encoded.encode('simulated git failure'),
+          },
+  });
+  expect(failedSweep.exitCode).toBe(3);
+  expect(failedSweep.stderr).toContain('simulated git failure');
+  expect(failedSweep.stdout).not.toContain('artifacts declared');
+
+  let invocation = 0;
+  const failedTrackedList = captureMain(['.'], {
+    runGit: () => {
+      invocation += 1;
+      if (invocation < 3) {
+        return {
+          exitCode: 0,
+          stdout: encoded.encode('tools/state-contract/check.ts\n'),
+          stderr: encoded.encode(''),
+        };
+      }
+      return {
+        exitCode: 128,
+        stdout: encoded.encode(''),
+        stderr: encoded.encode('simulated tracked-list failure'),
+      };
+    },
+  });
+  expect(failedTrackedList.exitCode).toBe(3);
+  expect(failedTrackedList.stderr).toContain('simulated tracked-list failure');
+  expect(failedTrackedList.stdout).not.toContain('artifacts declared');
+});
+
+test('an empty sweep is a hard error that refuses a verdict', () => {
+  const encoded = new TextEncoder();
+  const result = captureMain(['.'], {
+    runGit: () => ({
+      exitCode: 0,
+      stdout: encoded.encode(''),
+      stderr: encoded.encode(''),
+    }),
+  });
+  expect(result.exitCode).toBe(3);
+  expect(result.stderr).toContain(
+    'the sweep found no files — refusing to report a contract verdict',
+  );
+  expect(result.stdout).not.toContain('artifacts declared');
+});
+
+test('positional, default, and --repo roots produce the same true verdict', () => {
+  const root = join(import.meta.dir, '..', '..');
+  const positional = captureMain([root]);
+  const byFlag = captureMain(['--repo', root]);
+  const byDefault = captureMain([], { cwd: () => root });
+  for (const result of [positional, byFlag, byDefault]) {
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain('0 FAIL, 3 known gap(s)');
+  }
+  expect(byFlag.stdout).toBe(positional.stdout);
+  expect(byDefault.stdout).toBe(positional.stdout);
+});
 
 test('HISTORICAL: a reader whose writer never migrated is a FAIL', () => {
   const { root, names } = fixture({

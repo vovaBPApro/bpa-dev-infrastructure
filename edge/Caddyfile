@@ -25,11 +25,16 @@
 		}
 	}
 
-	# Any OTHER /api/* path stays closed. The app answers unknown /api routes with
-	# a JSON 404 itself, but the edge must not forward them at all — the allowlist
-	# above is the whole API surface that is public.
+	# The application's own API. This was briefly closed at the edge when the UI
+	# was exposed, which broke the product: the dashboard loaded but could not
+	# reach /api/bill/dashboard, so it rendered "No imported periods" while the
+	# database held six July transactions. The app itself answers unknown /api
+	# routes with a JSON 404 (verified), so closing them here only hid our own
+	# endpoints from our own UI.
 	handle /api/* {
-		respond 404
+		reverse_proxy {$APP_UPSTREAM} {
+			header_up Host {upstream_hostport}
+		}
 	}
 
 	# The application UI. Opened 2026-07-31 because the operator could not click

@@ -62,6 +62,7 @@ import {
   detectCodexPasteDeliveryState,
   evaluateStall,
   getWatchdogTimeoutConfig,
+  isMcpChannelDetached,
   isPendingReplyTimedOut,
   markWatchdogNoticeSent,
   maybeReadJson,
@@ -570,6 +571,14 @@ function shortId(): string {
 type BufferedMsg = { content: string; meta: Record<string, string> };
 const msgBuffer: BufferedMsg[] = [];
 const MAX_BUFFER = 200; // drop oldest when over cap
+type TelegramReplyOptions = {
+  chatId: string;
+  text: string;
+  replyTo?: number;
+  files?: string[];
+  format?: string;
+  loud?: boolean;
+};
 const PROCESS_STARTED_AT = new Date().toISOString();
 
 // Auto-reply throttle for "no Claude session" case — one notice per chat per
@@ -644,6 +653,57 @@ function markRepliedMany(successfulChatIds: string[]) {
     pending.replied_at = Date.now();
     pending.reply_source = 'explicit_reply';
   }
+}
+
+async function sendTelegramReply({
+  chatId,
+  text,
+  replyTo,
+  files = [],
+  format = 'text',
+  loud = false,
+}: TelegramReplyOptions): Promise<number[]> {
+  const access = loadAccess();
+  const limit = Math.max(
+    1,
+    Math.min(access.textChunkLimit ?? MAX_CHUNK_LIMIT, MAX_CHUNK_LIMIT),
+  );
+  const mode = access.chunkMode ?? 'length';
+  const replyMode = access.replyToMode ?? 'first';
+  const parseMode =
+    format === 'markdownv2' ? ('MarkdownV2' as const) : undefined;
+  const sentIds: number[] = [];
+
+  for (const [index, part] of chunk(text, limit, mode).entries()) {
+    const threaded =
+      replyTo != null &&
+      replyMode !== 'off' &&
+      (replyMode === 'all' || index === 0);
+    const sent = await bot.api.sendMessage(chatId, part, {
+      ...(threaded ? { reply_parameters: { message_id: replyTo } } : {}),
+      ...(parseMode ? { parse_mode: parseMode } : {}),
+      ...(!loud ? { disable_notification: true } : {}),
+    });
+    sentIds.push(sent.message_id);
+  }
+
+  for (const file of files) {
+    assertSendable(file);
+    if (statSync(file).size > MAX_ATTACHMENT_BYTES) {
+      throw new Error(`file too large: ${file}`);
+    }
+    const opts: Record<string, unknown> = {};
+    if (replyTo != null && replyMode !== 'off') {
+      opts.reply_parameters = { message_id: replyTo };
+    }
+    if (!loud) opts.disable_notification = true;
+    const input = new InputFile(file);
+    const sent = PHOTO_EXTS.has(extname(file).toLowerCase())
+      ? await bot.api.sendPhoto(chatId, input, opts)
+      : await bot.api.sendDocument(chatId, input, opts);
+    sentIds.push(sent.message_id);
+  }
+  return sentIds;
 }
 
 function turnKey(
@@ -1008,58 +1068,15 @@ function createMcpServer(): Server {
             args.reply_to != null ? Number(args.reply_to) : undefined;
           const files = (args.files as string[] | undefined) ?? [];
           const format = (args.format as string | undefined) ?? 'text';
-          const silent = !loud;
-          const parseMode =
-            format === 'markdownv2' ? ('MarkdownV2' as const) : undefined;
-
           assertAllowedChat(chat_id);
-          for (const f of files) {
-            assertSendable(f);
-            const st = statSync(f);
-            if (st.size > MAX_ATTACHMENT_BYTES)
-              throw new Error(`file too large: ${f}`);
-          }
-
-          const access = loadAccess();
-          const limit = Math.max(
-            1,
-            Math.min(access.textChunkLimit ?? MAX_CHUNK_LIMIT, MAX_CHUNK_LIMIT),
-          );
-          const mode = access.chunkMode ?? 'length';
-          const replyMode = access.replyToMode ?? 'first';
-          const chunks = chunk(text, limit, mode);
-          const sentIds: number[] = [];
-
-          for (let i = 0; i < chunks.length; i++) {
-            const shouldReplyTo =
-              reply_to != null &&
-              replyMode !== 'off' &&
-              (replyMode === 'all' || i === 0);
-            const sent = await bot.api.sendMessage(chat_id, chunks[i], {
-              ...(shouldReplyTo
-                ? { reply_parameters: { message_id: reply_to } }
-                : {}),
-              ...(parseMode ? { parse_mode: parseMode } : {}),
-              ...(silent ? { disable_notification: true } : {}),
-            });
-            sentIds.push(sent.message_id);
-          }
-
-          for (const f of files) {
-            const ext = extname(f).toLowerCase();
-            const input = new InputFile(f);
-            const opts: Record<string, unknown> = {};
-            if (reply_to != null && replyMode !== 'off')
-              opts.reply_parameters = { message_id: reply_to };
-            if (silent) opts.disable_notification = true;
-            if (PHOTO_EXTS.has(ext)) {
-              const sent = await bot.api.sendPhoto(chat_id, input, opts);
-              sentIds.push(sent.message_id);
-            } else {
-              const sent = await bot.api.sendDocument(chat_id, input, opts);
-              sentIds.push(sent.message_id);
-            }
-          }
+          const sentIds = await sendTelegramReply({
+            chatId: chat_id,
+            text,
+            replyTo: reply_to,
+            files,
+            format,
+            loud,
+          });
 
           // Outbound watchdog: this chat received an explicit reply/complete
           // — clear its pending entry so the auto-relay timer does not fire.
@@ -2766,17 +2783,111 @@ const httpServer = createServer(
 
     // Health check
     if (req.method === 'GET' && url.pathname === '/health') {
+      const binding = currentBinding();
+      const transportConnected = activeServer !== null;
+      const alive = isConnectionAlive();
+      const connected = transportConnected && alive;
+      const tmuxLive = binding?.tmux_session ? await tmuxAlive() : false;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(
         JSON.stringify({
           status: 'ok',
           bot: botUsername || 'starting',
-          connected: isConnectionAliveForStatus(),
-          alive: isConnectionAlive(),
+          connected,
+          alive,
+          transport_connected: transportConnected,
+          mcp_detached: isMcpChannelDetached({
+            provider: binding?.provider,
+            connected,
+            tmuxAlive: tmuxLive,
+          }),
+          direct_reply_endpoint: '/reply',
           buffered: msgBuffer.length,
           pid: process.pid,
         }),
       );
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/mcp/rebind') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          ok: true,
+          status: 'reconnect_required',
+          sse_endpoint: '/sse',
+        }),
+      );
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/reply') {
+      const raw = await readRequestBody(req);
+      let input: Record<string, unknown>;
+      try {
+        input = JSON.parse(raw) as Record<string, unknown>;
+      } catch {
+        input = { text: raw };
+      }
+      const chat =
+        input.chat_id != null ? String(input.chat_id) : notifyChatId();
+      const text = typeof input.text === 'string' ? input.text : '';
+      if (!chat || !text.trim()) {
+        res.writeHead(400, { 'Content-Type': 'text/plain' });
+        res.end('missing chat or text');
+        return;
+      }
+      try {
+        assertAllowedChat(chat);
+        const replyTo =
+          input.reply_to != null ? Number(input.reply_to) : undefined;
+        const files = Array.isArray(input.files)
+          ? input.files.filter((file): file is string => typeof file === 'string')
+          : [];
+        const messageIds = await sendTelegramReply({
+          chatId: chat,
+          text,
+          replyTo: Number.isFinite(replyTo) ? replyTo : undefined,
+          files,
+          format: input.format === 'markdownv2' ? 'markdownv2' : 'text',
+          loud: input.loud === true,
+        });
+        markReplied(chat);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            ok: true,
+            chat_id: chat,
+            message_ids: messageIds,
+          }),
+        );
+      } catch (err) {
+        res.writeHead(502, { 'Content-Type': 'text/plain' });
+        res.end(`send_failed: ${err instanceof Error ? err.message : err}`);
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/ack') {
+      const raw = await readRequestBody(req);
+      let bodyChat: string | null = null;
+      try {
+        const value = (JSON.parse(raw) as { chat_id?: unknown }).chat_id;
+        if (value != null) bodyChat = String(value);
+      } catch {
+        // Empty body uses the persisted binding.
+      }
+      const chat = bodyChat ?? notifyChatId();
+      if (!chat) {
+        res.writeHead(400, { 'Content-Type': 'text/plain' });
+        res.end('no chat_id and no bound chat');
+        return;
+      }
+      const pending = pendingReplies.get(chat);
+      const cleared = pending && pending.replied_at == null ? 1 : 0;
+      markReplied(chat);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, chat_id: chat, cleared }));
       return;
     }
 

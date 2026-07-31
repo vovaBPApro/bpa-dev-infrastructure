@@ -13,6 +13,16 @@ export type PersistedBinding = {
   state_version: number;
 };
 
+export type McpDetachState = {
+  provider?: Provider;
+  connected: boolean;
+  tmuxAlive: boolean;
+};
+
+export function isMcpChannelDetached(state: McpDetachState): boolean {
+  return state.provider === 'claude' && !state.connected && state.tmuxAlive;
+}
+
 export type PendingReply = {
   chatId: string;
   messageId?: number;

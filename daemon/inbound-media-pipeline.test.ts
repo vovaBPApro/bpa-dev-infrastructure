@@ -64,7 +64,7 @@ function isolatedEnv(overrides: Record<string, string>): Record<string, string> 
 
 type SentMessage = { chat_id: string; text: string };
 
-type TgFile = { path: string; bytes: Uint8Array };
+type TgFile = { path: string; bytes: Uint8Array<ArrayBuffer> };
 
 type Harness = {
   chatId: string;

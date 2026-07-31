@@ -22,3 +22,6 @@ orchestrator/runtime.env
 
 node_modules/
 *.log
+
+# Ephemeral stand workspaces created by morning.sh / stand scenarios
+stand/workspaces/

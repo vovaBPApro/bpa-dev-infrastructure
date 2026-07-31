@@ -87,9 +87,8 @@ unit_path="$(dirname "$BUN_BIN"):$(dirname "$codex_bin"):/usr/local/bin:/usr/bin
 if ! systemd-run --collect --unit "$unit" \
   --setenv="HOME=$HOME" --setenv="TMPDIR=$tmp_dir" --setenv="PATH=$unit_path" \
   --working-directory="$worktree" \
-  --property="StandardOutput=append:$log" --property="StandardError=append:$log" \
-  /bin/bash -c 'exec "$1" exec --dangerously-bypass-approvals-and-sandbox "$(cat "$2")"' \
-  _ "$codex_bin" "$prompt" >/dev/null; then
+  /bin/bash -o pipefail -c '"$1" exec --dangerously-bypass-approvals-and-sandbox "$(cat "$2")" 2>&1 | "$3" "$4" >>"$5"' \
+  _ "$codex_bin" "$prompt" "$BUN_BIN" "$repo/daemon/mask-stream.ts" "$log" >/dev/null; then
   printf 'launch-lane: unit launch failed; retained worktree for diagnosis: %s\n' "$worktree" >&2
   exit 1
 fi

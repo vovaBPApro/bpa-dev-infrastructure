@@ -60,7 +60,11 @@ if grep -Fxq -- '--user' "$SCRATCH/systemd.args"; then
   exit 1
 fi
 grep -Fq -- '--working-directory=' "$SCRATCH/systemd.args"
-grep -Fq 'StandardOutput=append:' "$SCRATCH/systemd.args"
+if grep -Fq 'StandardOutput=append:' "$SCRATCH/systemd.args"; then
+  printf 'lane output bypassed the masking sink\n' >&2
+  exit 1
+fi
+grep -Fq 'daemon/mask-stream.ts' "$SCRATCH/systemd.args"
 test -f "$SCRATCH/codex.executed"
 grep -Fxq 'exec' "$SCRATCH/codex.args"
 grep -Fxq -- '--dangerously-bypass-approvals-and-sandbox' "$SCRATCH/codex.args"

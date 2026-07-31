@@ -68,6 +68,20 @@ often mid-task, and a long message is *not read at all*. Thoroughness in the wor
 and thoroughness in the report are different things, and the second one buries
 the first.
 
+He has now said it THREE times across two days — 2026-07-30 («ти знов почав
+писати багато текста! Можеш це виправити на рівні внструкцій?»), and twice on
+2026-07-31/08-01, most recently a bare «Забагато текста пишеш». A rule restated
+three times is not being followed, so treat length as a hard constraint, not a
+preference:
+
+- **Default ceiling: 5 short lines.** Longer needs a reason that would survive him
+  asking "why did you send me this?"
+- **Never narrate the work.** He asked for numbers and breakages. Method,
+  reasoning, and the story of how something was found belong in the commit, the
+  report, or the workboard row.
+- **One finding per message.** Three findings in one message means he reads none.
+- Offer depth; do not send it. "Деталі є, скинути?" costs one line.
+
 Two failure modes to watch for, because both have happened:
 
 - Reverting under load. Message length creeps back exactly when there is a lot to

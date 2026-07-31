@@ -30,6 +30,7 @@ import {
   InlineKeyboard,
   InputFile,
   type Context,
+  type Transformer,
 } from 'grammy';
 import type { ReactionTypeEmoji } from 'grammy/types';
 import { randomBytes } from 'crypto';
@@ -90,6 +91,11 @@ import {
   parseHumanMissionCommand,
 } from './human-mission';
 import { resolveWhisperConfig, transcribeAudio } from './transcribe';
+import {
+  applyOutboundHistory,
+  contentFingerprint,
+  logInbound,
+} from './history-logger';
 import {
   AutonomyKeepalive,
   deliverAutonomyNudge,
@@ -512,6 +518,13 @@ const bot = new Bot(TOKEN, {
     ? { apiRoot: process.env.TELEGRAM_API_ROOT }
     : undefined,
 });
+
+// Record every supported Bot API delivery attempt. The history module stores
+// metadata and a content fingerprint only; message bodies and API errors can
+// contain credentials and must never enter this forensic log.
+const logOutboundHistory: Transformer = (prev, method, payload, signal) =>
+  applyOutboundHistory(prev, method, payload, signal);
+bot.api.config.use(logOutboundHistory);
 
 // File downloads must follow the same root as Bot API calls. Before this
 // constant existed, getFile downloads hardcoded api.telegram.org, so a stubbed
@@ -3655,6 +3668,19 @@ async function handleInbound(
       /* best-effort; never block delivery on mirroring */
     }
   }
+
+  // Schedule off the delivery path. Never persist the body: its fingerprint
+  // proves which candidate content arrived without creating another secret
+  // store when credentials are sent through Telegram.
+  logInbound({
+    ts: new Date().toISOString(),
+    chat_id,
+    user: from.username ?? String(from.id),
+    ...(msgId != null ? { message_id: msgId } : {}),
+    type: attachment?.kind ?? 'text',
+    kind: 'update',
+    ...contentFingerprint(text),
+  });
 
   void bot.api.sendChatAction(chat_id, 'typing').catch(() => {});
 

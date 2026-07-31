@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CADDYFILE="${EDGE_TEST_CADDYFILE:-$SCRIPT_DIR/Caddyfile}"
 TMP_DIR="$(mktemp -d)"
 CADDY_PID=""
 UPSTREAM_PID=""
@@ -15,20 +16,10 @@ cleanup() {
 trap cleanup EXIT
 
 # shellcheck disable=SC2016 # these are literal Caddy placeholders
-grep -Fq '{$EDGE_DOMAIN}' "$SCRIPT_DIR/Caddyfile"
+grep -Fq '{$EDGE_DOMAIN}' "$CADDYFILE"
 # shellcheck disable=SC2016 # these are literal Caddy placeholders
-grep -Fq 'reverse_proxy {$APP_UPSTREAM}' "$SCRIPT_DIR/Caddyfile"
-[[ "$(grep -c '/api/integrations/.*/callback' "$SCRIPT_DIR/Caddyfile")" -eq 2 ]]
-grep -Fq 'import /var/lib/bpa-previews/routes/*.caddy' "$SCRIPT_DIR/Caddyfile"
-# The edge no longer carries a literal `respond 404`: the application's own API
-# and the SPA are both proxied, and the app answers unknown /api routes with a
-# JSON 404 itself. Asserting the config STRING was what made this test pass while
-# the real contract had changed, so assert the BEHAVIOUR instead — an unknown
-# /api path must still be refused end to end.
-if command -v curl >/dev/null 2>&1 && curl -s -o /dev/null -m 10 "https://${EDGE_TEST_DOMAIN:-agentic.bpa.pro}/" 2>/dev/null; then
-  unknown_api=$(curl -s -o /dev/null -w '%{http_code}' -m 15 "https://${EDGE_TEST_DOMAIN:-agentic.bpa.pro}/api/definitely-not-a-route")
-  [[ "$unknown_api" == "404" ]] || { echo "ERROR: unknown /api returned $unknown_api, expected 404" >&2; exit 1; }
-fi
+grep -Fq 'reverse_proxy {$APP_UPSTREAM}' "$CADDYFILE"
+grep -Fq 'import /var/lib/bpa-previews/routes/*.caddy' "$CADDYFILE"
 grep -Fq 'AmbientCapabilities=CAP_NET_BIND_SERVICE' "$SCRIPT_DIR/bpa-edge.service"
 grep -Fq 'EnvironmentFile=/etc/bpa-edge/edge.env' "$SCRIPT_DIR/bpa-edge.service"
 grep -Fq 'systemctl restart bpa-edge.service' "$SCRIPT_DIR/install.sh"
@@ -51,11 +42,11 @@ done
 
 if command -v caddy >/dev/null 2>&1; then
   EDGE_DOMAIN=edge.test.invalid APP_UPSTREAM=http://127.0.0.1:3000 \
-    caddy validate --config "$SCRIPT_DIR/Caddyfile"
+    caddy validate --config "$CADDYFILE" --adapter caddyfile
 elif command -v docker >/dev/null 2>&1; then
   docker run --rm \
     -e EDGE_DOMAIN=edge.test.invalid -e APP_UPSTREAM=http://127.0.0.1:3000 \
-    -v "$SCRIPT_DIR/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.10.0 \
+    -v "$CADDYFILE:/etc/caddy/Caddyfile:ro" caddy:2.10.0 \
     caddy validate --config /etc/caddy/Caddyfile
 else
   echo 'ERROR: caddy or docker is required for config validation' >&2
@@ -68,6 +59,10 @@ command -v caddy >/dev/null 2>&1 || {
 }
 command -v bun >/dev/null 2>&1 || {
   echo 'ERROR: bun is required for the stub upstream' >&2
+  exit 1
+}
+command -v curl >/dev/null 2>&1 || {
+  echo 'ERROR: curl is required for the HTTPS routing regression lock' >&2
   exit 1
 }
 
@@ -84,8 +79,10 @@ Bun.serve({
     if (request.headers.get("host") !== `127.0.0.1:${port}`) {
       return new Response("unexpected upstream Host", { status: 421 });
     }
-    return new Response(new URL(request.url).pathname, {
-      status: 409,
+    const path = new URL(request.url).pathname;
+    const status = path === "/api/definitely-not-a-route" ? 404 : 409;
+    return new Response(path, {
+      status,
       headers: { "X-Stub-Upstream": "reached" },
     });
   },
@@ -95,7 +92,7 @@ STUB_PORT="$UPSTREAM_PORT" bun run "$TMP_DIR/upstream.ts" >"$TMP_DIR/upstream.lo
 UPSTREAM_PID=$!
 EDGE_DOMAIN="https://localhost:$EDGE_PORT" EDGE_HTTP_PORT=$((EDGE_PORT + 2000)) \
   APP_UPSTREAM="http://127.0.0.1:$UPSTREAM_PORT" \
-  caddy run --config "$SCRIPT_DIR/Caddyfile" >"$TMP_DIR/caddy.log" 2>&1 &
+  caddy run --config "$CADDYFILE" --adapter caddyfile >"$TMP_DIR/caddy.log" 2>&1 &
 CADDY_PID=$!
 
 ready=false
@@ -112,26 +109,59 @@ if [[ "$ready" != true ]]; then
   exit 1
 fi
 
-for callback in qbo google; do
-  headers="$TMP_DIR/$callback.headers"
-  body="$TMP_DIR/$callback.body"
+public_paths=(
+  /api/integrations/qbo/callback
+  /api/integrations/google/callback
+  /api/integrations/qbo/connect
+  /api/integrations/google/connect
+  /api/integrations/status
+)
+for path in "${public_paths[@]}"; do
+  name="${path//\//_}"
+  headers="$TMP_DIR/$name.headers"
+  body="$TMP_DIR/$name.body"
   status="$(curl --insecure --silent --show-error --dump-header "$headers" \
     --output "$body" --write-out '%{http_code}' \
-    "https://localhost:$EDGE_PORT/api/integrations/$callback/callback")"
+    "https://localhost:$EDGE_PORT$path")"
   [[ "$status" == 409 ]] || {
-    echo "ERROR: $callback callback returned $status instead of upstream 409" >&2
+    echo "ERROR: public flow route $path returned $status instead of upstream 409" >&2
     exit 1
   }
   grep -qi '^X-Stub-Upstream: reached' "$headers"
   grep -qi '^X-BPA-Edge: callback-proxy' "$headers"
-  [[ "$(<"$body")" == "/api/integrations/$callback/callback" ]]
+  [[ "$(<"$body")" == "$path" ]]
 done
 
-status="$(curl --insecure --silent --show-error --output "$TMP_DIR/fallback.body" \
-  --write-out '%{http_code}' "https://localhost:$EDGE_PORT/not-public")"
-[[ "$status" == 409 ]] || {
-  echo "ERROR: UI fallback returned $status instead of upstream 409" >&2
-  exit 1
-}
+for path in /api/definitely-not-a-route / /bill; do
+  name="${path//\//_}"
+  headers="$TMP_DIR/$name.headers"
+  body="$TMP_DIR/$name.body"
+  status="$(curl --insecure --silent --show-error --dump-header "$headers" \
+    --output "$body" --write-out '%{http_code}' "https://localhost:$EDGE_PORT$path")"
+  expected=409
+  [[ "$path" == /api/definitely-not-a-route ]] && expected=404
+  [[ "$status" == "$expected" ]] || {
+    echo "ERROR: forwarded route $path returned $status instead of upstream $expected" >&2
+    exit 1
+  }
+  grep -qi '^X-Stub-Upstream: reached' "$headers" || {
+    echo "ERROR: forwarded route $path did not reach the upstream" >&2
+    exit 1
+  }
+done
+
+for path in /api/integrations/gmail/callback /api/integrations/drive/callback; do
+  headers="$TMP_DIR/retired-${path##*/}.headers"
+  status="$(curl --insecure --silent --show-error --dump-header "$headers" \
+    --output /dev/null --write-out '%{http_code}' "https://localhost:$EDGE_PORT$path")"
+  [[ "$status" == 404 ]] || {
+    echo "ERROR: retired route $path returned $status instead of edge 404" >&2
+    exit 1
+  }
+  if grep -qi '^X-Stub-Upstream: reached' "$headers"; then
+    echo "ERROR: retired route $path reached the upstream" >&2
+    exit 1
+  fi
+done
 
 echo 'PASS HTTPS edge routes exact callback allowlist, preview imports, and UI fallback'

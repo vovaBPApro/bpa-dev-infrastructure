@@ -25,6 +25,16 @@
 		}
 	}
 
+	# Retired provider-specific Google callbacks must not be revived by the
+	# general API proxy below. Google now uses the single callback above.
+	@oauth_retired path \
+ /api/integrations/gmail/callback \
+ /api/integrations/drive/callback
+
+	handle @oauth_retired {
+		respond 404
+	}
+
 	# The application's own API. This was briefly closed at the edge when the UI
 	# was exposed, which broke the product: the dashboard loaded but could not
 	# reach /api/bill/dashboard, so it rendered "No imported periods" while the

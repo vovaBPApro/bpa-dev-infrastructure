@@ -24,7 +24,7 @@ const unknown = (reason: string): QuotaField => ({ state: 'unknown', reason });
 
 type Candidate = { timestamp: number; limits: Record<string, unknown> };
 
-export function parseCodexQuotaJsonl(contents: readonly string[]): Pick<LocalVendorQuota, 'codex5h' | 'codex7d' | 'codexCredits'> {
+export function parseCodexQuotaJsonl(contents: readonly string[], now = Date.now()): Pick<LocalVendorQuota, 'codex5h' | 'codex7d' | 'codexCredits'> {
   let latest: Candidate | null = null;
   for (const content of contents) {
     for (const line of content.split('\n')) {
@@ -43,10 +43,21 @@ export function parseCodexQuotaJsonl(contents: readonly string[]): Pick<LocalVen
     const reason = 'no local Codex token_count event with rate_limits';
     return { codex5h: unknown(reason), codex7d: unknown(reason), codexCredits: null };
   }
+  if (latest.timestamp > now + LOCAL_QUOTA_FUTURE_SKEW_MS) {
+    const reason = 'latest local Codex event is future-dated';
+    return { codex5h: unknown(reason), codex7d: unknown(reason), codexCredits: null };
+  }
+  if (now - latest.timestamp > LOCAL_QUOTA_FRESHNESS_MS) {
+    const reason = 'latest local Codex event is stale';
+    return { codex5h: unknown(reason), codex7d: unknown(reason), codexCredits: null };
+  }
   const windows = [latest.limits.primary, latest.limits.secondary]
     .filter((v): v is Record<string, unknown> => Boolean(v && typeof v === 'object'));
   const window = (minutes: number, label: string): QuotaField => {
     const value = windows.find((v) => v.window_minutes === minutes);
+    if (value && typeof value.resets_at === 'number' && value.resets_at * 1000 <= now) {
+      return unknown(`${label} window already reset`);
+    }
     return value && typeof value.used_percent === 'number'
       ? { state: 'known', usedPercent: value.used_percent, resetsAt: typeof value.resets_at === 'number' ? value.resets_at : null }
       : unknown(`${label} window absent from latest local Codex event`);
@@ -102,7 +113,7 @@ export function parseClaudeQuotaJsonl(contents: readonly string[], now = Date.no
     fetchedAt <= now + LOCAL_QUOTA_FUTURE_SKEW_MS &&
     now - fetchedAt <= LOCAL_QUOTA_FRESHNESS_MS,
   );
-  const authFailure = loginState === 'relogin-needed' || latestAuthFailureAt > (latest?.timestamp ?? Number.NEGATIVE_INFINITY);
+  const authFailure = loginState === 'relogin-needed' || latestAuthFailureAt > fetchedAt;
   const unavailable = !latest
     ? noSnapshot
     : !complete
@@ -183,7 +194,7 @@ export function readLocalVendorQuota(home: string, now = Date.now()): LocalVendo
   recentFile(join(home, '.codex', 'quota-latest.jsonl'), cutoff, claudeCandidates);
   recentJsonl(join(home, '.claude', 'projects'), cutoff, claudeCandidates);
   return {
-    ...parseCodexQuotaJsonl(readBounded(codexCandidates)),
+    ...parseCodexQuotaJsonl(readBounded(codexCandidates), now),
     ...parseClaudeQuotaJsonl(readBounded(claudeCandidates), now),
   };
 }

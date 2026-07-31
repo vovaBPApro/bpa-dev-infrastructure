@@ -218,7 +218,12 @@ run_suite() {
   rc=$?
   end=$(date +%s)
   dur=$(( end - start ))
-  if (( rc == 0 )); then
+  if (( rc == 0 )) && grep -q '^NOT-APPLICABLE ' "$log"; then
+    local na_reason
+    na_reason="$(grep '^NOT-APPLICABLE ' "$log" | paste -sd ';' -)"
+    record "$suite" NOT-APPLICABLE "$dur" "$na_reason"
+    printf 'N/A   %-56s %s\n' "$suite" "$na_reason"
+  elif (( rc == 0 )); then
     record "$suite" PASS "$dur" ''
     printf 'PASS  %-56s %ss\n' "$suite" "$dur"
   else
@@ -316,10 +321,11 @@ partition_check() {
 # ── Job summary ────────────────────────────────────────────────────────────
 emit_summary() {
   local group="$1" guard_rc="$2"
-  local pass fail skip total docker_calls refused
+  local pass fail skip not_applicable total docker_calls refused
   pass=$(awk -F'\t' '$2=="PASS"' "$RESULTS" | wc -l)
   fail=$(awk -F'\t' '$2=="FAIL"' "$RESULTS" | wc -l)
   skip=$(awk -F'\t' '$2=="SKIP"' "$RESULTS" | wc -l)
+  not_applicable=$(awk -F'\t' '$2=="NOT-APPLICABLE"' "$RESULTS" | wc -l)
   total=$(wc -l < "$RESULTS")
   docker_calls=$(wc -l < "$DOCKER_CALL_LOG")
   refused=$(grep -c '^REFUSED' "$DOCKER_CALL_LOG" 2>/dev/null || true)
@@ -331,11 +337,17 @@ emit_summary() {
     printf '| passed | %s |\n' "$pass"
     printf '| **failed** | **%s** |\n' "$fail"
     printf '| **skipped** | **%s** |\n' "$skip"
+    printf '| not applicable | %s |\n' "$not_applicable"
     printf '| discovered | %s |\n' "$total"
     printf '| coverage guard | %s |\n\n' "$( ((guard_rc==0)) && printf 'ok' || printf 'FAILED' )"
     if (( skip > 0 )); then
       printf '### skipped, with reason\n\n| suite | reason |\n|---|---|\n'
       awk -F'\t' '$2=="SKIP" {printf "| `%s` | %s |\n", $1, $4}' "$RESULTS"
+      printf '\n'
+    fi
+    if (( not_applicable > 0 )); then
+      printf '### not applicable, with reason\n\n| suite | reason |\n|---|---|\n'
+      awk -F'\t' '$2=="NOT-APPLICABLE" {printf "| `%s` | %s |\n", $1, $4}' "$RESULTS"
       printf '\n'
     fi
     if (( fail > 0 )); then

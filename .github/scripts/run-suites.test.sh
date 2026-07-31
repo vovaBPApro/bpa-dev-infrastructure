@@ -11,6 +11,7 @@
 #   1. unmet requirement  -> SKIP row is named AND the run exits non-zero
 #   2. SUITES_ALLOW_SKIP=1 -> same run is waived (local-machine escape hatch)
 #   3. fully runnable      -> passes with exit 0 and no skip noise
+#   4. subject absent      -> NOT-APPLICABLE is distinct from PASS and SKIP
 set -uo pipefail
 
 RUNNER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run-suites.sh"
@@ -98,6 +99,22 @@ grep -q 'PASS  planted/plain.test.sh' <<<"$out3"
 check "the planted suite actually executed" "$?"
 grep -q 'SKIP-GATE' <<<"$out3"
 check "no skip-gate output on a zero-skip run" "$(( $? == 0 ? 1 : 0 ))"
+
+# ── Case 4: a checker with no subject is named NOT-APPLICABLE ──────────────
+REPO4="$WORK/repo-not-applicable"
+make_repo "$REPO4"
+mkdir -p "$REPO4/tools/subject"
+cat > "$REPO4/tools/subject/check.ts" <<'EOF'
+console.log('NOT-APPLICABLE SUBJECT: positive runtime evidence absent');
+EOF
+git -C "$REPO4" add -A
+out4="$(cd "$REPO4" && bash .github/scripts/run-suites.sh checks 2>&1)"
+rc4=$?
+check "not-applicable checker exits the group cleanly" "$(( rc4 == 0 ? 0 : 1 ))"
+grep -q 'N/A   tools/subject/check.ts' <<<"$out4"
+check "not-applicable is reported distinctly from PASS" "$?"
+grep -q 'SKIP-GATE' <<<"$out4"
+check "not-applicable does not enter the skip gate" "$(( $? == 0 ? 1 : 0 ))"
 
 if (( FAILURES > 0 )); then
   printf '%d assertion(s) failed\n' "$FAILURES" >&2

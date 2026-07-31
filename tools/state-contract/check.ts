@@ -476,6 +476,43 @@ export type RunningLaneState =
   | { running: number; reason?: never }
   | { running: null; reason: string };
 
+export type OrchestratorHostState =
+  | { applicable: true }
+  | { applicable: false; reason: string };
+
+// FLEET-IDLE has a subject only while this machine is actively hosting the
+// orchestrator. The named tmux session is runtime evidence created and probed
+// by orchestrator/launch.sh; checkout location and CI environment variables are
+// not evidence about host role.
+export function queryOrchestratorHost(root: string): OrchestratorHostState {
+  let session = 'orchestrator';
+  try {
+    const configured = readFileSync(join(root, 'bootstrap/env.template'), 'utf8')
+      .match(/^ORCH_SESSION=([^\s#]+)$/m)?.[1];
+    if (configured) session = configured;
+  } catch {
+    // launch.sh's portable default remains authoritative without a template.
+  }
+  let proc: ReturnType<typeof Bun.spawnSync>;
+  try {
+    proc = Bun.spawnSync(['tmux', 'has-session', '-t', session], {
+      env: process.env,
+    });
+  } catch {
+    return {
+      applicable: false,
+      reason: `live ${session} tmux session is not observable (tmux unavailable)`,
+    };
+  }
+  if (proc.exitCode !== 0) {
+    return {
+      applicable: false,
+      reason: `live ${session} tmux session does not exist`,
+    };
+  }
+  return { applicable: true };
+}
+
 export function countOpenWorkboardRows(source: string): number {
   const lines = source.split('\n');
   const start = lines.findIndex((line) => /^## Open(?:\s|$)/.test(line));
@@ -728,25 +765,30 @@ if (import.meta.main) {
     KNOWN_GAPS,
     (p) => tracked.has(p),
   );
-  let workboardSource: string | undefined;
-  try {
-    workboardSource = readFileSync(join(root, 'instance/workboard.md'), 'utf8');
-  } catch (error) {
-    findings.push({
-      level: 'FAIL',
-      id: 'FLEET-IDLE',
-      detail:
-        'open workboard row count unknown/degraded: cannot read ' +
-        `instance/workboard.md: ` +
-        (error instanceof Error ? error.message : String(error)),
-    });
-  }
-  if (workboardSource !== undefined) {
-    const fleetFinding = checkFleetIdle(
-      workboardSource,
-      queryRunningSystemLanes(),
-    );
-    if (fleetFinding) findings.push(fleetFinding);
+  const orchestratorHost = queryOrchestratorHost(root);
+  if (!orchestratorHost.applicable) {
+    console.log(`NOT-APPLICABLE FLEET-IDLE: ${orchestratorHost.reason}`);
+  } else {
+    let workboardSource: string | undefined;
+    try {
+      workboardSource = readFileSync(join(root, 'instance/workboard.md'), 'utf8');
+    } catch (error) {
+      findings.push({
+        level: 'FAIL',
+        id: 'FLEET-IDLE',
+        detail:
+          'open workboard row count unknown/degraded: cannot read ' +
+          `instance/workboard.md: ` +
+          (error instanceof Error ? error.message : String(error)),
+      });
+    }
+    if (workboardSource !== undefined) {
+      const fleetFinding = checkFleetIdle(
+        workboardSource,
+        queryRunningSystemLanes(),
+      );
+      if (fleetFinding) findings.push(fleetFinding);
+    }
   }
   const fails = findings.filter((f) => f.level === 'FAIL');
   for (const f of findings) {

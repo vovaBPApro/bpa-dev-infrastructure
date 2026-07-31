@@ -21,6 +21,12 @@ if "$SCRIPT_DIR/install.sh" --domain edge.test.invalid --upstream 'http://127.0.
   echo 'ERROR: installer accepted an invalid upstream' >&2
   exit 1
 fi
+for forbidden_upstream in http://127.0.0.1:4822 http://127.0.0.1:99999; do
+  if "$SCRIPT_DIR/install.sh" --domain edge.test.invalid --upstream "$forbidden_upstream" >/dev/null 2>&1; then
+    echo "ERROR: installer accepted forbidden upstream $forbidden_upstream" >&2
+    exit 1
+  fi
+done
 
 if command -v caddy >/dev/null 2>&1; then
   EDGE_DOMAIN=edge.test.invalid APP_UPSTREAM=http://127.0.0.1:3000 \

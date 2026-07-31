@@ -24,6 +24,9 @@ for path in "${paths[@]}"; do
   trap 'rm -f "$headers"' EXIT
   status="$(curl --silent --show-error --output /dev/null --dump-header "$headers" \
     --connect-timeout 10 --max-time 20 --write-out '%{http_code}' "https://$DOMAIN$path")"
+  [[ "$status" =~ ^[1-4][0-9][0-9]$ ]] || {
+    echo "FAIL: upstream callback returned HTTP $status: $path" >&2; exit 1;
+  }
   grep -Eiq '^X-BPA-Edge:[[:space:]]*callback-proxy[[:space:]]*$' "$headers" || {
     echo "FAIL: callback was not served by the allowlisted edge route: $path" >&2; exit 1;
   }
@@ -31,6 +34,20 @@ for path in "${paths[@]}"; do
   rm -f "$headers"
   trap - EXIT
 done
+
+blocked_headers="$(mktemp)"
+trap 'rm -f "$blocked_headers"' EXIT
+blocked_status="$(curl --silent --show-error --output /dev/null --dump-header "$blocked_headers" \
+  --connect-timeout 10 --max-time 20 --write-out '%{http_code}' "https://$DOMAIN/__edge_allowlist_probe__")"
+[[ "$blocked_status" == 404 ]] || {
+  echo "FAIL: non-allowlisted HTTPS path returned $blocked_status, not 404" >&2; exit 1;
+}
+if grep -Eiq '^X-BPA-Edge:[[:space:]]*callback-proxy' "$blocked_headers"; then
+  echo 'FAIL: non-allowlisted HTTPS path reached the callback route' >&2; exit 1
+fi
+rm -f "$blocked_headers"
+trap - EXIT
+echo 'PASS HTTPS non-allowlisted path -> 404'
 
 redirect_headers="$(mktemp)"
 trap 'rm -f "$redirect_headers"' EXIT

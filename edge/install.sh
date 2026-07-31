@@ -32,6 +32,13 @@ done
   echo 'ERROR: --upstream must be an http(s) URL with an explicit host and port' >&2; exit 2;
 }
 [[ "$UPSTREAM" != *$'\n'* && "$DOMAIN" != *$'\n'* ]] || exit 2
+UPSTREAM_PORT="${UPSTREAM##*:}"
+((10#$UPSTREAM_PORT >= 1 && 10#$UPSTREAM_PORT <= 65535)) || {
+  echo 'ERROR: upstream port must be between 1 and 65535' >&2; exit 2;
+}
+[[ "$UPSTREAM_PORT" != 4822 ]] || {
+  echo 'ERROR: port 4822 is reserved for bpa-telegram-daemon' >&2; exit 2;
+}
 
 if ! command -v caddy >/dev/null 2>&1; then
   apt-get update

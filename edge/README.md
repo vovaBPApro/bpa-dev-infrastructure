@@ -36,8 +36,9 @@ Run the complete public verification after DNS resolves:
 ```
 
 This uses normal CA validation (no `--insecure`), proves all three callback
-routes carry the edge marker, and proves HTTP redirects to the same HTTPS
-origin. Useful diagnostics are:
+routes carry the edge marker without a 5xx response, proves an unlisted HTTPS
+path is a 404, and proves HTTP redirects to the same HTTPS origin. Useful
+diagnostics are:
 
 ```sh
 systemctl status bpa-edge.service

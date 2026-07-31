@@ -22,8 +22,11 @@
 //     the UA template uses short generic reasons; the detail (paths, repo
 //     locations, git stderr) stays in the raw view;
 //   - source-derived free text that must be shown (commit subjects, mission
-//     text, branch names, model label) is sanitized: control/ANSI/bidi chars
-//     stripped, unexpected charsets replaced with '?', length-capped.
+//     text, branch names, model label) crosses one redacting sanitizer:
+//     paths, assignments and token-shaped values are visibly replaced before
+//     control/charset filtering and length-capping.
+//   - the production builder returns one already-prefixed, total-capped
+//     Telegram message; callers do not join or prefix renderer output.
 //
 // All shell access goes through the injected ShRunner, which the caller
 // (daemon/server.ts) builds with a hard timeout — the W-13 git-timeout
@@ -64,6 +67,8 @@ export const UA = {
   landedUnknown: 'невідомо (немає перевірених даних git)',
   blockersLabel: 'Блокери',
   blockersNone: 'немає',
+  blockersPresentTruncated: 'є (деталі скорочено)',
+  summaryTruncated: '… (частину деталей приховано)',
   blockerOrchDead: 'оркестратор не запущений',
   blockerOrchUnknown: 'стан оркестратора невідомий',
   blockerStaleHb: (hb: string) => `серцебиття оркестратора застаріле (${hb})`,
@@ -97,27 +102,91 @@ export function uaAge(ms: number): string {
 
 // ── Sanitization ─────────────────────────────────────────────────────────────
 // Source-derived free text (commit subjects, mission text, branch names, model
-// labels) is rendered into a chat message a human reads. Bound it: strip
-// control chars (incl. ANSI ESC), C1, zero-width and bidi-override characters;
-// replace anything outside the expected charset (Latin/Cyrillic letters,
-// digits, common punctuation) with '?' so hostile payloads are visible but
-// inert; collapse whitespace; cap the length. Failure REASONS are never passed
-// through here — they simply are not rendered in the human summary at all.
+// labels) is rendered into a chat message a human reads. Every such value
+// crosses this one boundary. Redaction precedes truncation so no partial secret
+// can be left at the length boundary. It is repeated after character filtering
+// so a transformation cannot accidentally re-form a sensitive value.
+//
+// Failure REASONS are never passed through here — they simply are not rendered
+// in the human summary at all.
 export const MAX_HUMAN_TEXT = 96;
 
+const REDACTED = '<redacted>';
+const PATH_REDACTED = '<path redacted>';
+
+function redactSensitiveText(input: string): string {
+  return input
+    // URLs with embedded credentials are sensitive as a whole.
+    .replace(/\bhttps?:\/\/[^\s/@:]+:[^\s/@]+@[^\s]+/gi, REDACTED)
+    // All conventional environment assignments, plus case-insensitive
+    // credential-looking key/value pairs.
+    .replace(
+      /\b[A-Z_][A-Z0-9_]*\s*=\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/g,
+      REDACTED,
+    )
+    .replace(
+      /\b(?:token|secret|password|passwd|pass|credential|key|api|auth|bearer|session|cookie|private)(?:[-_][A-Za-z0-9]+)*\s*=\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
+      REDACTED,
+    )
+    // Absolute paths require multiple segments, deliberately preserving the
+    // ordinary command name `/status`. Home-relative and Windows paths are
+    // handled separately.
+    .replace(
+      /(^|[\s("'=:\[])\/(?:[A-Za-z0-9._~-]+\/)+[A-Za-z0-9._~-]+/g,
+      `$1${PATH_REDACTED}`,
+    )
+    .replace(
+      /(^|[\s("'=:\[])~\/(?:[A-Za-z0-9._~-]+\/)*[A-Za-z0-9._~-]+/g,
+      `$1${PATH_REDACTED}`,
+    )
+    .replace(
+      /(^|[\s("'=:\[])[A-Za-z]:\\(?:[^\\\s]+\\)+[^\\\s]+/g,
+      `$1${PATH_REDACTED}`,
+    )
+    // Known vendor token prefixes. Character classes keep synthetic token
+    // signatures out of the repository while exercising the same runtime
+    // values.
+    .replace(
+      /\b(?:gh[pousr]_|github[_]pat_)[A-Za-z0-9_]{10,}\b/g,
+      REDACTED,
+    )
+    .replace(
+      /\b(?:sk-|xox[abprs]-|hf_|glpat-|npm_|dop_v1_)[A-Za-z0-9._-]{12,}\b/g,
+      REDACTED,
+    )
+    .replace(/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, REDACTED)
+    .replace(/\bAIza[0-9A-Za-z_-]{20,}\b/g, REDACTED)
+    .replace(/\bSG\.[A-Za-z0-9._-]{16,}\b/g, REDACTED)
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]{8,}/gi, REDACTED)
+    // JWTs and mixed-case-plus-digit opaque runs are credential-shaped even
+    // without a known vendor prefix.
+    .replace(
+      /\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
+      REDACTED,
+    )
+    .replace(
+      /\b(?=[A-Za-z0-9]{24,}\b)(?=[A-Za-z0-9]*[a-z])(?=[A-Za-z0-9]*[A-Z])(?=[A-Za-z0-9]*[0-9])[A-Za-z0-9]+\b/g,
+      REDACTED,
+    );
+}
+
 export function sanitizeForHuman(input: string, maxLen = MAX_HUMAN_TEXT): string {
-  const cleaned = input
+  const controlsRemoved = input
     .replace(
       /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g,
       ' ',
-    )
+    );
+  const cleaned = redactSensitiveText(controlsRemoved)
     .replace(
-      /[^\p{Script=Latin}\p{Script=Cyrillic}\p{Nd} .,:;!?'()\[\]\/+#%&*_@=«»’“”—–-]/gu,
+      /[^\p{Script=Latin}\p{Script=Cyrillic}\p{Nd} .,:;!?'()<>\[\]\/+#%&*_@=«»’“”—–-]/gu,
       '?',
     )
     .replace(/\s+/g, ' ')
     .trim();
-  return cleaned.length > maxLen ? `${cleaned.slice(0, maxLen - 1)}…` : cleaned;
+  const redacted = redactSensitiveText(cleaned);
+  return redacted.length > maxLen
+    ? `${redacted.slice(0, maxLen - 1)}…`
+    : redacted;
 }
 
 // Ukrainian plural picker: one/few(2-4)/many.
@@ -251,6 +320,12 @@ export type StatusSummaryDeps = {
 const MAX_LANES_SHOWN = 4;
 const MAX_LANDED_SHOWN = 3;
 
+export const HUMAN_STATUS_PREFIX = '📊 ';
+// Includes the prefix and truncation marker. 900 is intentionally far below
+// Telegram's 4096-code-unit single-message limit and exercises the cap even
+// when every currently rendered field reaches its individual maximum.
+export const MAX_HUMAN_STATUS_LENGTH = 900;
+
 export function renderHumanStatus(deps: StatusSummaryDeps): string[] {
   const now = deps.now ?? Date.now();
   const lines: string[] = [];
@@ -365,7 +440,111 @@ export function renderHumanStatus(deps: StatusSummaryDeps): string[] {
   return lines;
 }
 
-// Convenience gatherer for the daemon: one call site, everything injected.
+type CappedLine = {
+  text: string;
+  kind: 'fixed' | 'lane-detail' | 'landed-detail';
+};
+
+function prefixedStatusLength(lines: CappedLine[]): number {
+  return `${HUMAN_STATUS_PREFIX}${lines.map((line) => line.text).join('\n')}`
+    .length;
+}
+
+// Final human /status boundary. The blocker line is always kept last. When the
+// total cap is exceeded, extra lane details go first, then extra landed commit
+// details, then remaining list details, then the longest remaining field text.
+// The visible truncation marker is inserted immediately before blockers. If
+// even that cannot fit, the blocker line is replaced with a truthful fixed
+// "blockers exist" form rather than being dropped or softened.
+export function renderHumanStatusMessage(deps: StatusSummaryDeps): string {
+  const rendered = renderHumanStatus(deps);
+  const blockerText = rendered.at(-1) ?? `${UA.blockersLabel}: ${UA.blockerOrchUnknown}`;
+  const content = rendered.slice(0, -1);
+  const landedHeader = content.findIndex((line) =>
+    line.startsWith(`${UA.landedLabel}:`),
+  );
+  const workHeader = content.findIndex((line) =>
+    line.startsWith(`${UA.workLabel}:`),
+  );
+  const lines: CappedLine[] = content.map((text, index) => ({
+    text,
+    kind:
+      workHeader >= 0 &&
+      index > workHeader &&
+      (landedHeader < 0 || index < landedHeader)
+        ? 'lane-detail'
+        : landedHeader >= 0 && index > landedHeader
+          ? 'landed-detail'
+          : 'fixed',
+  }));
+  lines.push({ text: blockerText, kind: 'fixed' });
+  if (prefixedStatusLength(lines) <= MAX_HUMAN_STATUS_LENGTH) {
+    return `${HUMAN_STATUS_PREFIX}${lines.map((line) => line.text).join('\n')}`;
+  }
+
+  lines.splice(lines.length - 1, 0, {
+    text: UA.summaryTruncated,
+    kind: 'fixed',
+  });
+  const fits = () => prefixedStatusLength(lines) <= MAX_HUMAN_STATUS_LENGTH;
+  const dropFromEnd = (
+    kind: CappedLine['kind'],
+    minimumRemaining: number,
+  ): void => {
+    while (!fits()) {
+      const matching = lines
+        .map((line, index) => ({ line, index }))
+        .filter(({ line }) => line.kind === kind);
+      if (matching.length <= minimumRemaining) return;
+      lines.splice(matching.at(-1)!.index, 1);
+    }
+  };
+
+  dropFromEnd('lane-detail', 1);
+  dropFromEnd('landed-detail', 1);
+  dropFromEnd('lane-detail', 0);
+  dropFromEnd('landed-detail', 0);
+
+  while (!fits()) {
+    const candidates = lines
+      .map((line, index) => ({ line, index }))
+      .filter(
+        ({ line, index }) =>
+          index < lines.length - 2 &&
+          line.kind === 'fixed' &&
+          line.text.length > 24,
+      )
+      .sort((a, b) => b.line.text.length - a.line.text.length);
+    const candidate = candidates[0];
+    if (!candidate) break;
+    const excess = prefixedStatusLength(lines) - MAX_HUMAN_STATUS_LENGTH;
+    const nextLength = Math.max(24, candidate.line.text.length - excess);
+    candidate.line.text = `${candidate.line.text
+      .slice(0, nextLength - 1)
+      .trimEnd()}…`;
+  }
+
+  if (!fits()) {
+    const blockerIndex = lines.length - 1;
+    const blockersExist =
+      lines[blockerIndex].text !== `${UA.blockersLabel}: ${UA.blockersNone}`;
+    lines.splice(
+      0,
+      lines.length,
+      { text: UA.summaryTruncated, kind: 'fixed' },
+      {
+        text: blockersExist
+          ? `${UA.blockersLabel}: ${UA.blockersPresentTruncated}`
+          : `${UA.blockersLabel}: ${UA.blockersNone}`,
+        kind: 'fixed',
+      },
+    );
+  }
+
+  return `${HUMAN_STATUS_PREFIX}${lines.map((line) => line.text).join('\n')}`;
+}
+
+// Convenience gatherer for the daemon: one final, prefixed, capped message.
 export function buildHumanStatus(args: {
   canonicalRepo: string;
   runCmd: ShRunner;
@@ -375,10 +554,10 @@ export function buildHumanStatus(args: {
   baseRef?: string;
   laneOpts?: { root?: string; branchPrefix?: string };
   now?: number;
-}): string[] {
+}): string {
   const now = args.now ?? Date.now();
   const baseRef = args.baseRef ?? 'origin/main';
-  return renderHumanStatus({
+  return renderHumanStatusMessage({
     orchestrator: args.orchestrator,
     heartbeat: readHeartbeatFile(args.heartbeatPath, now),
     lanes: countActiveLanes(args.canonicalRepo, args.runCmd, {

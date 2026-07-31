@@ -10,9 +10,12 @@ import { join } from 'node:path';
 import { countActiveLanes, type ActiveLanes, type ShRunner } from './status';
 import {
   HEARTBEAT_FRESH_MS,
+  HUMAN_STATUS_PREFIX,
+  MAX_HUMAN_STATUS_LENGTH,
   parseHeartbeat,
   readLastLanded,
   renderHumanStatus,
+  renderHumanStatusMessage,
   uaAge,
   uaPlural,
   type LastLanded,
@@ -402,6 +405,129 @@ test('SANITIZE: over-long source text is capped in the summary', () => {
   expect(landed.length).toBeLessThan(120);
 });
 
+test('SECURITY: every free-text sink redacts paths, assignments, and token shapes', () => {
+  const path = '/home/operator/private/state.db';
+  const envName = 'GITHUB' + '_TOKEN=';
+  const vendorToken =
+    'gh' + 'p_' + '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcd';
+  const opaque =
+    'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4Y5z6';
+  const credential = 'credential=' + 'supersecret';
+  const deps = healthyDeps();
+  deps.orchestrator.model = credential;
+  deps.mission = {
+    present: true,
+    mission: { desc: path, status: `${envName}synthetic` },
+    updatedAt: NOW,
+  };
+  deps.lanes = {
+    verified: true,
+    count: 1,
+    lanes: [{ path: '/not-rendered', branch: opaque, ahead: 1 }],
+  };
+  deps.lastLanded = {
+    verified: true,
+    entries: [{ subject: vendorToken, ageMs: 60_000 }],
+  };
+
+  const joined = renderHumanStatus(deps).join('\n');
+  expect(joined).toContain('<path redacted>');
+  expect(joined).toContain('<redacted>');
+  for (const leaked of [
+    path,
+    envName,
+    vendorToken,
+    opaque,
+    opaque.slice(0, 30),
+    credential,
+  ]) {
+    expect(joined).not.toContain(leaked);
+  }
+});
+
+test('SECURITY: legitimate /status subject, branch, status, and model stay readable', () => {
+  const joined = renderHumanStatus(healthyDeps()).join('\n');
+  expect(joined).toContain('[CODER] daemon: honest /status fields');
+  expect(joined).toContain('ag-status-human');
+  expect(joined).toContain('[running]');
+  expect(joined).toContain('Codex (gpt-5.5)');
+});
+
+test('SECURITY: required path and credential families are visibly redacted', () => {
+  const samples = [
+    '/etc/operator/private.conf',
+    '~/private',
+    'C:\\Users\\operator\\private.txt',
+    'DEPLOY_ENV=synthetic',
+    'password=synthetic',
+    'Bearer abcdefghijklmnop',
+    'gh' + 'o_abcdefghijklmnopqrstuvwxyz',
+    'github' + '_pat_abcdefghijklmnopqrstuvwxyz',
+    'sk-' + 'abcdefghijklmnopqrst',
+    'xox' + 'b-abcdefghijklmnopqrst',
+    'AKIA' + 'ABCDEFGHIJKLMNOP',
+    'ASIA' + 'ABCDEFGHIJKLMNOP',
+    'AIza' + 'abcdefghijklmnopqrstuvwxyz123456789',
+    'hf_' + 'abcdefghijklmnopqrst',
+    'glpat-' + 'abcdefghijklmnopqrst',
+    'npm_' + 'abcdefghijklmnopqrst',
+    'dop_v1_' + 'abcdefghijklmnopqrst',
+    'SG.' + 'abcdefghijklmnopqrst',
+    'abcdefgh.ijklmnop.qrstuvwx',
+    'https://user:pass@example.test/private',
+    'https://example.test/?token=synthetic',
+  ];
+
+  for (const sample of samples) {
+    const deps = healthyDeps();
+    deps.lastLanded = {
+      verified: true,
+      entries: [{ subject: sample, ageMs: 60_000 }],
+    };
+    const joined = renderHumanStatus(deps).join('\n');
+    expect(joined).not.toContain(sample);
+    expect(joined).toContain('redacted>');
+  }
+});
+
+test('SECURITY: final prefixed simultaneous-maxima summary is capped and keeps blockers', () => {
+  const deps = healthyDeps();
+  deps.orchestrator.model = 'M'.repeat(500);
+  deps.mission = {
+    present: true,
+    mission: {
+      status: 'S'.repeat(500),
+      desc: 'D'.repeat(500),
+    },
+    updatedAt: NOW - 999_999_999_999_999,
+  };
+  deps.lanes = {
+    verified: true,
+    count: 8,
+    lanes: Array.from({ length: 8 }, (_, i) => ({
+      path: `/lane/${i}`,
+      branch: String.fromCharCode(65 + i).repeat(500),
+      ahead: i === 0 ? -1 : 999_999_999_999_999,
+    })),
+  };
+  deps.lastLanded = {
+    verified: true,
+    entries: Array.from({ length: 6 }, (_, i) => ({
+      subject: String.fromCharCode(75 + i).repeat(500),
+      ageMs: 999_999_999_999_999,
+    })),
+  };
+
+  const message = renderHumanStatusMessage(deps);
+  expect(message.startsWith(HUMAN_STATUS_PREFIX)).toBe(true);
+  expect(message.length).toBeLessThanOrEqual(MAX_HUMAN_STATUS_LENGTH);
+  expect(message.length).toBeLessThanOrEqual(4096);
+  expect(message).toContain('… (частину деталей приховано)');
+  expect(message).toContain('Блокери: стан частини лейнів невідомий');
+  expect(message).not.toContain('Блокери: немає');
+  expect(message.at(-1)).not.toBe('…');
+});
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 test('uaAge and uaPlural cover the Ukrainian forms', () => {
@@ -432,6 +558,8 @@ test('WIRING: /status routes to the human renderer, /status raw keeps the old du
   const humanCall = block.indexOf('buildHumanStatus(');
   expect(humanGuard).toBeGreaterThan(-1);
   expect(humanCall).toBeGreaterThan(humanGuard);
+  expect(block).toContain('await sendLong(chat_id, summary)');
+  expect(block).not.toContain("lines.join('\\n')");
   // Raw path survives, after the human branch, in the same handler.
   const rawDump = block.indexOf('JSON.stringify(daemonHealth)');
   expect(rawDump).toBeGreaterThan(humanCall);

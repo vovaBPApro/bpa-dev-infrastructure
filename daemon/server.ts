@@ -2123,7 +2123,7 @@ async function handleSessionCommand(
     // /status → human summary (HR-150); /status raw and /session keep the
     // full technical dump for debugging.
     if (cmd === '/status' && arg !== 'raw') {
-      const lines = buildHumanStatus({
+      const summary = buildHumanStatus({
         canonicalRepo: CANONICAL_REPO,
         runCmd: shSync,
         heartbeatPath:
@@ -2141,7 +2141,7 @@ async function handleSessionCommand(
         mission: readActiveMission(STATE_DB_PATH),
         baseRef: GIT_STALL_REF || 'origin/main',
       });
-      await sendLong(chat_id, `📊 ${lines.join('\n')}`);
+      await sendLong(chat_id, summary);
       return true;
     }
     const botProbe = await bot.api

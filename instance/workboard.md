@@ -262,3 +262,19 @@ process-local honesty relabel `fa2a974`.
 - **P-03 — daemon cutover to this repo's daemon/** (flips
   `capture.mode: manual → daemon` in `instance/params.yaml`; inbox ledger
   check then fail-closes) — needs the migration/cutover moment.
+
+- **W-19 — rotate every credential transported through Telegram** (opened
+  2026-07-31). During the live integration setup the operator sent, over
+  Telegram: the QuickBooks client id + secret, the Google OAuth client secret,
+  and two GCP service-account JSON keys. Each was moved to a mode-0600 file
+  outside the repo, and each was purged from the four places the daemon mirrors
+  inbound messages (`instance/decisions/inbox.jsonl`, the daemon mission log,
+  Claude history, the session transcript) with a whole-box sweep confirming
+  containment. None reached git.
+  BUT a Telegram-transported secret must be treated as EXPOSED regardless: it
+  existed in Telegram's infrastructure and may survive "delete for everyone".
+  Action: rotate all of them in the Google and Intuit consoles once the
+  integrations are proven working, then replace the local files. One click each.
+  Also worth deciding: a non-Telegram path for future secrets (the operator
+  pastes into a file over SSH, or a one-time secret link), so this row does not
+  recur every time a provider is added.

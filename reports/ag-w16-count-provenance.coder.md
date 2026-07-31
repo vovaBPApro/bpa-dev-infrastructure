@@ -1,54 +1,64 @@
 # W-16 count provenance coder report
 
-commit: d586a817baf70a6afcc8459a32830198fd1411bc [CODER] derive reported test counts from verify output
+commit: 434149fc1a4b57f717b37b799a41ff3dfc03cf37 [CODER] reject unverified prose count claims
 verify: bun test gate/completion-guard.test.ts && gate/land.test.sh && gate/land-batch.test.sh && gate/land-batch-hardening.test.sh && (cd daemon && bun run typecheck) && git diff --check origin/main...HEAD
-verify-count: 13/0
+verify-count: 14/0
 result: NO-GO
-blocker: required independent review artifact is absent; no review verdict exists under this worktree's `reports/` or another W-16 review worktree
+blocker: Tier A fix requires independent re-review at 434149fc1a4b57f717b37b799a41ff3dfc03cf37; the existing REJECT reviews the superseded SHA 9add65e42c8bd3ade448aa39bfe53cc1c55e535a
 secret-scan: clean
-remaining: independent review and landing
+remaining: independent re-review and landing; unrelated fresh-clone dispatch-check remains owned by ag-ci-dispatch-gate
 
 ## Regression lock
 
-Fail-before was reproduced against `origin/main` (`62eb1717`) with the new
-completion-guard regression test applied without the implementation:
+FAIL-BEFORE command, run with only the new prose regression test added to the
+reviewed implementation:
 
-```text
-red-exit=1
-Expected: 2
-Received: 0
-(fail) completion guard > rejects a claimed count that disagrees with the verify command output
-0 pass
-1 fail
+```sh
+bun test gate/completion-guard.test.ts
 ```
 
-Pass-after was reproduced at `d586a817baf70a6afcc8459a32830198fd1411bc`:
+Real output excerpt:
 
 ```text
-(pass) completion guard > rejects a claimed count that disagrees with the verify command output
-13 pass
-0 fail
+Expected: 2
+Received: 0
+(fail) completion guard > rejects a prose count outside the provenance-checked field
+FAIL_BEFORE_STATUS=1
+```
+
+PASS-AFTER command, run after the implementation change:
+
+```sh
+bun test gate/completion-guard.test.ts
+```
+
+Real output excerpt:
+
+```text
+(pass) completion guard > rejects a prose count outside the provenance-checked field
+Ran 14 tests across 1 file.
+PASS_AFTER_STATUS=0
+```
+
+The full quoted `verify:` command then exited 0 at the implementation SHA. Its
+shell-suite markers were:
+
+```text
 land tests: pass
 land batch tests: pass
 land batch hardening tests: pass
-```
-
-The complete quoted `verify:` command exited 0. The reported count is the exact
-machine-emitted count from the Bun suite; the shell suites do not emit numeric
-counts and are reported only by their pass markers.
-
-## Typecheck and unrelated CI exclusion
-
-The main-branch fix `b096cb5f` is present after rebase. The required daemon
-typecheck now exits 0:
-
-```text
 $ bunx tsc --noEmit
 ```
 
-The repository-wide CI `dispatch-check` failure is excluded exactly as directed:
-it concerns fresh-clone pack validation, is unrelated to this diff, and belongs
-to lane `ag-ci-dispatch-gate`. It was not run and is not a W-16 blocker.
+The canonical diff secret scan emitted `secret-scan: clean`. `git status
+--short` before the implementation commit named only the two intended guard
+files; after that commit it was empty.
+
+## External exclusion
+
+The fresh-clone `dispatch-check` CI failure is excluded exactly as directed. It
+is unrelated to this diff and belongs to `ag-ci-dispatch-gate`; it was not
+chased or included in W-16 verification.
 
 ## Manifest consumption
 
@@ -61,4 +71,5 @@ isolated-test-environments d0c2162eeba5 — Isolated Test Environments
 operator-feedback 82d309b667eb — Operator Feedback
 instruction-layers f9a51936be92 — Instruction Layers
 branching-policy dbe7ace1193b — Branching Policy
+reproducible-from-git 822d9efe694b — Reproducible From Git
 ```

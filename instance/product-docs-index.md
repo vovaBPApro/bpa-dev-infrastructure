@@ -94,3 +94,26 @@ confirm against the docs before relying on any of them:
 - `impeccable` (impeccable.style) is the binding UI-quality bar for all UI work.
 
 Related: [[HR-330]] (the product restart directive, verbatim).
+
+## Provider identities recovered from the old host (2026-07-31)
+
+Recovered via the old orchestrator when the operator could not find the existing
+OAuth app in the console. Recorded here because a rebuilt host must be able to
+find these again — Hard Floor 5. **Identifiers only; no secrets.**
+
+| what | value |
+| --- | --- |
+| Google OAuth client ID | `628068962434-3vsnonada2ju680af7uuqajn8n38cfdr.apps.googleusercontent.com` |
+| Google Cloud project | `bpapro-agents` (628068962434) |
+| QuickBooks realm | `9130357776566416` — **production**, not sandbox |
+
+Why this matters: the ported code reads `GOOGLE_OAUTH_CLIENT_ID` /
+`GOOGLE_OAUTH_CLIENT_SECRET` from the environment and `.env.example` ships them
+blank, so the real values existed ONLY in the old host's env file. Nothing in git
+pointed at which project or client to reuse, and the operator was about to
+register a duplicate app because of it. That is precisely the "not in git must
+never mean not written down" failure named in `reproducible-from-git`.
+
+Secrets are still host-supplied and stay out of git; they are pulled from the
+Google/Intuit consoles into a mode-0600 file outside the repository. Only the
+identities live here.

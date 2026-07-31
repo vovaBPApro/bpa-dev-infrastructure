@@ -28,7 +28,61 @@ export type LedgerLevel = "FAIL" | "WARN" | "SKIP" | "PASS";
 export type LedgerFinding = { level: LedgerLevel; file: string; detail: string };
 
 type InboxRow = { msg_id: number | string; ts: string };
-type TriageRow = { msg_id: number | string; verdict: string };
+type TriageRow = {
+  msg_id: number | string;
+  verdict: string;
+  category: string;
+  reason: string;
+  triaged_by: string;
+  triaged_at: string;
+  [key: string]: unknown;
+};
+
+const TRIAGE_FIELDS = new Set([
+  "msg_id",
+  "verdict",
+  "category",
+  "reason",
+  "triaged_by",
+  "triaged_at",
+]);
+const CATEGORY_VALUE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const PROVENANCE_VALUE = /^[a-z0-9]+(?:[-_.][a-z0-9]+)*$/i;
+
+function validateTriageRow(row: TriageRow, line: number): LedgerFinding | undefined {
+  const file = `instance/decisions/triage.jsonl:${line}`;
+  if (!row || typeof row !== "object" || Array.isArray(row)) {
+    return { level: "FAIL", file, detail: "invalid triage row: an object is required" };
+  }
+  const forbidden = Object.keys(row).filter((field) => !TRIAGE_FIELDS.has(field));
+  if (forbidden.length > 0) {
+    return {
+      level: "FAIL",
+      file,
+      detail: `triage row contains forbidden free-text field(s): ${forbidden.join(", ")}`,
+    };
+  }
+  const validId =
+    (typeof row.msg_id === "number" && Number.isFinite(row.msg_id)) ||
+    (typeof row.msg_id === "string" && row.msg_id !== "");
+  if (!validId || !["chatter", "directive"].includes(row.verdict)) {
+    return { level: "FAIL", file, detail: "invalid triage row: msg_id and chatter/directive verdict are required" };
+  }
+  if (!CATEGORY_VALUE.test(row.category) || !CATEGORY_VALUE.test(row.reason)) {
+    return {
+      level: "FAIL",
+      file,
+      detail: "invalid triage row: category and reason must be category-only kebab-case tokens",
+    };
+  }
+  if (!PROVENANCE_VALUE.test(row.triaged_by) || !/^\d{4}-\d{2}-\d{2}$/.test(row.triaged_at)) {
+    return {
+      level: "FAIL",
+      file,
+      detail: "invalid triage row: triaged_by identifier and YYYY-MM-DD triaged_at provenance are required",
+    };
+  }
+}
 
 type JsonlResult<T> = { rows: Array<{ line: number; value: T }>; findings: LedgerFinding[] };
 
@@ -116,45 +170,32 @@ export function checkInboxAging(
 ): LedgerFinding[] {
   const findings: LedgerFinding[] = [];
   const decisionsDir = join(repo, "instance", "decisions");
-  const inboxPath = join(decisionsDir, "inbox.jsonl");
-  if (!existsSync(inboxPath)) {
-    const mode = readCaptureMode(repo);
-    if (mode === "daemon") {
-      return [{ level: "FAIL", file: "instance/decisions/inbox.jsonl", detail: "capture.mode=daemon — required inbox.jsonl is missing" }];
-    }
-    return [{ level: "SKIP", file: "instance/decisions/inbox.jsonl", detail: "capture.mode=manual — inbox not expected yet" }];
-  }
-
-  const inbox = readJsonl<InboxRow>(inboxPath, "instance/decisions/inbox.jsonl");
-  findings.push(...inbox.findings);
-  const routed = routedMsgIds(decisionsDir);
-
   const triagePath = join(decisionsDir, "triage.jsonl");
   const triaged = new Set<string>();
   if (existsSync(triagePath)) {
     const triage = readJsonl<TriageRow>(triagePath, "instance/decisions/triage.jsonl");
     findings.push(...triage.findings);
     for (const { line, value: row } of triage.rows) {
-      // Any recorded verdict (chatter OR directive) triages the row: it is no
-      // longer an unrouted-unknown. A `directive` verdict still expects an HR
-      // file, but that is the reconciliation sweep's job, not aging.
-      if (
-        row &&
-        (typeof row.msg_id === "number" || typeof row.msg_id === "string") &&
-        row.msg_id !== "" &&
-        typeof row.verdict === "string" &&
-        row.verdict !== ""
-      ) {
-        triaged.add(String(row.msg_id));
-      } else {
-        findings.push({
-          level: "FAIL",
-          file: `instance/decisions/triage.jsonl:${line}`,
-          detail: "invalid triage row: non-empty msg_id and verdict are required",
-        });
-      }
+      const invalid = validateTriageRow(row, line);
+      if (invalid) findings.push(invalid);
+      else triaged.add(String(row.msg_id));
     }
   }
+
+  const inboxPath = join(decisionsDir, "inbox.jsonl");
+  if (!existsSync(inboxPath)) {
+    const mode = readCaptureMode(repo);
+    if (mode === "daemon") {
+      findings.push({ level: "FAIL", file: "instance/decisions/inbox.jsonl", detail: "capture.mode=daemon — required inbox.jsonl is missing" });
+      return findings;
+    }
+    findings.push({ level: "SKIP", file: "instance/decisions/inbox.jsonl", detail: "capture.mode=manual — inbox not expected yet" });
+    return findings;
+  }
+
+  const inbox = readJsonl<InboxRow>(inboxPath, "instance/decisions/inbox.jsonl");
+  findings.push(...inbox.findings);
+  const routed = routedMsgIds(decisionsDir);
 
   let aged = 0;
   for (const { line, value: row } of inbox.rows) {

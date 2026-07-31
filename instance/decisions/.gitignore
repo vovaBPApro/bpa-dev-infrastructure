@@ -1,5 +1,4 @@
-# Runtime capture artifacts — raw inbound chat, never committed (secret-hygiene:
-# the jsonl carries verbatim Human messages that may contain sensitive words).
-# HR-*.md decision files ARE tracked; the .jsonl append logs are not.
+# Runtime capture artifact — raw inbound chat, never committed (secret-hygiene:
+# inbox.jsonl carries verbatim Human messages that may contain sensitive words).
+# HR-*.md and redacted triage.jsonl decision records ARE tracked.
 inbox.jsonl
-triage.jsonl

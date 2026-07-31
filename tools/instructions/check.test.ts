@@ -271,7 +271,14 @@ describe("check.ts ledger aging", () => {
     writeDecision(
       repo,
       "triage.jsonl",
-      JSON.stringify({ msg_id: 701, verdict: "chatter", ts: hoursAgoIso(47) }) + "\n",
+      JSON.stringify({
+        msg_id: 701,
+        verdict: "chatter",
+        category: "channel-check",
+        reason: "liveness-ping",
+        triaged_by: "orchestrator",
+        triaged_at: "2026-07-29",
+      }) + "\n",
     );
     const result = runCheckAt(repo, LEDGER_NOW, ["--strict"]);
     expect(result.status).toBe(0);

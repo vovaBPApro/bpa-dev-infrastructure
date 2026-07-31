@@ -102,7 +102,7 @@ describe("checkInboxAging", () => {
   test("a row triaged as chatter is not aged", () => {
     const root = repo({
       "inbox.jsonl": jsonl([{ msg_id: 503, chat_id: 1, ts: hoursAgo(48), text: "lol ok" }]),
-      "triage.jsonl": jsonl([{ msg_id: 503, verdict: "chatter", ts: hoursAgo(47) }]),
+      "triage.jsonl": jsonl([{ msg_id: 503, verdict: "chatter", category: "channel-check", reason: "liveness-ping", triaged_by: "orchestrator", triaged_at: "2026-07-29" }]),
     });
     expect(checkInboxAging(root, NOW, true).some((f) => f.level === "FAIL")).toBe(false);
   });
@@ -110,9 +110,25 @@ describe("checkInboxAging", () => {
   test("a row triaged as directive is also cleared from aging", () => {
     const root = repo({
       "inbox.jsonl": jsonl([{ msg_id: 504, chat_id: 1, ts: hoursAgo(48), text: "please do" }]),
-      "triage.jsonl": jsonl([{ msg_id: 504, verdict: "directive", ts: hoursAgo(47) }]),
+      "triage.jsonl": jsonl([{ msg_id: 504, verdict: "directive", category: "product-input", reason: "open-follow-up", triaged_by: "orchestrator", triaged_at: "2026-07-29" }]),
     });
     expect(checkInboxAging(root, NOW, true).some((f) => f.level === "FAIL")).toBe(false);
+  });
+
+  test("a triage row with verbatim message text FAILs", () => {
+    const root = repo({
+      "triage.jsonl": jsonl([{
+        msg_id: 508,
+        verdict: "chatter",
+        category: "channel-check",
+        reason: "liveness-ping",
+        triaged_by: "orchestrator",
+        triaged_at: "2026-07-29",
+        text: "verbatim Human message",
+      }]),
+    });
+    const findings = checkInboxAging(root, NOW, true);
+    expect(findings.some((f) => f.level === "FAIL" && f.detail.includes("forbidden free-text field(s): text"))).toBe(true);
   });
 
   test("torn/garbled jsonl lines are skipped, not crashed on", () => {

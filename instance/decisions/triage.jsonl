@@ -1,0 +1,8 @@
+{"msg_id":5,"verdict":"chatter","category":"channel-check","reason":"liveness-ping","triaged_by":"orchestrator","triaged_at":"2026-07-31"}
+{"msg_id":17,"verdict":"chatter","category":"channel-check","reason":"status-question","triaged_by":"orchestrator","triaged_at":"2026-07-31"}
+{"msg_id":23,"verdict":"chatter","category":"channel-incident","reason":"resolved-defect","triaged_by":"orchestrator","triaged_at":"2026-07-31"}
+{"msg_id":35,"verdict":"chatter","category":"channel-check","reason":"liveness-ping","triaged_by":"orchestrator","triaged_at":"2026-07-31"}
+{"msg_id":49,"verdict":"chatter","category":"channel-check","reason":"liveness-ping","triaged_by":"orchestrator","triaged_at":"2026-07-31"}
+{"msg_id":54,"verdict":"chatter","category":"channel-check","reason":"liveness-ping","triaged_by":"orchestrator","triaged_at":"2026-07-31"}
+{"msg_id":57,"verdict":"chatter","category":"channel-check","reason":"liveness-ping","triaged_by":"orchestrator","triaged_at":"2026-07-31"}
+{"msg_id":59,"verdict":"directive","category":"product-input","reason":"open-follow-up","triaged_by":"orchestrator","triaged_at":"2026-07-31"}

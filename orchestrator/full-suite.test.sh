@@ -3,8 +3,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FULL_SUITE_SCRIPT="${FULL_SUITE_SCRIPT:-$SCRIPT_DIR/full-suite.sh}"
 SCRATCH="$(mktemp -d)"
 trap 'rm -rf "$SCRATCH"' EXIT
+
+grep -Fxq 'EnvironmentFile=-$ENV_FILE' "$SCRIPT_DIR/../bootstrap/units/bpa-full-suite.service.in"
+grep -Fxq 'EnvironmentFile=-$ENV_FILE' "$SCRIPT_DIR/../bootstrap/units/orch-morning-report.service.in"
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert() { "$@" || fail "$*"; }
@@ -31,8 +35,35 @@ run_tick() {
   local root="$1" runtime="$2" outbox="$3"
   ORCH_CONFIG_FILE="$SCRATCH/no-runtime.env" ORCH_INSTALL_ROOT="$root" ORCH_RUNTIME_DIR="$runtime" \
     FULL_SUITE_LOG="$runtime/full-suite.log" NUDGE_OUTBOX_FILE="$outbox" \
-    FULL_SUITE_NUDGE_REPEAT_MS=3600000 "$SCRIPT_DIR/full-suite.sh"
+    FULL_SUITE_NUDGE_REPEAT_MS=3600000 "$FULL_SUITE_SCRIPT"
 }
+
+# Regression lock for the live-state stomp: discard the entire inherited
+# ORCH_* namespace, including unknown future names, and run in a copied tree.
+ISOLATION_ROOT="$SCRATCH/isolation-repo"
+ISOLATION_RUNTIME="$SCRATCH/isolation-runtime"
+LIVE_HEARTBEAT="$SCRATCH/live.heartbeat"
+LIVE_STATE="$SCRATCH/live.state.db"
+mkdir -p "$ISOLATION_ROOT"
+printf 'operator heartbeat\n' > "$LIVE_HEARTBEAT"
+printf 'operator state\n' > "$LIVE_STATE"
+printf '%s\n' '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  '[[ -z "${ORCH_HEARTBEAT_FILE+x}" ]]' \
+  '[[ -z "${ORCH_FUTURE_STATE_POINTER+x}" ]]' \
+  '[[ "$PWD" != "'"$ISOLATION_ROOT"'" ]]' \
+  '[[ "$ORCH_STATE_DB" == "$ORCH_RUNTIME_DIR/state.db" ]]' \
+  'printf isolated > relative-write' > "$ISOLATION_ROOT/isolation.test.sh"
+chmod +x "$ISOLATION_ROOT/isolation.test.sh"
+before_isolation="$(md5sum "$LIVE_HEARTBEAT" "$LIVE_STATE")"
+assert env ORCH_HEARTBEAT_FILE="$LIVE_HEARTBEAT" ORCH_FUTURE_STATE_POINTER="$LIVE_STATE" \
+  ORCH_STATE_DB="$LIVE_STATE" ORCH_CONFIG_FILE="$SCRATCH/no-runtime.env" \
+  ORCH_INSTALL_ROOT="$ISOLATION_ROOT" ORCH_RUNTIME_DIR="$ISOLATION_RUNTIME" \
+  FULL_SUITE_LOG="$ISOLATION_RUNTIME/full-suite.log" "$FULL_SUITE_SCRIPT"
+after_isolation="$(md5sum "$LIVE_HEARTBEAT" "$LIVE_STATE")"
+[[ "$before_isolation" == "$after_isolation" ]] || fail 'live ORCH_* targets changed'
+not_exists "$ISOLATION_ROOT/relative-write"
+contains 'pass=1 fail=0' "$ISOLATION_RUNTIME/full-suite.log"
 
 MORNING_SCRIPT="${MORNING_SCRIPT:-$SCRIPT_DIR/morning.sh}"
 
@@ -105,7 +136,7 @@ not_exists "$EXCLUDED_OUTBOX"
 KNOB_RUNTIME="$SCRATCH/knob-runtime"
 assert_not env ORCH_CONFIG_FILE="$SCRATCH/no-runtime.env" ORCH_INSTALL_ROOT="$FAIL_ROOT" ORCH_RUNTIME_DIR="$KNOB_RUNTIME" \
   FULL_SUITE_LOG="$KNOB_RUNTIME/full-suite.log" NUDGE_OUTBOX_FILE="$KNOB_RUNTIME/nudges.outbox" \
-  FULL_SUITE_NUDGE_REPEAT_MS=garbage "$SCRIPT_DIR/full-suite.sh"
+  FULL_SUITE_NUDGE_REPEAT_MS=garbage "$FULL_SUITE_SCRIPT"
 contains 'FULL-SUITE invalid-knob name=FULL_SUITE_NUDGE_REPEAT_MS value=garbage using-default=21600000' "$KNOB_RUNTIME/full-suite.log"
 
 # Invalid exclusion selectors fall back to the documented frozen-reference
@@ -113,13 +144,13 @@ contains 'FULL-SUITE invalid-knob name=FULL_SUITE_NUDGE_REPEAT_MS value=garbage 
 EXCLUDE_KNOB_RUNTIME="$SCRATCH/exclude-knob-runtime"
 assert env ORCH_CONFIG_FILE="$SCRATCH/no-runtime.env" ORCH_INSTALL_ROOT="$EXCLUDED_ROOT" ORCH_RUNTIME_DIR="$EXCLUDE_KNOB_RUNTIME" \
   FULL_SUITE_LOG="$EXCLUDE_KNOB_RUNTIME/full-suite.log" NUDGE_OUTBOX_FILE="$EXCLUDE_KNOB_RUNTIME/nudges.outbox" \
-  FULL_SUITE_EXCLUDE=garbage "$SCRIPT_DIR/full-suite.sh"
+  FULL_SUITE_EXCLUDE=garbage "$FULL_SUITE_SCRIPT"
 contains 'FULL-SUITE invalid-knob name=FULL_SUITE_EXCLUDE value=garbage using-default=migration-prep/' "$EXCLUDE_KNOB_RUNTIME/full-suite.log"
 contains 'pass=2 fail=0 skipped=1 failed=none skipped_list=migration-prep/reference-daemon/test/frozen.test.sh' "$EXCLUDE_KNOB_RUNTIME/full-suite.log"
 
 MISSING_RUNTIME="$SCRATCH/missing-runtime"
 assert_not env ORCH_CONFIG_FILE="$SCRATCH/no-runtime.env" ORCH_INSTALL_ROOT="$SCRATCH/absent-repo" ORCH_RUNTIME_DIR="$MISSING_RUNTIME" \
-  FULL_SUITE_LOG="$MISSING_RUNTIME/full-suite.log" "$SCRIPT_DIR/full-suite.sh"
+  FULL_SUITE_LOG="$MISSING_RUNTIME/full-suite.log" "$FULL_SUITE_SCRIPT"
 contains 'FULL-SUITE SKIP reason=repo-root-absent' "$MISSING_RUNTIME/full-suite.log"
 
 # The morning digest reads the last durable summary and remains fail-soft when

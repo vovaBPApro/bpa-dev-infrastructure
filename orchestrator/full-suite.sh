@@ -101,6 +101,25 @@ if [[ ! -d "$INSTALL_ROOT" ]]; then
   exit 1
 fi
 
+# Execute from a disposable copy with an empty inherited environment. This is
+# the complete ORCH_* boundary: newly added variables are isolated without
+# extending a hand-maintained denylist, and repo-relative defaults stay scratch.
+SUITE_SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/bpa-full-suite.XXXXXX")"
+trap 'rm -rf "$SUITE_SCRATCH"' EXIT
+SUITE_ROOT="$SUITE_SCRATCH/repo"
+SUITE_RUNTIME="$SUITE_SCRATCH/runtime"
+SUITE_HOME="$SUITE_SCRATCH/home"
+SUITE_TMP="$SUITE_SCRATCH/tmp"
+mkdir -p "$SUITE_ROOT" "$SUITE_RUNTIME" "$SUITE_HOME" "$SUITE_TMP"
+cp -a --reflink=auto "$INSTALL_ROOT/." "$SUITE_ROOT/"
+SAFE_PATH="${PATH:-/usr/local/bin:/usr/bin:/bin}"
+CLEAN_TEST_ENV=(
+  env -i "HOME=$SUITE_HOME" "PATH=$SAFE_PATH" "TMPDIR=$SUITE_TMP"
+  "ORCH_CONFIG_FILE=$SUITE_SCRATCH/no-runtime.env"
+  "ORCH_INSTALL_ROOT=$SUITE_ROOT" "ORCH_RUNTIME_DIR=$SUITE_RUNTIME"
+  "ORCH_STATE_DB=$SUITE_RUNTIME/state.db" "INFRA_STATE_DB=$SUITE_RUNTIME/state.db"
+)
+
 mkdir -p "$(dirname "$FULL_SUITE_LOG")"
 started_epoch="$(date +%s)"
 timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -114,13 +133,13 @@ suite_count=0
 # the installed checkout is eligible, including future directories.
 while IFS= read -r -d '' suite; do
   suite_count=$((suite_count + 1))
-  relative="${suite#"$INSTALL_ROOT"/}"
+  relative="${suite#"$SUITE_ROOT"/}"
   if suite_is_excluded "$relative"; then
     skipped+=("$relative")
     log "FULL-SUITE SUITE ts=$timestamp suite=$relative rc=SKIP reason=excluded"
     continue
   fi
-  if timeout "$FULL_SUITE_TIMEOUT_S" bash "$suite" >> "$FULL_SUITE_LOG" 2>&1; then
+  if (cd "$SUITE_ROOT" && timeout "$FULL_SUITE_TIMEOUT_S" "${CLEAN_TEST_ENV[@]}" bash "$suite") >> "$FULL_SUITE_LOG" 2>&1; then
     rc=0
     pass=$((pass + 1))
   else
@@ -129,26 +148,26 @@ while IFS= read -r -d '' suite; do
     failed+=("$relative")
   fi
   log "FULL-SUITE SUITE ts=$timestamp suite=$relative rc=$rc"
-done < <(find "$INSTALL_ROOT" -type f -name '*.test.sh' -print0 | sort -z)
+done < <(find "$SUITE_ROOT" -type f -name '*.test.sh' -print0 | sort -z)
 
 # Bun receives the complete, sorted TypeScript suite set in one deterministic
 # invocation. Shell suites retain their existing one-process-per-suite behavior.
 ts_suites=()
 while IFS= read -r -d '' suite; do
   suite_count=$((suite_count + 1))
-  relative="${suite#"$INSTALL_ROOT"/}"
+  relative="${suite#"$SUITE_ROOT"/}"
   if suite_is_excluded "$relative"; then
     skipped+=("$relative")
     log "FULL-SUITE SUITE ts=$timestamp suite=$relative rc=SKIP reason=excluded"
     continue
   fi
   ts_suites+=("$relative")
-done < <(find "$INSTALL_ROOT" -type f -name '*.test.ts' -print0 | sort -z)
+done < <(find "$SUITE_ROOT" -type f -name '*.test.ts' -print0 | sort -z)
 
 if ((${#ts_suites[@]} > 0)); then
   # BUN_OPTIONS is a caller-level CLI injection surface (for example,
   # --only-failures or --test-name-pattern). Nightly semantics are fixed here.
-  if (cd "$INSTALL_ROOT" && timeout "$FULL_SUITE_TIMEOUT_S" env -u BUN_OPTIONS bun test "${ts_suites[@]}") >> "$FULL_SUITE_LOG" 2>&1; then
+  if (cd "$SUITE_ROOT" && timeout "$FULL_SUITE_TIMEOUT_S" "${CLEAN_TEST_ENV[@]}" bun test "${ts_suites[@]}") >> "$FULL_SUITE_LOG" 2>&1; then
     rc=0
     pass=$((pass + ${#ts_suites[@]}))
   else

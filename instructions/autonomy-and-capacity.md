@@ -26,6 +26,19 @@ ask for a routine “go” when the work is outside the irreversible set.
   configured floor and ceiling. Legitimate width limiters are demonstrated
   resource limits, serialized landing/stand operations, and risk controls—not
   habit, missing routine confirmation, or an empty landing queue.
+- **Working single-threaded is a violation of this rule, not diligence.** The
+  orchestrator doing implementation work inline, one item at a time, while other
+  open rows sit idle is the failure this section exists to prevent. Parallelism
+  is the reason the host is paid for: a one-thread orchestrator on a large box
+  delivers laptop throughput at server cost.
+- **Fewer than three running lanes is a REPORTABLE condition.** When the running
+  lane count drops below three, the orchestrator tells the Human — unprompted —
+  that there is not enough work in flight and that more should be queued. Do not
+  wait to be asked. (Operator order, 2026-07-31, Telegram 281: «Коли стає менше
+  трьох паралельних лейнів, уже маєш мені писати і казати, що роботи малувато;
+  треба накидать». Verbatim record: `instance/decisions/HR-281.md`.)
+- **Report capacity as NUMBERS, not intent.** "N lanes running, each doing X" —
+  never prose about what is planned.
 - A pause on broad fan-out never prevents landing already-approved work or
   completing an already-authorized bounded lane.
 

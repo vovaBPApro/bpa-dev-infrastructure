@@ -44,11 +44,20 @@ vm:
   # (msg 11555) was Vova's sizing FLOOR, not this box; the delivered machine exceeds it.
 
 fleet:
-  # Historical width band from the legacy control plane. Currently suspended:
-  # this repo's phase is sole-mission and the legacy fleet rules are dead.
-  floor: 6                         # historical (legacy CLAUDE.md Rule 24); status: suspended
-  ceiling: 15                      # historical (legacy CLAUDE.md Rule 24); status: suspended
-  status: suspended
+  # ACTIVE as of 2026-07-31 — instance/decisions/HR-275.md (Vova, verbatim).
+  # This band was marked `suspended` as a leftover of the legacy control plane,
+  # and the orchestrator used that as licence to work single-threaded on a
+  # 12-core / 251 GB box while Codex sat at 92% unused quota. He called that out
+  # directly: parallelism is the reason the server is paid for.
+  floor: 6                         # while the workboard has open rows, >= 6 lanes should be running
+  ceiling: 15                      # upper bound; raise only with measured host headroom
+  status: active
+  # Enforcement so this stops depending on orchestrator discipline. NOT YET
+  # IMPLEMENTED — dispatched as lane `ag-fleet-idle-check`, which must make the
+  # checker report a FLEET-IDLE failure when the workboard has open rows and zero
+  # lanes are running. Do not read this key as an existing guarantee until the
+  # lane lands and this comment is replaced with the landed SHA.
+  fleet_idle_check: planned:ag-fleet-idle-check
 
 orchestrator:
   # A doc in THIS repo now states the vendor shape, so the long-standing "no

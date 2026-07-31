@@ -341,6 +341,22 @@ export const REGISTRY: Artifact[] = [
       'and nothing from it may ever be printed.',
   },
   {
+    id: 'deployed-mechanisms.tsv',
+    kind: 'repo-file',
+    trackedPath: 'bootstrap/deployed-mechanisms.tsv',
+    writers: [],
+    readers: [
+      'bootstrap/check-deployed-drift.sh',
+      'bootstrap/deploy-host-mechanism.sh',
+    ],
+    note:
+      'Tracked manifest mapping each tracked source to its deployed host target ' +
+      'and the companion paths that must land with it. The repository is the ' +
+      'durable writer; bootstrap consumes the committed file. Added after a ' +
+      'deployed watchdog outran its unlanded companion board change and the ' +
+      'fleet silently drained.',
+  },
+  {
     id: 'unit-drift-exemptions.tsv',
     kind: 'repo-file',
     trackedPath: 'instance/unit-drift-exemptions.tsv',

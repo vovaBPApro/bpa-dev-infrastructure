@@ -29,6 +29,7 @@ install -d -m 700 \
   "$verify_fixture/root/.git" \
   "$verify_fixture/root/core" \
   "$verify_fixture/root/daemon" \
+  "$verify_fixture/root/deploy" \
   "$verify_fixture/root/orchestrator" \
   "$verify_fixture/root/workspace" \
   "$verify_fixture/root/gate" \
@@ -63,6 +64,7 @@ printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/root/orchestrato
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/root/orchestrator/morning.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/root/orchestrator/launch.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/root/bootstrap/check-deployed-drift.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/root/deploy/check-live-stand-staleness.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/opt/whisper.cpp/bin/whisper-cli"
 printf '%s\n' 'disabled by --no-cron' > "$verify_fixture/root/runtime/hygiene-cron.skip"
 for command_name in git curl tmux docker codex claude; do
@@ -73,6 +75,7 @@ chmod 700 "$verify_fixture/root/workspace/workspace.sh"
 chmod 700 "$verify_fixture/root/orchestrator/watchdog.sh" "$verify_fixture/root/orchestrator/full-suite.sh" "$verify_fixture/root/orchestrator/morning.sh"
 chmod 700 "$verify_fixture/root/orchestrator/launch.sh" "$verify_fixture/opt/whisper.cpp/bin/whisper-cli"
 chmod 700 "$verify_fixture/root/bootstrap/check-deployed-drift.sh"
+chmod 700 "$verify_fixture/root/deploy/check-live-stand-staleness.sh"
 INSTALL_ROOT="$verify_fixture/root" \
   ENV_FILE="$verify_fixture/root/.env" \
   BUN_BIN="$verify_fixture/bin/bun" \
@@ -109,6 +112,8 @@ for expected in \
   'PASS morning timer' \
   'PASS deploy drift service' \
   'PASS deploy drift timer' \
+  'PASS stand staleness service' \
+  'PASS stand staleness timer' \
   'PASS unit Exec paths' \
   'PASS deployed unit drift'; do
   grep -Fq "$expected" <<<"$verify_output"
@@ -283,6 +288,7 @@ install -d -m 700 \
   "$arming_fixture/root/workspace" \
   "$arming_fixture/root/hygiene" \
   "$arming_fixture/root/bootstrap" \
+  "$arming_fixture/root/deploy" \
   "$arming_fixture/root/runtime" \
   "$arming_fixture/config" \
   "$arming_fixture/bin"
@@ -304,9 +310,11 @@ for script_name in launch.sh watchdog.sh full-suite.sh morning.sh; do
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$arming_fixture/root/orchestrator/$script_name"
 done
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$arming_fixture/root/bootstrap/check-deployed-drift.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$arming_fixture/root/deploy/check-live-stand-staleness.sh"
 chmod 700 "$arming_fixture/bin"/* "$arming_fixture/root/hygiene/install-cron.sh" \
   "$arming_fixture/root/workspace/workspace.sh" "$arming_fixture/root/orchestrator"/*.sh \
   "$arming_fixture/root/bootstrap/check-deployed-drift.sh"
+chmod 700 "$arming_fixture/root/deploy/check-live-stand-staleness.sh"
 
 arming_calls="$arming_fixture/systemctl.calls"
 run_full_install() { # <extra installer args...>

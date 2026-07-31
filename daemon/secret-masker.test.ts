@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test';
 import { maskSecrets } from './secret-masker';
+import { SecretMaskStream } from './mask-stream';
 
 const assignments = [
   ['CLIENT_SECRET', `alpha-${'s'.repeat(24)}-omega`],
@@ -30,4 +31,20 @@ test('masked length reveals only a bucket, not the original length', () => {
   const short = maskSecrets(`PASSWORD=abc${'x'.repeat(8)}xyz`);
   const longer = maskSecrets(`PASSWORD=abc${'x'.repeat(14)}xyz`);
   expect(short).toBe(longer);
+});
+
+test('regression lock: a credential split across stream chunks is masked', () => {
+  const masker = new SecretMaskStream();
+  const value = `edge-${'c'.repeat(18)}-edge`;
+  const first = masker.push(`ACCESS_TOKEN=${value.slice(0, 9)}`);
+  const second = masker.push(`${value.slice(9)}\nnext line\n`);
+  const output = first + second + masker.end();
+  expect(first).toBe('');
+  expect(output).not.toContain(value);
+  expect(output).toContain('next line');
+});
+
+test('regression lock: short credential values disclose no original bytes', () => {
+  const value = 'a1b2c3d4';
+  expect(maskSecrets(`PASSWORD=${value}`)).toBe('PASSWORD=********');
 });

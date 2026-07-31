@@ -25,18 +25,30 @@ for (const valueFile of valueFiles) {
     }
   }
 }
-const values = [...found].map((value) => Buffer.from(value));
+const credentialValues = [...found];
+const values = credentialValues.map((value) => Buffer.from(value));
 if (!values.length) die('runtime store yielded no credential values');
 
 const before = readFileSync(target);
-for (const line of before.toString('utf8').split('\n')) if (line) JSON.parse(line);
+const parsedBefore = before.toString('utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
+const containsSemanticValue = (subject: unknown, value: string): boolean => {
+  if (typeof subject === 'string') return subject.includes(value);
+  if (Array.isArray(subject)) return subject.some((child) => containsSemanticValue(child, value));
+  return Boolean(subject && typeof subject === 'object' && Object.values(subject).some((child) => containsSemanticValue(child, value)));
+};
+const presentValues = new Set(credentialValues.filter((value) => parsedBefore.some((row) => containsSemanticValue(row, value))));
 const originalSize = statSync(target).size;
 const fd = openSync(target, 'r+');
 let replacements = 0;
 try {
   const current = Buffer.alloc(originalSize);
   if (readSync(fd, current, 0, current.length, 0) !== current.length) die('short read; target changed during inspection');
-  for (const value of values) {
+  const encodedValues = credentialValues.flatMap((value) => {
+    const raw = Buffer.from(value);
+    const json = Buffer.from(JSON.stringify(value).slice(1, -1));
+    return raw.equals(json) ? [raw] : [raw, json];
+  });
+  for (const value of encodedValues) {
     let offset = 0;
     while ((offset = current.indexOf(value, offset)) !== -1) {
       const stars = Buffer.alloc(value.length, 0x2a);
@@ -49,8 +61,12 @@ try {
 } finally { closeSync(fd); }
 if (statSync(target).size !== originalSize) die('target size changed');
 const after = readFileSync(target, 'utf8');
-for (const line of after.split('\n')) if (line) JSON.parse(line);
+const parsedAfter = after.split('\n').filter(Boolean).map((line) => JSON.parse(line));
 for (const value of values) if (Buffer.from(after).includes(value)) die('exact value survived target redaction');
+for (const value of presentValues) {
+  if (parsedAfter.some((row) => containsSemanticValue(row, value))) die('semantic value survived target redaction');
+}
+if (presentValues.size && replacements === 0) die('target contained credential values but no replacements were made');
 console.log(`redact-live-jsonl: replacements=${replacements} files=1 bytes_unchanged=${originalSize}`);
 
 const scanRoots = args.flatMap((arg, index) => arg === '--scan-root' && args[index + 1] ? [args[index + 1]] : []);

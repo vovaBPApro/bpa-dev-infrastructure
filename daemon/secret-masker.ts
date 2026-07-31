@@ -7,8 +7,12 @@ const PRIVATE_KEY = /(-----BEGIN\s+(?:[A-Z0-9]+\s+)?PRIVATE\s+KEY-----)([\s\S]*?
 let canonical: RegExp | undefined;
 
 function categoryMask(value: string): string {
-  if (value.length < 8) return '********';
-  const stars = value.length < 24 ? 8 : value.length < 64 ? 12 : 16;
+  // Short credentials do not have enough entropy to safely disclose an edge.
+  // For medium values, one character at either edge is sufficient to compare
+  // two configured values without exposing most of either value.
+  if (value.length <= 12) return '********';
+  if (value.length < 24) return `${value.slice(0, 1)}********${value.slice(-1)}`;
+  const stars = value.length < 64 ? 12 : 16;
   return `${value.slice(0, 3)}${'*'.repeat(stars)}${value.slice(-3)}`;
 }
 

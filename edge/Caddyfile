@@ -47,6 +47,17 @@
 		}
 	}
 
+	# Approved design previews, served as static files straight from the tracked
+	# repository. The preview lifecycle tool cannot add routes on this host: it
+	# ends with `systemctl reload bpa-edge`, and the edge runs with `admin off`,
+	# so a reload cannot push config and the route file is rolled back. Serving
+	# the accepted design here keeps it reproducible from git rather than a
+	# host-only container nobody can rebuild.
+	handle_path /design/* {
+		root * /srv/projects/agentic-bpa/design-preview
+		file_server
+	}
+
 	# The application UI. Opened 2026-07-31 because the operator could not click
 	# anything: the shell existed and served on :3000 but was unreachable from
 	# outside, so every review was screenshots instead of a running product.

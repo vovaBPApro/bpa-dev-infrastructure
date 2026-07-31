@@ -84,6 +84,10 @@ import {
   upsertEnvAssignment,
 } from './model-registry';
 import { appendInboxLine } from './inbox-mirror';
+import {
+  type HumanMissionCommand,
+  parseHumanMissionCommand,
+} from './human-mission';
 import { resolveWhisperConfig, transcribeAudio } from './transcribe';
 import {
   AutonomyKeepalive,
@@ -126,6 +130,7 @@ const APPROVED_DIR = join(STATE_DIR, 'approved');
 const PID_FILE = join(STATE_DIR, 'daemon.pid');
 const INBOX_DIR = join(STATE_DIR, 'inbox');
 const RUNTIME_DIR = join(STATE_DIR, 'daemon', 'runtime');
+const HUMAN_MISSION_FILE = join(RUNTIME_DIR, 'mission-human.txt');
 const INSTALL_ROOT = process.env.ORCH_INSTALL_ROOT ?? join(process.cwd(), '..');
 const BINDING_FILE = join(RUNTIME_DIR, 'orchestrator-binding.json');
 const TURN_DELIVERIES_FILE = join(RUNTIME_DIR, 'turn-deliveries.json');
@@ -2322,15 +2327,11 @@ async function handleSessionCommand(
   // the sentinel automatically (see inbox capture below) and work resumes.
   if (cmd === '/done' || cmd === '/mission_done') {
     try {
-      rmSync(join(RUNTIME_DIR, 'mission-inbox.log'), { force: true });
-    } catch {
-      /* ignore */
-    }
-    try {
       rmSync(join(RUNTIME_DIR, 'mission.txt'), { force: true });
     } catch {
       /* ignore */
     }
+    clearHumanMission();
     try {
       writeFileSync(join(RUNTIME_DIR, 'orchestrator-done'), '');
     } catch {
@@ -2347,11 +2348,12 @@ async function handleSessionCommand(
   if (cmd === '/mission') {
     let body = '(немає відкритої задачі)';
     try {
-      const log = readFileSync(
-        join(RUNTIME_DIR, 'mission-inbox.log'),
-        'utf8',
-      ).trim();
-      if (log) body = log.split('\n').slice(-10).join('\n');
+      const human = readFileSync(HUMAN_MISSION_FILE, 'utf8')
+        .split('\n')
+        .filter((line) => !line.startsWith('# '))
+        .join('\n')
+        .trim();
+      if (human) body = `HUMAN MISSION:\n${human}`;
     } catch {
       /* none */
     }
@@ -3411,6 +3413,24 @@ function safeName(s: string | undefined): string | undefined {
   return s?.replace(/[<>\[\]\r\n;]/g, '_');
 }
 
+function writeHumanMission(
+  command: Extract<HumanMissionCommand, { action: 'set' }>,
+): void {
+  mkdirSync(RUNTIME_DIR, { recursive: true, mode: 0o700 });
+  const lines = [
+    `# set_at=${new Date().toISOString()}`,
+    `# ttl_seconds=${command.ttlSeconds}`,
+    command.until ? `# until=${command.until}` : '',
+    command.text,
+  ].filter(Boolean);
+  writeFileSync(HUMAN_MISSION_FILE, `${lines.join('\n')}\n`, { mode: 0o600 });
+  rmSync(join(RUNTIME_DIR, 'orchestrator-done'), { force: true });
+}
+
+function clearHumanMission(): void {
+  rmSync(HUMAN_MISSION_FILE, { force: true });
+}
+
 // Best-effort spool download of an inbound attachment into INBOX_DIR (the same
 // state-dir spool the photo path and the download_attachment tool already use).
 // Returns the local path, or undefined on any failure — the caller must still
@@ -3566,33 +3586,35 @@ async function handleInbound(
     }
   }
 
-  // Ground truth for the external watchdog: log every Human directive that goes
-  // to the orchestrator. This lets the watchdog know a task is OPEN (so it keeps
-  // the orchestrator busy and the quota used) and reminds it of the latest ask —
-  // independent of whether the orchestrator records the mission itself.
+  // Human mission control is handled before dispatch. Voice transcripts use
+  // the same path as typed commands; attachment-bearing captions still carry
+  // their attachment to the orchestrator instead of dropping it.
+  if (!captionHandled) {
+    const missionCommand = parseHumanMissionCommand(text);
+    if (missionCommand.action === 'set') {
+      writeHumanMission(missionCommand);
+      await bot.api.sendMessage(
+        chat_id,
+        `✅ Mission set. TTL: ${missionCommand.ttlSeconds}s.`,
+      );
+      if (!hasAttachment) return;
+      captionHandled = 'command';
+    } else if (missionCommand.action === 'clear') {
+      clearHumanMission();
+      await bot.api.sendMessage(chat_id, '✅ Mission cleared.');
+      if (!hasAttachment) return;
+      captionHandled = 'command';
+    }
+  }
+
+  // Any ordinary Human directive resumes supervision after /done. Mission
+  // commands do the same in writeHumanMission; no second write-only task log is
+  // maintained because durable mission state lives in the control-plane DB.
   if (text.trim() && !captionHandled) {
-    // A caption the daemon already consumed (permission reply / session
-    // command) is not a Human directive — it must not enter the watchdog's
-    // mission log or lift the /done rest sentinel.
     try {
-      const inbox = join(RUNTIME_DIR, 'mission-inbox.log');
-      const entry = `${new Date().toISOString()} ${text
-        .trim()
-        .replace(/\s+/g, ' ')
-        .slice(0, 500)}`;
-      let lines: string[] = [];
-      try {
-        lines = readFileSync(inbox, 'utf8').split('\n').filter(Boolean);
-      } catch {
-        /* no file yet */
-      }
-      lines.push(entry);
-      // Cap growth: keep only the most recent directives. /done clears it fully.
-      writeFileSync(inbox, lines.slice(-50).join('\n') + '\n');
-      // A new Human directive lifts any prior /done rest — resume supervision.
       rmSync(join(RUNTIME_DIR, 'orchestrator-done'), { force: true });
     } catch {
-      /* best-effort; never block delivery on logging */
+      /* best-effort; never block delivery */
     }
   }
 

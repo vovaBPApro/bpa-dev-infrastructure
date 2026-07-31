@@ -625,6 +625,32 @@ test(
   30_000,
 );
 
+test('ML-9: MISSION set and clear are consumed before dispatch', async () => {
+  const h = await startDaemon();
+  h.pushText('MISSION: restore parser | ttl=6h', 405);
+
+  await waitFor('mission acknowledgement', () =>
+    h.sent.some((message) => message.text === '✅ Mission set. TTL: 21600s.'),
+  );
+  const missionPath = join(
+    h.scratch,
+    'state',
+    'daemon',
+    'runtime',
+    'mission-human.txt',
+  );
+  expect(readFileSync(missionPath, 'utf8')).toContain('# ttl_seconds=21600');
+  expect(readFileSync(missionPath, 'utf8')).toContain('\nrestore parser\n');
+  expect(h.pastes()).not.toContain('restore parser');
+
+  h.pushText('MISSION CLEAR', 406);
+  await waitFor('mission clear acknowledgement', () =>
+    h.sent.some((message) => message.text === '✅ Mission cleared.'),
+  );
+  expect(existsSync(missionPath)).toBe(false);
+  expect(h.pastes()).not.toContain('MISSION CLEAR');
+});
+
 test(
   'channel trust boundary escapes an adversarial multiline command caption',
   async () => {

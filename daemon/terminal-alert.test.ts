@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test';
 import {
   classifyTerminalFailure,
   formatTerminalAlert,
+  relayTerminalAlert,
   stripTerminalNoise,
 } from './terminal-alert';
 
@@ -42,4 +43,17 @@ test('formats an internal alert with class and session', () => {
       session: 'orchestrator',
     }),
   ).toContain('Type: network\nSession: orchestrator\n\nnetwork error');
+});
+
+test('REGRESSION ML-1: a rejected notify response is a delivery failure', async () => {
+  const rejectedFetch = async () =>
+    new Response('unavailable', { status: 503 });
+
+  await expect(
+    relayTerminalAlert(
+      { kind: '429/overload', line: 'quota exceeded', session: 'test-orch' },
+      '4822',
+      rejectedFetch,
+    ),
+  ).rejects.toThrow('notify returned HTTP 503');
 });

@@ -97,6 +97,11 @@ type AlertPayload = {
   session: string;
 };
 
+type AlertFetch = (
+  input: string | URL | Request,
+  init?: RequestInit,
+) => Promise<Response>;
+
 export function formatTerminalAlert(payload: AlertPayload): string {
   return [
     '[internal terminal failure alert]',
@@ -105,6 +110,22 @@ export function formatTerminalAlert(payload: AlertPayload): string {
     '',
     payload.line,
   ].join('\n');
+}
+
+export async function relayTerminalAlert(
+  payload: AlertPayload,
+  port: string,
+  fetchImpl: AlertFetch = fetch,
+): Promise<void> {
+  const response = await fetchImpl(`http://127.0.0.1:${port}/notify`, {
+    method: 'POST',
+    headers: { 'X-BPA-Alarm-Audience': 'internal' },
+    body: formatTerminalAlert(payload),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!response.ok) {
+    throw new Error(`notify returned HTTP ${response.status}`);
+  }
 }
 
 async function run(): Promise<void> {
@@ -120,15 +141,9 @@ async function run(): Promise<void> {
 
     const dedupKey = `${kind}\0${line}`;
     if (seen.has(dedupKey)) continue;
-    seen.add(dedupKey);
-
     try {
-      await fetch(`http://127.0.0.1:${port}/notify`, {
-        method: 'POST',
-        headers: { 'X-BPA-Alarm-Audience': 'internal' },
-        body: formatTerminalAlert({ kind, line, session }),
-        signal: AbortSignal.timeout(10_000),
-      });
+      await relayTerminalAlert({ kind, line, session }, port);
+      seen.add(dedupKey);
     } catch (error) {
       process.stderr.write(
         `[terminal-alert] delivery failed kind=${kind}: ${String(error)}\n`,

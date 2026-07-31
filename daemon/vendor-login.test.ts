@@ -453,6 +453,144 @@ test('a partial or future-dated record with an explicit relogin-needed still war
   ).toBe('relogin-needed');
 });
 
+// The alarm direction remains lenient, but unusable dating must not be
+// laundered into a fresh "checked 0m ago" reading.
+test('relogin-needed with future vendor and envelope timestamps warns without claiming freshness', () => {
+  const future = new Date(NOW + 24 * 60 * 60 * 1000).toISOString();
+  const verdict = readVendorLogin(
+    'claude',
+    source(
+      snapshotLine({
+        timestamp: future,
+        claude: authedClaude({
+          loginState: 'relogin-needed',
+          fetchedAt: future,
+        }),
+      }),
+    ),
+    { now: NOW },
+  );
+
+  expect(verdict.state).toBe('relogin-needed');
+  if (verdict.state !== 'relogin-needed') return;
+  expect(verdict.stale).toBe(true);
+  expect(verdict.ageMs).toBeNull();
+  const rendered = formatVendorLoginLine(verdict);
+  expect(rendered).toContain(RELOGIN_WARNING);
+  expect(rendered).not.toContain('checked 0m ago');
+});
+
+test('relogin-needed falls back from a future fetchedAt to a valid past envelope', () => {
+  const pastEnvelope = new Date(NOW - 5 * 60 * 1000).toISOString();
+  const futureFetch = new Date(NOW + 24 * 60 * 60 * 1000).toISOString();
+  const verdict = readVendorLogin(
+    'codex',
+    source(
+      snapshotLine({
+        timestamp: pastEnvelope,
+        codex: authedCodex({
+          loginState: 'relogin-needed',
+          fetchedAt: futureFetch,
+        }),
+      }),
+    ),
+    { now: NOW },
+  );
+
+  expect(verdict.state).toBe('relogin-needed');
+  if (verdict.state !== 'relogin-needed') return;
+  expect(verdict.observedAt).toBe(pastEnvelope);
+  expect(verdict.ageMs).toBe(5 * 60 * 1000);
+  expect(verdict.stale).toBe(false);
+  expect(formatVendorLoginLine(verdict)).not.toContain('checked 0m ago');
+});
+
+test('relogin-needed with a normal past timestamp keeps its true fresh age', () => {
+  const past = new Date(NOW - 5 * 60 * 1000).toISOString();
+  const verdict = readVendorLogin(
+    'claude',
+    source(
+      snapshotLine({
+        timestamp: past,
+        claude: authedClaude({
+          loginState: 'relogin-needed',
+          fetchedAt: past,
+        }),
+      }),
+    ),
+    { now: NOW },
+  );
+
+  expect(verdict.state).toBe('relogin-needed');
+  if (verdict.state !== 'relogin-needed') return;
+  expect(verdict.ageMs).toBe(5 * 60 * 1000);
+  expect(verdict.stale).toBe(false);
+});
+
+test('authenticated preserves the sanctioned two-minute clock-skew allowance', () => {
+  const future = new Date(NOW + 90 * 1000).toISOString();
+  const verdict = readVendorLogin(
+    'codex',
+    source(
+      snapshotLine({
+        timestamp: future,
+        codex: authedCodex({ fetchedAt: future }),
+      }),
+    ),
+    { now: NOW },
+  );
+
+  expect(verdict.state).toBe('authenticated');
+  if (verdict.state !== 'authenticated') return;
+  expect(verdict.ageMs).toBe(0);
+});
+
+test('authenticated remains unknown beyond the two-minute clock-skew allowance', () => {
+  const future = new Date(NOW + 5 * 60 * 1000).toISOString();
+  const verdict = readVendorLogin(
+    'codex',
+    source(
+      snapshotLine({
+        timestamp: future,
+        codex: authedCodex({ fetchedAt: future }),
+      }),
+    ),
+    { now: NOW },
+  );
+
+  expect(verdict.state).toBe('unknown');
+  expect(formatVendorLoginLine(verdict)).toContain('future');
+});
+
+test('authenticated with a normal past timestamp keeps its true age', () => {
+  const past = new Date(NOW - 5 * 60 * 1000).toISOString();
+  const verdict = readVendorLogin(
+    'codex',
+    source(
+      snapshotLine({
+        timestamp: past,
+        codex: authedCodex({ fetchedAt: past }),
+      }),
+    ),
+    { now: NOW },
+  );
+
+  expect(verdict.state).toBe('authenticated');
+  if (verdict.state !== 'authenticated') return;
+  expect(verdict.ageMs).toBe(5 * 60 * 1000);
+});
+
+test('authenticated degrades to unknown when its computed age is non-finite', () => {
+  const verdict = readVendorLogin(
+    'codex',
+    source(snapshotLine({ codex: authedCodex() })),
+    { now: Number.NaN },
+  );
+
+  expect(verdict.state).toBe('unknown');
+  expect(formatVendorLoginLine(verdict)).toContain('non-finite');
+});
+
 // ---------------------------------------------------------------------------
 // 6. No environment surface.
 // ---------------------------------------------------------------------------

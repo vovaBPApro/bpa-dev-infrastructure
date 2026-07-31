@@ -54,6 +54,8 @@
 // or unverifiable reading is `unknown`, and an expired reading is `unknown`
 // rather than a confident OK.
 
+import { ageFromObservedTimestamp } from './observed-time';
+
 // Basename of the vendor quota snapshot this module parses. Declared in the
 // state-contract registry; see the writer-gap note above.
 export const VENDOR_QUOTA_SNAPSHOT_BASENAME = 'quota-latest.jsonl';
@@ -147,7 +149,7 @@ export type VendorLoginVerdict =
       vendor: VendorId;
       state: 'relogin-needed';
       observedAt: string;
-      ageMs: number;
+      ageMs: number | null;
       stale: boolean;
     }
   | { vendor: VendorId; state: 'unknown'; reason: string };
@@ -360,12 +362,22 @@ export function readVendorLogin(
     // expired login does not heal itself while nobody is watching, so a stale
     // warning still warns — it just says how old it is. Dating may fall back
     // to the envelope timestamp here; a mis-dated warning is still a warning.
-    const observedAt = quota.fetchedAt ?? snapshot.capturedAt;
-    const parsedMs = Date.parse(observedAt);
-    const ageMs = Math.max(
-      0,
-      now - (Number.isNaN(parsedMs) ? snapshot.capturedAtMs : parsedMs),
-    );
+    let observedAt = quota.fetchedAt ?? snapshot.capturedAt;
+    let observedAge = ageFromObservedTimestamp(Date.parse(observedAt), now);
+    if (!observedAge.ok && observedAt !== snapshot.capturedAt) {
+      observedAt = snapshot.capturedAt;
+      observedAge = ageFromObservedTimestamp(snapshot.capturedAtMs, now);
+    }
+    if (!observedAge.ok) {
+      return {
+        vendor,
+        state: 'relogin-needed',
+        observedAt,
+        ageMs: null,
+        stale: true,
+      };
+    }
+    const ageMs = observedAge.ageMs;
     const stale = ageMs > freshnessMs || staleByWindow;
     return { vendor, state: 'relogin-needed', observedAt, ageMs, stale };
   }
@@ -406,7 +418,19 @@ export function readVendorLogin(
   }
 
   const observedAt = quota.fetchedAt;
-  const ageMs = Math.max(0, now - observedMs);
+  const observedAge = ageFromObservedTimestamp(observedMs, now);
+  let ageMs: number;
+  if (observedAge.ok) {
+    ageMs = observedAge.ageMs;
+  } else if (observedAge.reason === 'future') {
+    // The gate above proves this is within the sanctioned two-minute clock-skew
+    // allowance, so treating only this caller-approved skew as age zero is safe.
+    ageMs = 0;
+  } else {
+    return unknown(
+      `${vendor} record's fetchedAt or current time is non-finite — refusing to trust it`,
+    );
+  }
   const stale = ageMs > freshnessMs || staleByWindow;
 
   if (stale) {
@@ -429,6 +453,9 @@ export function formatVendorLoginLine(verdict: VendorLoginVerdict): string {
     return `${field}: unknown (${verdict.reason})`;
   }
   if (verdict.state === 'relogin-needed') {
+    if (verdict.ageMs === null) {
+      return `${field}: ${RELOGIN_WARNING} (stale reading, observation time unusable)`;
+    }
     return verdict.stale
       ? `${field}: ${RELOGIN_WARNING} (stale reading, last known ${ageLabel(verdict.ageMs)} ago)`
       : `${field}: ${RELOGIN_WARNING} (checked ${ageLabel(verdict.ageMs)} ago)`;

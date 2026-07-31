@@ -3,6 +3,7 @@ import { createServer, type Server } from 'node:http';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { isolatedTestEnv } from './test-env';
 
 type DaemonProcess = ReturnType<typeof Bun.spawn>;
 const temporaryPaths: string[] = [];
@@ -43,10 +44,9 @@ async function runMcpHealthCheck(
   healthUrl: string,
 ): Promise<{ output: string; status: number }> {
   const check = Bun.spawn(['bash', mcpHealthCheck], {
-    env: {
-      ...process.env,
+    env: isolatedTestEnv({
       TELEGRAM_DAEMON_HEALTH_URL: healthUrl,
-    },
+    }),
     stdout: 'pipe',
     stderr: 'pipe',
   });
@@ -114,8 +114,7 @@ test('detached Claude MCP raises an alarm and /reply still delivers through Tele
 
   const daemon = Bun.spawn(['bun', 'server.ts'], {
     cwd: import.meta.dir,
-    env: {
-      ...process.env,
+    env: isolatedTestEnv({
       PATH: `${binDirectory}:${process.env.PATH ?? ''}`,
       TELEGRAM_DAEMON_PORT: String(daemonPort),
       TELEGRAM_STATE_DIR: stateDirectory,
@@ -126,7 +125,7 @@ test('detached Claude MCP raises an alarm and /reply still delivers through Tele
       ORCH_SESSION: 'test-session',
       ORCH_STALL_WATCHDOG_TICK_MS: '600000',
       OUTBOX_POLL_MS: '600000',
-    },
+    }),
     stdout: 'ignore',
     stderr: 'ignore',
   });

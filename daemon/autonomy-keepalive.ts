@@ -37,6 +37,31 @@ export function hasOpenWorkboardRows(markdown: string): boolean {
     .some((line) => !/\bCLOSED\b/i.test(line));
 }
 
+type AutonomyDelivery = {
+  tmuxAvailable: () => Promise<boolean>;
+  paste: (text: string) => Promise<boolean>;
+  log: (message: string) => void;
+};
+
+/** Reject unless tmux acknowledges the paste so callers retain pending work. */
+export async function deliverAutonomyNudge(
+  message: string,
+  delivery: AutonomyDelivery,
+): Promise<void> {
+  if (!(await delivery.tmuxAvailable())) {
+    delivery.log('autonomy nudge deferred: tmux unavailable');
+    throw new Error('autonomy nudge not delivered: tmux unavailable');
+  }
+  const ok = await delivery.paste(
+    `<channel source="autonomy" audience="orchestrator">${message}</channel>`,
+  );
+  if (!ok) {
+    delivery.log(`autonomy nudge failed: ${message}`);
+    throw new Error('autonomy nudge not delivered: paste failed');
+  }
+  delivery.log(`autonomy nudge delivered: ${message}`);
+}
+
 type KeepaliveOptions = {
   floor: number;
   readWorkboard: () => string;

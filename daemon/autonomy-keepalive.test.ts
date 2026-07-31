@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test';
 import {
   AutonomyKeepalive,
+  deliverAutonomyNudge,
   hasOpenWorkboardRows,
   parseFleetConfig,
   parseSystemdLaneUnits,
@@ -76,6 +77,63 @@ test('event level nudges once when a running lane exits', async () => {
   await keepalive.eventTick();
 
   expect(nudges).toEqual(['lane alpha finished; inspect evidence and continue dispatch']);
+});
+
+test('REGRESSION ML-2 delivery: tmux unavailable rejects and retries the pending exit', async () => {
+  let units = [{ name: 'lane-alpha.service', active: true }];
+  let available = false;
+  const pasted: string[] = [];
+  const keepalive = new AutonomyKeepalive({
+    floor: 1,
+    readWorkboard: () => OPEN_WORKBOARD,
+    listUnits: () => units,
+    nudge: (message) =>
+      deliverAutonomyNudge(message, {
+        tmuxAvailable: async () => available,
+        paste: async (text) => {
+          pasted.push(text);
+          return true;
+        },
+        log: () => {},
+      }),
+  });
+
+  await keepalive.eventTick();
+  units = [];
+  await expect(keepalive.eventTick()).rejects.toThrow('tmux unavailable');
+  available = true;
+  await keepalive.eventTick();
+
+  expect(pasted).toHaveLength(1);
+  expect(pasted[0]).toContain('lane alpha finished');
+});
+
+test('REGRESSION ML-2 delivery: paste false rejects and retries the pending exit', async () => {
+  let units = [{ name: 'lane-alpha.service', active: true }];
+  let pasteOk = false;
+  let attempts = 0;
+  const keepalive = new AutonomyKeepalive({
+    floor: 1,
+    readWorkboard: () => OPEN_WORKBOARD,
+    listUnits: () => units,
+    nudge: (message) =>
+      deliverAutonomyNudge(message, {
+        tmuxAvailable: async () => true,
+        paste: async () => {
+          attempts++;
+          return pasteOk;
+        },
+        log: () => {},
+      }),
+  });
+
+  await keepalive.eventTick();
+  units = [];
+  await expect(keepalive.eventTick()).rejects.toThrow('paste failed');
+  pasteOk = true;
+  await keepalive.eventTick();
+
+  expect(attempts).toBe(2);
 });
 
 test('closed-only workboard and a full fleet stay quiet', async () => {

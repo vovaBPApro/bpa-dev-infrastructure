@@ -118,7 +118,9 @@ the governance row below.
   (hourly `/compact`, 15-min fleet ping, maintenance audit, per-message reply
   chase). All gone; every `tmuxPasteText`/`tmuxSend` call site here is
   operator-initiated. The direction inverted — live pushed the orchestrator, ours
-  pushes the Human. Contradicts `autonomy-and-capacity`. *lane*
+  pushes the Human. This lane restores the 15-minute fleet ping plus a lane-exit
+  event nudge with acknowledged retry. Still open: hourly `/compact`, maintenance
+  audit, and per-message reply chase. Contradicts `autonomy-and-capacity`. *lane*
 - **ML-3 — heartbeat multi-signal liveness**: one ongoing writer (turn end), and
   stale heartbeat → kill with no alive-check, so a long Codex turn is killed
   mid-work. IN FLIGHT: `ag-watchdog-restores`.

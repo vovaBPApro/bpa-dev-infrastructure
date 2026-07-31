@@ -85,6 +85,7 @@ import { appendInboxLine } from './inbox-mirror';
 import { resolveWhisperConfig, transcribeAudio } from './transcribe';
 import {
   AutonomyKeepalive,
+  deliverAutonomyNudge,
   parseFleetConfig,
   parseSystemdLaneUnits,
 } from './autonomy-keepalive';
@@ -1514,16 +1515,11 @@ function listSystemLaneUnits() {
 }
 
 async function autonomyNudge(message: string): Promise<void> {
-  if (!TMUX_SESSION || !(await tmuxAlive())) {
-    process.stderr.write(`${LOG_PREFIX} autonomy nudge deferred: tmux unavailable\n`);
-    return;
-  }
-  const ok = await tmuxPasteText(
-    `<channel source="autonomy" audience="orchestrator">${message}</channel>`,
-  );
-  process.stderr.write(
-    `${LOG_PREFIX} autonomy nudge ${ok ? 'delivered' : 'failed'}: ${message}\n`,
-  );
+  await deliverAutonomyNudge(message, {
+    tmuxAvailable: async () => Boolean(TMUX_SESSION) && tmuxAlive(),
+    paste: tmuxPasteText,
+    log: (line) => process.stderr.write(`${LOG_PREFIX} ${line}\n`),
+  });
 }
 
 const autonomyKeepalive = new AutonomyKeepalive({

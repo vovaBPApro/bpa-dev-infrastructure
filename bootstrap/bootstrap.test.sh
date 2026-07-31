@@ -151,10 +151,10 @@ printf 'FAIL-BEFORE 148b9ad0 ExecStart=%s\n' "$old_watchdog_exec"
 grep '^FAIL unit Exec paths' <<<"$broken_output"
 render_fixture_unit "$SCRIPT_DIR/units/bpa-orchestrator-watchdog.service.in"
 
-# W-17 regression lock: a deployed unit that loses hardening must fail the
-# tracked-template comparison. This is the exact shape found on the live host.
+# A deployed unit that loses a tracked restart boundary must fail the
+# byte-for-byte template comparison.
 cp "$verify_fixture/systemd/system/bpa-telegram-daemon.service" "$verify_fixture/daemon.unit.good"
-sed -i '/^NoNewPrivileges=true$/d; /^PrivateTmp=true$/d' \
+sed -i '/^RestartSec=5$/d' \
   "$verify_fixture/systemd/system/bpa-telegram-daemon.service"
 if drift_output="$(TEMPLATE_DIR="$SCRIPT_DIR/units" \
   INSTALL_ROOT="$verify_fixture/root" \
@@ -162,13 +162,12 @@ if drift_output="$(TEMPLATE_DIR="$SCRIPT_DIR/units" \
   BUN_BIN="$verify_fixture/bin/bun" \
   SYSTEMD_SYSTEM_DIR="$verify_fixture/systemd/system" \
   "$SCRIPT_DIR/check-unit-drift.sh" 2>&1)"; then
-  echo 'ERROR: unit drift check accepted missing daemon hardening' >&2
+  echo 'ERROR: unit drift check accepted a missing daemon restart boundary' >&2
   exit 1
 fi
 grep -Fq 'DRIFT bpa-telegram-daemon.service' <<<"$drift_output"
-grep -Fq -- '+NoNewPrivileges=true' <<<"$drift_output"
-grep -Fq -- '+PrivateTmp=true' <<<"$drift_output"
-printf '%s\n' 'FAIL-BEFORE W-17 deployed daemon missing NoNewPrivileges and PrivateTmp'
+grep -Fq -- '+RestartSec=5' <<<"$drift_output"
+printf '%s\n' 'FAIL-BEFORE deployed daemon missing RestartSec=5'
 mv "$verify_fixture/daemon.unit.good" "$verify_fixture/systemd/system/bpa-telegram-daemon.service"
 
 rm "$verify_fixture/systemd/system/orch-morning-report.timer"
@@ -216,6 +215,18 @@ if PATH="$verify_fixture/bin:$PATH" \
 fi
 render_fixture_unit "$SCRIPT_DIR/units/bpa-orchestrator-watchdog.service.in"
 render_fixture_unit "$SCRIPT_DIR/units/bpa-full-suite.service.in"
+
+empty_templates="$verify_fixture/empty-templates"
+mkdir "$empty_templates"
+if empty_output="$(TEMPLATE_DIR="$empty_templates" \
+  SYSTEMD_SYSTEM_DIR="$verify_fixture/systemd/system" \
+  EXEMPTIONS_FILE="$verify_fixture/no-exemptions.tsv" \
+  "$SCRIPT_DIR/check-unit-drift.sh" 2>&1)"; then
+  echo 'ERROR: an empty template inventory passed drift verification' >&2
+  exit 1
+fi
+grep -Fq 'ERROR: no unit templates found' <<<"$empty_output"
+printf '%s\n' 'FAIL-BEFORE empty unit template inventory'
 
 chmod 644 "$verify_fixture/root/.env"
 printf '%s\n' 'FAIL-BEFORE loose environment permissions'
@@ -315,12 +326,15 @@ grep -Fxq -- 'enable --now bpa-orchestrator.service' "$arming_calls"
 grep -Fxq -- 'enable --now bpa-full-suite.timer' "$arming_calls"
 grep -Fxq -- 'enable --now orch-morning-report.timer' "$arming_calls"
 grep -Fxq -- 'daemon-reload' "$arming_calls"
-test -f "$arming_fixture/config/bpa-orchestrator-watchdog.timer"
-grep -Fq 'Watchdog timer installed INERT' <<<"$bare_install_output"
+test ! -e "$arming_fixture/config/bpa-orchestrator-watchdog.service"
+test ! -e "$arming_fixture/config/bpa-orchestrator-watchdog.timer"
+grep -Fq 'Unit deliberately absent; not installing bpa-orchestrator-watchdog.timer.' <<<"$bare_install_output"
 
-# Only the explicit watchdog-specific opt-in arms it.
-run_full_install --arm-watchdog >/dev/null
-grep -Fxq -- 'enable --now bpa-orchestrator-watchdog.timer' "$arming_calls"
+# The hazard ruling overrides even the old explicit opt-in.
+if run_full_install --arm-watchdog >/dev/null 2>&1; then
+  echo 'ERROR: --arm-watchdog revived a deliberately absent watchdog' >&2
+  exit 1
+fi
 
 # Render deployable unit inputs without requiring host envsubst. Temporary test
 # fixtures are intentionally outside this sweep; bootstrap inputs may never

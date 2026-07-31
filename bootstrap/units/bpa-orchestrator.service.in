@@ -9,14 +9,13 @@ User=root
 Group=root
 WorkingDirectory=$INSTALL_ROOT
 Environment=HOME=/root
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=ORCH_CONFIG_FILE=$ENV_FILE
 EnvironmentFile=$ENV_FILE
 ExecStart=$INSTALL_ROOT/orchestrator/launch.sh start
 ExecStop=$INSTALL_ROOT/orchestrator/launch.sh stop
 RemainAfterExit=yes
 TimeoutStartSec=60
 TimeoutStopSec=30
-NoNewPrivileges=true
-PrivateTmp=true
-
 [Install]
 WantedBy=multi-user.target

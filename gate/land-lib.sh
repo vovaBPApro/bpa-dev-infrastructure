@@ -272,6 +272,64 @@ land_remote_reap() {
   echo "$prefix reap remote=deleted branch=$branch"
 }
 
+# Ref deletion is allowed only after the landed integration tip contains every
+# commit reachable from the lane. This is deliberately checked immediately
+# before reap instead of being inferred from an earlier successful merge: a
+# hook, interrupted retry, or future landing-flow change must not turn branch
+# cleanup into loss of unmerged work.
+land_assert_reap_safe() {
+  local repo="$1" branch="$2" landed_tip="$3" prefix="$4" worktree_ref worktree_path
+  local cherry_output dirty_output unique_merges worktrees
+  if ! git -C "$repo" show-ref --verify --quiet "refs/heads/$branch"; then
+    if git -C "$repo" ls-remote --exit-code origin "refs/heads/$branch" >/dev/null 2>&1; then
+      echo "$prefix reap safety=refused branch=$branch detail=remote-only" >&2
+    else
+      echo "$prefix reap safety=refused branch=$branch detail=local-ref-missing" >&2
+    fi
+    return 1
+  fi
+
+  if ! worktrees=$(git -C "$repo" worktree list --porcelain); then
+    echo "$prefix reap safety=refused branch=$branch detail=worktree-check-failed" >&2
+    return 1
+  fi
+  worktree_path=""
+  while IFS= read -r worktree_ref; do
+    case "$worktree_ref" in
+      worktree\ *) worktree_path=${worktree_ref#worktree } ;;
+      "branch refs/heads/$branch")
+        if [ -n "$worktree_path" ]; then
+          if ! dirty_output=$(git -C "$worktree_path" status --porcelain --untracked-files=normal); then
+            echo "$prefix reap safety=refused branch=$branch detail=worktree-check-failed worktree=$worktree_path" >&2
+            return 1
+          fi
+          if [ -n "$dirty_output" ]; then
+            echo "$prefix reap safety=refused branch=$branch detail=dirty-worktree worktree=$worktree_path" >&2
+            return 1
+          fi
+        fi
+        ;;
+    esac
+  done <<< "$worktrees"
+
+  # `git cherry` compares stable patch ids, so a commit replayed or squashed
+  # onto main is carried even when the lane tip is not its ancestor. A `+`
+  # means that the lane still has a patch with no equivalent on the landed tip.
+  if ! cherry_output=$(git -C "$repo" cherry "$landed_tip" "$branch"); then
+    echo "$prefix reap safety=refused branch=$branch detail=content-check-failed" >&2
+    return 1
+  fi
+  unique_merges=$(git -C "$repo" rev-list --merges "$landed_tip..$branch") || {
+    echo "$prefix reap safety=refused branch=$branch detail=content-check-failed" >&2
+    return 1
+  }
+  if [[ "$cherry_output" == *"+ "* ]] || [ -n "$unique_merges" ]; then
+    echo "$prefix reap safety=refused branch=$branch detail=unique-content" >&2
+    return 1
+  fi
+  echo "$prefix reap safety=pass branch=$branch carried-by=$landed_tip"
+}
+
 # Compare an optional report claim with the output of the verify command that
 # the gate itself just ran. The completion guard validates the claim's syntax.
 land_verify_count() {

@@ -200,6 +200,10 @@ reap_local_only=false
 allow_remote_delete=true
 if [ "$no_push" = true ]; then allow_remote_delete=false; fi
 for branch in "${branches[@]}" "$integration_branch"; do
+  if ! land_assert_reap_safe "$repo" "$branch" "$merge_sha" BATCH; then
+    reap_failed=true
+    continue
+  fi
   if ! git -C "$repo" branch -d "$branch"; then
     echo "BATCH reap failure branch=$branch" >&2
     reap_failed=true

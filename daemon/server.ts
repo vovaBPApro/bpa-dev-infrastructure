@@ -86,6 +86,7 @@ import {
   upsertEnvAssignment,
 } from './model-registry';
 import { appendInboxLine } from './inbox-mirror';
+import { readRestartContext } from './restart-context';
 import {
   type HumanMissionCommand,
   parseHumanMissionCommand,
@@ -3020,6 +3021,33 @@ const httpServer = createServer(
       });
 
       await server.connect(transport);
+
+      // A fresh harness session must reconcile durable Human input before it
+      // trusts the previous orchestrator snapshot. The inbox is append-only, so
+      // earlier intent remains visible but only the newest message per chat is
+      // marked active. The formatter enforces both a time and size bound.
+      const restartContext = readRestartContext(
+        process.env.ORCH_INBOX_JSONL ||
+          join(INSTALL_ROOT, 'instance', 'decisions', 'inbox.jsonl'),
+      );
+      if (restartContext) {
+        const primaryChat = loadAccess().allowFrom[0] ?? '0';
+        await server
+          .notification({
+            method: 'notifications/claude/channel',
+            params: {
+              content: restartContext.content,
+              meta: {
+                chat_id: primaryChat,
+                user: 'system',
+                user_id: '0',
+                ts: new Date().toISOString(),
+                kind: 'restart_context',
+              },
+            },
+          })
+          .catch(() => {});
+      }
 
       // Inject orchestrator state on connect — gives the new Claude session
       // a briefing of where the previous session left off. This is the "simple

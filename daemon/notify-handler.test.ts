@@ -1,6 +1,9 @@
 import { expect, test } from 'bun:test';
 import { createServer } from 'node:http';
-import { createNotifyHandler } from './notify-handler';
+import {
+  classifyNotifyAudience,
+  createNotifyHandler,
+} from './notify-handler';
 
 test('internal /notify reaches the orchestrator and never the Human relay', async () => {
   const internal: string[] = [];
@@ -57,6 +60,37 @@ test('internal /notify fails closed when orchestrator delivery fails', async () 
     expect(response.status).toBe(502);
     expect(await response.text()).toContain('orchestrator unavailable');
     expect(human).toEqual([]);
+  } finally {
+    server.close();
+  }
+});
+
+test('REGRESSION ML-1: external /notify invokes the Human sender', async () => {
+  expect(classifyNotifyAudience(undefined)).toBe('human');
+  const internal: string[] = [];
+  const human: Array<{ chat: string; text: string }> = [];
+  const server = createServer(
+    createNotifyHandler({
+      notifyChatId: () => 'human-chat',
+      relayInternal: async (text) => {
+        internal.push(text);
+      },
+      relayHuman: (chat, text) => human.push({ chat, text }),
+    }),
+  );
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('missing port');
+    const response = await fetch(`http://127.0.0.1:${address.port}/notify`, {
+      method: 'POST',
+      body: 'operator update',
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('queued');
+    expect(internal).toEqual([]);
+    expect(human).toEqual([{ chat: 'human-chat', text: 'operator update' }]);
   } finally {
     server.close();
   }

@@ -6,6 +6,12 @@ type NotifyDependencies = {
   relayHuman: (chatId: string, text: string) => void;
 };
 
+export function classifyNotifyAudience(
+  audience: string | string[] | undefined,
+): 'internal' | 'human' {
+  return audience === 'internal' ? 'internal' : 'human';
+}
+
 async function readBody(req: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) {
@@ -35,7 +41,10 @@ export function createNotifyHandler(deps: NotifyDependencies) {
       return;
     }
     try {
-      if (req.headers['x-bpa-alarm-audience'] === 'internal') {
+      if (
+        classifyNotifyAudience(req.headers['x-bpa-alarm-audience']) ===
+        'internal'
+      ) {
         await deps.relayInternal(text);
       } else {
         const chat = deps.notifyChatId();

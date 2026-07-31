@@ -32,6 +32,14 @@ test('ignores ordinary terminal output', () => {
   expect(classifyTerminalFailure('Tests: 42 pass, 0 fail')).toBeNull();
 });
 
+test('REGRESSION ML-1: an unclassified terminal failure remains actionable', () => {
+  expect(
+    classifyTerminalFailure(
+      'Provider terminal failure: strange new condition',
+    ),
+  ).toBe('unknown');
+});
+
 test('strips terminal control sequences before classification', () => {
   const clean = stripTerminalNoise('\u001b[31musage limit\u001b[0m\r');
   expect(clean).toBe('usage limit');

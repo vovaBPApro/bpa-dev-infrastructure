@@ -8,7 +8,11 @@ export type TerminalFailureClass =
   | 'failed'
   | 'exited'
   | 'network'
-  | 'fatal';
+  | 'fatal'
+  | 'unknown';
+
+const FAILURE_LIKE =
+  /\b(?:terminal failure|failure|failed|fatal|error|exited|stalled|crashed|panic)\b/i;
 
 const FAILURE_PATTERNS: ReadonlyArray<{
   kind: TerminalFailureClass;
@@ -82,7 +86,7 @@ export function classifyTerminalFailure(
   for (const entry of FAILURE_PATTERNS) {
     if (entry.patterns.some((pattern) => pattern.test(line))) return entry.kind;
   }
-  return null;
+  return FAILURE_LIKE.test(line) ? 'unknown' : null;
 }
 
 export function stripTerminalNoise(line: string): string {

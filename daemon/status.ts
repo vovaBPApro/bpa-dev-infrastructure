@@ -317,6 +317,7 @@ export type RuntimeStatusDeps = {
   countRunningAgents?: RunningAgentCounter;
   isPidAlive?: (pid: number) => boolean;
   now?: number;
+  vendorQuotaLines?: string[];
 };
 
 // Build the orchestrator runtime status lines. Process and worktree censuses
@@ -434,7 +435,7 @@ export function buildRuntimeStatus(deps: RuntimeStatusDeps): string[] {
     runningLine,
     laneLine,
     `providers_active: ${providers.text}`,
-    `vendor_quota: ${quota}`,
+    ...(deps.vendorQuotaLines ?? [`vendor_quota: ${quota}`]),
     `vendor_override: ${override.text}`,
     instanceLine,
     `binding: ${bindingLabel}`,

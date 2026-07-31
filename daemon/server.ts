@@ -116,6 +116,7 @@ import {
   type JsonReadResult,
 } from './status';
 import { installStderrSecretMasker } from './secret-masker';
+import { formatLocalVendorQuota, readLocalVendorQuota } from './vendor-quota-local';
 
 // Install before configuration and network startup: every daemon diagnostic
 // crosses this sink, including errors from future call sites.
@@ -2051,6 +2052,7 @@ function buildOrchRuntimeStatus(): string[] {
     laneOpts: { baseRef: GIT_STALL_REF || 'origin/main' },
     countRunningAgents,
     isPidAlive,
+    vendorQuotaLines: formatLocalVendorQuota(readLocalVendorQuota(home)),
   });
 }
 

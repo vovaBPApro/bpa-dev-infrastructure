@@ -1,10 +1,10 @@
 # Independent review: ag-ml1-alarm-classes
 
-verdict: REJECT
-reviewed-sha: 26c2b003dba3488eec10c3bdc762e9a662e86571
+verdict: ACCEPT
+reviewed-sha: 46c0f491617ddbcb40794812f9c17fb7709221e7
 independence: Independent Codex reviewer session; I did not author the coder commits.
 tier: Tier A — orchestrator core, terminal alarm routing, and fail-closed readiness
-diff: `git diff origin/main...26c2b003dba3488eec10c3bdc762e9a662e86571`
+diff: `git diff origin/main...46c0f491617ddbcb40794812f9c17fb7709221e7`
 
 ## Consumption check
 
@@ -15,36 +15,34 @@ diff: `git diff origin/main...26c2b003dba3488eec10c3bdc762e9a662e86571`
 - tool-permissions sha256:6c7b9f57fbbd — Tool Permissions
 - reproducible-from-git sha256:822d9efe694b — Reproducible From Git
 
-## Findings
+## Findings and disposition
 
-1. **BLOCKER — unknown terminal failures disappear silently.** The mission
-   requires an unclassified line to remain visible rather than be absorbed.
-   `classifyTerminalFailure()` returns `null` for an unknown failure, and the
-   live loop at `daemon/terminal-alert.ts:158` executes `if (!kind) continue`
-   without emitting, recording, or routing anything. Reproduction:
+No blocking finding remains. The two prior blockers are closed at the reviewed
+SHA: failure-looking lines outside the eight declared patterns route as
+`unknown`, while ordinary output remains ignored; and the external `/notify`
+path has a live HTTP-boundary lock proving that it invokes only the Human
+sender.
 
-   ```text
-   $ bun -e "import { classifyTerminalFailure } from './daemon/terminal-alert.ts'; console.log(String(classifyTerminalFailure('Provider terminal failure: strange new condition')))"
-   null
-   ```
-
-   This is the fail-open class called out by the mission: when classification
-   cannot determine the truth, the line is silently treated as non-actionable.
-   The existing `ignores ordinary terminal output` test does not cover an
-   unknown failure-looking line or its live-loop visibility.
-
-2. **BLOCKER — one historical routing lock was not preserved.** The requested
-   historical file has three behaviors: explicit internal classification,
-   internal never invokes the Human sender, and external invokes the Human
-   sender. The new `daemon/notify-handler.test.ts` covers internal success and
-   internal delivery failure, but has no external-to-Human test. The production
-   branch appears to call `relayHuman` for non-internal requests, but the
-   historical executable lock was regressed, so that behavior is no longer
-   protected.
+Fail-open review found affirmative failure handling at the relevant boundaries:
+non-2xx `/notify` responses throw and are not entered into the delivered dedup
+set; unavailable internal delivery returns HTTP 502; and launch requires both a
+live tmux pipe and classifier readiness file, otherwise it kills the new session
+and returns failure. Scope matches the claim. No dependency, schema, migration,
+persistent-data, or production deployment change is present. Rollback is a Git
+revert of the coder chain; there is no data rollback.
 
 ## Exact counts reproduced
 
-Declared terminal failure classes:
+Command:
+
+```sh
+sed -n '/export type TerminalFailureClass =/,/;/p' daemon/terminal-alert.ts | rg -o "'[^']+'" | rg -v "'unknown'"
+sed -n '/const FAILURE_PATTERNS/,/^];/p' daemon/terminal-alert.ts | rg -o "kind: '[^']+'"
+sed -n '/test.each(\[/,/^] as const)/p' daemon/terminal-alert.test.ts | rg "^[[:space:]]+\["
+rg "test\('REGRESSION ML-1" daemon/*.test.ts
+```
+
+Real output and counts:
 
 ```text
 'usage-limit'
@@ -55,12 +53,8 @@ Declared terminal failure classes:
 'exited'
 'network'
 'fatal'
-count=8
-```
+declared_count=8
 
-Pattern entries reproduced independently:
-
-```text
 kind: 'usage-limit'
 kind: '429/overload'
 kind: 'auth'
@@ -69,27 +63,27 @@ kind: 'failed'
 kind: 'exited'
 kind: 'network'
 kind: 'fatal'
-count=8
+pattern_count=8
+
+["You've hit your limit · resets 3pm", 'usage-limit']
+['API request failed: 429 Too Many Requests', '429/overload']
+['Authentication failed: invalid session', 'auth']
+['agent stalled: no progress for 600s', 'stalled']
+['Agent "worker-2" failed: command returned 1', 'failed']
+['[watchdog] Claude exited (code 1)', 'exited']
+['network error: ECONNRESET', 'network']
+['fatal error: uncaught exception', 'fatal']
+fixture_count=8
+
+REGRESSION ML-1: quota exhaustion is quota and never a stall
+REGRESSION ML-1: an unclassified terminal failure remains actionable
+REGRESSION ML-1: a rejected notify response is a delivery failure
+REGRESSION ML-1: classifier proves process readiness to its launcher
+REGRESSION ML-1: external /notify invokes the Human sender
+lock_count=5
 ```
 
-The fixture table also has 8 rows. Its realistic Claude quota line is:
-
-```text
-(pass) classifies You've hit your limit · resets 3pm as usage-limit
-```
-
-The mixed quota/stall precedence lock also passes:
-
-```text
-(pass) REGRESSION ML-1: quota exhaustion is quota and never a stall
-```
-
-Thus quota exhaustion is not classified as `stalled`; this portion is
-accepted. The class vocabulary calls Claude usage exhaustion `usage-limit` and
-API quota/rate exhaustion `429/overload` rather than using a literal `QUOTA`
-enum.
-
-## Green-at-reviewed-SHA evidence
+## Green at reviewed SHA
 
 Command:
 
@@ -97,93 +91,81 @@ Command:
 (cd daemon && bun test notify-handler.test.ts terminal-alert.test.ts && bun run typecheck) && (cd orchestrator && ORCH_SKIP_TRUST_CHECK=1 ./runtime.test.sh) && git diff --check origin/main...HEAD
 ```
 
-Real output summary at the reviewed SHA (exit 0):
+Real output summary, exit 0:
 
 ```text
-16 pass
+(pass) REGRESSION ML-1: external /notify invokes the Human sender
+(pass) REGRESSION ML-1: quota exhaustion is quota and never a stall
+(pass) REGRESSION ML-1: an unclassified terminal failure remains actionable
+(pass) REGRESSION ML-1: a rejected notify response is a delivery failure
+(pass) REGRESSION ML-1: classifier proves process readiness to its launcher
+18 pass
 0 fail
-23 expect() calls
-Ran 16 tests across 2 files. [101.00ms]
+29 expect() calls
+Ran 18 tests across 2 files.
 $ bunx tsc --noEmit
 ERROR terminal-alert-not-ready session=test-orch
 ERROR terminal-alert-not-ready session=test-orch
 runtime tests: PASS
 ```
 
-The two error lines are asserted negative fixtures: launch kills a session when
-the pipe detaches or the classifier never creates its readiness file.
+The two error lines are asserted negative fixtures: one detached pipe and one
+classifier that never creates its readiness file. Both leave no running session.
 
-## Red-before / green-after evidence
+## Red-before / green-after regression evidence
 
-I copied the unchanged reviewed `terminal-alert.test.ts` into disposable
-detached worktrees at each relevant pre-fix SHA. All three named regression
-locks failed before their fixes and pass at the reviewed SHA.
-
-Quota/classes, pre-fix `8ff4ec3` (exit 1):
+Each reviewed test was retained unchanged in a disposable detached worktree
+while its implementation fix was reverted (or, for the initial feature commit,
+the unchanged test was run against its pre-fix parent). Actual red results:
 
 ```text
+quota/classes, pre-fix parent 26b7f6d:
 error: Cannot find module './terminal-alert'
 0 pass
 1 fail
 1 error
-```
+exit=1
 
-Rejected notify response, pre-fix `a6c6281` (exit 1):
-
-```text
+rejected response, reverted a7da06e:
 SyntaxError: Export named 'relayTerminalAlert' not found
 0 pass
 1 fail
 1 error
-```
+exit=1
 
-Classifier readiness, pre-fix `babd436` (exit 1):
-
-```text
+readiness, reverted 0b003e8:
 Expected: true
 Received: false
 (fail) REGRESSION ML-1: classifier proves process readiness to its launcher
-13 pass
+0 pass
 1 fail
+daemon_exit=1
+FAIL: terminal alert pipe did not carry its readiness handshake path
+runtime_exit=1
+
+unknown failure, reverted 0c73aa6:
+Expected: "unknown"
+Received: null
+0 pass
+1 fail
+unknown_exit=1
+
+external routing, reverted 0c73aa6:
+SyntaxError: Export named 'classifyNotifyAudience' not found
+0 pass
+1 fail
+1 error
+external_exit=1
 ```
 
-The first two are feature-boundary reds because the pre-fix revisions do not
-provide the imported implementation/export; the readiness lock is a direct
-behavioral red. All corresponding tests are green in the 16/0 reviewed run.
+Restoring the reviewed implementation produced the `18 pass / 0 fail` green
+run above. The locks therefore fail before and pass after; none passes both ways.
 
-## Historical behavior check
+## Secret scan
 
-Command:
-
-```sh
-git show ffe05409:tools/claude-telegram-daemon/alarm-router.test.ts | rg '^test\\('
-rg '^test\\(' daemon/notify-handler.test.ts
-```
-
-Real output:
-
-```text
-test('classifies only an explicit internal header as an orchestrator alarm', () => {
-test('internal alarm never invokes the Human outbound sender', async () => {
-test('external alarm invokes the Human outbound sender', async () => {
-test('internal /notify reaches the orchestrator and never the Human relay', async () => {
-test('internal /notify fails closed when orchestrator delivery fails', async () => {
-```
-
-Internal routing is preserved and strengthened with a real HTTP boundary test;
-the external routing lock is missing.
-
-## Secrets, scope, and rollback
-
-The canonical `gate/land-lib.sh` pattern scan over
-`git diff origin/main...HEAD` produced no matches: `secret_scan=clean`.
-No dependency, schema, migration, or persistent-data change is present. Changed
-implementation paths are relevant to alarm classification/routing/readiness;
-the reports are mission evidence. Rollback is a Git revert of the coder commit
-chain, but landing is blocked before rollback posture becomes operative.
+The canonical pattern extracted from `gate/land-lib.sh` was run against
+`git diff origin/main...HEAD`; it produced no matches.
 
 secret-scan: clean
 
-blockers: `daemon/terminal-alert.ts:158` silently absorbs unclassified
-failure-looking lines; `daemon/notify-handler.test.ts` omits the historical
-external-to-Human routing lock.
+blockers: none

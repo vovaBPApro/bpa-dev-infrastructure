@@ -50,6 +50,11 @@ fi
 echo "DEPLOY build=$commit release=$release"
 (cd "$release" && bash -o pipefail -c "$BUILD_COMMAND")
 
+# A root build may recreate dist under mode 0700. Apply service-readable and
+# traversable permissions after the build while preserving executable bits.
+chmod -R a+rX "$release"
+find "$release" -type d -exec chmod a+rx {} +
+
 previous=
 if [[ -L "$CURRENT_LINK" ]]; then
   previous=$(readlink -f "$CURRENT_LINK")

@@ -23,7 +23,7 @@ SERVICE_NAME=fixture.service
 SERVICE_ROOT_ENV=APP_ROOT
 SYSTEMD_SYSTEM_DIR=$TMP/systemd
 HEALTH_URL=http://fixture/healthz
-BUILD_COMMAND='printf "{\"status\":\"ok\",\"build\":{\"commit\":\"\$(git rev-parse HEAD)\"}}\\n" > health.json'
+BUILD_COMMAND='mkdir -p dist && printf "{\"status\":\"ok\",\"build\":{\"commit\":\"\$(git rev-parse HEAD)\"}}\\n" > health.json && printf app > dist/app.js && chmod 0700 . dist'
 MIGRATION_PREFLIGHT_COMMAND='touch "$TMP/preflight-passed"'
 HEALTH_TIMEOUT_SECONDS=1
 STALE_COMMIT_THRESHOLD=0
@@ -37,6 +37,9 @@ if [[ "$1" == restart && ! -f "${PREFLIGHT_MARKER:?}" ]]; then
   echo 'restart occurred before migration preflight' >&2
   exit 91
 fi
+if [[ "$1" == restart && -n "${RESTART_MARKER:-}" ]]; then
+  printf 0 >"$RESTART_MARKER"
+fi
 exit 0
 EOF
 cat >"$TMP/bin/curl" <<EOF
@@ -48,6 +51,13 @@ if [[ "\$*" == *http://fixture/notify* ]]; then
   cp "\${payload#@}" '$TMP/notification.json'
   exit 0
 fi
+if [[ -n "\${RESTART_MARKER:-}" && -f "\$RESTART_MARKER" ]]; then
+  attempts=\$(cat "\$RESTART_MARKER")
+  if ((attempts < \${STARTUP_FAILURES:-0})); then
+    printf '%s' \$((attempts + 1)) >"\$RESTART_MARKER"
+    exit 7
+  fi
+fi
 cat '$TMP/releases/current/health.json'
 EOF
 chmod +x "$TMP/bin/systemctl" "$TMP/bin/curl"
@@ -58,13 +68,17 @@ ln -s "$TMP/releases/$old" "$TMP/releases/current"
 touch "$TMP/preflight-passed"
 PATH="$TMP/bin:$PATH" PREFLIGHT_MARKER="$TMP/preflight-passed" "$ROOT/deploy/live-stand.sh" "$TMP/config" "$new" | grep -F "DEPLOY SUCCESS service=fixture.service commit=$new"
 [[ "$(readlink -f "$TMP/releases/current")" == "$TMP/releases/$new" ]]
+[[ "$(stat -c %a "$TMP/releases/$new")" == 755 ]]
+[[ "$(stat -c %a "$TMP/releases/$new/dist")" == 755 ]]
+echo 'FAIL-BEFORE root build left release and regenerated dist at 0700; post-build permission lock: PASS'
 
 # Required red lock: a bad candidate is rolled back to the last healthy release.
 printf three >"$repo/source" && git -C "$repo" commit -am three >/dev/null
 bad=$(git -C "$repo" rev-parse HEAD)
 git -C "$repo" push origin HEAD:main >/dev/null
 sed -i "s#BUILD_COMMAND=.*#BUILD_COMMAND='printf not-json > health.json'#" "$TMP/config"
-if PATH="$TMP/bin:$PATH" PREFLIGHT_MARKER="$TMP/preflight-passed" "$ROOT/deploy/live-stand.sh" "$TMP/config" "$bad" >"$TMP/bad.out" 2>"$TMP/bad.err"; then
+sed -i 's/HEALTH_TIMEOUT_SECONDS=1/HEALTH_TIMEOUT_SECONDS=4/' "$TMP/config"
+if PATH="$TMP/bin:$PATH" PREFLIGHT_MARKER="$TMP/preflight-passed" RESTART_MARKER="$TMP/restart-attempts" STARTUP_FAILURES=2 "$ROOT/deploy/live-stand.sh" "$TMP/config" "$bad" >"$TMP/bad.out" 2>"$TMP/bad.err"; then
   echo 'FAIL: unhealthy release was accepted' >&2; exit 1
 fi
 grep -Fq 'rolling back' "$TMP/bad.err"
@@ -72,7 +86,8 @@ grep -Fq "rollback=healthy commit=$new" "$TMP/bad.err"
 [[ "$(readlink -f "$TMP/releases/current")" == "$TMP/releases/$new" ]]
 grep -Fq "exact-sha=$new" "$TMP/events"/*.delivered
 grep -Fq '"outcome":"rolled-back"' "$TMP/notification.json"
-echo 'FAIL-BEFORE unhealthy release would remain active; rollback lock: PASS'
+[[ "$(cat "$TMP/restart-attempts")" -ge 2 ]]
+echo 'FAIL-BEFORE app startup failure would remain active and immediate rollback probe false-alarmed; exact-SHA wait lock: PASS'
 
 # A migration collision is rejected before any restart or activation.
 sed -i "s#MIGRATION_PREFLIGHT_COMMAND=.*#MIGRATION_PREFLIGHT_COMMAND='exit 42'#" "$TMP/config"

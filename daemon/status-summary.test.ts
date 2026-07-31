@@ -7,7 +7,7 @@
 import { expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ActiveLanes, ShRunner } from './status';
+import { countActiveLanes, type ActiveLanes, type ShRunner } from './status';
 import {
   HEARTBEAT_FRESH_MS,
   parseHeartbeat,
@@ -316,6 +316,53 @@ test('ADVERSARIAL: future commit timestamp makes last-landed unknown, no clamp',
   expect(lines.join('\n')).not.toContain(ALL_GOOD);
   expect(lines.join('\n')).not.toContain('щойно)');
 });
+
+for (const offsetMs of [1, 60_000]) {
+  test(`ADVERSARIAL: future mission timestamp +${offsetMs}ms is invalid and blocks`, () => {
+    const deps = healthyDeps();
+    deps.mission = {
+      present: true,
+      mission: { status: 'running', desc: 'W-14' },
+      updatedAt: NOW + offsetMs,
+    };
+    const lines = renderHumanStatus(deps);
+    expect(lines.join('\n')).not.toContain(ALL_GOOD);
+    expect(lines[1]).toContain('невідомо');
+    expect(lines.at(-1)).toContain('місії');
+  });
+}
+
+const MALFORMED_WORKTREE_OUTPUTS = [
+  {
+    name: 'reviewer truncated record',
+    out: [
+      'worktree /home/bpa-shell/.cache/infra-lanes/ag-cut-off',
+      'HEAD 1111111111111111111111111111111111111111',
+    ].join('\n'),
+  },
+  { name: 'empty census', out: '' },
+  {
+    name: 'mid-record cut-off',
+    out: 'worktree /home/bpa-shell/.cache/infra-lanes/ag-cut-off',
+  },
+  {
+    name: 'orphan branch',
+    out: 'branch refs/heads/ag-orphan',
+  },
+] as const;
+
+for (const malformed of MALFORMED_WORKTREE_OUTPUTS) {
+  test(`ADVERSARIAL: ${malformed.name} worktree porcelain is unknown and blocks`, () => {
+    const runner: ShRunner = () => ({ out: malformed.out, ok: true });
+    const lanes = countActiveLanes('/repo', runner);
+    expect(lanes.verified).toBe(false);
+    const deps = healthyDeps();
+    deps.lanes = lanes;
+    const lines = renderHumanStatus(deps);
+    expect(lines.join('\n')).not.toContain(ALL_GOOD);
+    expect(lines.at(-1)).toContain('стан лейнів невідомий');
+  });
+}
 
 test('ADVERSARIAL: unknown lane ahead-state is a blocker, not a silent shrug', () => {
   const deps = healthyDeps();

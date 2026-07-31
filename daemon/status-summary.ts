@@ -30,6 +30,7 @@
 // pattern. This module never spawns anything on its own.
 
 import { readFileSync } from 'node:fs';
+import { ageFromObservedTimestamp } from './observed-time';
 import { countActiveLanes, type ActiveLanes, type ShRunner } from './status';
 
 // ── Wording ──────────────────────────────────────────────────────────────────
@@ -52,6 +53,7 @@ export const UA = {
   missionNone: 'не задана',
   // Generic on purpose: the source-derived reason (paths etc.) stays in raw.
   missionUnknown: 'невідомо (джерело місії недоступне)',
+  missionTimeInvalid: 'невідомо (час оновлення місії невалідний)',
   workLabel: 'Зараз в роботі',
   workNone: 'лейнів немає',
   workUnknown: 'невідомо (немає перевірених даних git)',
@@ -68,6 +70,7 @@ export const UA = {
   blockerNoHb: 'серцебиття оркестратора відсутнє',
   blockerBadHb: 'серцебиття оркестратора невалідне',
   blockerMissionUnknown: 'стан місії невідомий (джерело недоступне)',
+  blockerMissionTimeInvalid: 'стан місії невідомий (час оновлення невалідний)',
   blockerLanesUnknown: 'стан лейнів невідомий (git-перевірка не вдалася)',
   blockerLaneAheadUnknown: 'стан частини лейнів невідомий',
   blockerLandedUnknown: 'останні приземлені невідомі (git-перевірка не вдалася)',
@@ -78,7 +81,10 @@ export const UA = {
   updated: (age: string) => ` (оновлено ${age})`,
 };
 
-// Ukrainian relative age for humans. Coarse on purpose.
+// Ukrainian relative age for humans. Coarse on purpose. This formats an age
+// that an observation parser already validated; it never accepts or subtracts
+// an absolute timestamp. The defensive clamp therefore cannot hide a future
+// clock reading.
 export function uaAge(ms: number): string {
   const clamped = Math.max(0, ms);
   if (clamped < 60_000) return UA.justNow;
@@ -141,11 +147,9 @@ export function parseHeartbeat(raw: string | null, now: number): HeartbeatReadin
   const t = raw.trim();
   if (!/^\d+$/.test(t)) return { status: 'invalid' };
   const seconds = parseInt(t, 10);
-  // ANY future value is a broken clock, not liveness evidence — no grace
-  // window and no clamping to "fresh" (review finding, HR-150 fixup).
-  const ageMs = now - seconds * 1000;
-  if (ageMs < 0) return { status: 'invalid' };
-  return { status: 'ok', ageMs };
+  const age = ageFromObservedTimestamp(seconds * 1000, now);
+  if (!age.ok) return { status: 'invalid' };
+  return { status: 'ok', ageMs: age.ageMs };
 }
 
 export function readHeartbeatFile(path: string, now: number): HeartbeatReading {
@@ -201,11 +205,17 @@ export function readLastLanded(
       return { verified: false, reason: 'git log output malformed' };
     }
     const commitMs = parseInt(ct, 10) * 1000;
-    // ANY future commit timestamp is invalid evidence — no clamp to "just now".
-    if (commitMs > now) {
-      return { verified: false, reason: 'commit timestamp in the future' };
+    const age = ageFromObservedTimestamp(commitMs, now);
+    if (!age.ok) {
+      return {
+        verified: false,
+        reason:
+          age.reason === 'future'
+            ? 'commit timestamp in the future'
+            : 'commit timestamp malformed',
+      };
     }
-    entries.push({ subject, ageMs: now - commitMs });
+    entries.push({ subject, ageMs: age.ageMs });
   }
   if (entries.length === 0) {
     return { verified: false, reason: 'git log returned no commits' };
@@ -285,12 +295,22 @@ export function renderHumanStatus(deps: StatusSummaryDeps): string[] {
   } else {
     const m = deps.mission.mission;
     const updatedAt = deps.mission.updatedAt;
-    const ageMs = updatedAt == null ? null : Math.max(0, now - updatedAt);
-    const stale =
-      ageMs !== null && ageMs > HEARTBEAT_FRESH_MS ? UA.updated(uaAge(ageMs)) : '';
-    lines.push(
-      `${UA.missionLabel}: ${sanitizeForHuman(m.desc)} [${sanitizeForHuman(m.status, 24)}]${stale}`,
-    );
+    const age =
+      updatedAt == null
+        ? ({ ok: false, reason: 'non-finite' } as const)
+        : ageFromObservedTimestamp(updatedAt, now);
+    if (!age.ok) {
+      lines.push(`${UA.missionLabel}: ${UA.missionTimeInvalid}`);
+      blockers.push(UA.blockerMissionTimeInvalid);
+    } else {
+      const stale =
+        age.ageMs > HEARTBEAT_FRESH_MS
+          ? UA.updated(uaAge(age.ageMs))
+          : '';
+      lines.push(
+        `${UA.missionLabel}: ${sanitizeForHuman(m.desc)} [${sanitizeForHuman(m.status, 24)}]${stale}`,
+      );
+    }
   }
 
   // Зараз в роботі — lane worktree census (timeout- and throw-guarded at the

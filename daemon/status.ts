@@ -4,6 +4,8 @@
 // tested without the live system. Every field either reflects ground truth the
 // stack actually measured, or degrades HONESTLY to `unknown`/`n/a`.
 
+import { ageFromObservedTimestamp } from './observed-time';
+
 // A shell runner with the same shape as server.ts's `sh`.
 export type ShRunner = (cmd: string) => {
   out: string;
@@ -71,34 +73,108 @@ export type ActiveLanes =
       reason: string;
     };
 
-// Parse `git worktree list --porcelain` output into path/branch pairs.
+export type ParsedWorktree =
+  | { path: string; state: 'attached'; branch: string }
+  | { path: string; state: 'detached' }
+  | { path: string; state: 'bare' };
+
+export type WorktreePorcelain =
+  | { verified: true; worktrees: ParsedWorktree[] }
+  | { verified: false; reason: string };
+
+// Parse `git worktree list --porcelain` fail-closed. A real census always has
+// at least one complete record. Attached and detached records require HEAD;
+// bare records legitimately do not. Optional locked/prunable attributes do not
+// change the checkout state.
 export function parseWorktreePorcelain(
   out: string,
-): { path: string; branch: string }[] {
-  const entries: { path: string; branch: string }[] = [];
-  let path: string | null = null;
-  let branch = '';
-  const flush = () => {
-    if (path) entries.push({ path, branch });
-    path = null;
-    branch = '';
-  };
+): WorktreePorcelain {
+  const malformed = (): WorktreePorcelain => ({
+    verified: false,
+    reason: 'git worktree output malformed',
+  });
+  const records: string[][] = [];
+  let record: string[] = [];
   for (const raw of out.split('\n')) {
-    const line = raw.trim();
-    if (line.startsWith('worktree ')) {
-      flush();
-      path = line.slice('worktree '.length).trim();
-    } else if (line.startsWith('branch ')) {
-      branch = line
-        .slice('branch '.length)
-        .trim()
-        .replace(/^refs\/heads\//, '');
-    } else if (line === '') {
-      flush();
+    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+    if (line.trim() === '') {
+      if (record.length > 0) records.push(record);
+      record = [];
+    } else {
+      record.push(line);
     }
   }
-  flush();
-  return entries;
+  if (record.length > 0) records.push(record);
+  if (records.length === 0) {
+    return { verified: false, reason: 'git worktree returned no records' };
+  }
+
+  const worktrees: ParsedWorktree[] = [];
+  for (const rows of records) {
+    const first = rows[0]!;
+    if (!first.startsWith('worktree ')) return malformed();
+    const path = first.slice('worktree '.length);
+    if (!path.startsWith('/')) return malformed();
+
+    let head: string | null = null;
+    let branch: string | null = null;
+    let detached = false;
+    let bare = false;
+    let locked = false;
+    let prunable = false;
+
+    for (const row of rows.slice(1)) {
+      if (row.startsWith('HEAD ')) {
+        if (
+          head !== null ||
+          !/^HEAD [0-9a-fA-F]{40}([0-9a-fA-F]{24})?$/.test(row)
+        ) {
+          return malformed();
+        }
+        head = row.slice('HEAD '.length);
+      } else if (row.startsWith('branch ')) {
+        const ref = row.slice('branch '.length);
+        if (
+          branch !== null ||
+          !ref.startsWith('refs/heads/') ||
+          !/^[^\s\u0000-\u001f\u007f]+$/.test(
+            ref.slice('refs/heads/'.length),
+          )
+        ) {
+          return malformed();
+        }
+        branch = ref.slice('refs/heads/'.length);
+      } else if (row === 'detached') {
+        if (detached) return malformed();
+        detached = true;
+      } else if (row === 'bare') {
+        if (bare) return malformed();
+        bare = true;
+      } else if (row === 'locked' || /^locked .+$/.test(row)) {
+        if (locked) return malformed();
+        locked = true;
+      } else if (row === 'prunable' || /^prunable .+$/.test(row)) {
+        if (prunable) return malformed();
+        prunable = true;
+      } else {
+        return malformed();
+      }
+    }
+
+    const states = Number(branch !== null) + Number(detached) + Number(bare);
+    if (states !== 1) return malformed();
+    if (bare) {
+      if (head !== null) return malformed();
+      worktrees.push({ path, state: 'bare' });
+    } else if (detached) {
+      if (head === null || branch !== null) return malformed();
+      worktrees.push({ path, state: 'detached' });
+    } else {
+      if (head === null || branch === null) return malformed();
+      worktrees.push({ path, state: 'attached', branch });
+    }
+  }
+  return { verified: true, worktrees };
 }
 
 // Derive the configured coder-lane worktree set from `git worktree list` on the
@@ -135,8 +211,13 @@ export function countActiveLanes(
     };
   }
 
+  const parsed = parseWorktreePorcelain(res.out);
+  if (!parsed.verified) return parsed;
+
   const lanes: LaneWorktree[] = [];
-  for (const { path, branch } of parseWorktreePorcelain(res.out)) {
+  for (const worktree of parsed.worktrees) {
+    if (worktree.state !== 'attached') continue;
+    const { path, branch } = worktree;
     const isLanePath = path.startsWith(root);
     const isLaneBranch = branch.startsWith(branchPrefix);
     if (!isLanePath || !isLaneBranch) continue;
@@ -199,9 +280,14 @@ type FieldResult =
 
 function stateAge(read: JsonReadResult, now: number): string | null {
   if (!read.present || read.modifiedAt === undefined) return null;
-  const ageMs = Math.max(0, now - read.modifiedAt);
-  return ageMs > STATE_FRESHNESS_MS
-    ? `stale, age ${Math.floor(ageMs / 60000)}m`
+  const age = ageFromObservedTimestamp(read.modifiedAt, now);
+  if (!age.ok) {
+    return age.reason === 'future'
+      ? 'invalid, timestamp in future'
+      : 'invalid timestamp';
+  }
+  return age.ageMs > STATE_FRESHNESS_MS
+    ? `stale, age ${Math.floor(age.ageMs / 60000)}m`
     : null;
 }
 

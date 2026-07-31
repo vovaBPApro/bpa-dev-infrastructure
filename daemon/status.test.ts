@@ -62,19 +62,74 @@ function fakeRunner(porcelain: string, aheadOut = '2'): ShRunner {
 
 const CANON = '/home/bpa-shell/bpa-dev-infrastructure';
 
+const MALFORMED_PORCELAIN_CASES = [
+  {
+    name: 'reviewer truncated record',
+    out: [
+      'worktree /home/bpa-shell/.cache/infra-lanes/ag-cut-off',
+      'HEAD 1111111111111111111111111111111111111111',
+    ].join('\n'),
+  },
+  { name: 'empty output', out: '' },
+  {
+    name: 'mid-record cut-off',
+    out: 'worktree /home/bpa-shell/.cache/infra-lanes/ag-cut-off',
+  },
+  {
+    name: 'orphan branch row',
+    out: 'branch refs/heads/ag-orphan',
+  },
+] as const;
+
 test('parseWorktreePorcelain pairs each worktree with its branch', () => {
   const entries = parseWorktreePorcelain(PORCELAIN_TWO_LANES);
-  expect(entries).toEqual([
-    { path: '/home/bpa-shell/bpa-dev-infrastructure', branch: 'main' },
-    {
-      path: '/home/bpa-shell/.cache/infra-lanes/status-fix',
-      branch: 'ag-status-fix',
-    },
-    {
-      path: '/home/bpa-shell/.cache/infra-lanes/item6-tail',
-      branch: 'ag-item6-tail',
-    },
-  ]);
+  expect(entries).toEqual({
+    verified: true,
+    worktrees: [
+      {
+        path: '/home/bpa-shell/bpa-dev-infrastructure',
+        state: 'attached',
+        branch: 'main',
+      },
+      {
+        path: '/home/bpa-shell/.cache/infra-lanes/status-fix',
+        state: 'attached',
+        branch: 'ag-status-fix',
+      },
+      {
+        path: '/home/bpa-shell/.cache/infra-lanes/item6-tail',
+        state: 'attached',
+        branch: 'ag-item6-tail',
+      },
+    ],
+  });
+});
+
+for (const malformed of MALFORMED_PORCELAIN_CASES) {
+  test(`ADVERSARIAL: ${malformed.name} is an unverified worktree census`, () => {
+    const lanes = countActiveLanes(CANON, fakeRunner(malformed.out));
+    expect(lanes.verified).toBe(false);
+  });
+}
+
+test('NEGATIVE CONTROL: detached and bare worktrees are valid non-lane records', () => {
+  const porcelain = [
+    'worktree /home/bpa-shell/bpa-dev-infrastructure',
+    'HEAD 1111111111111111111111111111111111111111',
+    'branch refs/heads/main',
+    'locked maintenance',
+    '',
+    'worktree /tmp/review-detached',
+    'HEAD 2222222222222222222222222222222222222222',
+    'detached',
+    'prunable gitdir file points to non-existent location',
+    '',
+    'worktree /srv/archive.git',
+    'bare',
+    '',
+  ].join('\n');
+  const lanes = countActiveLanes(CANON, fakeRunner(porcelain));
+  expect(lanes).toEqual({ verified: true, count: 0, lanes: [] });
 });
 
 // REGRESSION LOCK for Telegram msg 11582: two lane worktrees exist, so /status
@@ -103,6 +158,7 @@ test('buildAgentLines shows the verified count and per-lane ahead', () => {
 test('REGRESSION: running processes with no lane worktrees are never presented as zero agents', () => {
   const onlyCanonical = [
     'worktree /home/bpa-shell/bpa-dev-infrastructure',
+    'HEAD 1111111111111111111111111111111111111111',
     'branch refs/heads/main',
     '',
   ].join('\n');

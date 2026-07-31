@@ -9,34 +9,20 @@ summary: Operator runbook for wiping and rebuilding this installation's VM.
 
 # Migration day: VM wipe and re-initialization
 
-## As built (2026-07-30 cutover) — read before following the paths below
+## Deployment contract
 
-This runbook describes the *intended* clean install. The installation actually
-standing today deviates from it, and `instance/params.yaml` records the as-built
-values, not these:
-
-| | runbook says | as built on `bpa-infra` |
-|---|---|---|
-| install root | `/home/bpa-dev-infrastructure` | `/root/bpa-dev-infrastructure` |
-| account | normal operator account | `root` |
-| RAM | 64 GB (sizing floor, msg 11555) | 251 GB |
-| cores | unspecified | 12 |
-| host / IP | — | `bpa-infra` / 144.76.185.238 |
-
-The cutover to this machine was directed by `instance/decisions/HR-11736.md`.
-The `/home/...` paths in the steps below are left as written: they are the
-runbook's target for a *fresh* install, and rewriting them would misrepresent
-what this document is for. When following it on a box that deviates, substitute
-`repos.canonical_root` from `instance/params.yaml`.
+The as-built installation is the declared rebuild target: account `root`,
+install root `/root/bpa-dev-infrastructure`, and SYSTEM units under
+`/etc/systemd/system`. `instance/params.yaml` is the single instance-level home
+for the account and root. The bootstrap defaults match those values and refuses
+to claim success when the system manager or activation boundary is unavailable.
 
 This runbook is for a fresh Ubuntu 24.04 VM. Target sizing (Vova, 2026-07-29,
 msg 11555): **64 GB RAM** — lane builds and Playwright stands are memory-bound,
 and upgrading the machine was chosen over throttling test concurrency.
 Provisioning a new, bigger VM instead of wiping in place follows this same
-runbook. Run it as the normal operator
-account, not as root. The installed control plane lives at
-`/home/bpa-dev-infrastructure`; do not choose another root unless the
-bootstrap environment is deliberately overridden.
+runbook. Run the deployment steps as `root`; the SYSTEM-unit contract does not
+depend on a user bus or lingering.
 
 1. Before the wipe, keep only the following offline references. Do not commit
    any of them or put them in this repository.
@@ -50,17 +36,16 @@ bootstrap environment is deliberately overridden.
    `bootstrap/install.sh` does not install. The bootstrap itself installs its
    missing `git`, `curl`, `tmux`, `envsubst`, `unzip`, `xz`, and `cron`
    packages using `sudo`. Install and enable Docker, then make the operator a
-   member of the Docker group. Log out and back in before continuing so the
-   group change is active.
+   runtime dependency. The strict bootstrap verification refuses to pass until
+   Docker is installed and usable.
 
    ```bash
    sudo apt-get update
    sudo apt-get install -y docker.io
    sudo systemctl enable --now docker
-   sudo usermod -aG docker "$USER"
    ```
 
-   After the new login, verify the non-root Docker access:
+   Verify Docker:
 
    ```bash
    docker version
@@ -74,8 +59,8 @@ bootstrap environment is deliberately overridden.
    chmod 700 ~/.ssh
    chmod 600 ~/.ssh/id_ed25519
    ssh -T git@github.com
-   git clone git@github.com:vovaBPApro/bpa-dev-infrastructure.git /home/bpa-dev-infrastructure
-   cd /home/bpa-dev-infrastructure
+   git clone git@github.com:vovaBPApro/bpa-dev-infrastructure.git /root/bpa-dev-infrastructure
+   cd /root/bpa-dev-infrastructure
    ```
 
 4. Install both interactive coding CLIs and complete their browser logins; the
@@ -103,7 +88,7 @@ bootstrap environment is deliberately overridden.
    its full install gate.
 
    ```bash
-   cd /home/bpa-dev-infrastructure
+   cd /root/bpa-dev-infrastructure
    bootstrap/install.sh
    ```
 
@@ -111,7 +96,7 @@ bootstrap environment is deliberately overridden.
    this point the Telegram token is still a placeholder, so the daemon and
    watchdog are intentionally not enabled yet.
 
-6. Configure Telegram in `/home/bpa-dev-infrastructure/.env`. This is the
+6. Configure Telegram in `/root/bpa-dev-infrastructure/.env`. This is the
    exact `EnvironmentFile` used by the rendered daemon, watchdog, and
    full-suite units. Replace the three values below in a local editor; keep the
    angle brackets out of the final values. `TELEGRAM_BOUND_CHAT_ID` is the
@@ -120,7 +105,7 @@ bootstrap environment is deliberately overridden.
    ```dotenv
    TELEGRAM_BOT_TOKEN=<TELEGRAM_BOT_TOKEN>
    TELEGRAM_BOUND_CHAT_ID=<TELEGRAM_CHAT_ID>
-   INFRA_STATE_DB=/home/bpa-dev-infrastructure/runtime/state.db
+   INFRA_STATE_DB=/root/bpa-dev-infrastructure/runtime/state.db
    ```
 
    Rerun bootstrap so it enforces mode `0600`, renders and activates the
@@ -129,25 +114,24 @@ bootstrap environment is deliberately overridden.
    symlink or is not a regular file.
 
    ```bash
-   cd /home/bpa-dev-infrastructure
-   loginctl enable-linger "$USER"
+   cd /root/bpa-dev-infrastructure
    bootstrap/install.sh
    ```
 
 7. Verify the install. The heading is `STATUS CHECK`; a healthy configured VM
    has `PASS` lines for `git`, `curl`, `tmux`, `bun`, `repository`,
-   `environment file`, `environment permissions`, `linger`, `state-db`,
+   `environment file`, `environment permissions`, `state-db`,
    `workspace`, `gate`, `hygiene-cron`, all seven rendered unit files, `unit
    Exec paths`, and the enabled daemon/watchdog/full-suite/morning units. The
-   `linger` row confirms the preceding `loginctl enable-linger` step. `unit
-   Exec paths` confirms each rendered `Exec*` program exists and is executable
+   `system systemd`, enabled/active orchestrator and daemon rows prove the
+   activation boundary. `unit Exec paths` confirms each rendered `Exec*` program exists and is executable
    (installed BPA programs must remain beneath the install root; the configured
    `BUN_BIN` is the sole external executable). `stand` is also `PASS` when
    Docker is available. Treat any `FAIL` as a stop condition; `SKIP token
    configured` means the token is still a placeholder.
 
    ```bash
-   cd /home/bpa-dev-infrastructure
+   cd /root/bpa-dev-infrastructure
    bootstrap/install.sh --verify
    ```
 
@@ -157,7 +141,7 @@ bootstrap environment is deliberately overridden.
    before the one-shot suite has made its first summary.
 
    ```bash
-   cd /home/bpa-dev-infrastructure
+   cd /root/bpa-dev-infrastructure
    orchestrator/status.sh
    orchestrator/watchdog.sh
    orchestrator/morning.sh --dry-run
@@ -171,13 +155,13 @@ bootstrap environment is deliberately overridden.
    rehearsal's `kill -9` / health / `launch.sh start` sequence on a real VM.
 
    ```bash
-   daemon_pid="$(systemctl --user show --property=MainPID --value bpa-telegram-daemon.service)"
+   daemon_pid="$(systemctl show --property=MainPID --value bpa-telegram-daemon.service)"
    test "$daemon_pid" -gt 0
    kill -9 "$daemon_pid"
    for _ in $(seq 1 40); do curl -fsS http://127.0.0.1:4822/health && break; sleep 1; done
    curl -fsS http://127.0.0.1:4822/health
-   /home/bpa-dev-infrastructure/orchestrator/launch.sh start
-   /home/bpa-dev-infrastructure/orchestrator/launch.sh status
+   /root/bpa-dev-infrastructure/orchestrator/launch.sh start
+   /root/bpa-dev-infrastructure/orchestrator/launch.sh status
    ```
 
    If the orchestrator was already running, `launch.sh start` correctly exits

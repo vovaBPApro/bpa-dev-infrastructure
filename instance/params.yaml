@@ -30,9 +30,7 @@ repos:
     - agent-mila
   legacy_rescue_branch: rescue/vm-final-20260728   # instructions/repo-layout.md
   canonical_root: /root/bpa-dev-infrastructure     # AS BUILT on bpa-infra after the 2026-07-30 cutover.
-  # instance/migration-day.md still documents /home/bpa-dev-infrastructure as the runbook's
-  # install root; this installation deviates (it runs as root). The as-built value wins here
-  # because instructions/ cite this parameter by name — see migration-day.md "As built".
+  account: root                     # SYSTEM-unit deployment contract; bootstrap refuses non-root activation.
   git_remote: git@github.com:vovaBPApro/bpa-dev-infrastructure.git  # instance/migration-day.md (clone step)
 
 vm:

@@ -34,7 +34,7 @@ exit 1
 EOF
 cat > "$BIN/systemctl" <<'EOF'
 #!/usr/bin/env bash
-exit 1
+exit 0
 EOF
 cat > "$BIN/mv" <<'EOF'
 #!/usr/bin/env bash

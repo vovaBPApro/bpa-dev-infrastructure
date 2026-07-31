@@ -1,0 +1,22 @@
+[Unit]
+Description=BPA orchestrator tmux session
+After=network-online.target bpa-telegram-daemon.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=$INSTALL_ROOT
+Environment=HOME=/root
+EnvironmentFile=$ENV_FILE
+ExecStart=$INSTALL_ROOT/orchestrator/launch.sh start
+ExecStop=$INSTALL_ROOT/orchestrator/launch.sh stop
+RemainAfterExit=yes
+TimeoutStartSec=60
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

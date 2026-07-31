@@ -38,7 +38,7 @@ git -C "$REPO" add fixture
 git -C "$REPO" commit -qm fixture
 printf '%s\n' '#!/usr/bin/env bash' 'printf "PASS fixture bootstrap\\n"' > "$SCRATCH/bootstrap.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$BIN/docker"
-printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$BIN/systemctl"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$BIN/systemctl"
 chmod +x "$SCRATCH/bootstrap.sh" "$BIN/docker" "$BIN/systemctl"
 BUN_PATH="$(command -v bun)"
 MISSION_CLI="$SCRIPT_DIR/../core/mission-cli.ts"

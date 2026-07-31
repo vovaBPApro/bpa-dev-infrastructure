@@ -107,10 +107,10 @@ run_stand() {
 }
 
 run_systemd_check() {
-  if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
-    row PASS 'user systemd' 'user session available'
+  if command -v systemctl >/dev/null 2>&1 && systemctl show-environment >/dev/null 2>&1; then
+    row PASS 'system systemd' 'system manager available'
   else
-    row SKIP 'user systemd' 'no user-systemd session'
+    row FAIL 'system systemd' 'system manager unavailable'
   fi
 }
 

@@ -1,20 +1,22 @@
 #!/usr/bin/env bash
-# Install or refresh the BPA development infrastructure for the current user.
+# Install or refresh the BPA development infrastructure as the root system account.
 # Secrets are never accepted on the command line; edit INSTALL_ROOT/.env locally.
 set -euo pipefail
 
 BUN_VERSION="${BUN_VERSION:-1.3.14}"
-INSTALL_ROOT="${INSTALL_ROOT:-/home/bpa-dev-infrastructure}"
+INSTALL_ROOT="${INSTALL_ROOT:-/root/bpa-dev-infrastructure}"
 DRY_RUN=false
 VERIFY=false
+VERIFY_SOURCE=false
 NO_CRON=false
 ARM_WATCHDOG=false
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ENV_FILE="${ENV_FILE:-$INSTALL_ROOT/.env}"
-SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+SYSTEMD_SYSTEM_DIR="${SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
 BUN_BIN="${BUN_BIN:-$HOME/.bun/bin/bun}"
+WHISPER_BIN="${WHISPER_BIN:-/opt/whisper.cpp/bin/whisper-cli}"
 RUNTIME_DIR="${RUNTIME_DIR:-$INSTALL_ROOT/runtime}"
 STATE_DB="${INFRA_STATE_DB:-$RUNTIME_DIR/state.db}"
 CRONTAB_CMD="${CRONTAB_CMD:-crontab}"
@@ -23,10 +25,13 @@ FULL_SUITE_ON_CALENDAR="${FULL_SUITE_ON_CALENDAR:-}"
 
 usage() {
   cat <<'EOF'
-Usage: bootstrap/install.sh [--dry-run | --verify] [--no-cron] [--arm-watchdog]
+Usage: bootstrap/install.sh [--dry-run | --verify | --verify-source] [--no-cron] [--arm-watchdog]
 
 Environment overrides: INSTALL_ROOT, REPO_URL, BUN_VERSION, ENV_FILE, BUN_BIN,
-RUNTIME_DIR, INFRA_STATE_DB, and CRONTAB_CMD.
+RUNTIME_DIR, INFRA_STATE_DB, CRONTAB_CMD, SYSTEMD_SYSTEM_DIR, and WHISPER_BIN
+(the last two are test/rehearsal overrides).
+--verify is the fail-closed deployed-host check. --verify-source checks only the
+boundaries supported by a source/container test and may report explicit SKIPs.
 The Telegram token is never accepted as an argument. Paste it into .env locally.
 The watchdog timer is installed INERT; a configured token never arms it. Only
 the explicit --arm-watchdog flag enables bpa-orchestrator-watchdog.timer.
@@ -37,6 +42,7 @@ while (($#)); do
   case "$1" in
     --dry-run) DRY_RUN=true ;;
     --verify) VERIFY=true ;;
+    --verify-source) VERIFY_SOURCE=true ;;
     --no-cron) NO_CRON=true ;;
     --arm-watchdog) ARM_WATCHDOG=true ;;
     -h|--help) usage; exit 0 ;;
@@ -45,25 +51,30 @@ while (($#)); do
   shift
 done
 
-if "$DRY_RUN" && { "$VERIFY" || "$NO_CRON"; }; then
+if "$DRY_RUN" && { "$VERIFY" || "$VERIFY_SOURCE" || "$NO_CRON"; }; then
   echo "ERROR: --dry-run cannot be combined with --verify or --no-cron" >&2
   exit 2
 fi
 
-if "$VERIFY" && "$NO_CRON"; then
+if { "$VERIFY" || "$VERIFY_SOURCE"; } && "$NO_CRON"; then
   echo "ERROR: --verify and --no-cron cannot be combined" >&2
   exit 2
 fi
 
-if "$ARM_WATCHDOG" && { "$DRY_RUN" || "$VERIFY"; }; then
+if "$VERIFY" && "$VERIFY_SOURCE"; then
+  echo "ERROR: --verify and --verify-source are mutually exclusive" >&2
+  exit 2
+fi
+
+if "$ARM_WATCHDOG" && { "$DRY_RUN" || "$VERIFY" || "$VERIFY_SOURCE"; }; then
   echo "ERROR: --arm-watchdog applies only to a real install run" >&2
   exit 2
 fi
 
 plan() { printf 'PLAN %-12s %s\n' "$1" "$2"; }
 
-systemd_user_available() {
-  command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1
+systemd_system_available() {
+  command -v systemctl >/dev/null 2>&1 && systemctl show-environment >/dev/null 2>&1
 }
 
 print_plan() {
@@ -75,8 +86,8 @@ print_plan() {
   plan "workspace" "make workspace/workspace.sh sync capability available"
   plan "hygiene" "install hygiene cron unless --no-cron is set"
   plan "test-gate" "run the full daemon, core, gate, stand, and workspace test sweep"
-  plan "units" "render daemon, watchdog, full-suite, and morning-report systemd --user units in $SYSTEMD_USER_DIR"
-  plan "activate" "reload user systemd and enable units when available; the watchdog timer stays INERT unless --arm-watchdog is passed"
+  plan "units" "render orchestrator, daemon, watchdog, full-suite, and morning-report SYSTEM units in $SYSTEMD_SYSTEM_DIR"
+  plan "activate" "reload systemd and enable the deployment units; the watchdog timer stays INERT unless --arm-watchdog is passed"
 }
 
 if "$DRY_RUN"; then
@@ -115,17 +126,13 @@ hygiene_cron_status() {
   "$CRONTAB_CMD" -l 2>/dev/null | grep -Fxq '# BEGIN bpa-dev-infrastructure hygiene'
 }
 
-linger_enabled() {
-  loginctl show-user "$USER" --property=Linger 2>/dev/null | grep -Fxq 'Linger=yes'
-}
-
 gate_status() {
   "$BUN_BIN" "$INSTALL_ROOT/gate/completion-guard.ts" --help >/dev/null
 }
 
 rendered_unit_exec_paths_status() {
   local unit line command exec_path
-  local -a units=("$SYSTEMD_USER_DIR"/*.service "$SYSTEMD_USER_DIR"/*.timer)
+  local -a units=("$SYSTEMD_SYSTEM_DIR"/*.service "$SYSTEMD_SYSTEM_DIR"/*.timer)
 
   for unit in "${units[@]}"; do
     [[ -f "$unit" ]] || continue
@@ -145,6 +152,7 @@ rendered_unit_exec_paths_status() {
 }
 
 verify() {
+  local source_only="${1:-false}"
   printf '%-6s %-24s\n' 'STATUS' 'CHECK'
   printf '%-6s %-24s\n' '------' '------------------------'
   check "git" command -v git
@@ -154,11 +162,6 @@ verify() {
   check "repository" test -d "$INSTALL_ROOT/.git"
   check "environment file" test -f "$ENV_FILE"
   check "environment permissions" test "$(stat -c '%a' "$ENV_FILE" 2>/dev/null || true)" = 600
-  if command -v loginctl >/dev/null 2>&1; then
-    check "linger" linger_enabled
-  else
-    skip "linger" "loginctl command unavailable"
-  fi
   check "state-db" state_db_status
   check "workspace" workspace_status
   if [[ -f "$HYGIENE_CRON_SKIP_FILE" ]]; then
@@ -169,49 +172,54 @@ verify() {
     check "hygiene-cron" hygiene_cron_status
   fi
   check "gate" gate_status
-  if command -v docker >/dev/null 2>&1; then
-    check "stand" docker --version
-  else
-    skip "stand" "docker command unavailable"
-  fi
+  check "docker" docker version
+  check "codex login" codex login status
+  check "claude" claude --version
+  check "whisper" "$WHISPER_BIN" --version
   if has_configured_token; then
     check "token configured" true
   else
-    skip "token configured" "token placeholder remains"
+    if "$source_only"; then skip "token configured" "token placeholder remains (source mode)"; else check "token configured" false; fi
   fi
-  check "daemon unit" test -f "$SYSTEMD_USER_DIR/bpa-telegram-daemon.service"
-  check "watchdog service" test -f "$SYSTEMD_USER_DIR/bpa-orchestrator-watchdog.service"
-  check "watchdog timer" test -f "$SYSTEMD_USER_DIR/bpa-orchestrator-watchdog.timer"
-  check "full-suite service" test -f "$SYSTEMD_USER_DIR/bpa-full-suite.service"
-  check "full-suite timer" test -f "$SYSTEMD_USER_DIR/bpa-full-suite.timer"
-  check "morning service" test -f "$SYSTEMD_USER_DIR/orch-morning-report.service"
-  check "morning timer" test -f "$SYSTEMD_USER_DIR/orch-morning-report.timer"
+  check "orchestrator unit" test -f "$SYSTEMD_SYSTEM_DIR/bpa-orchestrator.service"
+  check "daemon unit" test -f "$SYSTEMD_SYSTEM_DIR/bpa-telegram-daemon.service"
+  check "watchdog service" test -f "$SYSTEMD_SYSTEM_DIR/bpa-orchestrator-watchdog.service"
+  check "watchdog timer" test -f "$SYSTEMD_SYSTEM_DIR/bpa-orchestrator-watchdog.timer"
+  check "full-suite service" test -f "$SYSTEMD_SYSTEM_DIR/bpa-full-suite.service"
+  check "full-suite timer" test -f "$SYSTEMD_SYSTEM_DIR/bpa-full-suite.timer"
+  check "morning service" test -f "$SYSTEMD_SYSTEM_DIR/orch-morning-report.service"
+  check "morning timer" test -f "$SYSTEMD_SYSTEM_DIR/orch-morning-report.timer"
   check "unit Exec paths" rendered_unit_exec_paths_status
-  if ! systemd_user_available; then
-    skip "user systemd" "no user-systemd session"
-    skip "daemon enabled" "user-systemd unavailable"
-    skip "watchdog armed" "user-systemd unavailable"
-    skip "full-suite enabled" "user-systemd unavailable"
-    skip "morning enabled" "user-systemd unavailable"
-  elif ! has_configured_token; then
-    skip "daemon enabled" "token placeholder remains"
-    skip "watchdog armed" "token placeholder remains"
+  if ! systemd_system_available; then
+    if "$source_only"; then
+      skip "system systemd" "system manager unavailable (source mode)"
+    else
+      check "system systemd" false
+    fi
   else
-    check "daemon enabled" systemctl --user is-enabled --quiet bpa-telegram-daemon.service
+    check "system systemd" true
+    check "orchestrator enabled" systemctl is-enabled --quiet bpa-orchestrator.service
+    check "orchestrator active" systemctl is-active --quiet bpa-orchestrator.service
+    check "daemon enabled" systemctl is-enabled --quiet bpa-telegram-daemon.service
+    check "daemon active" systemctl is-active --quiet bpa-telegram-daemon.service
     # Unarmed is the ruled deploy default, never a failure: report the state.
-    if systemctl --user is-enabled --quiet bpa-orchestrator-watchdog.timer; then
+    if systemctl is-enabled --quiet bpa-orchestrator-watchdog.timer; then
       check "watchdog armed" true
     else
       skip "watchdog armed" "unarmed by default; arm with bootstrap/install.sh --arm-watchdog"
     fi
-    check "full-suite enabled" systemctl --user is-enabled --quiet bpa-full-suite.timer
-    check "morning enabled" systemctl --user is-enabled --quiet orch-morning-report.timer
+    check "full-suite enabled" systemctl is-enabled --quiet bpa-full-suite.timer
+    check "morning enabled" systemctl is-enabled --quiet orch-morning-report.timer
   fi
   return "$result"
 }
 
 if "$VERIFY"; then
-  verify
+  verify false
+  exit $?
+fi
+if "$VERIFY_SOURCE"; then
+  verify true
   exit $?
 fi
 
@@ -329,7 +337,8 @@ run_install_test_gate() {
 }
 
 render_units() {
-  install -d -m 700 "$SYSTEMD_USER_DIR"
+  ((EUID == 0)) || { echo 'ERROR: SYSTEM unit installation requires root' >&2; return 1; }
+  install -d -m 755 "$SYSTEMD_SYSTEM_DIR"
   local source destination configured_calendar configured_interval
   if [[ -z "$FULL_SUITE_ON_CALENDAR" && -f "$ENV_FILE" ]]; then
     configured_calendar="$(sed -n 's/^FULL_SUITE_ON_CALENDAR=//p' "$ENV_FILE" | tail -n 1)"
@@ -361,37 +370,32 @@ render_units() {
     return 1
   fi
   for source in "$SOURCE_ROOT"/bootstrap/units/*.in; do
-    destination="$SYSTEMD_USER_DIR/$(basename "${source%.in}")"
+    destination="$SYSTEMD_SYSTEM_DIR/$(basename "${source%.in}")"
     INSTALL_ROOT="$INSTALL_ROOT" ENV_FILE="$ENV_FILE" BUN_BIN="$BUN_BIN" \
       FULL_SUITE_ON_CALENDAR="$FULL_SUITE_ON_CALENDAR" ORCH_WATCHDOG_INTERVAL="$ORCH_WATCHDOG_INTERVAL" \
       envsubst < "$source" > "$destination"
-    chmod 600 "$destination"
+    chmod 644 "$destination"
   done
-  if systemd_user_available; then
-    systemctl --user daemon-reload
+  if systemd_system_available; then
+    systemctl daemon-reload
   else
-    echo "User systemd is unavailable; units were rendered only. On a VM with a user session, run:"
-    echo "  systemctl --user daemon-reload"
-    echo "  systemctl --user enable --now bpa-telegram-daemon.service bpa-full-suite.timer orch-morning-report.timer"
-    echo "The watchdog timer stays INERT by ruling; arm it only deliberately with:"
-    echo "  bootstrap/install.sh --arm-watchdog"
+    echo "ERROR: system systemd is unavailable; SYSTEM units cannot be activated." >&2
+    return 1
   fi
 }
 
 activate_units() {
-  if ! systemd_user_available; then
-    echo "Activation skipped: no user-systemd session is available."
-    return
-  fi
+  systemd_system_available || { echo 'ERROR: system systemd is unavailable' >&2; return 1; }
   if has_configured_token; then
-    systemctl --user enable --now bpa-telegram-daemon.service
-    systemctl --user enable --now bpa-full-suite.timer
-    systemctl --user enable --now orch-morning-report.timer
+    systemctl enable --now bpa-telegram-daemon.service
+    systemctl enable --now bpa-orchestrator.service
+    systemctl enable --now bpa-full-suite.timer
+    systemctl enable --now orch-morning-report.timer
     # A configured token is NOT a watchdog opt-in. The standing deploy ruling
     # keeps bpa-orchestrator-watchdog.timer unarmed; only the explicit
     # --arm-watchdog flag may enable it.
     if "$ARM_WATCHDOG"; then
-      systemctl --user enable --now bpa-orchestrator-watchdog.timer
+      systemctl enable --now bpa-orchestrator-watchdog.timer
     else
       echo "Watchdog timer installed INERT (deploy ruling: stays unarmed). Arm deliberately with: bootstrap/install.sh --arm-watchdog"
     fi
@@ -400,23 +404,16 @@ activate_units() {
   fi
 }
 
-warn_if_linger_disabled() {
-  if command -v loginctl >/dev/null 2>&1 && ! linger_enabled; then
-    echo "WARNING: user lingering is disabled; user-systemd automation will stop after logout or reboot." >&2
-    echo "WARNING: enable it with: loginctl enable-linger $USER" >&2
-  fi
-}
-
 if [[ "${BOOTSTRAP_LIB_ONLY:-false}" != true ]]; then
   ensure_prerequisites
   install_bun
   sync_repository
   render_environment
-  warn_if_linger_disabled
   initialize_state_db
   install_hygiene_cron
   run_install_test_gate
   render_units
   activate_units
-  echo "Bootstrap completed. Run '$SCRIPT_DIR/install.sh --verify' after configuring the local token."
+  verify false
+  echo "Bootstrap completed and deployment verification passed."
 fi

@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALLER="$SCRIPT_DIR/install.sh"
 
 # shellcheck disable=SC2016 # inspect the literal default assignment
-grep -Fxq 'INSTALL_ROOT="${INSTALL_ROOT:-/home/bpa-dev-infrastructure}"' "$INSTALLER"
+grep -Fxq 'INSTALL_ROOT="${INSTALL_ROOT:-/root/bpa-dev-infrastructure}"' "$INSTALLER"
 grep -Fxq 'TimeoutSec=3600' "$SCRIPT_DIR/units/bpa-full-suite.service.in"
 
 dry_run="$($INSTALLER --dry-run)"
@@ -33,51 +33,54 @@ install -d -m 700 \
   "$verify_fixture/root/workspace" \
   "$verify_fixture/root/gate" \
   "$verify_fixture/root/runtime" \
-  "$verify_fixture/config/systemd/user" \
-  "$verify_fixture/bin"
+  "$verify_fixture/systemd/system" \
+  "$verify_fixture/bin" \
+  "$verify_fixture/opt/whisper.cpp/bin"
 install -m 600 /dev/null "$verify_fixture/root/.env"
 printf '%s\n' 'TELEGRAM_BOT_TOKEN=fixture-token' > "$verify_fixture/root/.env"
 printf '%s\n' \
   '[Service]' \
-  "ExecStart=$verify_fixture/bin/bun run server.ts" > "$verify_fixture/config/systemd/user/bpa-telegram-daemon.service"
+  "ExecStart=$verify_fixture/bin/bun run server.ts" > "$verify_fixture/systemd/system/bpa-telegram-daemon.service"
+printf '%s\n' '[Service]' "ExecStart=$verify_fixture/root/orchestrator/launch.sh start" > "$verify_fixture/systemd/system/bpa-orchestrator.service"
 printf '%s\n' \
   '[Service]' \
-  "ExecStart=$verify_fixture/root/orchestrator/watchdog.sh" > "$verify_fixture/config/systemd/user/bpa-orchestrator-watchdog.service"
-printf '%s\n' '[Timer]' > "$verify_fixture/config/systemd/user/bpa-orchestrator-watchdog.timer"
+  "ExecStart=$verify_fixture/root/orchestrator/watchdog.sh" > "$verify_fixture/systemd/system/bpa-orchestrator-watchdog.service"
+printf '%s\n' '[Timer]' > "$verify_fixture/systemd/system/bpa-orchestrator-watchdog.timer"
 printf '%s\n' \
   '[Service]' \
-  "ExecStart=$verify_fixture/root/orchestrator/full-suite.sh" > "$verify_fixture/config/systemd/user/bpa-full-suite.service"
-printf '%s\n' '[Timer]' > "$verify_fixture/config/systemd/user/bpa-full-suite.timer"
+  "ExecStart=$verify_fixture/root/orchestrator/full-suite.sh" > "$verify_fixture/systemd/system/bpa-full-suite.service"
+printf '%s\n' '[Timer]' > "$verify_fixture/systemd/system/bpa-full-suite.timer"
 printf '%s\n' \
   '[Service]' \
-  "ExecStart=$verify_fixture/root/orchestrator/morning.sh" > "$verify_fixture/config/systemd/user/orch-morning-report.service"
-printf '%s\n' '[Timer]' > "$verify_fixture/config/systemd/user/orch-morning-report.timer"
+  "ExecStart=$verify_fixture/root/orchestrator/morning.sh" > "$verify_fixture/systemd/system/orch-morning-report.service"
+printf '%s\n' '[Timer]' > "$verify_fixture/systemd/system/orch-morning-report.timer"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/bin/bun"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$verify_fixture/bin/systemctl"
-printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "Linger=yes"' > "$verify_fixture/bin/loginctl"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/root/workspace/workspace.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/root/orchestrator/watchdog.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/root/orchestrator/full-suite.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/root/orchestrator/morning.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/root/orchestrator/launch.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/opt/whisper.cpp/bin/whisper-cli"
 printf '%s\n' 'disabled by --no-cron' > "$verify_fixture/root/runtime/hygiene-cron.skip"
-for command_name in git curl tmux; do
+for command_name in git curl tmux docker codex claude; do
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/bin/$command_name"
 done
 chmod 700 "$verify_fixture/bin"/*
 chmod 700 "$verify_fixture/root/workspace/workspace.sh"
 chmod 700 "$verify_fixture/root/orchestrator/watchdog.sh" "$verify_fixture/root/orchestrator/full-suite.sh" "$verify_fixture/root/orchestrator/morning.sh"
+chmod 700 "$verify_fixture/root/orchestrator/launch.sh" "$verify_fixture/opt/whisper.cpp/bin/whisper-cli"
 verify_output="$(PATH="$verify_fixture/bin:$PATH" \
   INSTALL_ROOT="$verify_fixture/root" \
   ENV_FILE="$verify_fixture/root/.env" \
-  XDG_CONFIG_HOME="$verify_fixture/config" \
+  SYSTEMD_SYSTEM_DIR="$verify_fixture/systemd/system" \
+  WHISPER_BIN="$verify_fixture/opt/whisper.cpp/bin/whisper-cli" \
   BUN_BIN="$verify_fixture/bin/bun" \
-  "$INSTALLER" --verify)"
-grep -Fq 'SKIP user systemd' <<<"$verify_output"
-grep -Fq 'SKIP daemon enabled' <<<"$verify_output"
+  "$INSTALLER" --verify-source)"
+grep -Fq 'SKIP system systemd' <<<"$verify_output"
 for expected in \
   'PASS state-db' \
   'PASS workspace' \
-  'PASS linger' \
   'SKIP hygiene-cron' \
   'PASS gate' \
   'PASS morning service' \
@@ -85,7 +88,24 @@ for expected in \
   'PASS unit Exec paths'; do
   grep -Fq "$expected" <<<"$verify_output"
 done
-grep -Eq '^(PASS|SKIP) stand' <<<"$verify_output"
+grep -Fq 'PASS docker' <<<"$verify_output"
+
+# Regression lock for meteorite gap 1: the same incomplete activation boundary
+# may be inspected in explicitly limited source mode, but production verify
+# must be red. Before this fix `--verify` returned zero with these SKIP rows.
+if strict_output="$(PATH="$verify_fixture/bin:$PATH" \
+  INSTALL_ROOT="$verify_fixture/root" \
+  ENV_FILE="$verify_fixture/root/.env" \
+  SYSTEMD_SYSTEM_DIR="$verify_fixture/systemd/system" \
+  WHISPER_BIN="$verify_fixture/opt/whisper.cpp/bin/whisper-cli" \
+  BUN_BIN="$verify_fixture/bin/bun" \
+  "$INSTALLER" --verify 2>&1)"; then
+  echo 'ERROR: production verify accepted an unavailable system manager' >&2
+  exit 1
+fi
+grep -Fq 'FAIL system systemd' <<<"$strict_output"
+printf '%s\n' 'FAIL-BEFORE meteorite gap 1: production verify accepted activation SKIPs'
+grep '^FAIL system systemd' <<<"$strict_output"
 
 # Keep this regression fixture self-contained: Actions checks out depth one, so
 # the historical pre-fix commit is intentionally unavailable in CI.
@@ -95,13 +115,14 @@ expected_old_watchdog_exec="\$INSTALL_ROOT/daemon/orchestrator-watchdog.sh"
 old_watchdog_exec="${old_watchdog_exec/\$INSTALL_ROOT/$verify_fixture/root}"
 printf '%s\n' \
   '[Service]' \
-  "ExecStart=$old_watchdog_exec" > "$verify_fixture/config/systemd/user/bpa-orchestrator-watchdog.service"
+  "ExecStart=$old_watchdog_exec" > "$verify_fixture/systemd/system/bpa-orchestrator-watchdog.service"
 if broken_output="$(PATH="$verify_fixture/bin:$PATH" \
   INSTALL_ROOT="$verify_fixture/root" \
   ENV_FILE="$verify_fixture/root/.env" \
-  XDG_CONFIG_HOME="$verify_fixture/config" \
+  SYSTEMD_SYSTEM_DIR="$verify_fixture/systemd/system" \
+  WHISPER_BIN="$verify_fixture/opt/whisper.cpp/bin/whisper-cli" \
   BUN_BIN="$verify_fixture/bin/bun" \
-  "$INSTALLER" --verify 2>&1)"; then
+  "$INSTALLER" --verify-source 2>&1)"; then
   echo 'ERROR: verify accepted a unit with a missing ExecStart target' >&2
   exit 1
 fi
@@ -110,22 +131,23 @@ printf 'FAIL-BEFORE 148b9ad0 ExecStart=%s\n' "$old_watchdog_exec"
 grep '^FAIL unit Exec paths' <<<"$broken_output"
 printf '%s\n' \
   '[Service]' \
-  "ExecStart=$verify_fixture/root/orchestrator/watchdog.sh" > "$verify_fixture/config/systemd/user/bpa-orchestrator-watchdog.service"
+  "ExecStart=$verify_fixture/root/orchestrator/watchdog.sh" > "$verify_fixture/systemd/system/bpa-orchestrator-watchdog.service"
 
-rm "$verify_fixture/config/systemd/user/orch-morning-report.timer"
+rm "$verify_fixture/systemd/system/orch-morning-report.timer"
 if missing_morning_output="$(PATH="$verify_fixture/bin:$PATH" \
   INSTALL_ROOT="$verify_fixture/root" \
   ENV_FILE="$verify_fixture/root/.env" \
-  XDG_CONFIG_HOME="$verify_fixture/config" \
+  SYSTEMD_SYSTEM_DIR="$verify_fixture/systemd/system" \
+  WHISPER_BIN="$verify_fixture/opt/whisper.cpp/bin/whisper-cli" \
   BUN_BIN="$verify_fixture/bin/bun" \
-  "$INSTALLER" --verify 2>&1)"; then
+  "$INSTALLER" --verify-source 2>&1)"; then
   echo 'ERROR: verify accepted a missing morning timer' >&2
   exit 1
 fi
 grep -Fq 'FAIL morning timer' <<<"$missing_morning_output"
 printf '%s\n' 'FAIL-BEFORE missing morning timer'
 grep '^FAIL morning timer' <<<"$missing_morning_output"
-printf '%s\n' '[Timer]' > "$verify_fixture/config/systemd/user/orch-morning-report.timer"
+printf '%s\n' '[Timer]' > "$verify_fixture/systemd/system/orch-morning-report.timer"
 
 chmod 644 "$verify_fixture/root/.env"
 printf '%s\n' 'FAIL-BEFORE loose environment permissions'
@@ -153,20 +175,11 @@ printf '%s\n' 'TELEGRAM_BOT_TOKEN=__OPERATOR_PASTE_TELEGRAM_BOT_TOKEN_HERE__' > 
 placeholder_output="$(PATH="$verify_fixture/bin:$PATH" \
   INSTALL_ROOT="$verify_fixture/root" \
   ENV_FILE="$verify_fixture/root/.env" \
-  XDG_CONFIG_HOME="$verify_fixture/config" \
+  SYSTEMD_SYSTEM_DIR="$verify_fixture/systemd/system" \
+  WHISPER_BIN="$verify_fixture/opt/whisper.cpp/bin/whisper-cli" \
   BUN_BIN="$verify_fixture/bin/bun" \
-  "$INSTALLER" --verify)"
+  "$INSTALLER" --verify-source)"
 grep -Fq 'SKIP token configured' <<<"$placeholder_output"
-
-printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "Linger=no"' > "$verify_fixture/bin/loginctl"
-linger_warning="$(PATH="$verify_fixture/bin:$PATH" \
-  INSTALL_ROOT="$verify_fixture/root" \
-  ENV_FILE="$verify_fixture/root/.env" \
-  INSTALLER_PATH="$INSTALLER" \
-  BOOTSTRAP_LIB_ONLY=true \
-  bash -c 'source "$INSTALLER_PATH"; warn_if_linger_disabled' 2>&1)"
-grep -Fq 'WARNING: user lingering is disabled' <<<"$linger_warning"
-grep -Fq "loginctl enable-linger $USER" <<<"$linger_warning"
 
 # ── Bare install on a token-configured host must NOT arm the watchdog ───────
 # Standing deploy ruling: the watchdog timer stays unarmed. At 17ec3e0a
@@ -180,6 +193,7 @@ trap 'rm -rf "$verify_fixture" "$arming_fixture"' EXIT
 install -d -m 700 \
   "$arming_fixture/root/.git" \
   "$arming_fixture/root/daemon" \
+  "$arming_fixture/root/orchestrator" \
   "$arming_fixture/root/core" \
   "$arming_fixture/root/gate" \
   "$arming_fixture/root/workspace" \
@@ -189,17 +203,23 @@ install -d -m 700 \
   "$arming_fixture/bin"
 printf '%s\n' 'TELEGRAM_BOT_TOKEN=fixture-token' > "$arming_fixture/root/.env"
 chmod 600 "$arming_fixture/root/.env"
-for command_name in git curl tmux unzip xz crontab bun; do
+for command_name in git curl tmux unzip xz crontab bun docker codex claude; do
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$arming_fixture/bin/$command_name"
 done
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "# BEGIN bpa-dev-infrastructure hygiene"' > "$arming_fixture/bin/crontab"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "Linger=yes"' > "$arming_fixture/bin/loginctl"
 # shellcheck disable=SC2016 # the recorder shim must expand $* at CALL time
 printf '%s\n' '#!/usr/bin/env bash' \
   'printf "%s\n" "$*" >> "${BOOTSTRAP_TEST_SYSTEMCTL_CALLS:?}"' \
   'exit 0' > "$arming_fixture/bin/systemctl"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$arming_fixture/root/workspace/workspace.test.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$arming_fixture/root/workspace/workspace.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$arming_fixture/root/hygiene/install-cron.sh"
-chmod 700 "$arming_fixture/bin"/* "$arming_fixture/root/hygiene/install-cron.sh"
+for script_name in launch.sh watchdog.sh full-suite.sh morning.sh; do
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$arming_fixture/root/orchestrator/$script_name"
+done
+chmod 700 "$arming_fixture/bin"/* "$arming_fixture/root/hygiene/install-cron.sh" \
+  "$arming_fixture/root/workspace/workspace.sh" "$arming_fixture/root/orchestrator"/*.sh
 
 arming_calls="$arming_fixture/systemctl.calls"
 run_full_install() { # <extra installer args...>
@@ -207,7 +227,8 @@ run_full_install() { # <extra installer args...>
   PATH="$arming_fixture/bin:$PATH" \
     INSTALL_ROOT="$arming_fixture/root" \
     ENV_FILE="$arming_fixture/root/.env" \
-    XDG_CONFIG_HOME="$arming_fixture/config" \
+    SYSTEMD_SYSTEM_DIR="$arming_fixture/config" \
+    WHISPER_BIN="$arming_fixture/bin/bun" \
     BUN_BIN="$arming_fixture/bin/bun" \
     RUNTIME_DIR="$arming_fixture/root/runtime" \
     BOOTSTRAP_TEST_SYSTEMCTL_CALLS="$arming_calls" \
@@ -215,33 +236,34 @@ run_full_install() { # <extra installer args...>
 }
 
 bare_install_output="$(run_full_install)"
-if grep -F 'bpa-orchestrator-watchdog.timer' "$arming_calls" | grep -E 'enable|--now|start'; then
+if grep -F 'enable --now bpa-orchestrator-watchdog.timer' "$arming_calls"; then
   echo 'ERROR: a bare install on a token-configured host armed the watchdog timer' >&2
   exit 1
 fi
-printf 'FAIL-BEFORE 17ec3e0a bare install recorded: --user enable --now bpa-orchestrator-watchdog.timer\n'
+printf 'FAIL-BEFORE 17ec3e0a bare install recorded: enable --now bpa-orchestrator-watchdog.timer\n'
 # The rest of the stack still activates: inertness is watchdog-specific.
-grep -Fxq -- '--user enable --now bpa-telegram-daemon.service' "$arming_calls"
-grep -Fxq -- '--user enable --now bpa-full-suite.timer' "$arming_calls"
-grep -Fxq -- '--user enable --now orch-morning-report.timer' "$arming_calls"
-grep -Fxq -- '--user daemon-reload' "$arming_calls"
-test -f "$arming_fixture/config/systemd/user/bpa-orchestrator-watchdog.timer"
+grep -Fxq -- 'enable --now bpa-telegram-daemon.service' "$arming_calls"
+grep -Fxq -- 'enable --now bpa-orchestrator.service' "$arming_calls"
+grep -Fxq -- 'enable --now bpa-full-suite.timer' "$arming_calls"
+grep -Fxq -- 'enable --now orch-morning-report.timer' "$arming_calls"
+grep -Fxq -- 'daemon-reload' "$arming_calls"
+test -f "$arming_fixture/config/bpa-orchestrator-watchdog.timer"
 grep -Fq 'Watchdog timer installed INERT' <<<"$bare_install_output"
 
 # Only the explicit watchdog-specific opt-in arms it.
 run_full_install --arm-watchdog >/dev/null
-grep -Fxq -- '--user enable --now bpa-orchestrator-watchdog.timer' "$arming_calls"
+grep -Fxq -- 'enable --now bpa-orchestrator-watchdog.timer' "$arming_calls"
 
 # Render deployable unit inputs without requiring host envsubst. Temporary test
 # fixtures are intentionally outside this sweep; bootstrap inputs may never
 # retain the retired host root.
 rendered_units="$(for template in "$SCRIPT_DIR"/units/*.in; do
   # shellcheck disable=SC2016 # preserve template placeholders for sed
-  sed 's|\$INSTALL_ROOT|/home/bpa-dev-infrastructure|g; s|\$ENV_FILE|/home/bpa-dev-infrastructure/.env|g; s|\$BUN_BIN|/root/.bun/bin/bun|g' "$template"
+  sed 's|\$INSTALL_ROOT|/root/bpa-dev-infrastructure|g; s|\$ENV_FILE|/root/bpa-dev-infrastructure/.env|g; s|\$BUN_BIN|/root/.bun/bin/bun|g' "$template"
 done)"
-grep -Fq 'WorkingDirectory=/home/bpa-dev-infrastructure/orchestrator' <<<"$rendered_units"
-grep -Fq 'EnvironmentFile=/home/bpa-dev-infrastructure/.env' <<<"$rendered_units"
-grep -Fq 'ExecStart=/home/bpa-dev-infrastructure/orchestrator/morning.sh' <<<"$rendered_units"
+grep -Fq 'WorkingDirectory=/root/bpa-dev-infrastructure/orchestrator' <<<"$rendered_units"
+grep -Fq 'EnvironmentFile=/root/bpa-dev-infrastructure/.env' <<<"$rendered_units"
+grep -Fq 'ExecStart=/root/bpa-dev-infrastructure/orchestrator/morning.sh' <<<"$rendered_units"
 if grep -RInF '/home/bpa-shell' "$INSTALLER" "$SCRIPT_DIR/env.template" "$SCRIPT_DIR/units" >/dev/null; then
   echo 'ERROR: legacy /home/bpa-shell reference found in bootstrap input' >&2
   exit 1

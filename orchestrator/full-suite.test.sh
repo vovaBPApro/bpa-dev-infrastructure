@@ -136,7 +136,7 @@ git -C "$MORNING_REPO" add fixture
 git -C "$MORNING_REPO" commit -qm fixture
 printf '%s\n' '#!/usr/bin/env bash' 'printf "PASS fixture bootstrap\\n"' > "$SCRATCH/bootstrap.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$MORNING_BIN/docker"
-printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$MORNING_BIN/systemctl"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$MORNING_BIN/systemctl"
 chmod +x "$SCRATCH/bootstrap.sh" "$MORNING_BIN/docker" "$MORNING_BIN/systemctl"
 BUN_PATH="$(command -v bun)"
 MISSION_CLI="$SCRIPT_DIR/../core/mission-cli.ts"

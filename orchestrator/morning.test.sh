@@ -45,7 +45,7 @@ exit 1
 EOF
 cat > "$BIN/systemctl" <<'EOF'
 #!/usr/bin/env bash
-exit 1
+exit 0
 EOF
 chmod +x "$SCRATCH/bootstrap.sh" "$BIN/docker" "$BIN/systemctl"
 MISSION_CLI="$SCRIPT_DIR/../core/mission-cli.ts"
@@ -70,7 +70,7 @@ assert contains 'Готовність' "$OUTBOX"
 assert contains 'Що потестити' "$OUTBOX"
 assert contains 'другий коміт' "$OUTBOX"
 assert contains 'SKIP — stand smoke (docker daemon unavailable)' "$OUTBOX"
-assert contains 'SKIP — user systemd (no user-systemd session)' "$OUTBOX"
+assert contains 'PASS — system systemd (system manager available)' "$OUTBOX"
 assert contains 'PASS — disk pressure (pct=' "$OUTBOX"
 [[ "$(<"$WATERMARK")" == "$HEAD" ]] || fail 'watermark did not advance'
 

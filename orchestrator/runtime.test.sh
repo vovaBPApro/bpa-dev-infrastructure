@@ -27,6 +27,7 @@ case "$1" in
     printf '%s\n' "${MOCK_PANE_PID:-$$}" > "$state/pid"
     printf 'tmux new-session %s\n' "$*" >> "$state/calls"
     ;;
+  pipe-pane) printf 'tmux pipe-pane %s\n' "$*" >> "$state/calls" ;;
   kill-session) rm -f "$state/session"; printf 'tmux kill-session %s\n' "$*" >> "$state/calls" ;;
   list-panes) cat "$state/pid" ;;
   *) printf 'unexpected tmux: %s\n' "$*" >&2; exit 2 ;;
@@ -94,6 +95,9 @@ assert_not "$SCRIPT_DIR/launch.sh" status
 
 assert "$SCRIPT_DIR/launch.sh" start
 [[ "$(calls 'systemd-run')" == 0 ]] || fail 'launch used a systemd-run wrapper'
+[[ "$(calls 'tmux pipe-pane')" == 1 ]] || fail 'launch did not wire terminal alerts'
+grep -q 'terminal-alert.ts --session test-orch' "$STATE/calls" ||
+  fail 'terminal alert pipe did not carry its classifier and session'
 assert_not "$SCRIPT_DIR/launch.sh" start
 [[ "$(calls 'tmux new-session')" == 1 ]] || fail 'double launch created another session'
 

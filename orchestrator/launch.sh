@@ -25,6 +25,7 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 SINGLETON_LOCK_FILE="${ORCH_SINGLETON_LOCK_FILE:-$REPO_DIR/runtime/orchestrator.singleton.lock}"
 MISSION_CLI="${ORCH_MISSION_CLI:-$REPO_DIR/core/mission-cli.ts}"
 STATE_DB="${ORCH_STATE_DB:-$REPO_DIR/runtime/state.db}"
+TERMINAL_ALERT="${ORCH_TERMINAL_ALERT:-$REPO_DIR/daemon/terminal-alert.ts}"
 # One number, shared with watchdog.sh, which is the only renewer. 180000 is
 # three ticks at the 60s default watchdog interval; watchdog.sh explains why two
 # ticks EXACTLY is not enough. Keep the two defaults identical — cadence-knob.test.sh
@@ -341,7 +342,7 @@ start() {
   if [[ "$PROVIDER" == codex ]] && ! codex_trust_preflight; then
     return 2
   fi
-  local command provider_bin singleton_command startup_file pane_pid
+  local command provider_bin singleton_command startup_file pane_pid terminal_alert_bun terminal_alert_command
   command="$(build_command)"
   provider_bin="${command#exec }"; provider_bin="${provider_bin%% *}"
   command -v "$provider_bin" >/dev/null 2>&1 || { printf 'provider not found: %s\n' "$provider_bin" >&2; return 2; }
@@ -365,6 +366,14 @@ start() {
   # Do not leak the launch mutex into tmux/the provider process.
   exec 9>&-
   tmux new-session -d -s "$SESSION" -c "$WORK_DIR" "sh -c $(printf '%q' "$singleton_command")" || return 1
+  terminal_alert_bun="$(command -v bun)"
+  printf -v terminal_alert_command 'exec %q %q --session %q' \
+    "$terminal_alert_bun" "$TERMINAL_ALERT" "$SESSION"
+  if ! tmux pipe-pane -o -t "$SESSION" "$terminal_alert_command"; then
+    printf 'ERROR terminal-alert-pipe-failed session=%s\n' "$SESSION" >&2
+    tmux kill-session -t "$SESSION" 2>/dev/null || true
+    return 1
+  fi
   # tmux reports success before the pane command can reject a held flock.
   # Give that command a bounded window to exit, then fail the launch loudly.
   sleep 0.1

@@ -40,6 +40,27 @@ export type DaemonHealthDeps = {
   processStartedAt: string;
 };
 
+export type TransportResponseState = {
+  destroyed: boolean;
+  socket?: { destroyed: boolean } | null;
+};
+
+// A registered server is not proof that its transport is still usable.
+// Unknown response state is deliberately disconnected: health must fail closed.
+export function isTransportSessionConnected(
+  serverPresent: boolean,
+  transportPresent: boolean,
+  response?: TransportResponseState,
+): boolean {
+  return (
+    serverPresent &&
+    transportPresent &&
+    response !== undefined &&
+    !response.destroyed &&
+    !(response.socket?.destroyed ?? true)
+  );
+}
+
 // Build only from observations made for this status read. The buffer and its
 // counters are explicitly scoped to this daemon process lifetime.
 export function buildDaemonHealth(deps: DaemonHealthDeps) {

@@ -4,11 +4,39 @@ import {
   buildDaemonHealth,
   buildRuntimeStatus,
   countActiveLanes,
+  isTransportSessionConnected,
   parseWorktreePorcelain,
   type JsonReadResult,
   type RuntimeStatusDeps,
   type ShRunner,
 } from './status';
+
+test('REGRESSION ML-4: dead or half-open transport is not connected', () => {
+  expect(
+    isTransportSessionConnected(true, true, {
+      destroyed: false,
+      socket: { destroyed: true },
+    }),
+  ).toBe(false);
+  expect(
+    isTransportSessionConnected(true, true, {
+      destroyed: true,
+      socket: { destroyed: false },
+    }),
+  ).toBe(false);
+  expect(isTransportSessionConnected(true, true)).toBe(false);
+});
+
+test('transport session is connected only with server and live socket', () => {
+  const liveResponse = {
+    destroyed: false,
+    socket: { destroyed: false },
+  };
+
+  expect(isTransportSessionConnected(true, true, liveResponse)).toBe(true);
+  expect(isTransportSessionConnected(false, true, liveResponse)).toBe(false);
+  expect(isTransportSessionConnected(true, false, liveResponse)).toBe(false);
+});
 
 test('REGRESSION: daemon health uses process-local honest field names and epochs', () => {
   const health = buildDaemonHealth({

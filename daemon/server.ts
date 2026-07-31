@@ -87,6 +87,7 @@ import {
   buildAgentLines,
   buildDaemonHealth,
   buildRuntimeStatus,
+  isTransportSessionConnected,
   type ShRunner,
   type JsonReader,
   type JsonReadResult,
@@ -2626,12 +2627,14 @@ function isConnectionAlive(): boolean {
 // /status is fail-closed: an SDK transport without an inspectable response is
 // not evidence of a live connection.
 function isConnectionAliveForStatus(): boolean {
-  if (!activeTransport) return false;
-  const transport = activeTransport as unknown as { _res?: ServerResponse };
-  const response = transport._res;
-  return response
-    ? !response.destroyed && !(response.socket?.destroyed ?? true)
-    : false;
+  const response = (
+    activeTransport as unknown as { _res?: ServerResponse } | null
+  )?._res;
+  return isTransportSessionConnected(
+    activeServer !== null,
+    activeTransport !== null,
+    response,
+  );
 }
 
 async function readRequestBody(req: IncomingMessage): Promise<string> {
@@ -2655,7 +2658,7 @@ const httpServer = createServer(
         JSON.stringify({
           status: 'ok',
           bot: botUsername || 'starting',
-          connected: activeServer !== null,
+          connected: isConnectionAliveForStatus(),
           alive: isConnectionAlive(),
           buffered: msgBuffer.length,
           pid: process.pid,

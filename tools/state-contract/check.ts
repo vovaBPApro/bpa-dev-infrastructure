@@ -515,7 +515,8 @@ export function queryOrchestratorHost(root: string): OrchestratorHostState {
 
 export function countOpenWorkboardRows(source: string): number {
   const row = /^- <!-- status: (open|done|blocked|superseded) --> \*\*([A-Z]+-(?:[0-9]+|GOV))\s+—/;
-  const candidate = /^- (?:<!-- status: [^>]+ --> )?\*\*[A-Z]+-(?:[0-9]+|GOV)\s+—/;
+  // Broad enough that a malformed ID cannot silently disappear from the count.
+  const candidate = /^- .*?\*\*[^*\s]+-[^*\s]+\s+—/;
   const seen = new Set<string>();
   let rows = 0;
   let open = 0;

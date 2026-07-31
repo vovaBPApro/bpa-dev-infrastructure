@@ -136,6 +136,20 @@ test('FLEET-IDLE rejects missing statuses and duplicate row ids', () => {
   });
 });
 
+test('FLEET-IDLE rejects a lowercase row id instead of undercounting it', () => {
+  expect(
+    checkFleetIdle(
+      '- <!-- status: open --> **W-01 — valid**\n' +
+        '- <!-- status: open --> **w-02 — malformed lowercase id**',
+      { running: 1 },
+    ),
+  ).toEqual({
+    level: 'FAIL',
+    id: 'FLEET-IDLE',
+    detail: 'open workboard row count unknown/degraded: malformed workboard row at line 2',
+  });
+});
+
 test('HISTORICAL: a reader whose writer never migrated is a FAIL', () => {
   const { root, names } = fixture({
     'daemon/server.ts': `

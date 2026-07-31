@@ -81,7 +81,7 @@ Four steps, in order:
 | `launch-lane.test.sh` | real compose/gate/worktree dispatch proof with a mocked system manager boundary |
 | `as-run-*.sh` | superseded, host-bound historical wave evidence |
 | `fleet-nudge.sh` | STOPGAP watchdog — validates explicit workboard statuses, counts only `open` rows, and refuses malformed/duplicate rows |
-| `fleet-nudge.test.sh` | regression lock for honest open-row counting and fail-closed parsing |
+| `fleet-nudge.test.sh` | regression locks for honest counting, fail-loud parsing, HR-281 notification, and deployed identity |
 | `orch-fleet-nudge.service` / `.timer` | systemd units for the above (installed to `/etc/systemd/system/`, 10-minute interval) |
 
 `fleet-nudge.sh` is explicitly temporary: ML-2 (`ag-ml2-autonomy-keepalive`)
@@ -95,3 +95,4 @@ once ML-2 is deployed.
     install -m 644 orchestrator/fleet/orch-fleet-nudge.timer   /etc/systemd/system/
     systemctl daemon-reload && systemctl enable --now orch-fleet-nudge.timer
     systemctl list-timers orch-fleet-nudge.timer   # verify
+    cmp -s orchestrator/fleet/fleet-nudge.sh /root/.local/bin/orch-fleet-nudge.sh

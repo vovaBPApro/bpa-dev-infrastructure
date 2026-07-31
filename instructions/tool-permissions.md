@@ -22,6 +22,9 @@ Maintain a versioned, fail-closed permission surface. Local enforcement may be
 implemented through settings and hooks, but committed policy must remain
 portable and must never contain credentials, tokens, or host-specific secrets.
 
+Lane-specific capability declaration is defined by `lane-capabilities.md`;
+untrusted-content boundaries are defined by `prompt-injection-trust-model.md`.
+
 ## Portable baseline
 
 - **Allow:** read-only repository inspection, scoped diffs, approved project

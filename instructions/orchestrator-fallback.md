@@ -4,20 +4,21 @@ layer: L1
 status: binding
 audience: orchestrator
 tags: [orchestrator, playbook, vendor, restart]
-summary: Extra binding rules for an orchestrator running on a fallback (non-Anthropic, e.g. GPT) model when Fable/Anthropic quota is exhausted.
+summary: Harness-independent startup and vendor-switchover rules for an orchestrator session.
 decision: [hr-11573]
 ---
 
-# Orchestrator on a Fallback Model
+# Orchestrator Session Portability
 
-When Fable / Anthropic quota is exhausted, the Human raises the orchestrator on
-a non-Anthropic model (for example GPT). That session runs a different harness
-than the Claude one, so several defaults no longer hold. These rules add to
-`orchestrator-playbook`; they never relax it.
+The configured primary may run through any supported harness; Codex/GPT is not
+inherently a fallback. These portability rules apply whenever an orchestrator
+starts cold or switches harness/vendor. They add to `orchestrator-playbook` and
+never relax it. Current provider priority comes only from
+`instance/params.yaml`, not from this document's historical filename.
 
 ## Session start — verify the load happened, never assume it
 
-A fallback session started by `orchestrator/launch.sh` DOES get the standing
+A session started by `orchestrator/launch.sh` DOES get the standing
 context: the launcher declares the shared `SessionStart` hook on the codex
 command line (`--config hooks.SessionStart=…` plus
 `--dangerously-bypass-hook-trust`, which is required — without it the hook is
@@ -25,7 +26,7 @@ dropped and nobody can answer the trust prompt in a detached pane). The hook is
 the same script the Claude harness runs, so the load is identical. It arrives
 with the first turn, and the session shows `SessionStart hook (completed)`.
 
-A fallback session started any other way — by hand, or on a harness whose hooks
+A session started any other way — by hand, or on a harness whose hooks
 are not wired — auto-loads nothing. If the confirmation above is not visible,
 treat the load as not done and follow this deterministic sequence — do not stop
 on a missing tool:
@@ -50,13 +51,10 @@ memory, promote it into the repo before it can be lost across a switch.
 
 ## Review independence under a shared vendor
 
-When the orchestrator and its coder lanes share one vendor, cross-vendor review
-independence is gone and must be recovered from elsewhere. Prefer a genuine
-cross-vendor reviewer whenever any other quota allows it. Only when no
-independent cross-vendor route is available, use the emergency same-provider
-consortium of SEPARATE sessions per `review-policy` ("Blocked-review fallback"),
-with its per-domain passes on one SHA. Every review record must state whether a
-deferred cross-vendor review is still owed; the fallback never lowers the tier.
+When the orchestrator and coder lanes share one vendor, preserve session and
+role/persona independence. The normal review shape and whether cross-vendor
+review is required are defined only by `review-policy`; this portability
+contract does not add a deferred cross-vendor debt.
 
 ## Human-verbatim finalization stays deferred, never skipped
 

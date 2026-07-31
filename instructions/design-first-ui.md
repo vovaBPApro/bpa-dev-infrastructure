@@ -9,7 +9,8 @@ summary: Approve the UI design before implementation, then re-read the feature p
 
 # Design-First UI Workflow
 
-Decided with the Human on 2026-07-29 (Telegram 11558). Verbatim source (Vova):
+Decided with the Human on 2026-07-29
+(`instance/decisions/HR-11558.md`, Telegram 11558). Verbatim source (Vova):
 
 > «…він заточений під те, щоб ми спочатку робили дизайни зовнішнього вигляду, а
 > вже потім реалізовували функциональну частину. Ось цей підхід я би зберіг, і

@@ -9,7 +9,8 @@ summary: Target repository layout: control plane, framework repo, one repo per a
 
 # Target Repository Layout
 
-Decided with the Human on 2026-07-29 (Telegram 11552–11555), before the VM
+Decided with the Human on 2026-07-29
+(`instance/decisions/HR-11543.md`, Telegram 11552–11555), before the VM
 migration. Verbatim source (Vova, msg 11555):
 
 > «Каркас нових агентів це буде новий окремий репо, як і нові репо на кожного

@@ -15,6 +15,9 @@ every update has one obvious home. Decided with the Human on 2026-07-29
 (`decision: hr-11557`; verbatim in `instance/decisions/HR-11557.md`). Full design
 rationale: `migration-prep/INSTRUCTIONS_CONSILIUM_FINAL.md`.
 
+The still-open composition-interface requirement is retained in
+`instance/decisions/HR-98.md`; this document owns its L1 routing mechanics.
+
 ## The three layers
 
 - **L1 — Infrastructure** (`bpa-dev-infrastructure/instructions/` + `instance/`):

@@ -21,9 +21,9 @@ brand loyalty or round-robin.
 - Treat quota and provider health as routing signals. Record a thin, failed, or
   unavailable route in the mission evidence; redirect eligible work instead of
   waiting idle.
-- Preserve role separation even when the vendor pool is constrained. If normal
-  independent review is unavailable, use only the documented emergency
-  consortium and keep any deferred review visible.
+- Preserve role and session separation even when the vendor pool is constrained;
+  use the normal same-provider consortium defined by `review-policy.md` rather
+  than inventing deferred cross-vendor debt.
 - Give every dispatched lane an explicit file allowlist, denylist, acceptance
   rows, risk tier, verification commands, and stop condition. Do not silently
   widen a lane because another route is busy.

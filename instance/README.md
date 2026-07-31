@@ -23,7 +23,18 @@ Contents: `params.yaml` (named instance values), `decisions/HR-<msg-id>.md`
 (verbatim Human directives, sacred), `parked.md` (L2/L3 content parked here
 until its repo exists). No secrets, tokens, or keys ever live in this bucket.
 
+Operator-specific retained sources and their concise routed contract are indexed
+by `instance/operator/README.md`.
+
 `decisions/inbox.jsonl` and `decisions/triage.jsonl` are runtime capture
 artifacts (the daemon's auto-mirror of raw inbound Human messages, §2.4) — they
 carry verbatim chat text and are git-ignored, never committed; only the
 routed `HR-<msg-id>.md` files are tracked.
+
+## Retired generated-only rows
+
+- `HR-11552` was removed because it contained no captured Human words and
+  duplicated the retained HR-11549/HR-11555 branching and layout provenance.
+- `HR-11562` and `HR-11564` were removed because they contained only generated
+  descriptions of completed consilium procedure; the retained consilium
+  artifacts remain the evidence.

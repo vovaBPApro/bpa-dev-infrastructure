@@ -9,6 +9,8 @@ summary: The orchestrator dispatches, verifies, lands, cleans up, and reports; i
 
 # Orchestrator Playbook
 
+For a new or reconstructed session, begin with `orchestrator-cold-start.md`.
+
 The orchestrator dispatches, verifies, lands, cleans up, and reports. It does
 not author runtime code, tests, plans, migrations, or reviews.
 

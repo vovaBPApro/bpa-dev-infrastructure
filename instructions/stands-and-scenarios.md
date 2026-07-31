@@ -9,6 +9,9 @@ summary: A stand is disposable, named, isolated, and resource-bounded, owning it
 
 # Stands and Scenarios
 
+Per-lane dependency and database isolation is governed by
+`isolated-test-environments.md`.
+
 ## Binding rules
 
 - A stand is disposable, named, isolated, and resource-bounded. It owns a Compose project, network, workspace, ports, state, logs, and teardown evidence.

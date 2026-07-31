@@ -13,6 +13,8 @@ Use this lifecycle for every change:
 
 `Discussion -> Plan -> Review -> Approval -> Implementation -> Verification -> Doc Update -> Archive`
 
+Detailed planning artifact rules live in `planning-and-specs.md`.
+
 ## Control Rules
 
 - Start in Discussion. Explore the repository, clarify intent, and record

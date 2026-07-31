@@ -10,6 +10,8 @@ summary: Treat operator input as test evidence and preserve the words that defin
 # Operator Feedback
 
 Treat operator input as test evidence and preserve the words that define work.
+The communication half of `instance/decisions/HR-11558.md` is retained
+provenance for this contract.
 
 - Store mission-defining operator requirements verbatim in the mission artifact;
   keep generated summaries separately labelled. Do not silently normalize,

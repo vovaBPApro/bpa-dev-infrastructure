@@ -24,6 +24,9 @@ enforces parked-manifest consistency.
 | `instructions/lang/react-rules.md` | L2 (framework) | L2 framework repo creation |
 | `instructions/lang/typescript-ai-guidelines.md` | L2 (framework) | L2 framework repo creation |
 
+The stack approval retained in `instance/decisions/HR-11567.md` is provenance
+for the first two rows.
+
 Notes:
 
 - The stack decision (technology choice + its consilium verdict) is an L2

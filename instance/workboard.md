@@ -14,6 +14,11 @@ in the row, then delete it next pass) or by an explicit dropped-with-reason
 note. Derived-work items live here; Human directives stay in
 `instance/decisions/` and are only referenced.
 
+Source inventories and open directives that feed this board include
+`instance/migration-parity.md`, `instance/decisions/HR-101.md`, and
+`instance/decisions/HR-203.md`. The operator-guide routing wrapper is
+`instance/decisions/HR-254.md`.
+
 ## Product (HR-330) — the rebuild
 
 Directive and his verbatim words: `instance/decisions/HR-330.md`. Document

@@ -21,8 +21,11 @@ narrative that cannot be rerun.
   Unclear classification is Tier A.
 - **Tier B:** bounded lower-risk docs, tests, and fixes that do not alter a
   Tier-A surface.
-- Tier A requires an independent, preferably cross-vendor, implementation
-  review before landing. A review of a plan never substitutes for diff review.
+- Tier A requires an independent implementation consilium with distinct
+  role/persona lenses before landing. Per `instance/decisions/HR-212.md`, role
+  diversity outranks vendor diversity; cross-vendor review is a supplement when
+  cheaply available, not a condition landing waits for. A review of a plan never
+  substitutes for diff review.
 - Tier B requires an independent executable lock review: run the relevant
   regression lock, prove it fails before the fix and passes at the reviewed
   SHA, and reject false-green test environments. A visual or interaction lock
@@ -44,12 +47,10 @@ equals the report's commit before it accepts the record. Break-glass
 `--skip-review` requires a reason and is durably audited in the runtime review
 skip log; see the gate's usage output for operational mechanics.
 
-## Blocked-review fallback
+## Constrained-provider review
 
-Use a same-provider emergency consortium for urgent Tier A only after a normal
-independent route was attempted and is unavailable, quota-blocked, stalled, or
-timed out. Preserve the activation evidence and separate passes for security,
-operations/runtime, and tests/regression. Every pass must review the same SHA;
-any rejection parks the item. The record must say whether a deferred independent
-review remains required. This fallback never lowers the tier or weakens a
-required approval boundary.
+A same-provider consortium is valid when its reviewers are separate sessions
+with distinct role/persona lenses. Preserve separate passes for security,
+operations/runtime, and tests/regression; every pass reviews the same SHA and
+any rejection parks the item. Provider constraint never lowers the tier,
+session-independence requirement, or an explicit approval boundary.

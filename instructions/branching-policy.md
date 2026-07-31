@@ -11,7 +11,8 @@ floor-line: Branch and worktree hygiene is mandatory — lane branches die after
 
 # Branching Policy
 
-Decided with the Human on 2026-07-29 (Telegram 11549–11550), before the VM
+Decided with the Human on 2026-07-29 (`instance/decisions/HR-11549.md`,
+Telegram 11549–11550), before the VM
 migration. Verbatim question that triggered this document (Vova, msg 11549):
 
 > «Доречі по бранчах - в нову інфру в нас прописано політику бранчування? Типу

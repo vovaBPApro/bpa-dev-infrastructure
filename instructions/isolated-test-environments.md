@@ -9,6 +9,9 @@ summary: Each lane gets an isolated checkout and dependency output; never mutate
 
 # Isolated Test Environments
 
+Concrete disposable runtime ownership and acceptance live in
+`stands-and-scenarios.md`.
+
 ## Binding rules
 
 - Give each code lane an isolated checkout and dependency output. Never install, build, migrate, or rewrite dependencies in the canonical working tree to run a lane test.

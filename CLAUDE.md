@@ -33,6 +33,9 @@ Instructions live in three layers — L1 infra (this repo), L2 framework, L3 age
 reference, never copy. Full routing rule (Step 0 + Q1–Q4, delivery, capture):
 `instructions/instruction-layers.md`.
 
+Entry points: the generated `instructions/README.md` indexes generic rules;
+`instance/README.md` indexes this installation's facts and retained evidence.
+
 ## Report Contract
 
 Every report to the Human must contain:

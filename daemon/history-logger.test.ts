@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -31,6 +31,7 @@ afterEach(async () => {
   await flushHistoryLogger();
   delete process.env.TELEGRAM_STATE_DIR;
   delete process.env.TELEGRAM_HISTORY_MAX_BYTES;
+  delete process.env.TELEGRAM_HISTORY_RETENTION_DAYS;
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -102,4 +103,27 @@ test('a cap smaller than one record skips it instead of exceeding the cap', asyn
   });
   await flushHistoryLogger();
   expect(() => entries(dir)).toThrow();
+});
+
+test('retention removes expired monthly files but preserves recent history', async () => {
+  const dir = stateDir();
+  const historyDir = join(dir, 'history');
+  mkdirSync(historyDir);
+  const expired = join(historyDir, 'messages-2020-01.jsonl');
+  const recent = join(historyDir, 'messages-2020-02.jsonl');
+  writeFileSync(expired, '{"old":true}\n');
+  writeFileSync(recent, '{"recent":true}\n');
+  const now = Date.now();
+  utimesSync(expired, new Date(now - 3 * 86_400_000), new Date(now - 3 * 86_400_000));
+  utimesSync(recent, new Date(now), new Date(now));
+  process.env.TELEGRAM_HISTORY_RETENTION_DAYS = '2';
+
+  logHistory({
+    ts: new Date(now).toISOString(), direction: 'in', outcome: 'received', chat_id: '1',
+    user: 'u', type: 'text', content_length: 0,
+  });
+  await flushHistoryLogger();
+
+  expect(() => readFileSync(expired)).toThrow();
+  expect(readFileSync(recent, 'utf8')).toContain('recent');
 });

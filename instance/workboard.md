@@ -49,6 +49,21 @@ pointers: `instance/product-docs-index.md`. Evidence:
 
 ## Open
 
+- **W-18 — triage verdicts are governance but are gitignored** (found 2026-07-31
+  while clearing three aged inbox warnings). `instance/decisions/triage.jsonl`
+  holds the orchestrator's verdicts on inbound Human messages — "chatter" vs
+  "directive" — which is decision content, yet `.gitignore` excludes it alongside
+  `inbox.jsonl`. So a triage decision dies with the host, which contradicts Hard
+  Floor 5 (`reproducible-from-git`) and re-opens every aged row on a rebuild.
+  The ignore has a REAL rationale, stated in that `.gitignore`: the jsonl carries
+  verbatim Human messages that may contain sensitive words — so this is a genuine
+  tension, not an oversight to reverse casually. Likely resolution: TRACK
+  triage.jsonl but forbid verbatim message text in it (msg_id + verdict +
+  category only, no quotes), leaving `inbox.jsonl` ignored as raw capture. Needs
+  a lane: decide the format, enforce "no raw text" mechanically, migrate the
+  existing rows. Note the state-contract already flagged this file as having a
+  human writer and no tooling.
+
 - **W-17 — the live daemon unit lost its security hardening** (found 2026-07-31
   by diffing deployed units against their templates for the first time).
   `bootstrap/units/bpa-telegram-daemon.service.in` sets `NoNewPrivileges=true`

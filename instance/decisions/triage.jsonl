@@ -1,14 +1,14 @@
-{"msg_id":5,"verdict":"chatter","category":"channel-check","reason":"liveness-ping","triaged_by":"orchestrator","triaged_at":"2026-07-31"}
-{"msg_id":17,"verdict":"chatter","category":"channel-check","reason":"status-question","triaged_by":"orchestrator","triaged_at":"2026-07-31"}
-{"msg_id":23,"verdict":"chatter","category":"channel-incident","reason":"resolved-defect","triaged_by":"orchestrator","triaged_at":"2026-07-31"}
-{"msg_id":35,"verdict":"chatter","category":"channel-check","reason":"liveness-ping","triaged_by":"orchestrator","triaged_at":"2026-07-31"}
-{"msg_id":49,"verdict":"chatter","category":"channel-check","reason":"liveness-ping","triaged_by":"orchestrator","triaged_at":"2026-07-31"}
-{"msg_id":54,"verdict":"chatter","category":"channel-check","reason":"liveness-ping","triaged_by":"orchestrator","triaged_at":"2026-07-31"}
-{"msg_id":57,"verdict":"chatter","category":"channel-check","reason":"liveness-ping","triaged_by":"orchestrator","triaged_at":"2026-07-31"}
-{"msg_id":59,"verdict":"directive","category":"product-input","reason":"open-follow-up","triaged_by":"orchestrator","triaged_at":"2026-07-31"}
-{"msg_id":64,"verdict":"chatter","category":"channel-check","reason":"liveness-ping","triaged_by":"orchestrator","triaged_at":"2026-07-31"}
-{"msg_id":69,"verdict":"directive","category":"coordination","reason":"handoff-contact-established-and-completed","triaged_by":"orchestrator","triaged_at":"2026-07-31"}
-{"msg_id":71,"verdict":"directive","category":"coordination","reason":"handoff-contact-established-and-completed","triaged_by":"orchestrator","triaged_at":"2026-07-31"}
-{"msg_id":72,"verdict":"directive","category":"capacity","reason":"answered-and-superseded-by-product-restart","triaged_by":"orchestrator","triaged_at":"2026-07-31"}
-{"msg_id":74,"verdict":"chatter","category":"channel-check","reason":"liveness-ping","triaged_by":"orchestrator","triaged_at":"2026-07-31"}
-{"msg_id":75,"verdict":"directive","category":"security","reason":"answered-telegram-logging-confirmed-and-purge-implemented","triaged_by":"orchestrator","triaged_at":"2026-07-31"}
+{"msg_id": 5, "verdict": "chatter", "category": "channel-check", "reason": "liveness-ping", "triaged_by": "orchestrator", "triaged_at": "2026-07-31"}
+{"msg_id": 17, "verdict": "chatter", "category": "channel-check", "reason": "status-question", "triaged_by": "orchestrator", "triaged_at": "2026-07-31"}
+{"msg_id": 23, "verdict": "chatter", "category": "channel-incident", "reason": "resolved-defect", "triaged_by": "orchestrator", "triaged_at": "2026-07-31"}
+{"msg_id": 35, "verdict": "chatter", "category": "channel-check", "reason": "liveness-ping", "triaged_by": "orchestrator", "triaged_at": "2026-07-31"}
+{"msg_id": 49, "verdict": "chatter", "category": "channel-check", "reason": "liveness-ping", "triaged_by": "orchestrator", "triaged_at": "2026-07-31"}
+{"msg_id": 54, "verdict": "chatter", "category": "channel-check", "reason": "liveness-ping", "triaged_by": "orchestrator", "triaged_at": "2026-07-31"}
+{"msg_id": 57, "verdict": "chatter", "category": "channel-check", "reason": "liveness-ping", "triaged_by": "orchestrator", "triaged_at": "2026-07-31"}
+{"msg_id": 59, "verdict": "directive", "category": "product-input", "reason": "delivered-via-old-orchestrator-2026-07-30", "triaged_by": "orchestrator", "triaged_at": "2026-07-31"}
+{"msg_id": 64, "verdict": "chatter", "category": "channel-check", "reason": "liveness-ping", "triaged_by": "orchestrator", "triaged_at": "2026-07-31"}
+{"msg_id": 69, "verdict": "directive", "category": "coordination", "reason": "handoff-contact-established-and-completed", "triaged_by": "orchestrator", "triaged_at": "2026-07-31"}
+{"msg_id": 71, "verdict": "directive", "category": "coordination", "reason": "handoff-contact-established-and-completed", "triaged_by": "orchestrator", "triaged_at": "2026-07-31"}
+{"msg_id": 72, "verdict": "directive", "category": "capacity", "reason": "answered-and-superseded-by-product-restart", "triaged_by": "orchestrator", "triaged_at": "2026-07-31"}
+{"msg_id": 74, "verdict": "chatter", "category": "channel-check", "reason": "liveness-ping", "triaged_by": "orchestrator", "triaged_at": "2026-07-31"}
+{"msg_id": 75, "verdict": "directive", "category": "security", "reason": "answered-telegram-logging-confirmed-and-purge-implemented", "triaged_by": "orchestrator", "triaged_at": "2026-07-31"}

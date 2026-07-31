@@ -60,6 +60,65 @@ describe("serializeInboxLine", () => {
     expect(parsed.text).toBe(text);
   });
 
+  test("records attachment identity for attachment-bearing rows (W-15)", () => {
+    const line = serializeInboxLine({
+      msg_id: 156,
+      chat_id: 1001,
+      ts: "2026-07-30T01:00:00.000Z",
+      text: "(document: report.pdf)",
+      attachment_kind: "document",
+      attachment_file_id: "BQACAgIAAxkBAAIB",
+      attachment_name: "report.pdf",
+      attachment_mime: "application/pdf",
+      attachment_size: 12345,
+    });
+    const parsed = JSON.parse(line);
+    expect(parsed.attachment_kind).toBe("document");
+    expect(parsed.attachment_file_id).toBe("BQACAgIAAxkBAAIB");
+    expect(parsed.attachment_name).toBe("report.pdf");
+    expect(parsed.attachment_mime).toBe("application/pdf");
+    expect(parsed.attachment_size).toBe(12345);
+    // Still exactly one physical line.
+    expect(line.split("\n").length).toBe(2);
+  });
+
+  test("records voice transcript and, separately, an honest failure reason", () => {
+    const good = JSON.parse(
+      serializeInboxLine({
+        msg_id: 1,
+        chat_id: 2,
+        ts: "t",
+        text: "привіт, як справи?",
+        attachment_kind: "voice",
+        attachment_file_id: "VOICE1",
+        transcript: "привіт, як справи?",
+      }),
+    );
+    expect(good.transcript).toBe("привіт, як справи?");
+    expect(good.transcript_error).toBeUndefined();
+
+    const bad = JSON.parse(
+      serializeInboxLine({
+        msg_id: 2,
+        chat_id: 2,
+        ts: "t",
+        text: "(voice message)",
+        attachment_kind: "voice",
+        attachment_file_id: "VOICE2",
+        transcript_error: "whisper model missing: /opt/whisper.cpp/...",
+      }),
+    );
+    expect(bad.transcript).toBeUndefined();
+    expect(bad.transcript_error).toContain("whisper model missing");
+  });
+
+  test("plain text rows keep their historical four-field shape", () => {
+    const parsed = JSON.parse(
+      serializeInboxLine({ msg_id: 1, chat_id: 2, ts: "t", text: "hi" }),
+    );
+    expect(Object.keys(parsed).sort()).toEqual(["chat_id", "msg_id", "text", "ts"]);
+  });
+
   test("ignores extra properties so a token cannot leak in", () => {
     // A fake credential-shaped value on a non-whitelisted key must never reach
     // the serialized line (kept pattern-free so the secret scan stays clean).

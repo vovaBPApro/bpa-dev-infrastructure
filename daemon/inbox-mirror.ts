@@ -8,20 +8,38 @@
 // and touches nothing already written. It is a runtime artifact and MUST stay
 // out of git — it carries raw chat text (see instance/README.md + .gitignore).
 //
-// Hard constraint: this line carries {msg_id, chat_id, ts, text} and NOTHING
-// else. No bot token, no env value, no secret ever enters a mirror row — the
-// caller passes only the four fields below and this module serializes only them.
+// Hard constraint: a mirror row carries only the whitelisted fields serialized
+// below — message identity, text, attachment identity (W-15: without the
+// Telegram file_id a lost attachment delivery was unrecoverable), and the
+// voice transcript. No bot token, no env value, no secret ever enters a row —
+// serializeInboxLine emits ONLY the whitelist, so a caller cannot leak a token
+// by over-passing.
 
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 
 // One raw inbound row. `text` may contain newlines, emoji, or other Human input;
 // JSON.stringify escapes all of it into a single safe line.
+//
+// The attachment fields (W-15) record the Telegram file identity for every
+// attachment-bearing message so a delivery lost between daemon and session is
+// recoverable later via download_attachment. `transcript` carries the local
+// Whisper transcription of a voice/audio message (HR-146 §NI-3);
+// `transcript_error` records WHY a transcription is absent — the row must
+// never silently look like a plain text message when the audio could not be
+// transcribed.
 export type InboxRecord = {
   msg_id: number | string;
   chat_id: number | string;
   ts: string;
   text: string;
+  attachment_kind?: string;
+  attachment_file_id?: string;
+  attachment_name?: string;
+  attachment_mime?: string;
+  attachment_size?: number;
+  transcript?: string;
+  transcript_error?: string;
 };
 
 // Default path, relative to the repo root. Overridable via ORCH_INBOX_JSONL
@@ -41,16 +59,30 @@ export function resolveInboxPath(
 }
 
 // Pure function: record -> exactly one serialized JSON line terminated by "\n".
-// The key order is fixed so rows are stable/diffable. Only the four whitelisted
-// fields are emitted; any extra property on the input is ignored, so a caller
-// cannot accidentally leak a token by over-passing.
+// The key order is fixed so rows are stable/diffable. Only the whitelisted
+// fields are emitted — any extra property on the input is ignored, so a caller
+// cannot accidentally leak a token by over-passing. Optional fields are
+// omitted (not emitted as null) so plain text rows keep their historical shape.
 export function serializeInboxLine(record: InboxRecord): string {
-  const row = {
+  const row: Record<string, string | number> = {
     msg_id: record.msg_id,
     chat_id: record.chat_id,
     ts: record.ts,
     text: record.text,
   };
+  if (record.attachment_kind !== undefined)
+    row.attachment_kind = record.attachment_kind;
+  if (record.attachment_file_id !== undefined)
+    row.attachment_file_id = record.attachment_file_id;
+  if (record.attachment_name !== undefined)
+    row.attachment_name = record.attachment_name;
+  if (record.attachment_mime !== undefined)
+    row.attachment_mime = record.attachment_mime;
+  if (record.attachment_size !== undefined)
+    row.attachment_size = record.attachment_size;
+  if (record.transcript !== undefined) row.transcript = record.transcript;
+  if (record.transcript_error !== undefined)
+    row.transcript_error = record.transcript_error;
   return JSON.stringify(row) + "\n";
 }
 

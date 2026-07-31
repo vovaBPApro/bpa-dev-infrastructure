@@ -13,7 +13,7 @@
 set -uo pipefail
 
 SESSION=bpa-orchestrator
-FLOOR=3
+FLOOR=10
 BOARD=/root/bpa-dev-infrastructure/instance/workboard.md
 DAEMON=http://127.0.0.1:4822
 LOGFILE=/root/.cache/infra-lanes/fleet-nudge.log
@@ -53,6 +53,10 @@ fi
 
 # Work remains but the fleet is idle => something on the orchestrator side is
 # wrong. Wake IT, not the Human.
+if [ "$running" -lt 3 ]; then
+  notify "⚠️ Лейнів лише $running (потрібно 10). На дошці $open відкритих рядків. Піднімаю."
+fi
+
 msg="[fleet-nudge] running lanes=$running (floor $FLOOR), workboard open rows=$open. Collect finished lane reports, land what is ACCEPTed, dispatch the next wave. Per HR-281 report the lane count to Vova unprompted."
 buf="nudge$$"
 tmux set-buffer -b "$buf" -- "$msg" 2>/dev/null || exit 0

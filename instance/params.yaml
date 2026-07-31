@@ -49,8 +49,9 @@ fleet:
   # and the orchestrator used that as licence to work single-threaded on a
   # 12-core / 251 GB box while Codex sat at 92% unused quota. He called that out
   # directly: parallelism is the reason the server is paid for.
-  floor: 6                         # while the workboard has open rows, >= 6 lanes should be running
+  floor: 10                        # HIS TARGET (2026-07-31): «У тебе задача — десять лейнів стабільно тримати»
   ceiling: 15                      # upper bound; raise only with measured host headroom
+  notify_human_below: 3            # below this the watchdog messages HIM directly, not just the orchestrator
   keepalive_interval_minutes: 15   # daemon timer backstop; independent of lane exit events
   status: active
   # Enforced by the state-contract checker: open work plus zero measured system

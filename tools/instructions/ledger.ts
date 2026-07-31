@@ -28,8 +28,8 @@ export const HR_PENDING_SLA_MS = 72 * 60 * 60 * 1000; // 72h
 export type LedgerLevel = "FAIL" | "WARN" | "SKIP" | "PASS";
 export type LedgerFinding = { level: LedgerLevel; file: string; detail: string };
 
-type InboxRow = { msg_id: number | string; ts: string };
-type TriageRow = {
+export type InboxRow = { msg_id: number | string; ts: string; text?: string };
+export type TriageRow = {
   msg_id: number | string;
   verdict: string;
   category: string;
@@ -37,6 +37,7 @@ type TriageRow = {
   triaged_by: string;
   triaged_at: string;
   quote: string;
+  answer_status?: "answered" | "owed";
   [key: string]: unknown;
 };
 
@@ -48,11 +49,12 @@ const TRIAGE_FIELDS = new Set([
   "triaged_by",
   "triaged_at",
   "quote",
+  "answer_status",
 ]);
 const CATEGORY_VALUE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const PROVENANCE_VALUE = /^[a-z0-9]+(?:[-_.][a-z0-9]+)*$/i;
 
-function canonicalSecretPattern(repo: string): string | undefined {
+export function canonicalSecretPattern(repo: string): string | undefined {
   const gate = join(repo, "gate", "land-lib.sh");
   if (!existsSync(gate)) return undefined;
   const assignment = readFileSync(gate, "utf8")
@@ -68,7 +70,7 @@ function canonicalSecretPattern(repo: string): string | undefined {
   return result.status === 0 && result.stdout ? result.stdout : undefined;
 }
 
-function validateTriageRow(row: TriageRow, line: number): LedgerFinding | undefined {
+export function validateTriageRow(row: TriageRow, line: number): LedgerFinding | undefined {
   const file = `instance/decisions/triage.jsonl:${line}`;
   if (!row || typeof row !== "object" || Array.isArray(row)) {
     return { level: "FAIL", file, detail: "invalid triage row: an object is required" };
@@ -86,6 +88,9 @@ function validateTriageRow(row: TriageRow, line: number): LedgerFinding | undefi
     (typeof row.msg_id === "string" && row.msg_id !== "");
   if (!validId || !["chatter", "directive"].includes(row.verdict)) {
     return { level: "FAIL", file, detail: "invalid triage row: msg_id and chatter/directive verdict are required" };
+  }
+  if (row.answer_status !== undefined && !["answered", "owed"].includes(row.answer_status)) {
+    return { level: "FAIL", file, detail: "invalid triage row: answered/owed answer_status is required" };
   }
   if (typeof row.quote !== "string" || row.quote.length === 0) {
     return { level: "FAIL", file, detail: "invalid triage row: non-empty verbatim quote is required" };
@@ -111,7 +116,7 @@ type JsonlResult<T> = { rows: Array<{ line: number; value: T }>; findings: Ledge
 // Reads and JSON-parses a .jsonl file with line provenance. A non-newline-
 // terminated final fragment may be a torn append, so it is a visible WARN.
 // Every malformed complete line is durable corrupt content and fails closed.
-function readJsonl<T>(path: string, file: string): JsonlResult<T> {
+export function readJsonl<T>(path: string, file: string): JsonlResult<T> {
   const rows: Array<{ line: number; value: T }> = [];
   const findings: LedgerFinding[] = [];
   const raw = readFileSync(path, "utf8");

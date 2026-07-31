@@ -59,6 +59,7 @@ LEASE_TTL_MS="${ORCH_LEASE_TTL_MS:-180000}"
 # install-watchdog.sh and the rendered timer ever disagree again.
 WATCHDOG_INTERVAL_S="${ORCH_WATCHDOG_INTERVAL:-${ORCH_WATCHDOG_INTERVAL_SECONDS:-60}}"
 INSTALL_ROOT="${ORCH_INSTALL_ROOT:-${INSTALL_ROOT:-$REPO_DIR}}"
+TRIAGE_CLI="${ORCH_TRIAGE_CLI:-$INSTALL_ROOT/tools/instructions/triage.ts}"
 NUDGE_OUTBOX_FILE="${NUDGE_OUTBOX_FILE:-$RUNTIME_DIR/nudges.outbox}"
 FLEET_IDLE_NUDGE_MS="${FLEET_IDLE_NUDGE_MS:-900000}"
 FLEET_NUDGE_REPEAT_MS="${FLEET_NUDGE_REPEAT_MS:-3600000}"
@@ -831,4 +832,23 @@ fi
 check_daemon_health || log "WATCHDOG observability-check-failed check=daemon-health"
 check_disk_pressure || log "WATCHDOG observability-check-failed check=disk-pressure"
 check_mission_pressure || log "WATCHDOG observability-check-failed check=mission-pressure"
+# Human input is surfaced at 20h, before the strict ledger's 24h breach. The
+# TypeScript action owns age calculation and owed-answer semantics; this tick
+# only transports its findings into the orchestrator's durable nudge channel.
+if [[ -f "$TRIAGE_CLI" ]]; then
+  triage_now_ms="${ORCH_WATCHDOG_NOW_MS:-$(( $(date +%s) * 1000 ))}"
+  triage_output="$("$BUN_BIN" "$TRIAGE_CLI" surface --repo "$INSTALL_ROOT" --now-ms "$triage_now_ms" 2>>"$LOG_FILE")" || {
+    log "WATCHDOG NO-GO reason=triage-surface-failed action=inspect-triage-cli"
+    triage_output=""
+  }
+  while IFS= read -r triage_line; do
+    [[ -n "$triage_line" ]] || continue
+    triage_id="$(sed -nE 's/^TRIAGE [^ ]+ msg=([^ ]+) .*/\1/p' <<<"$triage_line")"
+    [[ -n "$triage_id" ]] || { log "WATCHDOG NO-GO reason=triage-surface-malformed action=ignore"; continue; }
+    if nudge_due triage "$triage_id" "$triage_now_ms"; then
+      append_nudge "NUDGE $triage_line"
+      record_nudge triage "$triage_id" "$triage_now_ms"
+    fi
+  done <<<"$triage_output"
+fi
 exit 0

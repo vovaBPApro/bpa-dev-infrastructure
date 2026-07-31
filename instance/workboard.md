@@ -55,6 +55,24 @@ note. Derived-work items live here; Human directives stay in
   delivery dropped them (concurrent-turn buffering?). Daemon runtime code →
   coder lane; reproduce first with a test document before fixing.
 
+- **W-16 — lane-reported test counts are not trustworthy evidence** (found
+  2026-07-31, three independent occurrences in one night): `ag-status-human`
+  claimed `168/168` (reviewer executed 162/6), then claimed a "genuine 179/0"
+  (reviewer executed 158/0 under the mandated frozen-install command); a third
+  lane's suite exit-2 turned out to be a `/tmp`-checkout artifact. Root causes
+  so far identified: blind random test ports colliding with the kernel
+  ephemeral range (fixed in that branch by OS-assigned ports), and
+  environment-dependent discovery/invocation differences that change the file
+  set actually executed. The governance defect is that a REPORTED count is
+  currently accepted as evidence at all: the report contract requires a
+  `verify:` command, but nothing forces the reported numbers to come from THAT
+  command in a reproducible environment. Fix direction (own lane): make the
+  completion-guard/verify path the only source of a claimed count — e.g. the
+  gate re-runs `verify:` and compares, or the lane must paste the mandated
+  command's own output — so "N pass / 0 fail" cannot be a sentence someone
+  typed. Same false-green class as the reap `status=pass` and the CI
+  green-on-SKIP holes closed earlier tonight.
+
 ### Migration-loss restore queue (2026-07-30)
 
 Source: parity audit against the **live** old daemon at

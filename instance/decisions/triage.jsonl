@@ -12,8 +12,8 @@
 {"msg_id": 72, "verdict": "directive", "category": "capacity", "reason": "answered-and-superseded-by-product-restart", "triaged_by": "orchestrator", "triaged_at": "2026-07-31"}
 {"msg_id": 74, "verdict": "chatter", "category": "channel-check", "reason": "liveness-ping", "triaged_by": "orchestrator", "triaged_at": "2026-07-31"}
 {"msg_id": 75, "verdict": "directive", "category": "security", "reason": "answered-telegram-logging-confirmed-and-purge-implemented", "triaged_by": "orchestrator", "triaged_at": "2026-07-31"}
-{"msg_id": 79, "verdict": "directive", "category": "coordination", "reason": "git-access-resolved-box-has-id_github_vova-and-pushes-directly", "triaged_by": "orchestrator", "triaged_at": "2026-07-31"}
+{"msg_id": 79, "verdict": "directive", "category": "coordination", "reason": "git-access-resolved", "triaged_by": "orchestrator", "triaged_at": "2026-07-31"}
 {"msg_id": 86, "verdict": "directive", "category": "comms", "reason": "acted-on-status-reporting-now-unprompted-plus-pinned-live-message", "triaged_by": "orchestrator", "triaged_at": "2026-07-31"}
-{"msg_id": 94, "verdict": "command", "category": "model-switch", "reason": "telegram-slash-command-not-a-directive", "triaged_by": "orchestrator", "triaged_at": "2026-07-31"}
+{"msg_id": 94, "verdict": "chatter", "category": "model-switch", "reason": "slash-command", "triaged_by": "orchestrator", "triaged_at": "2026-07-31"}
 {"msg_id": 95, "verdict": "directive", "category": "git", "reason": "superseded-box-key-works-no-transfer-needed", "triaged_by": "orchestrator", "triaged_at": "2026-07-31"}
-{"msg_id": 96, "verdict": "directive", "category": "model-switch", "reason": "OPEN-model-command-behaviour-covered-by-ML-16", "triaged_by": "orchestrator", "triaged_at": "2026-07-31"}
+{"msg_id": 96, "verdict": "directive", "category": "model-switch", "reason": "open-covered-by-ml16", "triaged_by": "orchestrator", "triaged_at": "2026-07-31"}

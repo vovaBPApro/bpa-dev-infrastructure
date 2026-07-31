@@ -43,7 +43,16 @@ note. Derived-work items live here; Human directives stay in
   many lanes and their states, last landed thing, anything blocked. Daemon
   runtime code → coder lane; keep the honest-fields work (W-13 relabel) intact.
 
-- **W-15 — attachment-bearing Telegram messages are lost to the orchestrator**
+- **W-15 — CLOSED 2026-07-31** (landed `bfaf851a` + fixup `e898ac4e`; delete this
+  row next pass). Proven live, not by test alone: Vova's real voice messages (249,
+  256) arrived carrying `voice_transcribed="whisper-local"` with correct verbatim
+  Ukrainian, and his document (254, `How to Work With Vova.md`, 27843 bytes)
+  auto-downloaded and was read straight from the session. Both fix halves verified
+  live: the mirror now records `attachment_kind`/`file_id`/`mime`/`size` + the full
+  transcript (contrast msg 239 pre-fix, mirrored as the bare `"(voice message)"`),
+  and `server.ts:3288,3294` now guard the caption/permission early-return with
+  `if (!hasAttachment) return;` so a captioned attachment can no longer be
+  swallowed. Original row kept below for provenance:
   (found 2026-07-30 ~21:02Z): Vova sent 4 photo documents + BPA_ROLES_AND_REVIEW.md
   (inbox.jsonl msgs 156-160 record the filenames), but the `<channel>` tags with
   `attachment_file_id` never surfaced in the orchestrator session — text
@@ -173,7 +182,20 @@ ChatGPT share link (msg 144/59); Vova will send it as PDF — study on arrival.
   any agent can read/verify Drive contents for debugging (e.g. QuickBooks/Gmail
   import testing) without Vova screenshotting. He can do the one-time connect
   himself. Detail: HR-146 §NI-2.
-- **NI-3 — local Whisper voice transcription**: local Whisper (STT only) on this
+- **NI-3 — local Whisper voice transcription — ORCHESTRATOR CONSUMER DONE
+  2026-07-31; product consumer still open.** Live-proven on Vova's real voice
+  (uk verbatim, incl. technical vocabulary: бранчі/рефактор/мерж/пул/пуш/рісет).
+  Engine suite green on this box: `bun test daemon/transcribe.test.ts` = 8 pass /
+  0 fail with all three REAL-engine tests executed (English `.oga` opus — the
+  Telegram wire format, Ukrainian → Cyrillic, and garbage audio failing closed
+  with the ffmpeg reason rather than inventing a transcript). Source provenance
+  closed the same day: the box's binary predated the pinning fix and carried the
+  tag-only marker `v1.9.1`, so it was never verified against the pinned commit —
+  re-ran `tools/whisper/install.sh`, marker is now
+  `v1.9.1@f049fff95a089aa9969deb009cdd4892b3e74916` and the re-pinned binary
+  reproduces a byte-identical transcript on the same audio. RAM measurement and
+  the PRODUCT-side consumer (voice button in the framework) remain open.
+  Original row: local Whisper (STT only) on this
   server; multi-language (uk first, en required, possibly pl); consumed BOTH by
   the orchestrator (Telegram voice messages) and by the product's chat (voice
   record button in the framework) — ONE model, TWO consumers, but product and

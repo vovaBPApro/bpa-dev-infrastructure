@@ -1,3 +1,7 @@
+<!-- repo-added:begin -->
+> **Repository note:** This is the full reference; read it on demand. Use `How-to-Work-With-Vova-CORE.md` for the compact behavioral form.
+<!-- repo-added:end -->
+
 # How to Work With Vova
 
 **Document type:** Operator collaboration guide

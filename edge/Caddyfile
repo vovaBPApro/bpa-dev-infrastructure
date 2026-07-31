@@ -4,10 +4,9 @@
 }
 
 {$EDGE_DOMAIN} {
-	# The public surface is an explicit allowlist and nothing else. Two callback
-	# paths (Google is unified — the service is resolved from the OAuth `state`,
-	# so adding Gmail/Drive/Sheets never needs a new URL registered in the Google
-	# console), plus the routes that START a flow and report its state.
+	# OAuth surface — an explicit allowlist. Google is unified: the service is
+	# resolved from the OAuth `state`, so adding Gmail/Drive/Sheets never needs a
+	# new URL registered in the Google console.
 	@oauth_public path \
  /api/integrations/qbo/callback \
  /api/integrations/google/callback \
@@ -22,7 +21,21 @@
 		}
 	}
 
-	handle {
+	# Any OTHER /api/* path stays closed. The app answers unknown /api routes with
+	# a JSON 404 itself, but the edge must not forward them at all — the allowlist
+	# above is the whole API surface that is public.
+	handle /api/* {
 		respond 404
+	}
+
+	# The application UI. Opened 2026-07-31 because the operator could not click
+	# anything: the shell existed and served on :3000 but was unreachable from
+	# outside, so every review was screenshots instead of a running product.
+	# This serves the SPA and its assets, with client-side routing falling back to
+	# index.html so /bill and /mila resolve.
+	handle {
+		reverse_proxy {$APP_UPSTREAM} {
+			header_up Host {upstream_hostport}
+		}
 	}
 }

@@ -194,6 +194,7 @@ verify() {
   check "stand staleness timer" test -f "$SYSTEMD_SYSTEM_DIR/agentic-bpa-staleness.timer"
   check "database grants service" test -f "$SYSTEMD_SYSTEM_DIR/agentic-bpa-db-grants.service"
   check "database grants timer" test -f "$SYSTEMD_SYSTEM_DIR/agentic-bpa-db-grants.timer"
+  check "stand verifier service" test -f "$SYSTEMD_SYSTEM_DIR/agentic-bpa-stand-verifier.service"
   check "meteorite service" test -f "$SYSTEMD_SYSTEM_DIR/bpa-meteorite.service"
   check "meteorite timer" test -f "$SYSTEMD_SYSTEM_DIR/bpa-meteorite.timer"
   check "unit Exec paths" rendered_unit_exec_paths_status
@@ -226,6 +227,7 @@ verify() {
     check "deploy drift enabled" systemctl is-enabled --quiet bpa-deploy-drift-guard.timer
     check "stand staleness enabled" systemctl is-enabled --quiet agentic-bpa-staleness.timer
     check "database grants enabled" systemctl is-enabled --quiet agentic-bpa-db-grants.timer
+    check "stand verifier enabled" systemctl is-enabled --quiet agentic-bpa-stand-verifier.service
     check "meteorite enabled" systemctl is-enabled --quiet bpa-meteorite.timer
   fi
   return "$result"
@@ -417,6 +419,7 @@ activate_units() {
     systemctl enable --now bpa-deploy-drift-guard.timer
     systemctl enable --now agentic-bpa-staleness.timer
     systemctl enable --now agentic-bpa-db-grants.timer
+    systemctl enable --now agentic-bpa-stand-verifier.service
     systemctl enable --now bpa-meteorite.timer
     if "$ARM_WATCHDOG"; then
       echo 'ERROR: watchdog units are deliberately absent because unattended lease-loss handling is not approved' >&2

@@ -115,6 +115,7 @@ for expected in \
   'PASS deploy drift timer' \
   'PASS stand staleness service' \
   'PASS stand staleness timer' \
+  'PASS stand verifier service' \
   'PASS unit Exec paths' \
   'PASS deployed unit drift'; do
   grep -Fq "$expected" <<<"$verify_output"

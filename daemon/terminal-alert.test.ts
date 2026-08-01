@@ -32,6 +32,15 @@ test('ignores ordinary terminal output', () => {
   expect(classifyTerminalFailure('Tests: 42 pass, 0 fail')).toBeNull();
 });
 
+test('REGRESSION terminal-tool-error: a benign non-zero tool result does not alert', () => {
+  expect(classifyTerminalFailure('Error: Exit code 2')).toBeNull();
+  expect(
+    classifyTerminalFailure(
+      "sed: can't read /tmp/missing: No such file or directory",
+    ),
+  ).toBeNull();
+});
+
 test('REGRESSION ML-1: an unclassified terminal failure remains actionable', () => {
   expect(
     classifyTerminalFailure(

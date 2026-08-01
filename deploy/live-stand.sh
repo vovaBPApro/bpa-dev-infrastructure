@@ -7,7 +7,8 @@ usage() { echo 'usage: live-stand.sh <tracked-config> <commit>' >&2; exit 2; }
 CONFIG=$1
 REQUESTED_COMMIT=$2
 [[ -f "$CONFIG" ]] || { echo "DEPLOY ERROR: config missing: $CONFIG" >&2; exit 2; }
-# shellcheck disable=SC1090 -- the config is a tracked, reviewed instance artifact.
+# The config is a tracked, reviewed instance artifact.
+# shellcheck disable=SC1090
 source "$CONFIG"
 : "${REPO_ROOT:?}" "${RELEASE_ROOT:?}" "${CURRENT_LINK:?}" "${SERVICE_NAME:?}" "${HEALTH_URL:?}" "${BUILD_COMMAND:?}" "${MIGRATION_PREFLIGHT_COMMAND:?}"
 SERVICE_ROOT_ENV=${SERVICE_ROOT_ENV:-APP_ROOT}
@@ -66,7 +67,12 @@ fi
 # configured command owns a disposable copy of the live schema; it receives the
 # exact comparison through environment variables and must leave live data alone.
 migration_files=$(git -C "$REPO_ROOT" diff --name-only "$previous_commit..$commit" | LC_ALL=C grep -E "$MIGRATION_PATH_PATTERN" || true)
+migration_applies=false
 if [[ -n "$migration_files" ]]; then
+  migration_applies=true
+  rollback_detail="rollback is NOT safe candidate=$commit reason=migration-changes; a schema change outlives code rollback"
+  echo "DEPLOY SAFETY: $rollback_detail" >&2
+  deliver_event rollback-unsafe "$rollback_detail" || true
   echo "DEPLOY migration-preflight=$commit files=$(printf '%s' "$migration_files" | tr '\n' ',')"
   if ! (cd "$REPO_ROOT" && DEPLOYED_COMMIT="$previous_commit" TARGET_COMMIT="$commit" MIGRATION_FILES="$migration_files" bash -o pipefail -c "$MIGRATION_PREFLIGHT_COMMAND"); then
     detail="migration preflight failed candidate=$commit previous=$previous_commit; live service untouched"
@@ -75,6 +81,7 @@ if [[ -n "$migration_files" ]]; then
     exit 1
   fi
 else
+  echo "DEPLOY SAFETY: rollback-safe candidate=$commit reason=no-migration-changes"
   echo "DEPLOY migration-preflight=skipped reason=no-migration-changes"
 fi
 
@@ -172,6 +179,12 @@ if wait_until_probe_safe && wait_for_commit "$commit"; then
   :
 else
   health_result=$?
+  if [[ "$migration_applies" == true ]]; then
+    detail="deploy failed after migration candidate=$commit; code rollback cannot restore service against the migrated schema; fix forward: repair the production schema or deploy code compatible with it, then pass startup checks"
+    echo "DEPLOY CRITICAL: $detail" >&2
+    deliver_event forward-fix-required "$detail" || true
+    exit 3
+  fi
   if [[ "$health_result" -eq 4 ]]; then
     echo "DEPLOY ALARM: health contract drift for candidate=$commit; rolling back to $previous" >&2
   else

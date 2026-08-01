@@ -265,35 +265,6 @@ export async function relayTerminalAlert(
   }
 }
 
-const ALERT_BURST_WINDOW_MS = 60_000;
-const ALERT_BURST_LIMIT = 3;
-const ALERT_COOLDOWN_MS = 5 * 60_000;
-
-// Loop backstop. Internal terminal alerts are pasted back into the same tmux
-// pane this process reads, so a mangled echo (TUI line-wrap + chrome corrupt
-// the framed nonce) can re-classify as a fresh failure and self-amplify — the
-// 429/overload feedback storm. Nonce/frame-hash echo suppression cannot survive
-// terminal re-rendering, so we hard-cap emission: at most ALERT_BURST_LIMIT
-// alerts per ALERT_BURST_WINDOW_MS, then a cooldown where alerts are logged but
-// not relayed. Genuine distinct failures still surface (3/min is ample); only a
-// flood is throttled.
-export class AlertRateLimiter {
-  private hits: number[] = [];
-  private cooldownUntil = 0;
-
-  allow(now: number = Date.now()): boolean {
-    if (now < this.cooldownUntil) return false;
-    this.hits = this.hits.filter((t) => now - t < ALERT_BURST_WINDOW_MS);
-    if (this.hits.length >= ALERT_BURST_LIMIT) {
-      this.cooldownUntil = now + ALERT_COOLDOWN_MS;
-      this.hits = [];
-      return false;
-    }
-    this.hits.push(now);
-    return true;
-  }
-}
-
 async function run(): Promise<void> {
   const sessionIndex = Bun.argv.indexOf('--session');
   const session = Bun.argv[sessionIndex + 1] || 'unknown';
@@ -301,7 +272,6 @@ async function run(): Promise<void> {
   const readyFile = readyIndex >= 0 ? Bun.argv[readyIndex + 1] : '';
   const port = process.env.TELEGRAM_DAEMON_PORT || '4822';
   const seen = new Set<string>();
-  const limiter = new AlertRateLimiter();
 
   if (readyIndex >= 0 && !readyFile) {
     throw new Error('--ready-file requires a path');
@@ -324,12 +294,6 @@ async function run(): Promise<void> {
 
     const dedupKey = `${kind}\0${line}`;
     if (seen.has(dedupKey)) continue;
-    if (!limiter.allow()) {
-      process.stderr.write(
-        `[terminal-alert] rate-limited kind=${kind}: loop backstop, not relayed\n`,
-      );
-      continue;
-    }
     try {
       await relayTerminalAlert({ kind, line, session }, port);
       seen.add(dedupKey);

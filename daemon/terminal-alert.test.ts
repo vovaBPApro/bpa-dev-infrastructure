@@ -7,7 +7,6 @@ import {
   formatTerminalAlert,
   relayTerminalAlert,
   stripTerminalNoise,
-  AlertRateLimiter,
 } from './terminal-alert';
 
 test.each([
@@ -371,28 +370,5 @@ test('REGRESSION ML-1: classifier proves process readiness to its launcher', asy
     child.kill();
     await child.exited;
     rmSync(scratch, { recursive: true, force: true });
-  }
-});
-
-
-test('REGRESSION terminal-alert-loop-backstop: emission is rate-capped so a mangled echo cannot self-amplify', () => {
-  const limiter = new AlertRateLimiter();
-  let t = 1_000_000;
-  // Burst of 5 alert-worthy frames inside one window: only the first 3 relay.
-  const verdicts = Array.from({ length: 5 }, () => limiter.allow(t));
-  expect(verdicts).toEqual([true, true, true, false, false]);
-  // Cooldown holds even a minute later (past the burst window, inside cooldown).
-  expect(limiter.allow(t + 90_000)).toBe(false);
-  // After the full cooldown the limiter recovers and admits again.
-  expect(limiter.allow(t + 6 * 60_000)).toBe(true);
-});
-
-test('REGRESSION terminal-alert-loop-backstop: a slow trickle of real failures is never throttled', () => {
-  const limiter = new AlertRateLimiter();
-  let t = 2_000_000;
-  // One alert every 30s stays under 3-per-60s forever.
-  for (let i = 0; i < 20; i += 1) {
-    expect(limiter.allow(t)).toBe(true);
-    t += 30_000;
   }
 });

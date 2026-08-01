@@ -163,7 +163,7 @@ test(
       expect(attempts).toHaveLength(4);
       expect(journaled[2]).toContain('Type: n·etwork');
 
-      await Bun.sleep(250);
+      await Bun.sleep(1_000);
       expect(attempts).toHaveLength(4);
       expect(journaled).toHaveLength(3);
 
@@ -198,6 +198,7 @@ test(
       );
     } finally {
       await tmux(socket, 'kill-server');
+      server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       rmSync(scratch, { recursive: true, force: true });
     }

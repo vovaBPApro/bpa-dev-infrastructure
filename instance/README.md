@@ -46,9 +46,21 @@ The two sources that DO hold real verbatim history right now:
   bot replies, chronological, 2026-06-30 through 2026-07-31 16:32) and
   `vova-telegram-by-message-id.txt` (his messages only, same range). This
   directory is **outside this git repo entirely** (`/root/orch-mailbox/`, not
-  under `bpa-dev-infrastructure/`) and is not tracked anywhere — it would not
-  survive the meteorite test (Hard Floor 5). Not yet fixed; tracked as
-  workboard row W-30.
+  under `bpa-dev-infrastructure/`). It is the designated restricted full-history
+  location: owner `root`, directory mode `0700`, files mode `0600`; the retention
+  owner is the BPA operator, and retention is indefinite until a reviewed
+  redacted copy preserves all non-secret content. The canonical signature scan
+  found hits, so none of these files may enter Git or an unencrypted backup.
+  An off-host encrypted backup target has not been provisioned, so the archive
+  still fails the meteorite test; this is the remaining W-30 blocker.
+
+  Redaction must operate on copies, replace every canonical-signature match with
+  a stable marker carrying only file and line provenance, rescan both plaintext
+  and decoded base64-like additions with the landing scanner, and compare the
+  message/event headers and timestamps against the originals. Only that reviewed,
+  scan-clean derivative may be proposed for `instance/`; originals remain
+  read-only inputs. Inventory, hashes, encoding proof, and scan counts are in
+  `reports/telegram-archive-recovery.md`.
 
 Together these two sources cover 2026-06-30 through the present with no gap.
 Neither is a substitute for fixing W-29 — until that lands, every new message

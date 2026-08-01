@@ -12,11 +12,14 @@ const OPEN_WORKBOARD = `# Workboard\n\n## Open\n\n- **ML-2 — autonomy keep-ali
 test('fleet config reads floor and interval with a 15-minute default', () => {
   expect(parseFleetConfig('fleet:\n  floor: 6\n')).toEqual({
     floor: 6,
+    notifyHumanBelow: 1,
     intervalMs: 900_000,
   });
   expect(
-    parseFleetConfig('fleet:\n  floor: 4\n  keepalive_interval_minutes: 2\n'),
-  ).toEqual({ floor: 4, intervalMs: 120_000 });
+    parseFleetConfig(
+      'fleet:\n  floor: 4\n  notify_human_below: 3\n  keepalive_interval_minutes: 2\n',
+    ),
+  ).toEqual({ floor: 4, notifyHumanBelow: 3, intervalMs: 120_000 });
 });
 
 test('system lane census uses SYSTEM systemd unit state', () => {
@@ -34,9 +37,11 @@ test('REGRESSION ML-2: timer nudges with open rows and zero running lanes', asyn
   const nudges: string[] = [];
   const keepalive = new AutonomyKeepalive({
     floor: 6,
+    notifyHumanBelow: 3,
     readWorkboard: () => OPEN_WORKBOARD,
     listUnits: () => [],
     nudge: async (message) => void nudges.push(message),
+    alertHuman: async () => {},
   });
 
   await keepalive.timerTick();
@@ -49,9 +54,11 @@ test('dirty-dead lane with no exit event is still caught by timer level', async 
   const nudges: string[] = [];
   const keepalive = new AutonomyKeepalive({
     floor: 2,
+    notifyHumanBelow: 1,
     readWorkboard: () => OPEN_WORKBOARD,
     listUnits: () => [{ name: 'lane-dirty.service', active: false }],
     nudge: async (message) => void nudges.push(message),
+    alertHuman: async () => {},
   });
 
   // No eventTick call: this models a dirty death whose exit transition was lost.
@@ -66,9 +73,11 @@ test('event level nudges once when a running lane exits', async () => {
   let units = [{ name: 'lane-alpha.service', active: true }];
   const keepalive = new AutonomyKeepalive({
     floor: 1,
+    notifyHumanBelow: 1,
     readWorkboard: () => OPEN_WORKBOARD,
     listUnits: () => units,
     nudge: async (message) => void nudges.push(message),
+    alertHuman: async () => {},
   });
 
   await keepalive.eventTick();
@@ -85,6 +94,7 @@ test('REGRESSION ML-2 delivery: tmux unavailable rejects and retries the pending
   const pasted: string[] = [];
   const keepalive = new AutonomyKeepalive({
     floor: 1,
+    notifyHumanBelow: 1,
     readWorkboard: () => OPEN_WORKBOARD,
     listUnits: () => units,
     nudge: (message) =>
@@ -96,6 +106,7 @@ test('REGRESSION ML-2 delivery: tmux unavailable rejects and retries the pending
         },
         log: () => {},
       }),
+    alertHuman: async () => {},
   });
 
   await keepalive.eventTick();
@@ -114,6 +125,7 @@ test('REGRESSION ML-2 delivery: paste false rejects and retries the pending exit
   let attempts = 0;
   const keepalive = new AutonomyKeepalive({
     floor: 1,
+    notifyHumanBelow: 1,
     readWorkboard: () => OPEN_WORKBOARD,
     listUnits: () => units,
     nudge: (message) =>
@@ -125,6 +137,7 @@ test('REGRESSION ML-2 delivery: paste false rejects and retries the pending exit
         },
         log: () => {},
       }),
+    alertHuman: async () => {},
   });
 
   await keepalive.eventTick();
@@ -141,10 +154,60 @@ test('closed-only workboard and a full fleet stay quiet', async () => {
   const nudges: string[] = [];
   const keepalive = new AutonomyKeepalive({
     floor: 1,
+    notifyHumanBelow: 1,
     readWorkboard: () => OPEN_WORKBOARD,
     listUnits: () => [{ name: 'lane-alpha.service', active: true }],
     nudge: async (message) => void nudges.push(message),
+    alertHuman: async () => {},
   });
   await keepalive.timerTick();
   expect(nudges).toEqual([]);
+});
+
+test('REGRESSION fleet floor: zero lanes alerts Human once with numbers and rearms after recovery', async () => {
+  const alerts: string[] = [];
+  let units: { name: string; active: boolean }[] = [];
+  const keepalive = new AutonomyKeepalive({
+    floor: 10,
+    notifyHumanBelow: 3,
+    readWorkboard: () => '',
+    listUnits: () => units,
+    nudge: async () => {},
+    alertHuman: async (message) => void alerts.push(message),
+  });
+
+  await keepalive.timerTick();
+  await keepalive.timerTick();
+  units = [
+    { name: 'lane-a.service', active: true },
+    { name: 'lane-b.service', active: true },
+    { name: 'lane-c.service', active: true },
+  ];
+  await keepalive.timerTick();
+  units = [];
+  await keepalive.timerTick();
+
+  expect(alerts).toEqual([
+    '0 lanes running — not enough work in flight (alert threshold: 3)',
+    '0 lanes running — not enough work in flight (alert threshold: 3)',
+  ]);
+});
+
+test('failed Human delivery remains armed for retry', async () => {
+  let attempts = 0;
+  const keepalive = new AutonomyKeepalive({
+    floor: 10,
+    notifyHumanBelow: 3,
+    readWorkboard: () => '',
+    listUnits: () => [],
+    nudge: async () => {},
+    alertHuman: async () => {
+      attempts++;
+      if (attempts === 1) throw new Error('Telegram unavailable');
+    },
+  });
+
+  await expect(keepalive.timerTick()).rejects.toThrow('Telegram unavailable');
+  await keepalive.timerTick();
+  expect(attempts).toBe(2);
 });

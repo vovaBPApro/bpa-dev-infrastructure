@@ -1568,11 +1568,26 @@ async function autonomyNudge(message: string): Promise<void> {
   });
 }
 
+async function alertHumanAboutFleet(message: string): Promise<void> {
+  const access = loadAccess();
+  if (access.allowFrom.length === 0) {
+    throw new Error('fleet alert has no allowlisted Human chat');
+  }
+  await Promise.all(
+    access.allowFrom.map((chatId) =>
+      sendTelegramReply({ chatId, text: message, loud: true }),
+    ),
+  );
+  process.stderr.write(`${LOG_PREFIX} fleet Human alert delivered: ${message}\n`);
+}
+
 const autonomyKeepalive = new AutonomyKeepalive({
   floor: FLEET_CONFIG.floor,
+  notifyHumanBelow: FLEET_CONFIG.notifyHumanBelow,
   readWorkboard: () => readFileSync(WORKBOARD_FILE, 'utf8'),
   listUnits: listSystemLaneUnits,
   nudge: autonomyNudge,
+  alertHuman: alertHumanAboutFleet,
 });
 
 let laneEventTickRunning = false;

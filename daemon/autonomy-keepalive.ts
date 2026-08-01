@@ -1,15 +1,26 @@
 export type LaneUnit = { name: string; active: boolean };
 
-export type FleetConfig = { floor: number; intervalMs: number };
+export type FleetConfig = {
+  floor: number;
+  notifyHumanBelow: number;
+  intervalMs: number;
+};
 
 export function parseFleetConfig(yaml: string): FleetConfig {
   const fleet = yaml.match(/^fleet:\s*\n((?:^[ \t]+.*(?:\n|$))*)/m)?.[1] ?? '';
   const floor = Number(fleet.match(/^\s+floor:\s*(\d+)/m)?.[1] ?? 1);
+  const notifyHumanBelow = Number(
+    fleet.match(/^\s+notify_human_below:\s*(\d+)/m)?.[1] ?? 1,
+  );
   const minutes = Number(
     fleet.match(/^\s+keepalive_interval_minutes:\s*(\d+(?:\.\d+)?)/m)?.[1] ?? 15,
   );
   return {
     floor: Number.isFinite(floor) && floor > 0 ? floor : 1,
+    notifyHumanBelow:
+      Number.isFinite(notifyHumanBelow) && notifyHumanBelow > 0
+        ? notifyHumanBelow
+        : 1,
     intervalMs:
       Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : 900_000,
   };
@@ -64,14 +75,17 @@ export async function deliverAutonomyNudge(
 
 type KeepaliveOptions = {
   floor: number;
+  notifyHumanBelow: number;
   readWorkboard: () => string;
   listUnits: () => LaneUnit[];
   nudge: (message: string) => Promise<void>;
+  alertHuman: (message: string) => Promise<void>;
 };
 
 /** Independent event and timer paths which share only their delivery method. */
 export class AutonomyKeepalive {
   private previousRunning: Set<string> | null = null;
+  private humanAlertActive = false;
 
   constructor(private readonly opts: KeepaliveOptions) {}
 
@@ -100,6 +114,16 @@ export class AutonomyKeepalive {
 
   async timerTick(): Promise<void> {
     const running = this.opts.listUnits().filter((unit) => unit.active).length;
+    if (running < this.opts.notifyHumanBelow) {
+      if (!this.humanAlertActive) {
+        await this.opts.alertHuman(
+          `${running} lanes running — not enough work in flight (alert threshold: ${this.opts.notifyHumanBelow})`,
+        );
+        this.humanAlertActive = true;
+      }
+    } else {
+      this.humanAlertActive = false;
+    }
     if (running >= this.opts.floor) return;
     if (!hasOpenWorkboardRows(this.opts.readWorkboard())) return;
     await this.opts.nudge(

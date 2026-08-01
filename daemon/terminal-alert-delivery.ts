@@ -42,6 +42,7 @@ export async function deliverTerminalAlert(
     let drainAccepted = false;
     let settled = false;
     let needsDrain = false;
+    let returnKnown = false;
     let acceptanceScheduled = false;
 
     const cleanup = (): void => {
@@ -52,6 +53,7 @@ export async function deliverTerminalAlert(
     const finish = (): void => {
       if (
         !settled &&
+        returnKnown &&
         callbackAccepted &&
         (!needsDrain || drainAccepted) &&
         !acceptanceScheduled
@@ -59,6 +61,12 @@ export async function deliverTerminalAlert(
         acceptanceScheduled = true;
         setImmediate(() => {
           if (settled) return;
+          acceptanceScheduled = false;
+          if (
+            !returnKnown ||
+            !callbackAccepted ||
+            (needsDrain && !drainAccepted)
+          ) return;
           settled = true;
           cleanup();
           resolve();
@@ -82,6 +90,7 @@ export async function deliverTerminalAlert(
     );
 
     deps.journal.once('error', onError);
+    deps.journal.once('drain', onDrain);
     try {
       const accepted = deps.journal.write(line, (error?: Error | null) => {
         if (error) {
@@ -92,7 +101,7 @@ export async function deliverTerminalAlert(
         finish();
       });
       needsDrain = !accepted;
-      if (needsDrain) deps.journal.once('drain', onDrain);
+      returnKnown = true;
       finish();
     } catch (error) {
       fail(error);

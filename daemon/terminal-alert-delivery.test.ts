@@ -49,6 +49,37 @@ test('REGRESSION W-37: backpressure requires callback and drain acceptance', asy
   expect(accepted).toBe(true);
 });
 
+test('REGRESSION W-37: synchronous callback with backpressure cannot bypass drain', async () => {
+  const events = new EventEmitter();
+  const journal = Object.assign(events, {
+    write(_line: string, done: (error?: Error | null) => void): boolean {
+      done();
+      return false;
+    },
+  });
+
+  await expect(
+    deliverTerminalAlert(frame(), { journal, acceptanceTimeoutMs: 20 }),
+  ).rejects.toThrow('acceptance timed out');
+});
+
+test('REGRESSION W-37: synchronous callback with backpressure succeeds after drain', async () => {
+  const events = new EventEmitter();
+  const journal = Object.assign(events, {
+    write(_line: string, done: (error?: Error | null) => void): boolean {
+      done();
+      return false;
+    },
+  });
+
+  const delivery = deliverTerminalAlert(frame(), {
+    journal,
+    acceptanceTimeoutMs: 100,
+  });
+  queueMicrotask(() => events.emit('drain'));
+  await delivery;
+});
+
 test('REGRESSION W-37: asynchronous stream error fails delivery', async () => {
   const events = new EventEmitter();
   const journal = Object.assign(events, {

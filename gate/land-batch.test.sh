@@ -19,7 +19,8 @@ make_fixture() {
   git -C "$repo" config user.email batch@example.test
   git -C "$repo" config user.name Batch
   printf 'base\n' > "$repo/base.txt"
-  git -C "$repo" add base.txt
+  printf 'import { test, expect } from "bun:test"; test("fixture", () => expect(true).toBe(true));\n' > "$repo/base.test.ts"
+  git -C "$repo" add base.txt base.test.ts
   git -C "$repo" commit -m base >/dev/null
   git -C "$repo" push -u origin main >/dev/null
   printf 'ref: refs/heads/main\n' > "$bare/HEAD"
@@ -37,6 +38,24 @@ make_lane() {
 }
 
 report() { printf 'commit: %s fixture\nverify: true\nresult: clean\nsecret-scan: clean\nremaining: none\n' "$2" > "$1"; }
+
+make_fixture zero-tests
+zero_before=$(git -C "$repo" rev-parse main)
+git -C "$repo" checkout -b ag-zero-tests >/dev/null
+printf 'import { test } from "bun:test"; void test;\n' > "$repo/base.test.ts"
+git -C "$repo" add base.test.ts
+git -C "$repo" commit -m zero-tests >/dev/null
+zero_sha=$(git -C "$repo" rev-parse HEAD)
+git -C "$repo" checkout main >/dev/null
+zero_peer_sha=$(make_lane "$repo" ag-zero-peer peer.txt peer)
+report "$fixture_root/zero-tests.md" "$zero_sha"
+report "$fixture_root/zero-peer.md" "$zero_peer_sha"
+if "$batch" --branches ag-zero-tests,ag-zero-peer --reports "$fixture_root/zero-tests.md,$fixture_root/zero-peer.md" --repo "$repo" --no-push >"$fixture_root/zero-tests-batch.out" 2>&1; then
+  echo 'zero-tests: batch gate accepted an empty suite' >&2
+  exit 1
+fi
+assert_output_has "$fixture_root/zero-tests-batch.out" 'BATCH framework-check=test status=fail tests=0 detail=no-tests-collected'
+assert test "$(git -C "$repo" rev-parse main)" = "$zero_before"
 
 make_fixture disjoint
 bare_skip_before=$(git -C "$repo" rev-parse main)

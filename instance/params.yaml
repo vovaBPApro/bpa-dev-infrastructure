@@ -61,41 +61,35 @@ fleet:
 orchestrator:
   # A doc in THIS repo now states the vendor shape, so the long-standing "no
   # model/vendor map here" omission is lifted for these keys only.
-  top_provider: codex              # HUMAN RULING: instance/decisions/HR-271.md (Vova, 2026-07-31).
-  # The top orchestrator is Codex gpt-5.6-sol. Claude is reserved ENTIRELY: not
-  # spent on routing, only on short-lived Sonnet errand-agents for the claude.ai
-  # connectors (Drive/Gmail/QuickBooks) and Fable for real escalation. This
-  # replaces the "thin Claude top" shape from handoff-oldorch-2026-07-30.md §1.
+  top_provider: claude             # HUMAN RULING: instance/decisions/HR-709.md (Vova, 2026-08-01).
+  # SUPERSEDES HR-271 item 1. He corrected the record: Codex gpt-5.6-sol is a
+  # quota-exhaustion FALLBACK only, not the resting top-orchestrator provider.
   top_posture: thin                # unchanged in KIND — routing/decisions/Human contact only
   # Pinned in source (orchestrator/launch.sh CLAUDE_MODEL) for the same reason
   # as fallback_model below: an unpinned claude launch emits no --model and the
   # top orchestrator silently becomes the account default.
-  # SUPERSEDED 2026-07-31 by HR-271: the top orchestrator is no longer Claude at
-  # all (see top_provider: codex above, and fallback_model: gpt-5.6-sol below,
-  # which is now the TOP model rather than the fallback). This key survives only
-  # as the tier to use IF a Claude top is ever run again, and as the tier for the
-  # Sonnet errand-agents. HR-269's reasoning below still explains why NOT Fable.
-  top_model: claude-sonnet-5       # HUMAN RULING: instance/decisions/HR-269.md (Vova, 2026-07-31).
-  # Rest on Sonnet — NOT Fable, NOT Opus. Fable is escalation-only because his own
-  # usage screenshots show it is his TIGHTEST bucket (79% used), so resting there
-  # would eat the reserve he wants kept for hard problems. This SUPERSEDES his
-  # 2026-07-30 "thin top on Fable" position by his own evidence, same goal.
-  # CORRECTION 2026-07-31: this key previously read `claude-fable-5` and claimed
-  # "AS RUN ... confirmed by the launcher -> claude_model=claude-fable-5". That was
-  # FALSE. The host pinned ORCH_CLAUDE_MODEL=claude-opus-5, so the thin posture was
-  # never in force and the heaviest tier was burning the scarcest quota.
-  # Ground truth at the time of correction, re-run rather than trusted:
-  #   `bash orchestrator/launch.sh model` -> claude_model=claude-opus-5
-  # Applies at the next relaunch; runtime.env is the host pin that enforces it.
+  top_model: claude-fable-5        # HUMAN RULING: instance/decisions/HR-709.md (Vova, 2026-08-01).
+  # SUPERSEDES HR-269 item 1 and HR-271's "Claude reserved entirely" framing.
+  # Rest on FABLE, not Sonnet, not Opus, not Codex. His words: "на fable було
+  # мінімальне навантаження... всі дочірні агенти піднімаються на кодексах".
+  # Child/lane agents stay on Codex (HR-269 item 2 / HR-271, unchanged) and must
+  # be lean/autonomous enough not to round-trip the top orchestrator often — the
+  # goal is minimizing FABLE quota burn, not avoiding Claude altogether.
+  # DRIFT FOUND 2026-08-01: `bash orchestrator/launch.sh model` already reported
+  # claude_model=claude-fable-5 (the runtime.env pin was already correct) at the
+  # moment this ruling arrived, yet the LIVE session was running claude-sonnet-5.
+  # The restart path that brought this session up did not honor the pin — a
+  # separate open defect, not resolved by this key. See workboard.
   top_model_source: runtime.env    # host pin; orchestrator/launch.sh CLAUDE_MODEL is the fallback default
   top_model_status: pinned         # orchestrator/model-command.test.sh locks the emitted --model;
   # ORCH_CLAUDE_MODEL in runtime.env overrides the source default per host, and
   # the Telegram /model command writes that same name, so an operator switch and
   # this pin cannot disagree.
-  # CLOSED 2026-07-31: he was asked and he ruled — instance/decisions/HR-269.md
-  # carries his verbatim words. This is now a Human ruling, not an as-run record.
   # Escalation tier reachable from Telegram (`/model fable`); switch up for a
   # hairy incident, back down after. Selectable set: daemon/model-registry.ts.
+  # NOTE: fable is now the RESTING tier (top_model above), not escalation-only —
+  # HR-709 repurposed it. This key name is stale (kept as the Telegram catalog
+  # label, not a claim about posture); do not read it as contradicting top_model.
   escalation_model: claude-fable-5 # instance/handoff-oldorch-2026-07-30.md §1; verified runnable 2026-07-30
   lean_model: claude-sonnet-5      # ibid (thin/lean top); verified runnable 2026-07-30
   model_switch: telegram-/model    # daemon/server.ts handleModelCommand; relaunch-scoped, persisted to runtime.env

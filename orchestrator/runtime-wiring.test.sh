@@ -26,6 +26,7 @@ cat > "$SHIM/systemd-run" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 while [[ "$1" == -* ]]; do shift; done
+[[ "${1:-}" == -- ]] && shift
 exec "$@"
 EOF
 cat > "$SHIM/codex" <<'EOF'

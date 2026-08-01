@@ -49,7 +49,9 @@ cat > "$SHIM/systemd-run" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'systemd-run %s\n' "$*" >> "${MOCK_STATE:?}/calls"
-exit 97
+while [[ "$1" == -* ]]; do shift; done
+[[ "${1:-}" == -- ]] && shift
+exec "$@"
 EOF
 cat > "$SHIM/codex" <<'EOF'
 #!/usr/bin/env bash
@@ -107,7 +109,9 @@ assert_not "$SCRIPT_DIR/launch.sh" status
 [[ ! -e "$STATE/calls" ]] || fail 'help/status had side effects'
 
 assert "$SCRIPT_DIR/launch.sh" start
-[[ "$(calls 'systemd-run')" == 0 ]] || fail 'launch used a systemd-run wrapper'
+[[ "$(calls 'systemd-run')" == 1 ]] || fail 'launch did not use one systemd transient scope'
+grep -q '^systemd-run .*--collect .*--scope .*--unit=bpa-orchestrator-test-orch -- tmux new-session ' "$STATE/calls" ||
+  fail 'tmux launch was not constructed inside the named collected scope'
 [[ "$(calls 'tmux pipe-pane')" == 1 ]] || fail 'launch did not wire terminal alerts'
 grep -q 'terminal-alert.ts --session test-orch' "$STATE/calls" ||
   fail 'terminal alert pipe did not carry its classifier and session'

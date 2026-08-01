@@ -21,8 +21,10 @@ exec /usr/bin/tmux -L "${ORCH_TEST_TMUX_SOCKET:?}" "$@"
 EOF
 cat > "$SHIM/systemd-run" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' 'Failed to connect to user scope bus via local transport' >&2
-exit 1
+set -euo pipefail
+while [[ "$1" == -* ]]; do shift; done
+[[ "${1:-}" == -- ]] && shift
+exec "$@"
 EOF
 cat > "$SHIM/codex" <<'EOF'
 #!/usr/bin/env bash

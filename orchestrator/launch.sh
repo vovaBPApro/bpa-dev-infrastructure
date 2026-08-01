@@ -110,6 +110,27 @@ model_report() {
 
 session_exists() { tmux has-session -t "$SESSION" 2>/dev/null; }
 
+start_tmux_outside_daemon_cgroup() {
+  local scope_session scope_unit
+  if ! command -v systemd-run >/dev/null 2>&1; then
+    printf 'ERROR orchestrator-scope-unavailable reason=systemd-run-missing; refusing in-cgroup tmux launch\n' >&2
+    return 1
+  fi
+  # Keep the ordinary tmux server/socket and all ambient launch environment;
+  # only ask PID 1 to move the tmux client (and therefore the server it forks)
+  # into a sibling transient scope before it starts. --collect removes the
+  # transient unit after the session exits.
+  scope_session="$(printf '%s' "$SESSION" | LC_ALL=C tr -c 'A-Za-z0-9_.-' '-')"
+  scope_unit="bpa-orchestrator-${scope_session}"
+  if ! systemd-run --quiet --collect --scope --unit="$scope_unit" -- \
+    tmux new-session -d -s "$SESSION" -c "$WORK_DIR" \
+      "sh -c $(printf '%q' "$singleton_command")"; then
+    printf 'ERROR orchestrator-scope-launch-failed unit=%s; refusing in-cgroup tmux fallback\n' \
+      "$scope_unit" >&2
+    return 1
+  fi
+}
+
 now_ms() {
   local seconds nanos
   read -r seconds nanos < <(date '+%s %N')
@@ -366,7 +387,15 @@ start() {
     "$SINGLETON_LOCK_FILE" "$startup_file" "$startup_file" "$pulse_command" "$command"
   # Do not leak the launch mutex into tmux/the provider process.
   exec 9>&-
-  tmux new-session -d -s "$SESSION" -c "$WORK_DIR" "sh -c $(printf '%q' "$singleton_command")" || return 1
+  start_tmux_outside_daemon_cgroup || return 1
+  # The scoped tmux client can return after its pane has already rejected the
+  # singleton flock. Detect that before trying to attach auxiliary pipe-pane
+  # processes, otherwise the useful refusal is obscured by "can't find pane".
+  sleep 0.1
+  if ! session_exists; then
+    printf 'ERROR orchestrator-singleton-held lock=%s\n' "$SINGLETON_LOCK_FILE" >&2
+    return 1
+  fi
   terminal_alert_bun="$(command -v bun)"
   terminal_alert_ready="$TERMINAL_ALERT_READY_FILE"
   rm -f "$terminal_alert_ready"
@@ -388,13 +417,6 @@ start() {
     printf 'ERROR terminal-alert-not-ready session=%s\n' "$SESSION" >&2
     tmux kill-session -t "$SESSION" 2>/dev/null || true
     rm -f "$terminal_alert_ready"
-    return 1
-  fi
-  # tmux reports success before the pane command can reject a held flock.
-  # Give that command a bounded window to exit, then fail the launch loudly.
-  sleep 0.1
-  if ! session_exists; then
-    printf 'ERROR orchestrator-singleton-held lock=%s\n' "$SINGLETON_LOCK_FILE" >&2
     return 1
   fi
   pane_pid="$(tmux list-panes -t "$SESSION" -F '#{pane_pid}' | head -n 1)"

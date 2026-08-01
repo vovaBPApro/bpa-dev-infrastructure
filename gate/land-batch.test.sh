@@ -70,6 +70,44 @@ assert_not git -C "$repo" show-ref --verify --quiet refs/heads/ag-three
 assert_not git -C "$repo" show-ref --verify --quiet refs/heads/batch-integration-$$
 assert test "$(git --git-dir="$bare" rev-parse main)" = "$(git -C "$repo" rev-parse main)"
 
+make_fixture declared-check-fail
+declared_batch_before=$(git -C "$repo" rev-parse main)
+declared_one_sha=$(make_lane "$repo" ag-declared-one package.json '{"scripts":{"lint":"echo batch-declared-lint-ran && false","test":"echo batch-declared-test-ran"}}')
+declared_two_sha=$(make_lane "$repo" ag-declared-two declared-two.txt two)
+report "$fixture_root/declared-one.md" "$declared_one_sha"
+report "$fixture_root/declared-two.md" "$declared_two_sha"
+declared_batch_output="$fixture_root/declared-batch.out"
+if "$batch" --branches ag-declared-one,ag-declared-two --reports "$fixture_root/declared-one.md,$fixture_root/declared-two.md" --repo "$repo" --no-push >"$declared_batch_output" 2>&1; then exit 1; fi
+assert_output_has "$declared_batch_output" 'BATCH declared-check=lint status=running'
+assert_output_has "$declared_batch_output" 'batch-declared-lint-ran'
+assert_output_has "$declared_batch_output" 'BATCH step=declared-checks status=fail'
+assert test "$(git -C "$repo" rev-parse main)" = "$declared_batch_before"
+
+for failure_kind in failing-test syntax-error; do
+  make_fixture "declared-$failure_kind"
+  failure_before=$(git -C "$repo" rev-parse main)
+  if [ "$failure_kind" = failing-test ]; then
+    failure_value='{"scripts":{"test":"false"}}'
+  else
+    failure_value='{"scripts":{"test":"bun test"}}'
+  fi
+  failure_sha=$(make_lane "$repo" "ag-$failure_kind" package.json "$failure_value")
+  if [ "$failure_kind" = syntax-error ]; then
+    git -C "$repo" checkout "ag-$failure_kind" >/dev/null
+    printf 'this is not valid TypeScript !!!\n' > "$repo/broken.test.ts"
+    git -C "$repo" add broken.test.ts
+    git -C "$repo" commit -m syntax-error >/dev/null
+    failure_sha=$(git -C "$repo" rev-parse HEAD)
+    git -C "$repo" checkout main >/dev/null
+  fi
+  peer_sha=$(make_lane "$repo" "ag-$failure_kind-peer" "$failure_kind-peer.txt" peer)
+  report "$fixture_root/$failure_kind.md" "$failure_sha"
+  report "$fixture_root/$failure_kind-peer.md" "$peer_sha"
+  if "$batch" --branches "ag-$failure_kind,ag-$failure_kind-peer" --reports "$fixture_root/$failure_kind.md,$fixture_root/$failure_kind-peer.md" --repo "$repo" --no-push >"$fixture_root/$failure_kind-batch.out" 2>&1; then exit 1; fi
+  assert_output_has "$fixture_root/$failure_kind-batch.out" 'BATCH declared-check=test status=fail'
+  assert_not git -C "$repo" merge-base --is-ancestor "$failure_sha" main
+done
+
 make_fixture conflict
 conflict_before=$(git -C "$repo" rev-parse main)
 first_sha=$(make_lane "$repo" ag-first base.txt first)

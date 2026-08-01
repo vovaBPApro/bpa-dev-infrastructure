@@ -330,28 +330,42 @@ assert test "$(git -C "$fixture_root/good-repo" rev-list --parents -n 1 HEAD | w
 assert_not git -C "$fixture_root/good-repo" show-ref --verify --quiet refs/heads/ag-good
 assert test "$(git --git-dir="$fixture_root/good-origin.git" rev-parse main)" = "$(git -C "$fixture_root/good-repo" rev-parse HEAD)"
 
-make_fixture bun-home
-bun_home_sha=$(make_lane "$fixture_root/bun-home-repo" ag-bun-home)
-report "$fixture_root/bun-home-report.md" "$bun_home_sha"
-bun_home="$fixture_root/bun-home"
-mkdir -p "$bun_home/.bun/bin"
-ln -s "$(command -v bun)" "$bun_home/.bun/bin/bun"
-bun_home_output="$fixture_root/bun-home-output.txt"
-env -i PATH=/usr/bin:/bin HOME="$bun_home" "$land" --branch ag-bun-home --report "$fixture_root/bun-home-report.md" --repo "$fixture_root/bun-home-repo" --no-push >"$bun_home_output" 2>&1
-assert_output_has "$bun_home_output" 'LAND step=completion-guard status=pass'
-assert_output_has "$bun_home_output" 'LAND verdict=landed sha='
-assert git -C "$fixture_root/bun-home-repo" merge-base --is-ancestor "$bun_home_sha" HEAD
+make_fixture declared-check-fail
+declared_before=$(git -C "$fixture_root/declared-check-fail-repo" rev-parse main)
+git -C "$fixture_root/declared-check-fail-repo" checkout -b ag-declared-check-fail >/dev/null
+printf '{"scripts":{"lint":"echo declared-lint-ran && false","test":"echo declared-test-ran"}}\n' > "$fixture_root/declared-check-fail-repo/package.json"
+git -C "$fixture_root/declared-check-fail-repo" add package.json
+git -C "$fixture_root/declared-check-fail-repo" commit -m declared-check-fail >/dev/null
+declared_sha=$(git -C "$fixture_root/declared-check-fail-repo" rev-parse HEAD)
+git -C "$fixture_root/declared-check-fail-repo" checkout main >/dev/null
+report "$fixture_root/declared-check-fail-report.md" "$declared_sha"
+declared_output="$fixture_root/declared-check-fail-output.txt"
+if "$land" --branch ag-declared-check-fail --report "$fixture_root/declared-check-fail-report.md" --repo "$fixture_root/declared-check-fail-repo" --no-push >"$declared_output" 2>&1; then exit 1; fi
+assert_output_has "$declared_output" 'LAND declared-check=lint status=running'
+assert_output_has "$declared_output" 'declared-lint-ran'
+assert_output_has "$declared_output" 'LAND step=declared-checks status=fail'
+assert test "$(git -C "$fixture_root/declared-check-fail-repo" rev-parse main)" = "$declared_before"
 
-make_fixture bun-missing
-bun_missing_sha=$(make_lane "$fixture_root/bun-missing-repo" ag-bun-missing)
-report "$fixture_root/bun-missing-report.md" "$bun_missing_sha"
-bun_missing_home="$fixture_root/bun-missing-home"
-mkdir -p "$bun_missing_home"
-bun_missing_output="$fixture_root/bun-missing-output.txt"
-if env -i PATH=/usr/bin:/bin HOME="$bun_missing_home" "$land" --branch ag-bun-missing --report "$fixture_root/bun-missing-report.md" --repo "$fixture_root/bun-missing-repo" --no-push >"$bun_missing_output" 2>&1; then exit 1; fi
-assert_output_has "$bun_missing_output" 'LAND step=preflight status=fail detail=bun-not-found'
-assert_output_lacks "$bun_missing_output" 'LAND step=completion-guard status=fail'
-assert test "$(git -C "$fixture_root/bun-missing-repo" rev-parse HEAD)" = "$(git -C "$fixture_root/bun-missing-repo" rev-parse main)"
+for failure_kind in failing-test syntax-error; do
+  make_fixture "declared-$failure_kind"
+  failure_repo="$fixture_root/declared-$failure_kind-repo"
+  failure_before=$(git -C "$failure_repo" rev-parse main)
+  git -C "$failure_repo" checkout -b "ag-$failure_kind" >/dev/null
+  if [ "$failure_kind" = failing-test ]; then
+    printf '{"scripts":{"test":"false"}}\n' > "$failure_repo/package.json"
+  else
+    printf '{"scripts":{"test":"bun test"}}\n' > "$failure_repo/package.json"
+    printf 'this is not valid TypeScript !!!\n' > "$failure_repo/broken.test.ts"
+  fi
+  git -C "$failure_repo" add .
+  git -C "$failure_repo" commit -m "$failure_kind" >/dev/null
+  failure_sha=$(git -C "$failure_repo" rev-parse HEAD)
+  git -C "$failure_repo" checkout main >/dev/null
+  report "$fixture_root/$failure_kind-report.md" "$failure_sha"
+  if "$land" --branch "ag-$failure_kind" --report "$fixture_root/$failure_kind-report.md" --repo "$failure_repo" --no-push >"$fixture_root/$failure_kind.out" 2>&1; then exit 1; fi
+  assert_output_has "$fixture_root/$failure_kind.out" 'LAND declared-check=test status=fail'
+  assert test "$(git -C "$failure_repo" rev-parse main)" = "$failure_before"
+done
 
 make_fixture bad-sha
 make_lane "$fixture_root/bad-sha-repo" ag-bad-sha >/dev/null

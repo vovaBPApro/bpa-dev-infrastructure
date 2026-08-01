@@ -421,8 +421,10 @@ export const REGISTRY: Artifact[] = [
     kind: 'repo-file',
     trackedPath: 'daemon/package.json',
     writers: [],
-    readers: ['stand/run-acceptance.sh'],
-    note: 'Tracked repository file, not runtime state.',
+    readers: ['gate/land-lib.sh', 'stand/run-acceptance.sh'],
+    note:
+      'Tracked repository manifest, not runtime state. The landing library also ' +
+      'reads the target repository root manifest to enforce declared checks.',
   },
 ];
 

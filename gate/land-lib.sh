@@ -2,29 +2,69 @@
 # Shared fail-closed checks for individual and batch landing.
 
 land_resolve_bun() {
-  local candidate candidate_dir
+  local candidate trusted_path='/usr/local/bin:/usr/bin:/bin'
   if [ -n "${BUN_BIN:-}" ]; then
-    candidate="$BUN_BIN"
-  elif [ -n "${HOME:-}" ] && [ -x "$HOME/.bun/bin/bun" ]; then
-    candidate="$HOME/.bun/bin/bun"
-  else
-    candidate=$(command -v bun 2>/dev/null || true)
+    echo "LAND step=preflight status=fail detail=caller-bun-override-refused" >&2
+    return 1
   fi
+
+  candidate=$(PATH="$trusted_path" command -v bun 2>/dev/null || true)
 
   if [ -z "$candidate" ] || [ ! -x "$candidate" ]; then
     echo "LAND step=preflight status=fail detail=bun-not-found" >&2
     return 1
   fi
 
-  case "$candidate" in
-    /*) ;;
-    *)
-      candidate_dir=$(CDPATH='' cd -- "$(dirname -- "$candidate")" && pwd -P) || return 1
-      candidate="$candidate_dir/$(basename -- "$candidate")"
-      ;;
-  esac
   BUN_BIN="$candidate"
   export BUN_BIN
+}
+
+# Run every root quality script whose declaration makes it part of the landing
+# contract. A missing package.json means there are no root package checks; an
+# unreadable/malformed manifest or a declared script that cannot run is a hard
+# failure. The gate never installs dependencies: changing dependency state is
+# outside landing authority, and a non-reproducible checkout must be refused.
+land_run_declared_checks() {
+  local repo="$1" prefix="$2" manifest="$repo/package.json" scripts_file script
+  if [ ! -e "$manifest" ]; then
+    echo "$prefix declared-checks=none"
+    return 0
+  fi
+  if [ ! -f "$manifest" ] || [ ! -r "$manifest" ]; then
+    echo "$prefix declared-checks=refused detail=manifest-unreadable" >&2
+    return 1
+  fi
+  scripts_file=$(mktemp "${TMPDIR:-/tmp}/bpa-land-scripts.XXXXXX") || return 1
+  if ! "$BUN_BIN" -e '
+    const manifest = await Bun.file(process.argv[1]).json();
+    if (manifest === null || typeof manifest !== "object" || Array.isArray(manifest)) process.exit(2);
+    if (manifest.scripts !== undefined && (manifest.scripts === null || typeof manifest.scripts !== "object" || Array.isArray(manifest.scripts))) process.exit(2);
+    for (const name of ["lint", "test"]) {
+      if (Object.prototype.hasOwnProperty.call(manifest.scripts ?? {}, name)) {
+        if (typeof manifest.scripts[name] !== "string" || manifest.scripts[name].trim() === "") process.exit(2);
+        console.log(name);
+      }
+    }
+  ' "$manifest" >"$scripts_file"; then
+    rm -f "$scripts_file"
+    echo "$prefix declared-checks=refused detail=manifest-invalid" >&2
+    return 1
+  fi
+  if [ ! -s "$scripts_file" ]; then
+    rm -f "$scripts_file"
+    echo "$prefix declared-checks=none"
+    return 0
+  fi
+  while IFS= read -r script; do
+    echo "$prefix declared-check=$script status=running"
+    if ! (cd "$repo" && "$BUN_BIN" run "$script"); then
+      rm -f "$scripts_file"
+      echo "$prefix declared-check=$script status=fail" >&2
+      return 1
+    fi
+    echo "$prefix declared-check=$script status=pass"
+  done < "$scripts_file"
+  rm -f "$scripts_file"
 }
 
 land_review_check() {

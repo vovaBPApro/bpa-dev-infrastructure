@@ -179,6 +179,14 @@ merged=true
 merge_sha=$(git -C "$repo" rev-parse HEAD)
 land_pass merge
 
+if ! land_run_declared_checks "$repo" LAND; then
+  git -C "$repo" reset --hard ORIG_HEAD >/dev/null
+  merged=false
+  merge_sha="none"
+  land_fail declared-checks
+fi
+land_pass declared-checks
+
 if [ "$run_verify" = true ]; then
   # Trust model: report verify commands are coder-authored and guard-validated.
   verify_command=$(sed -n 's/^verify:[[:space:]]*//p' "$report" | head -n 1)

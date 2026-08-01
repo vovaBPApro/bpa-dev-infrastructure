@@ -152,6 +152,12 @@ done
 merge_sha=$(git -C "$repo" rev-parse HEAD)
 batch_pass merge
 
+if ! land_run_declared_checks "$repo" BATCH; then
+  integration_cleanup
+  batch_fail declared-checks
+fi
+batch_pass declared-checks
+
 if [ "$run_verify" = true ]; then
   for index in "${!reports[@]}"; do
     verify_command=$(sed -n 's/^verify:[[:space:]]*//p' "${reports[$index]}" | head -n 1)

@@ -34,12 +34,36 @@ const INTERNAL_ALERT_END_PATTERN = INTERNAL_ALERT_END.replace(
 const INTERNAL_ALERT_NONCE_PREFIX_PATTERN =
   INTERNAL_ALERT_NONCE_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const INTERNAL_ALERT_NOISY_LINE_BREAK = '(?:[ \\t]*\\n)+[ \\t]*';
+const INTERNAL_ALERT_KIND_SEPARATOR = '·';
+
+function encodeAlertKind(kind: TerminalFailureClass): string {
+  return `${kind[0]}${INTERNAL_ALERT_KIND_SEPARATOR}${kind.slice(1)}`;
+}
+
+const INTERNAL_ALERT_KIND_PATTERN = [
+  'usage-limit',
+  '429/overload',
+  'auth',
+  'stalled',
+  'failed',
+  'exited',
+  'network',
+  'fatal',
+  'unknown',
+]
+  .map((kind) =>
+    encodeAlertKind(kind as TerminalFailureClass).replace(
+      /[.*+?^${}()|[\]\\]/g,
+      '\\$&',
+    ),
+  )
+  .join('|');
 
 const INTERNAL_ALERT_ECHO_WITH_NONCE = new RegExp(
   `(^|\\n)(?:(?:\\d{4}-\\d{2}-\\d{2}[ T])?\\d{2}:\\d{2}(?::\\d{2})?[ \\t]+)?(` +
     `[ \\t]*${INTERNAL_ALERT_BANNER_PATTERN}[ \\t]*${INTERNAL_ALERT_NOISY_LINE_BREAK}` +
     `${INTERNAL_ALERT_NONCE_PREFIX_PATTERN}[ \\t]*([^\\n]{1,256}?)[ \\t]*${INTERNAL_ALERT_NOISY_LINE_BREAK}` +
-    `Type:[ \\t]*(?:usage-limit|429/overload|auth|stalled|failed|exited|network|fatal|unknown)[ \\t]*${INTERNAL_ALERT_NOISY_LINE_BREAK}` +
+    `Type:[ \\t]*(?:${INTERNAL_ALERT_KIND_PATTERN})[ \\t]*${INTERNAL_ALERT_NOISY_LINE_BREAK}` +
     `Session:[^\\n]{1,512}${INTERNAL_ALERT_NOISY_LINE_BREAK}` +
     `[ \\t]*${INTERNAL_ALERT_PAYLOAD_PREFIX_PATTERN}[^\\n]*(?:\\n[^\\n]*)*?\\n` +
     `[ \\t]*${INTERNAL_ALERT_END_PATTERN}[ \\t]*)(?=\\n|$)`,
@@ -208,7 +232,7 @@ export function formatTerminalAlert(
   const frame = [
     '[internal terminal failure alert]',
     `${INTERNAL_ALERT_NONCE_PREFIX}${nonce}`,
-    `Type: ${payload.kind}`,
+    `Type: ${encodeAlertKind(payload.kind)}`,
     `Session: ${payload.session}`,
     '',
     ...framedPayload,

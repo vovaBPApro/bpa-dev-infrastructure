@@ -363,6 +363,20 @@ run_full_install() { # <extra installer args...>
     "$INSTALLER" "$@"
 }
 
+assert_disarm_attempts_and_queries() {
+  local expected
+  for expected in \
+    'disable --now bpa-orchestrator-watchdog.timer' \
+    '--user disable --now orch-runtime-watchdog.timer' \
+    'is-enabled bpa-orchestrator-watchdog.timer' \
+    'is-active bpa-orchestrator-watchdog.timer' \
+    '--user is-enabled orch-runtime-watchdog.timer' \
+    '--user is-active orch-runtime-watchdog.timer'; do
+    grep -Fxq -- "$expected" "$arming_calls" ||
+      { echo "ERROR: disarm omitted independent operation: $expected" >&2; exit 1; }
+  done
+}
+
 bare_install_output="$(run_full_install)"
 if grep -F 'enable --now bpa-orchestrator-watchdog.timer' "$arming_calls"; then
   echo 'ERROR: a bare install on a token-configured host armed the watchdog timer' >&2
@@ -406,8 +420,7 @@ grep -Fxq -- 'disable --now bpa-orchestrator-watchdog.timer' "$arming_calls"
 # Rollback/disarm leaves rendered units for a future arm but ensures neither
 # the canonical system timer nor legacy user timer remains armed.
 run_full_install --disarm-watchdog >/dev/null
-grep -Fxq -- 'disable --now bpa-orchestrator-watchdog.timer' "$arming_calls"
-grep -Fxq -- '--user disable --now orch-runtime-watchdog.timer' "$arming_calls"
+assert_disarm_attempts_and_queries
 test -f "$arming_fixture/config/bpa-orchestrator-watchdog.timer"
 
 # Every failed command/query is terminal, emits no false success, and leaves
@@ -416,16 +429,54 @@ for failed_command in \
   'disable --now bpa-orchestrator-watchdog.timer' \
   '--user disable --now orch-runtime-watchdog.timer' \
   'is-enabled bpa-orchestrator-watchdog.timer' \
+  'is-active bpa-orchestrator-watchdog.timer' \
+  '--user is-enabled orch-runtime-watchdog.timer' \
   '--user is-active orch-runtime-watchdog.timer'; do
-  if disarm_output="$(BOOTSTRAP_TEST_FAIL_COMMAND="$failed_command" run_full_install --disarm-watchdog 2>&1)"; then
+  if disarm_output="$(BOOTSTRAP_TEST_SYSTEM_ENABLED=enabled BOOTSTRAP_TEST_SYSTEM_ACTIVE=active \
+    BOOTSTRAP_TEST_LEGACY_ENABLED=enabled BOOTSTRAP_TEST_LEGACY_ACTIVE=active \
+    BOOTSTRAP_TEST_FAIL_COMMAND="$failed_command" run_full_install --disarm-watchdog 2>&1)"; then
     echo "ERROR: disarm accepted failed command: $failed_command" >&2
     exit 1
   fi
+  assert_disarm_attempts_and_queries
+  grep -Fq 'WATCHDOG DISARM system=' <<<"$disarm_output" ||
+    { echo "ERROR: disarm omitted terminal states after: $failed_command" >&2; exit 1; }
   if grep -Fq 'Watchdog timers disarmed' <<<"$disarm_output"; then
     echo "ERROR: disarm printed false success after: $failed_command" >&2
     exit 1
   fi
 done
+
+# Explicit disarm is a safety action, not a Telegram-dependent deployment.
+# Missing and placeholder tokens must still attempt and prove both generations.
+for token_mode in missing placeholder; do
+  if [[ "$token_mode" == missing ]]; then
+    rm -f "$arming_fixture/root/.env"
+  else
+    printf '%s\n' 'TELEGRAM_BOT_TOKEN=__OPERATOR_REQUIRED__' > "$arming_fixture/root/.env"
+  fi
+  disarm_output="$(BOOTSTRAP_TEST_SYSTEM_ENABLED=enabled BOOTSTRAP_TEST_SYSTEM_ACTIVE=active \
+    BOOTSTRAP_TEST_LEGACY_ENABLED=enabled BOOTSTRAP_TEST_LEGACY_ACTIVE=active \
+    run_full_install --disarm-watchdog 2>&1)"
+  assert_disarm_attempts_and_queries
+  grep -Fq 'WATCHDOG DISARM system=disabled/inactive legacy=disabled/inactive' <<<"$disarm_output"
+  grep -Fq 'Watchdog timers disarmed' <<<"$disarm_output"
+
+  if failed_disarm_output="$(BOOTSTRAP_TEST_SYSTEM_ENABLED=enabled BOOTSTRAP_TEST_SYSTEM_ACTIVE=active \
+    BOOTSTRAP_TEST_LEGACY_ENABLED=enabled BOOTSTRAP_TEST_LEGACY_ACTIVE=active \
+    BOOTSTRAP_TEST_FAIL_COMMAND='disable --now bpa-orchestrator-watchdog.timer' \
+    run_full_install --disarm-watchdog 2>&1)"; then
+    echo "ERROR: $token_mode-token disarm accepted canonical disable failure" >&2
+    exit 1
+  fi
+  assert_disarm_attempts_and_queries
+  grep -Fq 'WATCHDOG DISARM system=enabled/active legacy=disabled/inactive' <<<"$failed_disarm_output"
+  if grep -Fq 'Watchdog timers disarmed' <<<"$failed_disarm_output"; then
+    echo "ERROR: $token_mode-token failed disarm printed false success" >&2
+    exit 1
+  fi
+done
+printf '%s\n' 'TELEGRAM_BOT_TOKEN=fixture-token' > "$arming_fixture/root/.env"
 
 # Blank post-retirement state is unverifiable and restores the proven armed
 # legacy generation after proving the canonical generation inert.

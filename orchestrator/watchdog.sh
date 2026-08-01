@@ -668,8 +668,16 @@ read_restart_state() {
     seen["$key"]=1
     case "$key" in
       version) [[ "$value" == 1 ]] || return 1 ;;
-      last_restart) [[ "$value" =~ ^[0-9]+$ ]] || return 1; RESTART_LAST="$value" ;;
-      consecutive_failures) [[ "$value" =~ ^[0-9]+$ ]] || return 1; RESTART_FAILURES="$value" ;;
+      last_restart)
+        [[ "$value" =~ ^[0-9]{1,10}$ ]] || return 1
+        (( 10#$value <= 9999999999 )) || return 1
+        RESTART_LAST="$(( 10#$value ))"
+        ;;
+      consecutive_failures)
+        [[ "$value" =~ ^[0-9]{1,2}$ ]] || return 1
+        (( 10#$value <= 31 )) || return 1
+        RESTART_FAILURES="$(( 10#$value ))"
+        ;;
       alerted) [[ "$value" == 0 || "$value" == 1 ]] || return 1; RESTART_ALERTED="$value" ;;
       *) return 1 ;;
     esac
@@ -704,7 +712,11 @@ supervise_restart() {
     exit 0
   fi
   now="${ORCH_WATCHDOG_NOW:-$(date +%s)}"
-  [[ "$now" =~ ^[0-9]+$ ]] || now="$(date +%s)"
+  if [[ "$now" =~ ^[0-9]{1,10}$ ]] && (( 10#$now <= 9999999999 )); then
+    now="$(( 10#$now ))"
+  else
+    now="$(date +%s)"
+  fi
   if read_restart_state "$now"; then
     last="$RESTART_LAST"
     failures="$RESTART_FAILURES"
@@ -741,7 +753,7 @@ supervise_restart() {
     log "WATCHDOG restarted session=$SESSION reason=$reason action=restarted"
     append_nudge "NUDGE watchdog-restarted session=$SESSION reason=$reason"
   else
-    failures=$(( failures + 1 ))
+    (( failures < 31 )) && failures=$(( failures + 1 ))
     record_restart_state "$now" "$failures" "$alerted"
     log "WATCHDOG NO-GO reason=restart-failed session=$SESSION trigger=$reason consecutive=$failures action=retry-with-backoff"
     append_nudge "NUDGE watchdog-restart-failed session=$SESSION reason=$reason consecutive=$failures retry=backoff"

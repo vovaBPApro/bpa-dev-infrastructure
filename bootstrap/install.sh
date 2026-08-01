@@ -432,6 +432,10 @@ query_timer_state() { # <system|user> <unit> <enabled-var> <active-var>
   else
     active_rc=$?
   fi
+  # Preserve every independently resolved value for the caller's terminal
+  # report even when its companion query fails validation.
+  printf -v "$enabled_var" '%s' "${queried_enabled:-unknown}"
+  printf -v "$active_var" '%s' "${queried_active:-unknown}"
   case "$queried_enabled/$enabled_rc" in
     enabled/0|static/0|disabled/1|not-found/4) ;;
     *) return 1 ;;
@@ -440,15 +444,42 @@ query_timer_state() { # <system|user> <unit> <enabled-var> <active-var>
     active/0|inactive/3) ;;
     *) return 1 ;;
   esac
-  printf -v "$enabled_var" '%s' "$queried_enabled"
-  printf -v "$active_var" '%s' "$queried_active"
 }
 
 prove_watchdog_disarmed() { # <system|user> <unit>
   local enabled active
   query_timer_state "$1" "$2" enabled active &&
-    [[ "$enabled" == disabled || "$enabled" == not-found || "$enabled" == static ]] &&
+    [[ "$enabled" == disabled ]] &&
     [[ "$active" == inactive ]]
+}
+
+disarm_watchdogs() {
+  local system_disable_rc=0 legacy_disable_rc=0
+  local system_query_rc=0 legacy_query_rc=0
+  local system_enabled=unknown system_active=unknown
+  local legacy_enabled=unknown legacy_active=unknown
+
+  systemctl disable --now bpa-orchestrator-watchdog.timer ||
+    system_disable_rc=$?
+  systemctl --user disable --now orch-runtime-watchdog.timer ||
+    legacy_disable_rc=$?
+
+  query_timer_state system bpa-orchestrator-watchdog.timer \
+    system_enabled system_active || system_query_rc=$?
+  query_timer_state user orch-runtime-watchdog.timer \
+    legacy_enabled legacy_active || legacy_query_rc=$?
+
+  printf 'WATCHDOG DISARM system=%s/%s legacy=%s/%s\n' \
+    "$system_enabled" "$system_active" "$legacy_enabled" "$legacy_active"
+
+  if (( system_disable_rc != 0 || legacy_disable_rc != 0 ||
+        system_query_rc != 0 || legacy_query_rc != 0 )) ||
+     [[ "$system_enabled/$system_active" != disabled/inactive ||
+        "$legacy_enabled/$legacy_active" != disabled/inactive ]]; then
+    echo 'ERROR: watchdog disarm failed or terminal state is unproven' >&2
+    return 1
+  fi
+  echo 'Watchdog timers disarmed; rendered system units retained.'
 }
 
 restore_legacy_watchdog_armed() {
@@ -469,6 +500,10 @@ rollback_watchdog_arm() { # <legacy-was-armed>
 
 activate_units() {
   systemd_system_available || { echo 'ERROR: system systemd is unavailable' >&2; return 1; }
+  if "$DISARM_WATCHDOG"; then
+    disarm_watchdogs
+    return
+  fi
   if has_configured_token; then
     systemctl enable --now bpa-telegram-daemon.service
     systemctl enable --now bpa-orchestrator.service
@@ -479,19 +514,7 @@ activate_units() {
     systemctl enable --now agentic-bpa-db-grants.timer
     systemctl enable --now agentic-bpa-stand-verifier.service
     systemctl enable --now bpa-meteorite.timer
-    if "$DISARM_WATCHDOG"; then
-      if ! systemctl disable --now bpa-orchestrator-watchdog.timer ||
-         ! systemctl --user disable --now orch-runtime-watchdog.timer; then
-        echo 'ERROR: watchdog disarm command failed' >&2
-        return 1
-      fi
-      if ! prove_watchdog_disarmed system bpa-orchestrator-watchdog.timer ||
-         ! prove_watchdog_disarmed user orch-runtime-watchdog.timer; then
-          echo 'ERROR: watchdog disarm could not be proven for both timer generations' >&2
-          return 1
-      fi
-      echo 'Watchdog timers disarmed; rendered system units retained.'
-    elif "$ARM_WATCHDOG"; then
+    if "$ARM_WATCHDOG"; then
       local legacy_enabled legacy_active legacy_was_armed=false
       query_timer_state user orch-runtime-watchdog.timer legacy_enabled legacy_active || {
         echo "ERROR: legacy user watchdog state is unverifiable; refusing system watchdog arm" >&2
@@ -547,6 +570,10 @@ if [[ "${BOOTSTRAP_LIB_ONLY:-false}" != true ]]; then
   run_install_test_gate
   render_units
   activate_units
+  if "$DISARM_WATCHDOG"; then
+    echo "Bootstrap watchdog disarm completed and verified."
+    exit 0
+  fi
   verify false
   echo "Bootstrap completed and deployment verification passed."
 fi

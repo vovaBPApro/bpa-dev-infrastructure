@@ -14,6 +14,8 @@ DISARM_WATCHDOG=false
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/telegram-transport-preflight.sh"
 ENV_FILE="${ENV_FILE:-/root/.config/bpa/orchestrator.env}"
 SYSTEMD_SYSTEM_DIR="${SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
 BUN_BIN="${BUN_BIN:-/usr/local/bin/bun}"
@@ -120,16 +122,7 @@ skip() {
 }
 
 has_configured_token() {
-  local line token
-  [[ -f "$ENV_FILE" ]] || return 1
-  line="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" 2>/dev/null)" || return 1
-  [[ "$(grep -Ec '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE")" == 1 ]] || return 1
-  token="${line#TELEGRAM_BOT_TOKEN=}"
-  # BotFather tokens are an unsigned decimal bot id, a colon, and a bounded
-  # URL-safe secret. Reject shell syntax, quoting, whitespace and documented
-  # operator placeholders instead of treating an env file's existence as proof.
-  [[ "$token" =~ ^[0-9]{6,15}:[A-Za-z0-9_-]{20,}$ ]] || return 1
-  [[ "$token" != *'__OPERATOR_'* ]]
+  telegram_read_bot_token "$ENV_FILE"
 }
 
 state_db_status() {
@@ -196,6 +189,11 @@ verify() {
   check "whisper" "$WHISPER_BIN" --version
   if has_configured_token; then
     check "token configured" true
+    if "$source_only"; then
+      skip "alert transport" "network probe omitted in source mode"
+    else
+      check "alert transport" telegram_transport_preflight "$ENV_FILE"
+    fi
   else
     if "$source_only"; then skip "token configured" "token placeholder remains (source mode)"; else check "token configured" false; fi
   fi
@@ -524,6 +522,10 @@ activate_units() {
     systemctl enable --now agentic-bpa-stand-verifier.service
     systemctl enable --now bpa-meteorite.timer
     if "$ARM_WATCHDOG"; then
+      if ! telegram_transport_preflight "$ENV_FILE"; then
+        echo 'ERROR: Telegram alert transport authentication is unproven; refusing watchdog arm' >&2
+        return 1
+      fi
       local legacy_enabled legacy_active legacy_was_armed=false
       query_timer_state user orch-runtime-watchdog.timer legacy_enabled legacy_active || {
         echo "ERROR: legacy user watchdog state is unverifiable; refusing system watchdog arm" >&2

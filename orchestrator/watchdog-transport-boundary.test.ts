@@ -64,6 +64,7 @@ try {
     cwd: join(root, 'daemon'),
     env: isolatedTestEnv({
       PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: scratch,
+      NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost',
       TELEGRAM_API_ROOT: `http://127.0.0.1:${telegram.port}`,
       TELEGRAM_BOT_TOKEN: '123456:transport-boundary-fixture',
       TELEGRAM_STATE_DIR: state, TELEGRAM_DAEMON_PORT: String(daemonPort),

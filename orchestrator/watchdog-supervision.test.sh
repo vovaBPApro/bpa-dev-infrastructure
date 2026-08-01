@@ -306,6 +306,7 @@ malformed_states=(
   'version=1\nlast_restart=499\nconsecutive_failures=0\nalerted=0\nextra=1\n'
   'version=1\nlast_restart=499\nconsecutive_failures=0\nalerted=1\n'
   'version=1\nlast_restart=-1\nconsecutive_failures=0\nalerted=0\n'
+  'version=1\nlast_restart=10000000000\nconsecutive_failures=0\nalerted=0\n'
   'version=1\nlast_restart=18446744073709552115\nconsecutive_failures=0\nalerted=0\n'
   'version=1\nlast_restart=500\nconsecutive_failures=-1\nalerted=0\n'
   'version=1\nlast_restart=500\nconsecutive_failures=32\nalerted=0\n'
@@ -333,6 +334,25 @@ printf 'version=1\nlast_restart=9999999999\nconsecutive_failures=0\nalerted=0\n'
 ORCH_WATCHDOG_NOW=9999999999 tick
 assert_actions 0 0
 log_has 'WATCHDOG restart-suppressed'
+
+# Production mutation-red: widening the parser by one digit makes the adjacent
+# value inherit cooldown and therefore violates the immediate-recovery oracle.
+mutant_watchdog="$SCRATCH/watchdog-last-restart-mutant.sh"
+cp "$SCRIPT_DIR/lib.sh" "$SCRIPT_DIR/knobs.sh" "$SCRIPT_DIR/proc-identity.sh" "$SCRATCH/"
+sed 's/\^\[0-9\]{1,10}\$/^[0-9]{1,11}$/; s/<= 9999999999/<= 10000000000/' \
+  "$SCRIPT_DIR/watchdog.sh" > "$mutant_watchdog"
+chmod +x "$mutant_watchdog"
+grep -Fq '[[ "$value" =~ ^[0-9]{1,11}$ ]]' "$mutant_watchdog" ||
+  fail 'last_restart mutation was not applied to production parser'
+grep -Fq '(( 10#$value <= 10000000000 ))' "$mutant_watchdog" ||
+  fail 'last_restart cap mutation was not applied to production parser'
+new_case restart-state-adjacent-mutation-red
+export ORCH_TEST_SESSION_ALIVE=0
+printf 'version=1\nlast_restart=10000000000\nconsecutive_failures=0\nalerted=0\n' > "$ORCH_RESTART_STATE_FILE"
+ORCH_WATCHDOG_NOW=10000000000 "$mutant_watchdog"
+assert_actions 0 0
+log_has 'WATCHDOG restart-suppressed'
+printf '%s\n' 'MUTATION-RED last_restart adjacent-long suppresses required recovery'
 
 new_case restart-state-failure-boundary
 export ORCH_TEST_SESSION_ALIVE=0

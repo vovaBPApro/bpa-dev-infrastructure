@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALLER="$SCRIPT_DIR/install.sh"
+REAL_BUN_BIN="$(command -v bun)"
 
 # shellcheck disable=SC2016 # inspect the literal default assignment
 grep -Fxq 'INSTALL_ROOT="${INSTALL_ROOT:-/root/bpa-dev-infrastructure}"' "$INSTALLER"
@@ -300,6 +301,15 @@ chmod 600 "$arming_fixture/root/.env"
 for command_name in git curl tmux unzip xz crontab bun docker codex claude; do
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$arming_fixture/bin/$command_name"
 done
+# Authenticated transport fixture: consume curl's stdin config, record the
+# exact request without printing it, and return the configured bot identity.
+cat > "$arming_fixture/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+config="$(mktemp)"; cat > "$config"
+output="$(awk -F '"' '$1 == "output = " { print $2 }' "$config")"
+printf '%s\n' '{"ok":true,"result":{"id":123456789,"is_bot":true}}' > "$output"
+EOF
 printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "# BEGIN bpa-dev-infrastructure hygiene"' > "$arming_fixture/bin/crontab"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "Linger=yes"' > "$arming_fixture/bin/loginctl"
 # The fake is a state machine, not a call logger: unknown operations fail and
@@ -351,6 +361,8 @@ run_full_install() { # <extra installer args...>
     SYSTEMD_SYSTEM_DIR="$arming_fixture/config" \
     WHISPER_BIN="$arming_fixture/bin/bun" \
     BUN_BIN="$arming_fixture/bin/bun" \
+    CURL_BIN="$arming_fixture/bin/curl" \
+    TELEGRAM_PREFLIGHT_BUN_BIN="$REAL_BUN_BIN" \
     RUNTIME_DIR="$arming_fixture/root/runtime" \
     BOOTSTRAP_TEST_SYSTEMCTL_CALLS="$arming_calls" \
     BOOTSTRAP_TEST_LEGACY_STATE="$arming_fixture/legacy.state" \

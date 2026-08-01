@@ -58,10 +58,10 @@ reap_branches() {
   while IFS= read -r branch; do
     [[ "$branch" == "$main_branch" ]] && continue
     if git -C "$repo" merge-base --is-ancestor "$branch" "$main_branch"; then
-      worktree="$(printf '%s\n' "$worktree_list" | awk -v wanted="refs/heads/$branch" '
+      worktree="$(awk -v wanted="refs/heads/$branch" '
         $1 == "worktree" { path=$2 }
         $1 == "branch" && $2 == wanted { print path; exit }
-      ')"
+      ' <<< "$worktree_list")"
       say "merged branch: $branch${worktree:+ (worktree: $worktree)}"
       if "$apply"; then
         if [[ -n "$worktree" && "$worktree" != "$repo" ]]; then

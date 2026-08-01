@@ -1,0 +1,19 @@
+{
+  "database": "agentic",
+  "owner": "postgres",
+  "roles": {
+    "agentic": {
+      "login": true,
+      "superuser": false,
+      "bypassRls": false
+    }
+  },
+  "schemas": {
+    "public": {
+      "owner": "pg_database_owner",
+      "grants": {
+        "agentic": ["USAGE", "CREATE"]
+      }
+    }
+  }
+}

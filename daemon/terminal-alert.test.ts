@@ -55,13 +55,28 @@ test.each([
   },
 );
 
-test('REGRESSION terminal-alert-self-echo: ignores its own rendered banner', () => {
+test('REGRESSION terminal-alert-self-echo: pure rendered echo does not alert', () => {
   const banner = formatTerminalAlert({
     kind: 'unknown',
     line: 'Provider terminal failure: strange new condition',
     session: 'orchestrator',
   });
   expect(classifyTerminalFailure(banner)).toBeNull();
+});
+
+test('REGRESSION terminal-alert-self-echo: a real failure quoting the banner alerts', () => {
+  expect(
+    classifyTerminalFailure(
+      '[internal terminal failure alert] Type: fatal Session: quoted Runtime fatal signal 11',
+    ),
+  ).toBe('fatal');
+});
+
+test('REGRESSION terminal-alert-self-echo: 2026-08-01 09:14 loop transcript does not alert', () => {
+  const transcript =
+    '\u001b[33m2026-08-01 09:14 [internal terminal failure alert]\u001b[0m\n' +
+    'Type: fatal\nSession: orchestrator\n\nRuntime fatal signal 11';
+  expect(classifyTerminalFailure(transcript)).toBeNull();
 });
 
 test('REGRESSION ML-1: an unclassified terminal failure remains actionable', () => {

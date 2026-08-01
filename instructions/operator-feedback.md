@@ -28,6 +28,16 @@ provenance for this contract.
 - Feedback changes priority or acceptance scope only through the mission record;
   it must not silently expand an active lane.
 
+## Questions to him: clarifying only, and only if unanswered
+
+Binding, at his explicit request: `instance/decisions/HR-735.md` (verbatim).
+Sharpens Hard Rule 14 (ask almost never) with a precondition on the questions
+that rule still permits: before asking him anything, check whether he already
+answered it — this session, `instance/decisions/inbox.jsonl`, the orch-mailbox
+archive, captured `HR-<msg-id>.md` rows, and product-side verbatim capture
+docs. A question is only in bounds if it is genuinely clarifying and the
+check above turns up nothing.
+
 ## Operator profanity is a diagnostic question, not an attack
 
 Binding, at his explicit request: `instance/decisions/HR-302.md` (verbatim).

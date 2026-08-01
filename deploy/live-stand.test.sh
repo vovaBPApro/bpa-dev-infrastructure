@@ -3,6 +3,11 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TMP=$(mktemp -d)
 PG_CONTAINER=
+POSTGRES_READY_TIMEOUT_SECONDS=${POSTGRES_READY_TIMEOUT_SECONDS:-120}
+[[ "$POSTGRES_READY_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || {
+  echo 'FAIL: POSTGRES_READY_TIMEOUT_SECONDS must be a positive integer' >&2
+  exit 2
+}
 cleanup() {
   [[ -z "$PG_CONTAINER" ]] || docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
   rm -rf "$TMP"
@@ -141,11 +146,14 @@ git -C "$repo" add migrations/002_sales_invoices.sql && git -C "$repo" commit -m
 conflict=$(git -C "$repo" rev-parse HEAD)
 PG_CONTAINER="deploy-migration-poison-$$"
 docker run -d --name "$PG_CONTAINER" -e POSTGRES_PASSWORD=test postgres:16-alpine >/dev/null
-for _ in $(seq 1 30); do
-  docker exec "$PG_CONTAINER" pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1 && break
+postgres_ready_deadline=$((SECONDS + POSTGRES_READY_TIMEOUT_SECONDS))
+until docker exec "$PG_CONTAINER" pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1; do
+  if ((SECONDS >= postgres_ready_deadline)); then
+    echo "FAIL: PostgreSQL fixture was not ready after ${POSTGRES_READY_TIMEOUT_SECONDS}s" >&2
+    exit 1
+  fi
   sleep 1
 done
-docker exec "$PG_CONTAINER" pg_isready -h 127.0.0.1 -U postgres >/dev/null
 docker exec -i "$PG_CONTAINER" psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres <<'SQL' >/dev/null
 CREATE DATABASE live_schema;
 \connect live_schema

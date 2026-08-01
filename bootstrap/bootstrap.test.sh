@@ -479,6 +479,60 @@ if grep -Eq 'enable --now (bpa-telegram-daemon.service|bpa-orchestrator-watchdog
 fi
 grep -Fq 'refusing watchdog arm without a configured Telegram alert channel' <<<"$token_output"
 
+# Exact binary Unicode fixtures cover invalid UTF-8, U+FEFF in multiple
+# placements, the full BMP noncharacter interval boundaries, and plane-ending
+# noncharacters at both the first and last supplementary planes. The shared
+# parser suite exhaustively covers every forbidden code point; this integration
+# boundary proves explicit arm and deployed verification use that same parser.
+write_invalid_unicode_fixture() { # <case>
+  case "$1" in
+    invalid-utf8-unrelated)
+      printf 'UNRELATED=before\xffafter\nTELEGRAM_BOT_TOKEN=%s\n' "$valid_bot_token" ;;
+    bom-prefix)
+      printf '\xef\xbb\xbfUNRELATED=value\nTELEGRAM_BOT_TOKEN=%s\n' "$valid_bot_token" ;;
+    bom-after-token)
+      printf 'TELEGRAM_BOT_TOKEN=%s\nUNRELATED=after\xef\xbb\xbfvalue\n' "$valid_bot_token" ;;
+    noncharacter-fdd0-unrelated)
+      printf 'UNRELATED=before\xef\xb7\x90after\nTELEGRAM_BOT_TOKEN=%s\n' "$valid_bot_token" ;;
+    noncharacter-fdef-prefix)
+      printf '\xef\xb7\xafUNRELATED=value\nTELEGRAM_BOT_TOKEN=%s\n' "$valid_bot_token" ;;
+    noncharacter-fffe-after-token)
+      printf 'TELEGRAM_BOT_TOKEN=%s\nUNRELATED=after\xef\xbf\xbevalue\n' "$valid_bot_token" ;;
+    noncharacter-1ffff-unrelated)
+      printf 'UNRELATED=before\xf0\x9f\xbf\xbfafter\nTELEGRAM_BOT_TOKEN=%s\n' "$valid_bot_token" ;;
+    noncharacter-10fffe-prefix)
+      printf '\xf4\x8f\xbf\xbeUNRELATED=value\nTELEGRAM_BOT_TOKEN=%s\n' "$valid_bot_token" ;;
+    *) return 2 ;;
+  esac > "$arming_fixture/root/.env"
+}
+
+for unicode_case in \
+  invalid-utf8-unrelated \
+  bom-prefix \
+  bom-after-token \
+  noncharacter-fdd0-unrelated \
+  noncharacter-fdef-prefix \
+  noncharacter-fffe-after-token \
+  noncharacter-1ffff-unrelated \
+  noncharacter-10fffe-prefix; do
+  write_invalid_unicode_fixture "$unicode_case"
+  if token_output="$(run_full_install --arm-watchdog 2>&1)"; then
+    echo "ERROR: watchdog arm accepted systemd-invalid Unicode case $unicode_case" >&2
+    exit 1
+  fi
+  if BOOTSTRAP_LIB_ONLY=true ENV_FILE="$arming_fixture/root/.env" \
+    TELEGRAM_PREFLIGHT_BUN_BIN="$REAL_BUN_BIN" INSTALLER_PATH="$INSTALLER" \
+    bash -c 'source "$INSTALLER_PATH"; has_configured_token'; then
+    echo "ERROR: token verification accepted systemd-invalid Unicode case $unicode_case" >&2
+    exit 1
+  fi
+  if grep -Eq 'enable --now (bpa-telegram-daemon.service|bpa-orchestrator-watchdog.timer)|start bpa-orchestrator-watchdog.service' "$arming_calls"; then
+    echo "ERROR: systemd-invalid Unicode case $unicode_case reached an arm or immediate-service call" >&2
+    exit 1
+  fi
+  grep -Fq 'refusing watchdog arm without a configured Telegram alert channel' <<<"$token_output"
+done
+
 printf 'UNRELATED=ordinary\nTELEGRAM_BOT_TOKEN=%s\n' "$valid_bot_token" > "$arming_fixture/root/.env"
 BOOTSTRAP_LIB_ONLY=true ENV_FILE="$arming_fixture/root/.env" INSTALLER_PATH="$INSTALLER" \
   bash -c 'source "$INSTALLER_PATH"; has_configured_token'

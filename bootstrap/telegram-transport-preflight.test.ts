@@ -27,6 +27,17 @@ esac
 `);
 await chmod(curlFixture, 0o700);
 
+async function parserExit(contents: string | Uint8Array, preflight = helper) {
+  await writeFile(envFile, contents);
+  const proc = Bun.spawn({
+    cmd: ['bash', '-c', 'source "$PREFLIGHT"; telegram_read_bot_token "$ENV_FILE"'],
+    env: { PATH: process.env.PATH!, PREFLIGHT: preflight, ENV_FILE: envFile,
+      TELEGRAM_PREFLIGHT_BUN_BIN: process.execPath },
+    stdout: 'ignore', stderr: 'ignore',
+  });
+  return await proc.exited;
+}
+
 async function preflight(mode: string) {
   const proc = Bun.spawn({
     cmd: ['bash', '-c', 'source "$PREFLIGHT"; telegram_transport_preflight "$ENV_FILE"'],
@@ -62,10 +73,8 @@ const grammar: Array<[string, boolean, string]> = [
   [suffix(10_000), false, 'very long'],
 ];
 for (const [value, ok, label] of grammar) {
-  await writeFile(envFile, `TELEGRAM_BOT_TOKEN=${value}\n`);
-  const proc = Bun.spawn({ cmd: ['bash', '-c', 'source "$PREFLIGHT"; telegram_read_bot_token "$ENV_FILE"'],
-    env: { PATH: process.env.PATH!, PREFLIGHT: helper, ENV_FILE: envFile }, stdout: 'ignore', stderr: 'ignore' });
-  if (((await proc.exited) === 0) !== ok) throw new Error(`grammar ${label}`);
+  if (((await parserExit(`TELEGRAM_BOT_TOKEN=${value}\n`)) === 0) !== ok)
+    throw new Error(`grammar ${label}`);
 }
 
 const invalidShapes = [
@@ -85,23 +94,71 @@ const invalidShapes = [
   `TELEGRAM_BOT_TOKEN=${token}\n \t\rTELEGRAM_BOT_TOKEN=bad\n`,
 ];
 for (const [index, shape] of invalidShapes.entries()) {
-  await writeFile(envFile, shape);
-  const proc = Bun.spawn({ cmd: ['bash', '-c', 'source "$PREFLIGHT"; telegram_read_bot_token "$ENV_FILE"'],
-    env: { PATH: process.env.PATH!, PREFLIGHT: helper, ENV_FILE: envFile }, stdout: 'ignore', stderr: 'ignore' });
-  if ((await proc.exited) === 0) throw new Error(`invalid EnvironmentFile shape ${index}`);
+  if ((await parserExit(shape)) === 0) throw new Error(`invalid EnvironmentFile shape ${index}`);
 }
 
 // EnvironmentFile rejects U+0000. Keep this as an exact byte fixture because
 // JavaScript or shell text helpers can otherwise obscure the NUL boundary.
-await writeFile(envFile, Buffer.concat([
+const nulFixture = Buffer.concat([
   Buffer.from('UNRELATED=before'),
   Buffer.from([0]),
   Buffer.from(`after\nTELEGRAM_BOT_TOKEN=${token}\n`),
-]));
-{
-  const proc = Bun.spawn({ cmd: ['bash', '-c', 'source "$PREFLIGHT"; telegram_read_bot_token "$ENV_FILE"'],
-    env: { PATH: process.env.PATH!, PREFLIGHT: helper, ENV_FILE: envFile }, stdout: 'ignore', stderr: 'ignore' });
-  if ((await proc.exited) === 0) throw new Error('NUL-containing EnvironmentFile accepted');
+]);
+if ((await parserExit(nulFixture)) === 0)
+  throw new Error('NUL-containing EnvironmentFile accepted');
+
+// systemd 255 also requires valid UTF-8 and rejects U+FEFF plus all 66 Unicode
+// noncharacters. Exercise every noncharacter at three physical-file placements,
+// including both ends of every Unicode plane.
+const acceptedUnicode = [
+  0x80, 0xfccf, 0xfdd0 - 1, 0xfdef + 1, 0xfffd, 0x10000, 0x10fffd,
+];
+for (const point of acceptedUnicode) {
+  const scalar = Buffer.from(String.fromCodePoint(point), 'utf8');
+  const fixture = Buffer.concat([
+    Buffer.from('UNRELATED=valid-'),
+    scalar,
+    Buffer.from(`\nTELEGRAM_BOT_TOKEN=${token}\n`),
+  ]);
+  if (await parserExit(fixture))
+    throw new Error(`valid UTF-8 scalar U+${point.toString(16).toUpperCase()} rejected`);
+}
+
+const invalidUtf8: Array<[string, Buffer]> = [
+  ['lone-continuation', Buffer.from([0x80])],
+  ['invalid-leading-byte', Buffer.from([0xff])],
+  ['overlong-slash', Buffer.from([0xc0, 0xaf])],
+  ['truncated-three-byte', Buffer.from([0xe2, 0x82])],
+  ['encoded-surrogate', Buffer.from([0xed, 0xa0, 0x80])],
+  ['above-unicode-range', Buffer.from([0xf4, 0x90, 0x80, 0x80])],
+];
+const binaryPlacements = (bytes: Buffer) => [
+  Buffer.concat([bytes, Buffer.from(`UNRELATED=prefix\nTELEGRAM_BOT_TOKEN=${token}\n`)]),
+  Buffer.concat([Buffer.from('UNRELATED=inside-'), bytes,
+    Buffer.from(`-value\nTELEGRAM_BOT_TOKEN=${token}\n`)]),
+  Buffer.concat([Buffer.from(`TELEGRAM_BOT_TOKEN=${token}\nUNRELATED=suffix`), bytes,
+    Buffer.from('\n')]),
+];
+for (const [label, bytes] of invalidUtf8) {
+  for (const [placement, fixture] of binaryPlacements(bytes).entries()) {
+    if ((await parserExit(fixture)) === 0)
+      throw new Error(`invalid UTF-8 ${label} placement ${placement} accepted`);
+  }
+}
+
+const forbiddenPoints = [
+  0xfeff,
+  ...Array.from({ length: 0xfdef - 0xfdd0 + 1 }, (_, index) => 0xfdd0 + index),
+  ...Array.from({ length: 17 }, (_, plane) => (plane << 16) + 0xfffe),
+  ...Array.from({ length: 17 }, (_, plane) => (plane << 16) + 0xffff),
+];
+if (forbiddenPoints.length !== 67) throw new Error('forbidden Unicode fixture inventory drift');
+for (const point of forbiddenPoints) {
+  const bytes = Buffer.from(String.fromCodePoint(point), 'utf8');
+  for (const [placement, fixture] of binaryPlacements(bytes).entries()) {
+    if ((await parserExit(fixture)) === 0)
+      throw new Error(`forbidden U+${point.toString(16).toUpperCase()} placement ${placement} accepted`);
+  }
 }
 
 await writeFile(envFile, `UNRELATED=ordinary\nTELEGRAM_BOT_TOKEN=${token}\n`);
@@ -141,17 +198,30 @@ const nulGuard = "  LC_ALL=C tr -d '\\000' < \"$env_file\" | LC_ALL=C cmp -s \"$
 const withoutNulGuard = production.replace(nulGuard, '');
 if (withoutNulGuard === production) throw new Error('NUL mutation was not applied');
 await writeFile(nulMutant, withoutNulGuard);
-await writeFile(envFile, Buffer.concat([
-  Buffer.from('UNRELATED=before'),
-  Buffer.from([0]),
-  Buffer.from(`after\nTELEGRAM_BOT_TOKEN=${token}\n`),
-]));
-const nulProc = Bun.spawn({
-  cmd: ['bash', '-c', 'source "$PREFLIGHT"; telegram_read_bot_token "$ENV_FILE"'],
-  env: { PATH: process.env.PATH!, PREFLIGHT: nulMutant, ENV_FILE: envFile },
-  stdout: 'ignore', stderr: 'ignore',
-});
-if ((await nulProc.exited) !== 0) throw new Error('NUL mutant did not reproduce fail-before');
+if ((await parserExit(nulFixture, nulMutant)) !== 0)
+  throw new Error('NUL mutant did not reproduce fail-before');
+
+const unicodeMutant = join(scratch, 'preflight-unicode-mutant.sh');
+const unicodeGuard = '  telegram_environment_file_unicode_valid "$env_file" || return 1\n';
+const withoutUnicodeGuard = production.replace(unicodeGuard, '');
+if (withoutUnicodeGuard === production) throw new Error('Unicode mutation was not applied');
+await writeFile(unicodeMutant, withoutUnicodeGuard);
+for (const [label, bytes] of [
+  ['invalid UTF-8', Buffer.from([0xff])],
+  ['U+FEFF', Buffer.from([0xef, 0xbb, 0xbf])],
+  ['U+FDD0', Buffer.from([0xef, 0xb7, 0x90])],
+  ['U+1FFFE', Buffer.from([0xf0, 0x9f, 0xbf, 0xbe])],
+  ['U+10FFFF', Buffer.from([0xf4, 0x8f, 0xbf, 0xbf])],
+] as const) {
+  const fixture = Buffer.concat([
+    Buffer.from('UNRELATED=before'),
+    bytes,
+    Buffer.from(`after\nTELEGRAM_BOT_TOKEN=${token}\n`),
+  ]);
+  if ((await parserExit(fixture, unicodeMutant)) !== 0)
+    throw new Error(`${label} mutant did not reproduce fail-before`);
+}
 console.log('MUTATION-RED physical-line parser and bot-id bounds');
 console.log('MUTATION-RED NUL EnvironmentFile guard');
+console.log('MUTATION-RED UTF-8 and Unicode noncharacter EnvironmentFile guard');
 console.log('telegram transport preflight: PASS');

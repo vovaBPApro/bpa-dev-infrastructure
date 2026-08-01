@@ -3,6 +3,33 @@
 # deployed verification. The secret is supplied to curl through stdin, never
 # argv; response bodies are parsed from a private file and never printed.
 
+telegram_environment_file_unicode_valid() { # <EnvironmentFile>
+  local env_file="$1" bun_bin
+  bun_bin="${TELEGRAM_PREFLIGHT_BUN_BIN:-${BUN_BIN:-bun}}"
+  # systemd 255 accepts only UTF-8 scalar values and excludes U+FEFF plus every
+  # Unicode noncharacter. Decode the whole byte stream before Bash can split or
+  # discard any physical-line content. U+0000 remains a separate exact-byte
+  # guard below so its regression lock cannot be masked by this validator.
+  "$bun_bin" -e '
+    const bytes = new Uint8Array(await Bun.stdin.arrayBuffer());
+    let text;
+    try {
+      text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+    } catch {
+      process.exit(1);
+    }
+    for (const character of text) {
+      const point = character.codePointAt(0);
+      if (point === 0xfeff ||
+          (point >= 0xfdd0 && point <= 0xfdef) ||
+          (point & 0xffff) === 0xfffe ||
+          (point & 0xffff) === 0xffff) {
+        process.exit(1);
+      }
+    }
+  ' < "$env_file" >/dev/null 2>&1
+}
+
 telegram_read_bot_token() { # sets TELEGRAM_EFFECTIVE_BOT_TOKEN
   local env_file="$1" line trimmed token assignments=0
   TELEGRAM_EFFECTIVE_BOT_TOKEN=
@@ -12,6 +39,7 @@ telegram_read_bot_token() { # sets TELEGRAM_EFFECTIVE_BOT_TOKEN
   # physical lines and quotes can span them, so neither is supported anywhere
   # in the file. NUL, CR and the remaining non-tab control bytes are likewise
   # rejected before Bash physical-line parsing can disagree with systemd.
+  telegram_environment_file_unicode_valid "$env_file" || return 1
   LC_ALL=C tr -d '\000' < "$env_file" | LC_ALL=C cmp -s "$env_file" - || return 1
   LC_ALL=C grep -q $'[\001-\010\013-\037\177]' "$env_file" && return 1
   LC_ALL=C grep -q '["'"'"'\\]' "$env_file" && return 1

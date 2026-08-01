@@ -171,7 +171,7 @@ test('REGRESSION round-7-mangled-issued-frame: terminal wrapping and whitespace 
   );
   const mangled = issued
     .replace(/\n/g, '\r\n')
-    .replace('Type: fatal', '  Type:\t fatal  ')
+    .replace('Type: f·atal', '  Type:\t f·atal  ')
     .replace('Session: orchestrator', '\tSession:   orchestrator  ')
     .replace('in a long', 'in a\r\n    long');
   expect(classifyTerminalFailure(mangled)).toBeNull();
@@ -223,6 +223,86 @@ test('REGRESSION terminal-alert-self-echo: echo-of-echo remains suppressed', () 
   expect(classifyTerminalFailure(echo)).toBeNull();
 });
 
+test.each([
+  '← telegram: [internal terminal failure alert] Nonce: 933bbe0b-232d-4ed2…',
+  '  ← telegram: [internal terminal failurealert]Nonce:9d8de352-1780-470c…',
+  '←telegrm: [internalterminalfailurealert]Nonce:c13aa3a5-d245-49bd…',
+] as const)(
+  'REGRESSION round-9-live-truncated-quote: watcher vocabulary alone does not classify: %s',
+  (line) => {
+    expect(classifyTerminalFailure(line)).toBeNull();
+  },
+);
+
+test('REGRESSION round-9-live-truncated-quote: mixed TUI quote chunk does not classify', () => {
+  const chunk = [
+    '────────────────────',
+    '⠋ Working',
+    '← telegram: [internal terminal failure alert] Nonce: 933bbe0b-232d-4ed2…',
+    '❯ Press up to edit queued messages',
+    '  ← telegram: [internal terminal failurealert]Nonce:9d8de352-1780-470c…',
+    '←telegrm: [internalterminalfailurealert]Nonce:c13aa3a5-d245-49bd…',
+    '────────────────────',
+  ].join('\n');
+  expect(classifyTerminalFailure(chunk)).toBeNull();
+});
+
+test('REGRESSION round-9-live-truncated-quote: adjacent genuine failure still classifies', () => {
+  const chunk =
+    '← telegram: [internal terminal failure alert] Nonce: 933bbe0b-232d-4ed2…' +
+    '\nWorker exited unexpectedly';
+  expect(classifyTerminalFailure(chunk)).toBe('exited');
+});
+
+test.each([
+  'usage-limit',
+  '429/overload',
+  'auth',
+  'stalled',
+  'failed',
+  'exited',
+  'network',
+  'fatal',
+  'unknown',
+] as const)(
+  'REGRESSION round-10-emitted-vocabulary: %s frame headers and every quoted prefix are classifier-inert',
+  (kind) => {
+    const issuedNonce = 'round-10-issued';
+    const frame = formatTerminalAlert(
+      { kind, line: 'diagnostic detail', session: 'orchestrator' },
+      () => issuedNonce,
+    );
+    const unsuppressed = frame.replace(issuedNonce, 'round-10-unissued');
+
+    expect(classifyTerminalFailure(unsuppressed)).toBeNull();
+    for (const line of frame.split('\n')) {
+      if (line.startsWith('[internal terminal failure payload] ')) continue;
+      expect(classifyTerminalFailure(line)).toBeNull();
+      for (let end = 0; end <= line.length; end += 1) {
+        expect(classifyTerminalFailure(`← telegram: ${line.slice(0, end)}`)).toBeNull();
+      }
+    }
+  },
+);
+
+test('REGRESSION round-10-residual: a quote truncated inside verbatim payload remains actionable', () => {
+  const frame = formatTerminalAlert(
+    {
+      kind: 'fatal',
+      line: 'Runtime fatal signal 11',
+      session: 'orchestrator',
+    },
+    () => 'round-10-payload-residual',
+  );
+  const truncatedInsidePayload = frame.slice(
+    0,
+    frame.indexOf('\n[/internal terminal failure alert]'),
+  );
+  expect(classifyTerminalFailure(`← telegram: ${truncatedInsidePayload}`)).toBe(
+    'fatal',
+  );
+});
+
 test('REGRESSION terminal-alert-self-echo: issued nonce retention is bounded', () => {
   const frames = Array.from({ length: 257 }, (_, index) =>
     formatTerminalAlert(
@@ -235,11 +315,9 @@ test('REGRESSION terminal-alert-self-echo: issued nonce retention is bounded', (
 });
 
 test('REGRESSION ML-1: an unclassified terminal failure remains actionable', () => {
-  expect(
-    classifyTerminalFailure(
-      'Provider terminal failure: strange new condition',
-    ),
-  ).toBe('unknown');
+  expect(classifyTerminalFailure('Agent crashed in an unknown state')).toBe(
+    'unknown',
+  );
 });
 
 test('strips terminal control sequences before classification', () => {
@@ -256,7 +334,7 @@ test('formats an internal alert with class and session', () => {
       session: 'orchestrator',
     }, () => 'format-test-nonce'),
   ).toContain(
-    'Nonce: format-test-nonce\nType: network\nSession: orchestrator\n\n' +
+    'Nonce: format-test-nonce\nType: n·etwork\nSession: orchestrator\n\n' +
       '[internal terminal failure payload] network error\n' +
       '[/internal terminal failure alert]',
   );

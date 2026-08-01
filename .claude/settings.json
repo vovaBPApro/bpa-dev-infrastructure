@@ -19,6 +19,17 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "mcp__telegram-daemon__reply|mcp__telegram-daemon__complete|mcp__telegram-daemon__status_update",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/check-telegram-message-length.sh"
+          }
+        ]
+      }
     ]
   }
 }

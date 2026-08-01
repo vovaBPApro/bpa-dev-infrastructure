@@ -1,3 +1,1 @@
 # unit	disposition	evidence
-bpa-orchestrator-watchdog.service	deliberately-absent	operator-presence-required; guarded-reacquire=e415cdd; inert-install=ab1ea66
-bpa-orchestrator-watchdog.timer	deliberately-absent	operator-presence-required; guarded-reacquire=e415cdd; inert-install=ab1ea66

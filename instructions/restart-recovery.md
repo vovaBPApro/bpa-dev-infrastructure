@@ -9,6 +9,17 @@ summary: Reconstruct mission and lane state from durable records; never trust ch
 
 # Restart Recovery
 
+## Alert delivery boundary
+
+The system watchdog deliberately owns no Telegram credential. It appends loud
+recovery alerts to the configured `NUDGE_OUTBOX_FILE`; the independently
+managed `bpa-telegram-daemon.service` drains that same file and routes it to the
+bound Human chat even when the orchestrator tmux session is absent. If the
+orchestrator and Telegram daemon fail simultaneously, the durable outbox
+retains the alert but cannot make the Human reachable until the daemon
+recovers. Operators requiring notification through that simultaneous failure
+need a separately credentialed, independently supervised off-host channel.
+
 ## Binding rules
 
 - Reconstruct mission, lane, lease, dispatch, and terminal-report state from durable records; never use chat memory, a process list, or a stale heartbeat as the source of truth.

@@ -10,9 +10,12 @@ VERIFY=false
 VERIFY_SOURCE=false
 NO_CRON=false
 ARM_WATCHDOG=false
+DISARM_WATCHDOG=false
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/telegram-transport-preflight.sh"
 ENV_FILE="${ENV_FILE:-/root/.config/bpa/orchestrator.env}"
 SYSTEMD_SYSTEM_DIR="${SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
 BUN_BIN="${BUN_BIN:-/usr/local/bin/bun}"
@@ -26,7 +29,7 @@ FULL_SUITE_ON_CALENDAR="${FULL_SUITE_ON_CALENDAR:-}"
 
 usage() {
   cat <<'EOF'
-Usage: bootstrap/install.sh [--dry-run | --verify | --verify-source] [--no-cron] [--arm-watchdog]
+Usage: bootstrap/install.sh [--dry-run | --verify | --verify-source] [--no-cron] [--arm-watchdog|--disarm-watchdog]
 
 Environment overrides: INSTALL_ROOT, REPO_URL, BUN_VERSION, ENV_FILE, BUN_BIN,
 RUNTIME_DIR, INFRA_STATE_DB, CRONTAB_CMD, SYSTEMD_SYSTEM_DIR, BASH_BIN, and WHISPER_BIN
@@ -36,6 +39,7 @@ boundaries supported by a source/container test and may report explicit SKIPs.
 The Telegram token is never accepted as an argument. Paste it into .env locally.
 The watchdog timer is installed INERT; a configured token never arms it. Only
 the explicit --arm-watchdog flag enables bpa-orchestrator-watchdog.timer.
+--disarm-watchdog reversibly disables the system timer and leaves its units installed.
 EOF
 }
 
@@ -46,11 +50,17 @@ while (($#)); do
     --verify-source) VERIFY_SOURCE=true ;;
     --no-cron) NO_CRON=true ;;
     --arm-watchdog) ARM_WATCHDOG=true ;;
+    --disarm-watchdog) DISARM_WATCHDOG=true ;;
     -h|--help) usage; exit 0 ;;
     *) echo "ERROR: unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
   shift
 done
+
+if "$ARM_WATCHDOG" && "$DISARM_WATCHDOG"; then
+  echo "ERROR: --arm-watchdog and --disarm-watchdog are mutually exclusive" >&2
+  exit 2
+fi
 
 if "$DRY_RUN" && { "$VERIFY" || "$VERIFY_SOURCE" || "$NO_CRON"; }; then
   echo "ERROR: --dry-run cannot be combined with --verify or --no-cron" >&2
@@ -67,8 +77,8 @@ if "$VERIFY" && "$VERIFY_SOURCE"; then
   exit 2
 fi
 
-if "$ARM_WATCHDOG" && { "$DRY_RUN" || "$VERIFY" || "$VERIFY_SOURCE"; }; then
-  echo "ERROR: --arm-watchdog applies only to a real install run" >&2
+if { "$ARM_WATCHDOG" || "$DISARM_WATCHDOG"; } && { "$DRY_RUN" || "$VERIFY" || "$VERIFY_SOURCE"; }; then
+  echo "ERROR: watchdog arm/disarm applies only to a real install run" >&2
   exit 2
 fi
 
@@ -112,7 +122,7 @@ skip() {
 }
 
 has_configured_token() {
-  [[ -f "$ENV_FILE" ]] && ! grep -q '^TELEGRAM_BOT_TOKEN=__OPERATOR_' "$ENV_FILE"
+  telegram_read_bot_token "$ENV_FILE"
 }
 
 state_db_status() {
@@ -179,6 +189,11 @@ verify() {
   check "whisper" "$WHISPER_BIN" --version
   if has_configured_token; then
     check "token configured" true
+    if "$source_only"; then
+      skip "alert transport" "network probe omitted in source mode"
+    else
+      check "alert transport" telegram_transport_preflight "$ENV_FILE"
+    fi
   else
     if "$source_only"; then skip "token configured" "token placeholder remains (source mode)"; else check "token configured" false; fi
   fi
@@ -409,8 +424,93 @@ render_units() {
   fi
 }
 
+query_timer_state() { # <system|user> <unit> <enabled-var> <active-var>
+  local scope="$1" unit="$2" enabled_var="$3" active_var="$4"
+  local queried_enabled queried_active enabled_rc active_rc
+  local -a prefix=()
+  [[ "$scope" == system ]] || prefix=(--user)
+  if queried_enabled="$(systemctl "${prefix[@]}" is-enabled "$unit")"; then
+    enabled_rc=0
+  else
+    enabled_rc=$?
+  fi
+  if queried_active="$(systemctl "${prefix[@]}" is-active "$unit")"; then
+    active_rc=0
+  else
+    active_rc=$?
+  fi
+  # Preserve every independently resolved value for the caller's terminal
+  # report even when its companion query fails validation.
+  printf -v "$enabled_var" '%s' "${queried_enabled:-unknown}"
+  printf -v "$active_var" '%s' "${queried_active:-unknown}"
+  case "$queried_enabled/$enabled_rc" in
+    enabled/0|static/0|disabled/1|not-found/4) ;;
+    *) return 1 ;;
+  esac
+  case "$queried_active/$active_rc" in
+    active/0|inactive/3) ;;
+    *) return 1 ;;
+  esac
+}
+
+prove_watchdog_disarmed() { # <system|user> <unit>
+  local enabled active
+  query_timer_state "$1" "$2" enabled active &&
+    [[ "$enabled" == disabled ]] &&
+    [[ "$active" == inactive ]]
+}
+
+disarm_watchdogs() {
+  local system_disable_rc=0 legacy_disable_rc=0
+  local system_query_rc=0 legacy_query_rc=0
+  local system_enabled=unknown system_active=unknown
+  local legacy_enabled=unknown legacy_active=unknown
+
+  systemctl disable --now bpa-orchestrator-watchdog.timer ||
+    system_disable_rc=$?
+  systemctl --user disable --now orch-runtime-watchdog.timer ||
+    legacy_disable_rc=$?
+
+  query_timer_state system bpa-orchestrator-watchdog.timer \
+    system_enabled system_active || system_query_rc=$?
+  query_timer_state user orch-runtime-watchdog.timer \
+    legacy_enabled legacy_active || legacy_query_rc=$?
+
+  printf 'WATCHDOG DISARM system=%s/%s legacy=%s/%s\n' \
+    "$system_enabled" "$system_active" "$legacy_enabled" "$legacy_active"
+
+  if (( system_disable_rc != 0 || legacy_disable_rc != 0 ||
+        system_query_rc != 0 || legacy_query_rc != 0 )) ||
+     [[ "$system_enabled/$system_active" != disabled/inactive ||
+        "$legacy_enabled/$legacy_active" != disabled/inactive ]]; then
+    echo 'ERROR: watchdog disarm failed or terminal state is unproven' >&2
+    return 1
+  fi
+  echo 'Watchdog timers disarmed; rendered system units retained.'
+}
+
+restore_legacy_watchdog_armed() {
+  local enabled active
+  systemctl --user enable --now orch-runtime-watchdog.timer &&
+    query_timer_state user orch-runtime-watchdog.timer enabled active &&
+    [[ "$enabled/$active" == enabled/active ]]
+}
+
+rollback_watchdog_arm() { # <legacy-was-armed>
+  local legacy_was_armed="$1"
+  systemctl disable --now bpa-orchestrator-watchdog.timer || return 1
+  prove_watchdog_disarmed system bpa-orchestrator-watchdog.timer || return 1
+  if "$legacy_was_armed"; then
+    restore_legacy_watchdog_armed || return 1
+  fi
+}
+
 activate_units() {
   systemd_system_available || { echo 'ERROR: system systemd is unavailable' >&2; return 1; }
+  if "$DISARM_WATCHDOG"; then
+    disarm_watchdogs
+    return
+  fi
   if has_configured_token; then
     systemctl enable --now bpa-telegram-daemon.service
     systemctl enable --now bpa-orchestrator.service
@@ -422,13 +522,56 @@ activate_units() {
     systemctl enable --now agentic-bpa-stand-verifier.service
     systemctl enable --now bpa-meteorite.timer
     if "$ARM_WATCHDOG"; then
-      echo 'ERROR: watchdog units are deliberately absent because unattended lease-loss handling is not approved' >&2
-      return 1
+      if ! telegram_transport_preflight "$ENV_FILE"; then
+        echo 'ERROR: Telegram alert transport authentication is unproven; refusing watchdog arm' >&2
+        return 1
+      fi
+      local legacy_enabled legacy_active legacy_was_armed=false
+      query_timer_state user orch-runtime-watchdog.timer legacy_enabled legacy_active || {
+        echo "ERROR: legacy user watchdog state is unverifiable; refusing system watchdog arm" >&2
+        return 1
+      }
+      if [[ "$legacy_enabled/$legacy_active" == enabled/active ]]; then
+        legacy_was_armed=true
+        if ! systemctl --user disable --now orch-runtime-watchdog.timer; then
+          echo 'ERROR: legacy user watchdog retirement command failed' >&2
+          return 1
+        fi
+        if ! prove_watchdog_disarmed user orch-runtime-watchdog.timer; then
+          restore_legacy_watchdog_armed ||
+            echo 'ERROR: legacy watchdog retirement failed and prior state restoration is unproven' >&2
+          echo 'ERROR: legacy user watchdog remains armed; refusing system watchdog arm' >&2
+          return 1
+        fi
+      elif [[ "$legacy_enabled/$legacy_active" != disabled/inactive &&
+              "$legacy_enabled/$legacy_active" != not-found/inactive &&
+              "$legacy_enabled/$legacy_active" != static/inactive ]]; then
+        echo "ERROR: legacy user watchdog state is inconsistent enabled=$legacy_enabled active=$legacy_active" >&2
+        return 1
+      fi
+      local watchdog_enabled watchdog_active watchdog_next
+      if ! systemctl enable --now bpa-orchestrator-watchdog.timer ||
+         ! query_timer_state system bpa-orchestrator-watchdog.timer watchdog_enabled watchdog_active ||
+         [[ "$watchdog_enabled/$watchdog_active" != enabled/active ]] ||
+         ! watchdog_next="$(systemctl show bpa-orchestrator-watchdog.timer --property=NextElapseUSecRealtime --value)" ||
+         ! finite_future_systemd_trigger "$watchdog_next" "${ORCH_WATCHDOG_NOW:-$(date +%s)}" ||
+         ! systemctl start bpa-orchestrator-watchdog.service; then
+        rollback_watchdog_arm "$legacy_was_armed" || {
+          echo 'ERROR: watchdog arm failed and rollback could not be proven' >&2
+          return 1
+        }
+        echo "ERROR: watchdog arm unproven enabled=${watchdog_enabled:-unknown} active=${watchdog_active:-unknown} next=${watchdog_next:-none}" >&2
+        return 1
+      fi
     else
-      echo 'Watchdog units remain deliberately absent.'
+      echo 'Watchdog timer installed but remains unarmed.'
     fi
   else
-    echo "Token remains a placeholder; units installed but not enabled. Edit $ENV_FILE, then re-run this installer."
+    echo "Telegram bot token is missing or invalid; units installed but not enabled. Edit $ENV_FILE, then re-run this installer."
+    if "$ARM_WATCHDOG"; then
+      echo 'ERROR: refusing watchdog arm without a configured Telegram alert channel' >&2
+      return 1
+    fi
   fi
 }
 
@@ -442,6 +585,10 @@ if [[ "${BOOTSTRAP_LIB_ONLY:-false}" != true ]]; then
   run_install_test_gate
   render_units
   activate_units
+  if "$DISARM_WATCHDOG"; then
+    echo "Bootstrap watchdog disarm completed and verified."
+    exit 0
+  fi
   verify false
   echo "Bootstrap completed and deployment verification passed."
 fi

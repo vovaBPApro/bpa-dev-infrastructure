@@ -215,10 +215,10 @@ read_live_lease || fail 'no live lease after an uncontested re-acquire'
 [[ "$(lease_file_owner)" == "$SELF_OWNER" ]] || fail 'lease file owner drifted'
 [[ ! -s "$ORCH_TEST_ACTIONS" ]] || fail 'self-expiry triggered a relaunch'
 
-# ── 2. Genuine displacement by a LIVE owner: the fence must still fire ──────
-# Our token aged out AND a different, still-running orchestrator took the lease.
-# That is what fencing exists for; weakening it here would allow two live
-# orchestrators on one control plane.
+# ── 2. Positively live displacement: fence only the configured stale actor ──
+# A different live owner holding the current token is the one non-ambiguous
+# takeover case.  The configured stale session must be stopped; the holder and
+# its lease must survive.
 new_case displaced-by-live-owner
 stale_self_token="$(cli "$ORCH_STATE_DB" lease acquire "$SELF_OWNER" orchestrator 1000 | token_of)"
 expire_lease
@@ -227,6 +227,7 @@ write_lease_file "$SELF_OWNER" "$stale_self_token"
 tick
 assert_killed
 log_has "WATCHDOG lease-displaced owner=$SELF_OWNER token=$stale_self_token holder=$HOLDER_OWNER"
+kill -0 "$HOLDER_PID" 2>/dev/null || fail 'the valid live lease holder was killed'
 read_live_lease || fail 'the fence destroyed the live holder lease'
 [[ "$LEASE_OWNER_NOW" == "$HOLDER_OWNER" && "$LEASE_TOKEN_NOW" == "$held_token" ]] ||
   fail 'the fence stole the live holder lease instead of standing down'
@@ -288,18 +289,18 @@ log_has 'WATCHDOG NO-GO reason=lease-ttl-under-tick'
 unset ORCH_WATCHDOG_INTERVAL ORCH_LEASE_TTL_MS
 
 # ── 6. Consecutive ticks keep one token alive ──────────────────────────────
-# End to end, wall-clock: a lease acquired with a short TTL survives ticks that
-# straddle that TTL, under the SAME fencing token, with no kill and no relaunch.
+# End to end with an injected clock: a lease survives several exact ticks under
+# the SAME fencing token. No sleeps or expiry-boundary scheduler races.
 new_case renewal-across-ticks
-export ORCH_LEASE_TTL_MS=4000
-export ORCH_WATCHDOG_INTERVAL=1
-# The acquire TTL is deliberately shorter than the run: without working
-# renewals this lease is dead before the last tick.
-kept_token="$(cli "$ORCH_STATE_DB" lease acquire "$SELF_OWNER" orchestrator 2000 | token_of)"
+export ORCH_LEASE_TTL_MS=40000
+export ORCH_WATCHDOG_INTERVAL=10
+export BPA_ALLOW_TEST_CLOCK=1
+export INFRA_TEST_NOW_MS=1000000
+kept_token="$(cli "$ORCH_STATE_DB" lease acquire "$SELF_OWNER" orchestrator 15000 | token_of)"
 write_lease_file "$SELF_OWNER" "$kept_token"
-for _ in 1 2 3 4; do
+for tick_ms in 1010000 1020000 1030000 1040000; do
+  export INFRA_TEST_NOW_MS="$tick_ms"
   tick
-  sleep 1
 done
 assert_not_killed
 read_live_lease || fail 'the lease died across ticks that were supposed to renew it'
@@ -309,11 +310,11 @@ read_live_lease || fail 'the lease died across ticks that were supposed to renew
 # Survival alone does not prove the renewer is using the configured TTL — a
 # hardcoded TTL that happens to be longer would also survive. Pin the renewal
 # to ORCH_LEASE_TTL_MS so the knob, and only the knob, sets the headroom.
-(( LEASE_EXPIRY_NOW - $(date +%s) * 1000 <= ORCH_LEASE_TTL_MS + 1000 )) ||
+(( LEASE_EXPIRY_NOW == INFRA_TEST_NOW_MS + ORCH_LEASE_TTL_MS )) ||
   fail 'renewals ignore ORCH_LEASE_TTL_MS: the renewer applies a TTL of its own'
 [[ "$(lease_file_token)" == "$kept_token" ]] || fail 'lease file drifted across renewals'
 [[ ! -s "$ORCH_TEST_ACTIONS" ]] || fail 'a renewed, healthy session was relaunched'
-unset ORCH_LEASE_TTL_MS ORCH_WATCHDOG_INTERVAL
+unset ORCH_LEASE_TTL_MS ORCH_WATCHDOG_INTERVAL BPA_ALLOW_TEST_CLOCK INFRA_TEST_NOW_MS
 
 # ── mission-cli contract: renew must accept an explicit TTL ────────────────
 new_case renew-ttl-argument

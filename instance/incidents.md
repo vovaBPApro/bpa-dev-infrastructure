@@ -33,3 +33,13 @@ summary: Traceability from this installation's operating failures to rules.
 | Resource limits, bounded concurrency, and soak gates are infrastructure defaults. | The problem matrix records repeated disk pressure around 94% and HMR OOM evidence. |
 | Fresh Ubuntu bootstrap must not depend on `/home/bpa-shell`. | HR-18 requires clean-VM rehearsal independent of legacy host state. |
 | Morning stand reports must use concrete evidence, not jargon. | HR-14/HR-16 require timestamped stand health and concise plain-language “what changed / what to test” reports. |
+## 2026-08-01 — unattended orchestrator recovery remained disarmed
+
+The live orchestrator session died while the installed legacy user watchdog
+targeted `orchestrator` instead of the configured `bpa-orchestrator`. Its failed
+first launch wrote cooldown state, suppressing retries; the stopped timer had no
+finite next trigger after arming. The tracked correction makes the bootstrap
+system timer canonical, verifies arming, retries failed launches on the next
+tick, escalates bounded consecutive failures, and never kills a configured live
+session from contradictory lease state. Shared runtime rehearsal remains
+`NO-GO` until W-37 lands and an announced maintenance boundary exists.

@@ -112,6 +112,8 @@ DONE_SENTINEL="${ORCH_DONE_SENTINEL:-$TELEGRAM_STATE_DIR/daemon/runtime/orchestr
 # this old. Night (local 22:00–07:00) is stricter: the operator is asleep and
 # cannot intervene, so recover sooner.
 RESTART_STATE_FILE="${ORCH_RESTART_STATE_FILE:-$RUNTIME_DIR/watchdog-restart-state}"
+RESTART_FAILURE_ALERT_AFTER="${ORCH_RESTART_FAILURE_ALERT_AFTER:-3}"
+RESTART_BACKOFF_CAP_S="${ORCH_RESTART_BACKOFF_CAP_S:-900}"
 WATCHDOG_HOUR="${ORCH_WATCHDOG_HOUR:-$(date +%H)}"
 if (( 10#$WATCHDOG_HOUR >= 22 || 10#$WATCHDOG_HOUR < 7 )); then
   WATCHDOG_NIGHT=1
@@ -157,6 +159,8 @@ validate_bounded_knob LIVENESS_MAX_AGE 15 86400 120
 validate_bounded_knob LEASE_TTL_MS 1000 86400000 180000
 validate_bounded_knob WATCHDOG_INTERVAL_S 10 86400 60
 validate_bounded_knob DOCKER_STALE_TAG_KEEP 1 1000 3
+validate_bounded_knob RESTART_FAILURE_ALERT_AFTER 1 100 3
+validate_bounded_knob RESTART_BACKOFF_CAP_S 10 86400 900
 if (( WATCHDOG_NIGHT == 1 )); then
   validate_bounded_knob RESTART_COOLDOWN_S 60 604800 900
 else
@@ -172,6 +176,12 @@ fi
 if (( DISK_CRITICAL_PCT < DISK_ALERT_PCT )); then
   log "WATCHDOG invalid-knob-ordering name=DISK_CRITICAL_PCT value=$DISK_CRITICAL_PCT floor=DISK_ALERT_PCT clamped=$DISK_ALERT_PCT"
   DISK_CRITICAL_PCT="$DISK_ALERT_PCT"
+fi
+
+if [[ "${1:-}" == identity ]]; then
+  printf 'session=%s\nruntime_dir=%s\nstate_db=%s\nlease_file=%s\nlauncher=%s\nconfig_file=%s\n' \
+    "$SESSION" "$RUNTIME_DIR" "$STATE_DB" "$LEASE_FILE" "$LAUNCH_SCRIPT" "$CONFIG_FILE"
+  exit 0
 fi
 
 # ── `/done` rest ────────────────────────────────────────────────────────────
@@ -643,61 +653,117 @@ check_daemon_health() {
 # `launch.sh start` unconditionally, at the installed 60s cadence. A provider
 # that fails to come up therefore burned a launch (and its quota) once a minute,
 # indefinitely, in silence. A restart is now both throttled and announced.
-last_restart_at() {
-  local value=0
-  if [[ -f "$RESTART_STATE_FILE" ]]; then
-    value="$(sed -n 's/^last_restart=//p' "$RESTART_STATE_FILE" | head -n 1)"
-  fi
-  [[ "$value" =~ ^[0-9]+$ ]] || value=0
-  printf '%s\n' "$value"
+read_restart_state() {
+  local now="$1" line key value
+  local -A seen=()
+  RESTART_LAST=0 RESTART_FAILURES=0 RESTART_ALERTED=0
+  [[ -f "$RESTART_STATE_FILE" ]] || return 0
+  [[ -s "$RESTART_STATE_FILE" &&
+     "$(tail -c 1 "$RESTART_STATE_FILE"; printf x)" == $'\nx' ]] || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" == *=* ]] || return 1
+    key="${line%%=*}"
+    value="${line#*=}"
+    [[ -z "${seen[$key]+x}" ]] || return 1
+    seen["$key"]=1
+    case "$key" in
+      version) [[ "$value" == 1 ]] || return 1 ;;
+      last_restart)
+        [[ "$value" =~ ^[0-9]{1,10}$ ]] || return 1
+        (( 10#$value <= 9999999999 )) || return 1
+        RESTART_LAST="$(( 10#$value ))"
+        ;;
+      consecutive_failures)
+        [[ "$value" =~ ^[0-9]{1,2}$ ]] || return 1
+        (( 10#$value <= 31 )) || return 1
+        RESTART_FAILURES="$(( 10#$value ))"
+        ;;
+      alerted) [[ "$value" == 0 || "$value" == 1 ]] || return 1; RESTART_ALERTED="$value" ;;
+      *) return 1 ;;
+    esac
+  done < "$RESTART_STATE_FILE"
+  [[ ${#seen[@]} == 4 && -n "${seen[version]+x}" &&
+     -n "${seen[last_restart]+x}" && -n "${seen[consecutive_failures]+x}" &&
+     -n "${seen[alerted]+x}" ]] || return 1
+  (( RESTART_LAST <= now )) || return 1
+  (( RESTART_FAILURES > 0 || RESTART_ALERTED == 0 )) || return 1
+  (( RESTART_FAILURES == 0 || RESTART_LAST > 0 )) || return 1
 }
 
-record_restart_at() {
-  local now="$1" tmp
+record_restart_state() {
+  local now="$1" failures="$2" alerted="${3:-0}" tmp
   mkdir -p "$(dirname "$RESTART_STATE_FILE")"
   tmp="$(mktemp "$(dirname "$RESTART_STATE_FILE")/.watchdog-restart-state.XXXXXX")"
-  printf 'last_restart=%s\n' "$now" > "$tmp"
+  chmod 0600 "$tmp"
+  printf 'version=1\nlast_restart=%s\nconsecutive_failures=%s\nalerted=%s\n' \
+    "$now" "$failures" "$alerted" > "$tmp"
   mv -f "$tmp" "$RESTART_STATE_FILE"
 }
 
 # supervise_restart <reason> <kill-first:0|1>
 # Always terminal: it either restarts (and says so) or declines (and says why).
 supervise_restart() {
-  local reason="$1" kill_first="$2" now last since
-  now="${ORCH_WATCHDOG_NOW:-$(date +%s)}"
-  [[ "$now" =~ ^[0-9]+$ ]] || now="$(date +%s)"
-  last="$(last_restart_at)"
-  since=$(( now - last ))
-  # A restart recorded in the future means the clock moved backwards (or the
-  # state file was hand-edited). Suppressing on that would wedge recovery until
-  # real time caught up, so drop the stale record instead of trusting it.
-  if (( last > 0 && since < 0 )); then
-    log "WATCHDOG restart-state-clock-skew last=$last now=$now action=reset"
-    last=0
-    since=0
+  local reason="$1" kill_first="$2" now last since failures alerted backoff lock_file i
+  lock_file="${RESTART_STATE_FILE}.lock"
+  mkdir -p "$(dirname "$lock_file")"
+  exec {restart_lock_fd}>"$lock_file"
+  if ! flock -n "$restart_lock_fd"; then
+    log "WATCHDOG restart-suppressed reason=$reason state-lock=busy action=none"
+    exit 0
   fi
-  if (( last > 0 && since < RESTART_COOLDOWN_S )); then
-    log "WATCHDOG restart-suppressed reason=$reason since_s=$since cooldown_s=$RESTART_COOLDOWN_S night=$WATCHDOG_NIGHT action=none"
+  now="${ORCH_WATCHDOG_NOW:-$(date +%s)}"
+  if [[ "$now" =~ ^[0-9]{1,10}$ ]] && (( 10#$now <= 9999999999 )); then
+    now="$(( 10#$now ))"
+  else
+    now="$(date +%s)"
+  fi
+  if read_restart_state "$now"; then
+    last="$RESTART_LAST"
+    failures="$RESTART_FAILURES"
+    alerted="$RESTART_ALERTED"
+  else
+    log "WATCHDOG restart-state-invalid action=reset"
+    last=0 failures=0 alerted=0
+    record_restart_state 0 0 0
+  fi
+  since=$(( now - last ))
+  backoff="$WATCHDOG_INTERVAL_S"
+  if (( failures > 1 )); then
+    for (( i=1; i<failures; i++ )); do
+      backoff=$(( backoff * 2 ))
+      (( backoff >= RESTART_BACKOFF_CAP_S )) && { backoff="$RESTART_BACKOFF_CAP_S"; break; }
+    done
+  fi
+  (( failures == 0 )) && backoff="$RESTART_COOLDOWN_S"
+  if (( last > 0 && since < backoff )); then
+    log "WATCHDOG restart-suppressed reason=$reason since_s=$since cooldown_s=$backoff failures=$failures night=$WATCHDOG_NIGHT action=none"
     if nudge_due restart-suppressed "$SESSION" "$now"; then
-      append_nudge "NUDGE watchdog-restart-suppressed session=$SESSION reason=$reason since_s=$since cooldown_s=$RESTART_COOLDOWN_S"
+      append_nudge "NUDGE watchdog-restart-suppressed session=$SESSION reason=$reason since_s=$since cooldown_s=$backoff"
       record_nudge restart-suppressed "$SESSION" "$now"
     fi
     exit 0
   fi
   log "WATCHDOG restarting session=$SESSION reason=$reason night=$WATCHDOG_NIGHT action=restart"
   append_nudge "NUDGE watchdog-restarting session=$SESSION reason=$reason"
-  record_restart_at "$now"
   if (( kill_first == 1 )); then
     "$LAUNCH_SCRIPT" stop || log "WATCHDOG restart-stop-failed session=$SESSION reason=$reason"
   fi
   if "$LAUNCH_SCRIPT" start; then
+    record_restart_state "$now" 0 0
     log "WATCHDOG restarted session=$SESSION reason=$reason action=restarted"
     append_nudge "NUDGE watchdog-restarted session=$SESSION reason=$reason"
   else
-    log "WATCHDOG NO-GO reason=restart-failed session=$SESSION trigger=$reason action=manual-intervention"
-    append_nudge "NUDGE watchdog-restart-failed session=$SESSION reason=$reason needs=manual-intervention"
+    (( failures < 31 )) && failures=$(( failures + 1 ))
+    record_restart_state "$now" "$failures" "$alerted"
+    log "WATCHDOG NO-GO reason=restart-failed session=$SESSION trigger=$reason consecutive=$failures action=retry-with-backoff"
+    append_nudge "NUDGE watchdog-restart-failed session=$SESSION reason=$reason consecutive=$failures retry=backoff"
+    if (( failures >= RESTART_FAILURE_ALERT_AFTER && alerted == 0 )); then
+      append_nudge "ALERT orchestrator-recovery-failed session=$SESSION consecutive=$failures action=human-required"
+      record_restart_state "$now" "$failures" 1
+    fi
+    return 1
   fi
-  exit 0
+  return 0
 }
 
 if state_available; then

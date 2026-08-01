@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALLER="$SCRIPT_DIR/install.sh"
+REAL_BUN_BIN="$(command -v bun)"
 
 # shellcheck disable=SC2016 # inspect the literal default assignment
 grep -Fxq 'INSTALL_ROOT="${INSTALL_ROOT:-/root/bpa-dev-infrastructure}"' "$INSTALLER"
@@ -39,7 +40,8 @@ install -d -m 700 \
   "$verify_fixture/bin" \
   "$verify_fixture/opt/whisper.cpp/bin"
 install -m 600 /dev/null "$verify_fixture/root/.env"
-printf '%s\n' 'TELEGRAM_BOT_TOKEN=fixture-token' > "$verify_fixture/root/.env"
+valid_bot_token='123456789:abcdefghijklmnopqrstuvwxyz_ABCDE'
+printf 'TELEGRAM_BOT_TOKEN=%s\n' "$valid_bot_token" > "$verify_fixture/root/.env"
 printf '%s\n' \
   '[Service]' \
   "ExecStart=$verify_fixture/bin/bun run server.ts" > "$verify_fixture/systemd/system/bpa-telegram-daemon.service"
@@ -294,17 +296,45 @@ install -d -m 700 \
   "$arming_fixture/root/runtime" \
   "$arming_fixture/config" \
   "$arming_fixture/bin"
-printf '%s\n' 'TELEGRAM_BOT_TOKEN=fixture-token' > "$arming_fixture/root/.env"
+printf 'TELEGRAM_BOT_TOKEN=%s\n' "$valid_bot_token" > "$arming_fixture/root/.env"
 chmod 600 "$arming_fixture/root/.env"
 for command_name in git curl tmux unzip xz crontab bun docker codex claude; do
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$arming_fixture/bin/$command_name"
 done
+# Authenticated transport fixture: consume curl's stdin config, record the
+# exact request without printing it, and return the configured bot identity.
+cat > "$arming_fixture/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+config="$(mktemp)"; cat > "$config"
+output="$(awk -F '"' '$1 == "output = " { print $2 }' "$config")"
+printf '%s\n' '{"ok":true,"result":{"id":123456789,"is_bot":true}}' > "$output"
+EOF
 printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "# BEGIN bpa-dev-infrastructure hygiene"' > "$arming_fixture/bin/crontab"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "Linger=yes"' > "$arming_fixture/bin/loginctl"
-# shellcheck disable=SC2016 # the recorder shim must expand $* at CALL time
+# The fake is a state machine, not a call logger: unknown operations fail and
+# enable/disable mutate the states observed by later postchecks.
+# shellcheck disable=SC2016
 printf '%s\n' '#!/usr/bin/env bash' \
-  'printf "%s\n" "$*" >> "${BOOTSTRAP_TEST_SYSTEMCTL_CALLS:?}"' \
-  'exit 0' > "$arming_fixture/bin/systemctl"
+  'set -u' \
+  'call="$*"; printf "%s\n" "$call" >> "${BOOTSTRAP_TEST_SYSTEMCTL_CALLS:?}"' \
+  '[[ "$call" != "${BOOTSTRAP_TEST_FAIL_COMMAND:-}" ]] || exit "${BOOTSTRAP_TEST_FAIL_RC:-41}"' \
+  'case "$call" in' \
+  '  "show-environment"|"daemon-reload"|"enable --now bpa-telegram-daemon.service"|"enable --now bpa-orchestrator.service"|"enable --now bpa-full-suite.timer"|"enable --now orch-morning-report.timer"|"enable --now bpa-deploy-drift-guard.timer"|"enable --now agentic-bpa-staleness.timer"|"enable --now agentic-bpa-db-grants.timer"|"enable --now agentic-bpa-stand-verifier.service"|"enable --now bpa-meteorite.timer") exit 0 ;;' \
+  '  "is-enabled --quiet bpa-orchestrator.service"|"is-active --quiet bpa-orchestrator.service"|"is-enabled --quiet bpa-telegram-daemon.service"|"is-active --quiet bpa-telegram-daemon.service"|"is-enabled --quiet bpa-full-suite.timer"|"is-enabled --quiet orch-morning-report.timer"|"is-enabled --quiet bpa-deploy-drift-guard.timer"|"is-enabled --quiet agentic-bpa-staleness.timer"|"is-enabled --quiet agentic-bpa-db-grants.timer"|"is-enabled --quiet agentic-bpa-stand-verifier.service"|"is-enabled --quiet bpa-meteorite.timer") exit 0 ;;' \
+  '  "is-enabled --quiet bpa-orchestrator-watchdog.timer") [[ "$(head -n1 "${BOOTSTRAP_TEST_SYSTEM_STATE:?}")" == enabled ]] ;;' \
+  '  "--user disable --now orch-runtime-watchdog.timer") printf "disabled\ninactive\n" > "${BOOTSTRAP_TEST_LEGACY_STATE:?}"; exit 0 ;;' \
+  '  "--user enable --now orch-runtime-watchdog.timer") printf "enabled\nactive\n" > "${BOOTSTRAP_TEST_LEGACY_STATE:?}"; exit 0 ;;' \
+  '  "disable --now bpa-orchestrator-watchdog.timer") printf "disabled\ninactive\n" > "${BOOTSTRAP_TEST_SYSTEM_STATE:?}"; exit 0 ;;' \
+  '  "enable --now bpa-orchestrator-watchdog.timer") printf "enabled\nactive\n" > "${BOOTSTRAP_TEST_SYSTEM_STATE:?}"; exit 0 ;;' \
+  '  "--user is-enabled orch-runtime-watchdog.timer") state="$(head -n1 "${BOOTSTRAP_TEST_LEGACY_STATE:?}")"; [[ "${BOOTSTRAP_TEST_BLANK_AFTER_LEGACY_DISABLE:-0}" != 1 || "$state" != disabled ]] || exit 0; printf "%s\n" "$state"; [[ "$state" == disabled ]] && exit 1; [[ "$state" == not-found ]] && exit 4; exit 0 ;;' \
+  '  "--user is-active orch-runtime-watchdog.timer") state="$(tail -n1 "${BOOTSTRAP_TEST_LEGACY_STATE:?}")"; printf "%s\n" "$state"; [[ "$state" == inactive ]] && exit 3; exit 0 ;;' \
+  '  "is-enabled bpa-orchestrator-watchdog.timer") state="$(head -n1 "${BOOTSTRAP_TEST_SYSTEM_STATE:?}")"; printf "%s\n" "$state"; [[ "$state" == disabled ]] && exit 1; [[ "$state" == not-found ]] && exit 4; exit 0 ;;' \
+  '  "is-active bpa-orchestrator-watchdog.timer") state="$(tail -n1 "${BOOTSTRAP_TEST_SYSTEM_STATE:?}")"; printf "%s\n" "$state"; [[ "$state" == inactive ]] && exit 3; exit 0 ;;' \
+  '  "show bpa-orchestrator-watchdog.timer --property=NextElapseUSecRealtime --value") printf "%s\n" "${BOOTSTRAP_TEST_NEXT_TRIGGER:-Sat 2026-08-01 12:00:00 UTC}" ;;' \
+  '  "start bpa-orchestrator-watchdog.service") exit "${BOOTSTRAP_TEST_IMMEDIATE_RC:-0}" ;;' \
+  '  *) printf "unknown systemctl operation: %s\n" "$call" >&2; exit 64 ;;' \
+  'esac' > "$arming_fixture/bin/systemctl"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$arming_fixture/root/workspace/workspace.test.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$arming_fixture/root/workspace/workspace.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$arming_fixture/root/hygiene/install-cron.sh"
@@ -321,15 +351,47 @@ chmod 700 "$arming_fixture/root/deploy/check-live-stand-staleness.sh"
 arming_calls="$arming_fixture/systemctl.calls"
 run_full_install() { # <extra installer args...>
   : > "$arming_calls"
+  printf '%s\n%s\n' "${BOOTSTRAP_TEST_LEGACY_ENABLED:-disabled}" \
+    "${BOOTSTRAP_TEST_LEGACY_ACTIVE:-inactive}" > "$arming_fixture/legacy.state"
+  printf '%s\n%s\n' "${BOOTSTRAP_TEST_SYSTEM_ENABLED:-disabled}" \
+    "${BOOTSTRAP_TEST_SYSTEM_ACTIVE:-inactive}" > "$arming_fixture/system.state"
   PATH="$arming_fixture/bin:$PATH" \
     INSTALL_ROOT="$arming_fixture/root" \
     ENV_FILE="$arming_fixture/root/.env" \
     SYSTEMD_SYSTEM_DIR="$arming_fixture/config" \
     WHISPER_BIN="$arming_fixture/bin/bun" \
     BUN_BIN="$arming_fixture/bin/bun" \
+    CURL_BIN="$arming_fixture/bin/curl" \
+    TELEGRAM_PREFLIGHT_BUN_BIN="$REAL_BUN_BIN" \
     RUNTIME_DIR="$arming_fixture/root/runtime" \
     BOOTSTRAP_TEST_SYSTEMCTL_CALLS="$arming_calls" \
+    BOOTSTRAP_TEST_LEGACY_STATE="$arming_fixture/legacy.state" \
+    BOOTSTRAP_TEST_SYSTEM_STATE="$arming_fixture/system.state" \
+    BOOTSTRAP_TEST_FAIL_COMMAND="${BOOTSTRAP_TEST_FAIL_COMMAND:-}" \
+    BOOTSTRAP_TEST_FAIL_RC="${BOOTSTRAP_TEST_FAIL_RC:-41}" \
+    BOOTSTRAP_TEST_BLANK_AFTER_LEGACY_DISABLE="${BOOTSTRAP_TEST_BLANK_AFTER_LEGACY_DISABLE:-0}" \
+    BOOTSTRAP_TEST_NEXT_TRIGGER="${BOOTSTRAP_TEST_NEXT_TRIGGER:-Sat 2026-08-01 12:00:00 UTC}" \
+    BOOTSTRAP_TEST_IMMEDIATE_RC="${BOOTSTRAP_TEST_IMMEDIATE_RC:-0}" \
+    ORCH_WATCHDOG_NOW="${ORCH_WATCHDOG_NOW:-1785582000}" \
     "$INSTALLER" "$@"
+}
+
+assert_disarm_attempts_and_queries() {
+  local expected
+  for expected in \
+    'disable --now bpa-orchestrator-watchdog.timer' \
+    '--user disable --now orch-runtime-watchdog.timer' \
+    'is-enabled bpa-orchestrator-watchdog.timer' \
+    'is-active bpa-orchestrator-watchdog.timer' \
+    '--user is-enabled orch-runtime-watchdog.timer' \
+    '--user is-active orch-runtime-watchdog.timer'; do
+    grep -Fxq -- "$expected" "$arming_calls" ||
+      { echo "ERROR: disarm omitted independent operation: $expected" >&2; exit 1; }
+  done
+}
+
+assert_exact_disarm_terminal() { # <output> <expected-complete-line>
+  [[ "$(grep -F 'WATCHDOG DISARM system=' <<<"$1")" == "$2" ]]
 }
 
 bare_install_output="$(run_full_install)"
@@ -344,15 +406,279 @@ grep -Fxq -- 'enable --now bpa-orchestrator.service' "$arming_calls"
 grep -Fxq -- 'enable --now bpa-full-suite.timer' "$arming_calls"
 grep -Fxq -- 'enable --now orch-morning-report.timer' "$arming_calls"
 grep -Fxq -- 'daemon-reload' "$arming_calls"
-test ! -e "$arming_fixture/config/bpa-orchestrator-watchdog.service"
-test ! -e "$arming_fixture/config/bpa-orchestrator-watchdog.timer"
-grep -Fq 'Unit deliberately absent; not installing bpa-orchestrator-watchdog.timer.' <<<"$bare_install_output"
+test -f "$arming_fixture/config/bpa-orchestrator-watchdog.service"
+test -f "$arming_fixture/config/bpa-orchestrator-watchdog.timer"
+grep -Fq "EnvironmentFile=$arming_fixture/root/.env" "$arming_fixture/config/bpa-orchestrator-watchdog.service"
+grep -Fq "ExecStart=$arming_fixture/root/orchestrator/watchdog.sh" "$arming_fixture/config/bpa-orchestrator-watchdog.service"
+grep -Fq 'Persistent=true' "$arming_fixture/config/bpa-orchestrator-watchdog.timer"
+grep -Fq 'Watchdog timer installed but remains unarmed.' <<<"$bare_install_output"
 
-# The hazard ruling overrides even the old explicit opt-in.
-if run_full_install --arm-watchdog >/dev/null 2>&1; then
-  echo 'ERROR: --arm-watchdog revived a deliberately absent watchdog' >&2
+# Arming is fail-closed on the exact Telegram key and token grammar. Each bad
+# shape returns non-zero before any service/timer arm or immediate tick, and
+# the same parser cannot produce a false verify success.
+invalid_token_rows=(
+  '__MISSING_FILE__'
+  'SOME_OTHER_KEY=value'
+  'TELEGRAM_BOT_TOKEN='
+  'TELEGRAM_BOT_TOKEN=   '
+  'TELEGRAM_BOT_TOKEN =123456789:abcdefghijklmnopqrstuvwxyz_ABCDE'
+  'export TELEGRAM_BOT_TOKEN=123456789:abcdefghijklmnopqrstuvwxyz_ABCDE'
+  'TELEGRAM_BOT_TOKEN="123456789:abcdefghijklmnopqrstuvwxyz_ABCDE"'
+  'TELEGRAM_BOT_TOKEN=__OPERATOR_REQUIRED__'
+  'TELEGRAM_BOT_TOKEN=__OPERATOR_PASTE_TELEGRAM_BOT_TOKEN_HERE__'
+  'TELEGRAM_BOT_TOKEN=fixture-token'
+  $'TELEGRAM_BOT_TOKEN=123456789:abcdefghijklmnopqrstuvwxyz_ABCDE\nTELEGRAM_BOT_TOKEN=123456789:abcdefghijklmnopqrstuvwxyz_ABCDE'
+  $'UNRELATED=value\\\nTELEGRAM_BOT_TOKEN=123456789:abcdefghijklmnopqrstuvwxyz_ABCDE'
+  $'UNRELATED=\'first\nTELEGRAM_BOT_TOKEN=123456789:abcdefghijklmnopqrstuvwxyz_ABCDE\nlast\''
+  $'UNRELATED="first\nTELEGRAM_BOT_TOKEN=123456789:abcdefghijklmnopqrstuvwxyz_ABCDE\nlast"'
+  $'UNRELATED=escaped\\\\backslash\nTELEGRAM_BOT_TOKEN=123456789:abcdefghijklmnopqrstuvwxyz_ABCDE'
+  $'TELEGRAM_BOT_TOKEN=123456789:abcdefghijklmnopqrstuvwxyz_ABCDE\rTELEGRAM_BOT_TOKEN=bad'
+  $'TELEGRAM_BOT_TOKEN=123456789:abcdefghijklmnopqrstuvwxyz_ABCDE\r'
+  $'TELEGRAM_BOT_TOKEN=123456789:abcdefghijklmnopqrstuvwxyz_ABCDE\r\n'
+  $'TELEGRAM_BOT_TOKEN=123456789:abcdefghijklmnopqrstuvwxyz_ABCDE\n \t\rTELEGRAM_BOT_TOKEN=bad'
+)
+for token_row in "${invalid_token_rows[@]}"; do
+  if [[ "$token_row" == __MISSING_FILE__ ]]; then
+    rm -f "$arming_fixture/root/.env"
+  else
+    printf '%s\n' "$token_row" > "$arming_fixture/root/.env"
+  fi
+  if token_output="$(run_full_install --arm-watchdog 2>&1)"; then
+    echo "ERROR: watchdog arm accepted invalid token shape" >&2
+    exit 1
+  fi
+  if BOOTSTRAP_LIB_ONLY=true ENV_FILE="$arming_fixture/root/.env" INSTALLER_PATH="$INSTALLER" \
+    bash -c 'source "$INSTALLER_PATH"; has_configured_token'; then
+    echo 'ERROR: token verification accepted invalid token shape' >&2
+    exit 1
+  fi
+  if grep -Eq 'enable --now (bpa-telegram-daemon.service|bpa-orchestrator-watchdog.timer)|start bpa-orchestrator-watchdog.service' "$arming_calls"; then
+    echo 'ERROR: invalid token reached an arm or immediate-service call' >&2
+    exit 1
+  fi
+  grep -Fq 'refusing watchdog arm without a configured Telegram alert channel' <<<"$token_output"
+done
+
+# Exact binary EnvironmentFile fixture: Bash read discards NUL, while systemd
+# rejects U+0000. Both arm and deployed verification must fail before any unit
+# activation can consume a configuration the service manager cannot parse.
+printf 'UNRELATED=before\0after\nTELEGRAM_BOT_TOKEN=%s\n' "$valid_bot_token" \
+  > "$arming_fixture/root/.env"
+if token_output="$(run_full_install --arm-watchdog 2>&1)"; then
+  echo "ERROR: watchdog arm accepted NUL-containing EnvironmentFile" >&2
   exit 1
 fi
+if BOOTSTRAP_LIB_ONLY=true ENV_FILE="$arming_fixture/root/.env" INSTALLER_PATH="$INSTALLER" \
+  bash -c 'source "$INSTALLER_PATH"; has_configured_token'; then
+  echo 'ERROR: token verification accepted NUL-containing EnvironmentFile' >&2
+  exit 1
+fi
+if grep -Eq 'enable --now (bpa-telegram-daemon.service|bpa-orchestrator-watchdog.timer)|start bpa-orchestrator-watchdog.service' "$arming_calls"; then
+  echo 'ERROR: NUL-containing EnvironmentFile reached an arm or immediate-service call' >&2
+  exit 1
+fi
+grep -Fq 'refusing watchdog arm without a configured Telegram alert channel' <<<"$token_output"
+
+# Exact binary Unicode fixtures cover invalid UTF-8, U+FEFF in multiple
+# placements, the full BMP noncharacter interval boundaries, and plane-ending
+# noncharacters at both the first and last supplementary planes. The shared
+# parser suite exhaustively covers every forbidden code point; this integration
+# boundary proves explicit arm and deployed verification use that same parser.
+write_invalid_unicode_fixture() { # <case>
+  case "$1" in
+    invalid-utf8-unrelated)
+      printf 'UNRELATED=before\xffafter\nTELEGRAM_BOT_TOKEN=%s\n' "$valid_bot_token" ;;
+    bom-prefix)
+      printf '\xef\xbb\xbfUNRELATED=value\nTELEGRAM_BOT_TOKEN=%s\n' "$valid_bot_token" ;;
+    bom-after-token)
+      printf 'TELEGRAM_BOT_TOKEN=%s\nUNRELATED=after\xef\xbb\xbfvalue\n' "$valid_bot_token" ;;
+    noncharacter-fdd0-unrelated)
+      printf 'UNRELATED=before\xef\xb7\x90after\nTELEGRAM_BOT_TOKEN=%s\n' "$valid_bot_token" ;;
+    noncharacter-fdef-prefix)
+      printf '\xef\xb7\xafUNRELATED=value\nTELEGRAM_BOT_TOKEN=%s\n' "$valid_bot_token" ;;
+    noncharacter-fffe-after-token)
+      printf 'TELEGRAM_BOT_TOKEN=%s\nUNRELATED=after\xef\xbf\xbevalue\n' "$valid_bot_token" ;;
+    noncharacter-1ffff-unrelated)
+      printf 'UNRELATED=before\xf0\x9f\xbf\xbfafter\nTELEGRAM_BOT_TOKEN=%s\n' "$valid_bot_token" ;;
+    noncharacter-10fffe-prefix)
+      printf '\xf4\x8f\xbf\xbeUNRELATED=value\nTELEGRAM_BOT_TOKEN=%s\n' "$valid_bot_token" ;;
+    *) return 2 ;;
+  esac > "$arming_fixture/root/.env"
+}
+
+for unicode_case in \
+  invalid-utf8-unrelated \
+  bom-prefix \
+  bom-after-token \
+  noncharacter-fdd0-unrelated \
+  noncharacter-fdef-prefix \
+  noncharacter-fffe-after-token \
+  noncharacter-1ffff-unrelated \
+  noncharacter-10fffe-prefix; do
+  write_invalid_unicode_fixture "$unicode_case"
+  if token_output="$(run_full_install --arm-watchdog 2>&1)"; then
+    echo "ERROR: watchdog arm accepted systemd-invalid Unicode case $unicode_case" >&2
+    exit 1
+  fi
+  if BOOTSTRAP_LIB_ONLY=true ENV_FILE="$arming_fixture/root/.env" \
+    TELEGRAM_PREFLIGHT_BUN_BIN="$REAL_BUN_BIN" INSTALLER_PATH="$INSTALLER" \
+    bash -c 'source "$INSTALLER_PATH"; has_configured_token'; then
+    echo "ERROR: token verification accepted systemd-invalid Unicode case $unicode_case" >&2
+    exit 1
+  fi
+  if grep -Eq 'enable --now (bpa-telegram-daemon.service|bpa-orchestrator-watchdog.timer)|start bpa-orchestrator-watchdog.service' "$arming_calls"; then
+    echo "ERROR: systemd-invalid Unicode case $unicode_case reached an arm or immediate-service call" >&2
+    exit 1
+  fi
+  grep -Fq 'refusing watchdog arm without a configured Telegram alert channel' <<<"$token_output"
+done
+
+printf 'UNRELATED=ordinary\nTELEGRAM_BOT_TOKEN=%s\n' "$valid_bot_token" > "$arming_fixture/root/.env"
+BOOTSTRAP_LIB_ONLY=true ENV_FILE="$arming_fixture/root/.env" INSTALLER_PATH="$INSTALLER" \
+  bash -c 'source "$INSTALLER_PATH"; has_configured_token'
+printf 'TELEGRAM_BOT_TOKEN=%s\n' "$valid_bot_token" > "$arming_fixture/root/.env"
+
+BOOTSTRAP_LIB_ONLY=true ENV_FILE="$arming_fixture/root/.env" INSTALLER_PATH="$INSTALLER" \
+  bash -c 'source "$INSTALLER_PATH"; has_configured_token'
+
+# Explicit arm retires an armed legacy user timer first, proves it inactive,
+# enables the canonical system timer, validates one explicit finite property,
+# and performs an immediate safe one-shot tick.
+BOOTSTRAP_TEST_LEGACY_ENABLED=enabled \
+BOOTSTRAP_TEST_LEGACY_ACTIVE=active \
+BOOTSTRAP_TEST_NEXT_TRIGGER='Sat 2026-08-01 12:00:00 UTC' \
+ORCH_WATCHDOG_NOW=1785582000 \
+run_full_install --arm-watchdog >/dev/null
+grep -Fxq -- '--user disable --now orch-runtime-watchdog.timer' "$arming_calls"
+grep -Fxq -- 'enable --now bpa-orchestrator-watchdog.timer' "$arming_calls"
+grep -Fxq -- 'show bpa-orchestrator-watchdog.timer --property=NextElapseUSecRealtime --value' "$arming_calls"
+grep -Fxq -- 'start bpa-orchestrator-watchdog.service' "$arming_calls"
+
+# An active timer without a finite future trigger is not armed.
+if BOOTSTRAP_TEST_NEXT_TRIGGER=n/a ORCH_WATCHDOG_NOW=1785582000 \
+  run_full_install --arm-watchdog >/dev/null 2>&1; then
+  echo 'ERROR: bootstrap accepted an active watchdog with no next trigger' >&2
+  exit 1
+fi
+grep -Fxq -- 'disable --now bpa-orchestrator-watchdog.timer' "$arming_calls"
+
+# Rollback/disarm leaves rendered units for a future arm but ensures neither
+# the canonical system timer nor legacy user timer remains armed.
+run_full_install --disarm-watchdog >/dev/null
+assert_disarm_attempts_and_queries
+test -f "$arming_fixture/config/bpa-orchestrator-watchdog.timer"
+
+# Every failed command/query is terminal, emits no false success, and leaves
+# both timer generations in a modeled, inspectable state.
+disarm_failure_rows=(
+  'disable --now bpa-orchestrator-watchdog.timer|WATCHDOG DISARM system=enabled/active legacy=disabled/inactive'
+  '--user disable --now orch-runtime-watchdog.timer|WATCHDOG DISARM system=disabled/inactive legacy=enabled/active'
+  'is-enabled bpa-orchestrator-watchdog.timer|WATCHDOG DISARM system=unknown/inactive legacy=disabled/inactive'
+  'is-active bpa-orchestrator-watchdog.timer|WATCHDOG DISARM system=disabled/unknown legacy=disabled/inactive'
+  '--user is-enabled orch-runtime-watchdog.timer|WATCHDOG DISARM system=disabled/inactive legacy=unknown/inactive'
+  '--user is-active orch-runtime-watchdog.timer|WATCHDOG DISARM system=disabled/inactive legacy=disabled/unknown'
+)
+for failure_row in "${disarm_failure_rows[@]}"; do
+  failed_command="${failure_row%%|*}"
+  expected_terminal="${failure_row#*|}"
+  if disarm_output="$(BOOTSTRAP_TEST_SYSTEM_ENABLED=enabled BOOTSTRAP_TEST_SYSTEM_ACTIVE=active \
+    BOOTSTRAP_TEST_LEGACY_ENABLED=enabled BOOTSTRAP_TEST_LEGACY_ACTIVE=active \
+    BOOTSTRAP_TEST_FAIL_COMMAND="$failed_command" run_full_install --disarm-watchdog 2>&1)"; then
+    echo "ERROR: disarm accepted failed command: $failed_command" >&2
+    exit 1
+  fi
+  assert_disarm_attempts_and_queries
+  assert_exact_disarm_terminal "$disarm_output" "$expected_terminal" ||
+    { echo "ERROR: disarm terminal tuple mismatch after: $failed_command" >&2; exit 1; }
+  if grep -Fq 'Watchdog timers disarmed' <<<"$disarm_output"; then
+    echo "ERROR: disarm printed false success after: $failed_command" >&2
+    exit 1
+  fi
+done
+
+# Executable mutation-red proof: changing any one resolved terminal component
+# is rejected by the same exact-line oracle used for every failure row above.
+for failure_row in "${disarm_failure_rows[@]}"; do
+  expected_terminal="${failure_row#*|}"
+  for tuple_field in system legacy; do
+    mutant="$(sed -E "s/${tuple_field}=([^ ]+)/${tuple_field}=corrupt-\\1/" <<<"$expected_terminal")"
+    [[ "$mutant" != "$expected_terminal" ]]
+    if assert_exact_disarm_terminal "$mutant" "$expected_terminal"; then
+      echo "ERROR: exact terminal oracle accepted $tuple_field tuple mutant" >&2
+      exit 1
+    fi
+  done
+done
+printf '%s\n' 'MUTATION-RED disarm exact terminal tuples'
+
+# Explicit disarm is a safety action, not a Telegram-dependent deployment.
+# Missing and placeholder tokens must still attempt and prove both generations.
+for token_mode in missing placeholder; do
+  if [[ "$token_mode" == missing ]]; then
+    rm -f "$arming_fixture/root/.env"
+  else
+    printf '%s\n' 'TELEGRAM_BOT_TOKEN=__OPERATOR_REQUIRED__' > "$arming_fixture/root/.env"
+  fi
+  disarm_output="$(BOOTSTRAP_TEST_SYSTEM_ENABLED=enabled BOOTSTRAP_TEST_SYSTEM_ACTIVE=active \
+    BOOTSTRAP_TEST_LEGACY_ENABLED=enabled BOOTSTRAP_TEST_LEGACY_ACTIVE=active \
+    run_full_install --disarm-watchdog 2>&1)"
+  assert_disarm_attempts_and_queries
+  grep -Fq 'WATCHDOG DISARM system=disabled/inactive legacy=disabled/inactive' <<<"$disarm_output"
+  grep -Fq 'Watchdog timers disarmed' <<<"$disarm_output"
+
+  if failed_disarm_output="$(BOOTSTRAP_TEST_SYSTEM_ENABLED=enabled BOOTSTRAP_TEST_SYSTEM_ACTIVE=active \
+    BOOTSTRAP_TEST_LEGACY_ENABLED=enabled BOOTSTRAP_TEST_LEGACY_ACTIVE=active \
+    BOOTSTRAP_TEST_FAIL_COMMAND='disable --now bpa-orchestrator-watchdog.timer' \
+    run_full_install --disarm-watchdog 2>&1)"; then
+    echo "ERROR: $token_mode-token disarm accepted canonical disable failure" >&2
+    exit 1
+  fi
+  assert_disarm_attempts_and_queries
+  grep -Fq 'WATCHDOG DISARM system=enabled/active legacy=disabled/inactive' <<<"$failed_disarm_output"
+  if grep -Fq 'Watchdog timers disarmed' <<<"$failed_disarm_output"; then
+    echo "ERROR: $token_mode-token failed disarm printed false success" >&2
+    exit 1
+  fi
+done
+printf 'TELEGRAM_BOT_TOKEN=%s\n' "$valid_bot_token" > "$arming_fixture/root/.env"
+
+# Blank post-retirement state is unverifiable and restores the proven armed
+# legacy generation after proving the canonical generation inert.
+if blank_output="$(BOOTSTRAP_TEST_LEGACY_ENABLED=enabled BOOTSTRAP_TEST_LEGACY_ACTIVE=active \
+  BOOTSTRAP_TEST_BLANK_AFTER_LEGACY_DISABLE=1 run_full_install --arm-watchdog 2>&1)"; then
+  echo 'ERROR: arm accepted blank legacy post-retirement output' >&2
+  exit 1
+fi
+if grep -Fq 'Bootstrap completed' <<<"$blank_output"; then
+  echo 'ERROR: blank post-retirement query printed success' >&2
+  exit 1
+fi
+
+# Immediate recovery is in the arm transaction. Failure disables and proves
+# the canonical timer, then restores the exact prior armed legacy state.
+if immediate_output="$(BOOTSTRAP_TEST_LEGACY_ENABLED=enabled BOOTSTRAP_TEST_LEGACY_ACTIVE=active \
+  BOOTSTRAP_TEST_IMMEDIATE_RC=42 ORCH_WATCHDOG_NOW=1785582000 \
+  run_full_install --arm-watchdog 2>&1)"; then
+  echo 'ERROR: arm accepted a failed immediate watchdog service' >&2
+  exit 1
+fi
+grep -Fxq 'disabled' < <(head -n1 "$arming_fixture/system.state")
+grep -Fxq 'inactive' < <(tail -n1 "$arming_fixture/system.state")
+grep -Fxq 'enabled' < <(head -n1 "$arming_fixture/legacy.state")
+grep -Fxq 'active' < <(tail -n1 "$arming_fixture/legacy.state")
+if grep -Fq 'Bootstrap completed' <<<"$immediate_output"; then
+  echo 'ERROR: immediate failure printed success' >&2
+  exit 1
+fi
+
+# A rollback whose canonical disable fails is itself NO-GO.
+if rollback_output="$(BOOTSTRAP_TEST_NEXT_TRIGGER=n/a \
+  BOOTSTRAP_TEST_FAIL_COMMAND='disable --now bpa-orchestrator-watchdog.timer' \
+  ORCH_WATCHDOG_NOW=1785582000 run_full_install --arm-watchdog 2>&1)"; then
+  echo 'ERROR: arm accepted an unproven rollback disable' >&2
+  exit 1
+fi
+grep -Fq 'rollback could not be proven' <<<"$rollback_output"
 
 # Render deployable unit inputs without requiring host envsubst. Temporary test
 # fixtures are intentionally outside this sweep; bootstrap inputs may never

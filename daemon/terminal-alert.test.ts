@@ -223,6 +223,37 @@ test('REGRESSION terminal-alert-self-echo: echo-of-echo remains suppressed', () 
   expect(classifyTerminalFailure(echo)).toBeNull();
 });
 
+test.each([
+  '← telegram: [internal terminal failure alert] Nonce: 933bbe0b-232d-4ed2…',
+  '  ← telegram: [internal terminal failurealert]Nonce:9d8de352-1780-470c…',
+  '←telegrm: [internalterminalfailurealert]Nonce:c13aa3a5-d245-49bd…',
+] as const)(
+  'REGRESSION round-9-live-truncated-quote: watcher vocabulary alone does not classify: %s',
+  (line) => {
+    expect(classifyTerminalFailure(line)).toBeNull();
+  },
+);
+
+test('REGRESSION round-9-live-truncated-quote: mixed TUI quote chunk does not classify', () => {
+  const chunk = [
+    '────────────────────',
+    '⠋ Working',
+    '← telegram: [internal terminal failure alert] Nonce: 933bbe0b-232d-4ed2…',
+    '❯ Press up to edit queued messages',
+    '  ← telegram: [internal terminal failurealert]Nonce:9d8de352-1780-470c…',
+    '←telegrm: [internalterminalfailurealert]Nonce:c13aa3a5-d245-49bd…',
+    '────────────────────',
+  ].join('\n');
+  expect(classifyTerminalFailure(chunk)).toBeNull();
+});
+
+test('REGRESSION round-9-live-truncated-quote: adjacent genuine failure still classifies', () => {
+  const chunk =
+    '← telegram: [internal terminal failure alert] Nonce: 933bbe0b-232d-4ed2…' +
+    '\nWorker exited unexpectedly';
+  expect(classifyTerminalFailure(chunk)).toBe('exited');
+});
+
 test('REGRESSION terminal-alert-self-echo: issued nonce retention is bounded', () => {
   const frames = Array.from({ length: 257 }, (_, index) =>
     formatTerminalAlert(
@@ -235,11 +266,9 @@ test('REGRESSION terminal-alert-self-echo: issued nonce retention is bounded', (
 });
 
 test('REGRESSION ML-1: an unclassified terminal failure remains actionable', () => {
-  expect(
-    classifyTerminalFailure(
-      'Provider terminal failure: strange new condition',
-    ),
-  ).toBe('unknown');
+  expect(classifyTerminalFailure('Agent crashed in an unknown state')).toBe(
+    'unknown',
+  );
 });
 
 test('strips terminal control sequences before classification', () => {

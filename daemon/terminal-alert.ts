@@ -13,7 +13,6 @@ export type TerminalFailureClass =
   | 'unknown';
 
 const UNKNOWN_FAILURE_PATTERNS = [
-  /\bterminal failure\b/i,
   /\b(?:agent|watchdog|process) crashed\b/i,
 ] as const;
 

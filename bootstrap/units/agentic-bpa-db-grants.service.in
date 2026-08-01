@@ -1,0 +1,11 @@
+[Unit]
+Description=Fail loudly when the agentic-bpa database access contract drifts
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/agentic-bpa/app.env
+Environment=DB_ACCESS_DECLARATION=${INSTALL_ROOT}/database/access.declaration.json
+Environment=DB_GRANT_NOTIFY_URL=http://127.0.0.1:4822/notify
+ExecStart=${BUN_BIN} ${INSTALL_ROOT}/database/check-access.ts
+StandardOutput=journal+console
+StandardError=journal+console

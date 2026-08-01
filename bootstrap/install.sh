@@ -191,6 +191,8 @@ verify() {
   check "deploy drift timer" test -f "$SYSTEMD_SYSTEM_DIR/bpa-deploy-drift-guard.timer"
   check "stand staleness service" test -f "$SYSTEMD_SYSTEM_DIR/agentic-bpa-staleness.service"
   check "stand staleness timer" test -f "$SYSTEMD_SYSTEM_DIR/agentic-bpa-staleness.timer"
+  check "database grants service" test -f "$SYSTEMD_SYSTEM_DIR/agentic-bpa-db-grants.service"
+  check "database grants timer" test -f "$SYSTEMD_SYSTEM_DIR/agentic-bpa-db-grants.timer"
   check "unit Exec paths" rendered_unit_exec_paths_status
   check "deployed unit drift" env \
     INSTALL_ROOT="$INSTALL_ROOT" ENV_FILE="$ENV_FILE" BUN_BIN="$BUN_BIN" \
@@ -220,6 +222,7 @@ verify() {
     check "morning enabled" systemctl is-enabled --quiet orch-morning-report.timer
     check "deploy drift enabled" systemctl is-enabled --quiet bpa-deploy-drift-guard.timer
     check "stand staleness enabled" systemctl is-enabled --quiet agentic-bpa-staleness.timer
+    check "database grants enabled" systemctl is-enabled --quiet agentic-bpa-db-grants.timer
   fi
   return "$result"
 }
@@ -409,6 +412,7 @@ activate_units() {
     systemctl enable --now orch-morning-report.timer
     systemctl enable --now bpa-deploy-drift-guard.timer
     systemctl enable --now agentic-bpa-staleness.timer
+    systemctl enable --now agentic-bpa-db-grants.timer
     if "$ARM_WATCHDOG"; then
       echo 'ERROR: watchdog units are deliberately absent because unattended lease-loss handling is not approved' >&2
       return 1

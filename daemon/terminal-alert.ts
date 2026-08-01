@@ -35,6 +35,9 @@ const INTERNAL_ALERT_NONCE_PREFIX_PATTERN =
   INTERNAL_ALERT_NONCE_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const INTERNAL_ALERT_NOISY_LINE_BREAK = '(?:[ \\t]*\\n)+[ \\t]*';
 const INTERNAL_ALERT_KIND_SEPARATOR = '·';
+const CANONICAL_ALERT_NONCE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const INVALID_ALERT_NONCE = 'invalid-nonce';
 
 export function encodeAlertKind(kind: TerminalFailureClass): string {
   return `${kind[0]}${INTERNAL_ALERT_KIND_SEPARATOR}${kind.slice(1)}`;
@@ -44,7 +47,10 @@ export function formatTerminalAlertPointer(
   kind: TerminalFailureClass,
   nonce: string,
 ): string {
-  return `terminal-alert: kind=${encodeAlertKind(kind)} nonce=${nonce} — details in daemon journal`;
+  const renderedNonce = CANONICAL_ALERT_NONCE.test(nonce)
+    ? nonce
+    : INVALID_ALERT_NONCE;
+  return `terminal-alert: kind=${encodeAlertKind(kind)} nonce=${renderedNonce} — details in daemon journal`;
 }
 
 export function terminalAlertPointerFromFrame(frame: string): string {

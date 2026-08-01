@@ -91,6 +91,19 @@ for (const [index, shape] of invalidShapes.entries()) {
   if ((await proc.exited) === 0) throw new Error(`invalid EnvironmentFile shape ${index}`);
 }
 
+// EnvironmentFile rejects U+0000. Keep this as an exact byte fixture because
+// JavaScript or shell text helpers can otherwise obscure the NUL boundary.
+await writeFile(envFile, Buffer.concat([
+  Buffer.from('UNRELATED=before'),
+  Buffer.from([0]),
+  Buffer.from(`after\nTELEGRAM_BOT_TOKEN=${token}\n`),
+]));
+{
+  const proc = Bun.spawn({ cmd: ['bash', '-c', 'source "$PREFLIGHT"; telegram_read_bot_token "$ENV_FILE"'],
+    env: { PATH: process.env.PATH!, PREFLIGHT: helper, ENV_FILE: envFile }, stdout: 'ignore', stderr: 'ignore' });
+  if ((await proc.exited) === 0) throw new Error('NUL-containing EnvironmentFile accepted');
+}
+
 await writeFile(envFile, `UNRELATED=ordinary\nTELEGRAM_BOT_TOKEN=${token}\n`);
 if (await preflight('success')) throw new Error('ordinary preceding assignment rejected');
 
@@ -122,5 +135,23 @@ const shapeProc = Bun.spawn({
   stdout: 'ignore', stderr: 'ignore',
 });
 if ((await shapeProc.exited) !== 0) throw new Error('physical-line mutant did not reproduce fail-before');
+
+const nulMutant = join(scratch, 'preflight-nul-mutant.sh');
+const nulGuard = "  LC_ALL=C tr -d '\\000' < \"$env_file\" | LC_ALL=C cmp -s \"$env_file\" - || return 1\n";
+const withoutNulGuard = production.replace(nulGuard, '');
+if (withoutNulGuard === production) throw new Error('NUL mutation was not applied');
+await writeFile(nulMutant, withoutNulGuard);
+await writeFile(envFile, Buffer.concat([
+  Buffer.from('UNRELATED=before'),
+  Buffer.from([0]),
+  Buffer.from(`after\nTELEGRAM_BOT_TOKEN=${token}\n`),
+]));
+const nulProc = Bun.spawn({
+  cmd: ['bash', '-c', 'source "$PREFLIGHT"; telegram_read_bot_token "$ENV_FILE"'],
+  env: { PATH: process.env.PATH!, PREFLIGHT: nulMutant, ENV_FILE: envFile },
+  stdout: 'ignore', stderr: 'ignore',
+});
+if ((await nulProc.exited) !== 0) throw new Error('NUL mutant did not reproduce fail-before');
 console.log('MUTATION-RED physical-line parser and bot-id bounds');
+console.log('MUTATION-RED NUL EnvironmentFile guard');
 console.log('telegram transport preflight: PASS');

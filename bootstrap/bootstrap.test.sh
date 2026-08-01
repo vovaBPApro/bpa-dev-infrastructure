@@ -458,6 +458,27 @@ for token_row in "${invalid_token_rows[@]}"; do
   fi
   grep -Fq 'refusing watchdog arm without a configured Telegram alert channel' <<<"$token_output"
 done
+
+# Exact binary EnvironmentFile fixture: Bash read discards NUL, while systemd
+# rejects U+0000. Both arm and deployed verification must fail before any unit
+# activation can consume a configuration the service manager cannot parse.
+printf 'UNRELATED=before\0after\nTELEGRAM_BOT_TOKEN=%s\n' "$valid_bot_token" \
+  > "$arming_fixture/root/.env"
+if token_output="$(run_full_install --arm-watchdog 2>&1)"; then
+  echo "ERROR: watchdog arm accepted NUL-containing EnvironmentFile" >&2
+  exit 1
+fi
+if BOOTSTRAP_LIB_ONLY=true ENV_FILE="$arming_fixture/root/.env" INSTALLER_PATH="$INSTALLER" \
+  bash -c 'source "$INSTALLER_PATH"; has_configured_token'; then
+  echo 'ERROR: token verification accepted NUL-containing EnvironmentFile' >&2
+  exit 1
+fi
+if grep -Eq 'enable --now (bpa-telegram-daemon.service|bpa-orchestrator-watchdog.timer)|start bpa-orchestrator-watchdog.service' "$arming_calls"; then
+  echo 'ERROR: NUL-containing EnvironmentFile reached an arm or immediate-service call' >&2
+  exit 1
+fi
+grep -Fq 'refusing watchdog arm without a configured Telegram alert channel' <<<"$token_output"
+
 printf 'UNRELATED=ordinary\nTELEGRAM_BOT_TOKEN=%s\n' "$valid_bot_token" > "$arming_fixture/root/.env"
 BOOTSTRAP_LIB_ONLY=true ENV_FILE="$arming_fixture/root/.env" INSTALLER_PATH="$INSTALLER" \
   bash -c 'source "$INSTALLER_PATH"; has_configured_token'

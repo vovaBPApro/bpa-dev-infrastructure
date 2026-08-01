@@ -25,7 +25,7 @@ never a false green.
 ## Final report
 
 commit: 7ab1d525707bb77bf1d3e39207a2d605cb4e0e00 [CODER] bound watchdog A1 startup waits
-verify: cd daemon && bun test
+verify: cd daemon && set -o pipefail && bun test 2>&1 | sed 's/^[[:space:]]*//'
 verify-count: 208/0
 result: clean
 secret-scan: clean

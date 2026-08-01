@@ -8,10 +8,11 @@ SYSTEMD_SYSTEM_DIR="${SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
 INSTALL_ROOT="${INSTALL_ROOT:-/root/bpa-dev-infrastructure}"
 ENV_FILE="${ENV_FILE:-/root/.config/bpa/orchestrator.env}"
 BUN_BIN="${BUN_BIN:-/usr/local/bin/bun}"
+BASH_BIN="${BASH_BIN:-/usr/bin/bash}"
 FULL_SUITE_ON_CALENDAR="${FULL_SUITE_ON_CALENDAR:-*-*-* 03:30:00}"
 ORCH_WATCHDOG_INTERVAL="${ORCH_WATCHDOG_INTERVAL:-60}"
 EXEMPTIONS_FILE="${EXEMPTIONS_FILE:-$SCRIPT_DIR/../instance/unit-drift-exemptions.tsv}"
-export INSTALL_ROOT ENV_FILE BUN_BIN FULL_SUITE_ON_CALENDAR ORCH_WATCHDOG_INTERVAL
+export INSTALL_ROOT ENV_FILE BUN_BIN BASH_BIN FULL_SUITE_ON_CALENDAR ORCH_WATCHDOG_INTERVAL
 
 command -v envsubst >/dev/null 2>&1 || {
   echo 'ERROR: envsubst is required to check unit drift' >&2

@@ -88,6 +88,7 @@ render_fixture_unit() {
   INSTALL_ROOT="$verify_fixture/root" \
     ENV_FILE="$verify_fixture/root/.env" \
     BUN_BIN="$verify_fixture/bin/bun" \
+    BASH_BIN="/usr/bin/bash" \
     FULL_SUITE_ON_CALENDAR='*-*-* 03:30:00' \
     ORCH_WATCHDOG_INTERVAL=60 \
     envsubst < "$unit_template" > "$verify_fixture/systemd/system/$unit_name"
@@ -357,7 +358,7 @@ fi
 # retain the retired host root.
 rendered_units="$(for template in "$SCRIPT_DIR"/units/*.in; do
   # shellcheck disable=SC2016 # preserve template placeholders for sed
-  sed 's|\$INSTALL_ROOT|/root/bpa-dev-infrastructure|g; s|\$ENV_FILE|/root/bpa-dev-infrastructure/.env|g; s|\$BUN_BIN|/root/.bun/bin/bun|g' "$template"
+  sed 's|\$INSTALL_ROOT|/root/bpa-dev-infrastructure|g; s|\$ENV_FILE|/root/bpa-dev-infrastructure/.env|g; s|\$BUN_BIN|/root/.bun/bin/bun|g; s|\$BASH_BIN|/usr/bin/bash|g' "$template"
 done)"
 grep -Fq 'WorkingDirectory=/root/bpa-dev-infrastructure/orchestrator' <<<"$rendered_units"
 grep -Fq 'EnvironmentFile=/root/bpa-dev-infrastructure/.env' <<<"$rendered_units"

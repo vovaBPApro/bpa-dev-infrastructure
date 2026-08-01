@@ -99,6 +99,7 @@ import {
 } from './history-logger';
 import {
   AutonomyKeepalive,
+  deliverFleetAlert,
   deliverAutonomyNudge,
   parseFleetConfig,
   parseSystemdLaneUnits,
@@ -1568,17 +1569,26 @@ async function autonomyNudge(message: string): Promise<void> {
   });
 }
 
+const acknowledgedFleetAlertChats = new Set<string>();
+
 async function alertHumanAboutFleet(message: string): Promise<void> {
   const access = loadAccess();
   if (access.allowFrom.length === 0) {
     throw new Error('fleet alert has no allowlisted Human chat');
   }
-  await Promise.all(
-    access.allowFrom.map((chatId) =>
-      sendTelegramReply({ chatId, text: message, loud: true }),
-    ),
+  await deliverFleetAlert(
+    message,
+    access.allowFrom,
+    acknowledgedFleetAlertChats,
+    async (chatId, text) => {
+      await sendTelegramReply({ chatId, text, loud: true });
+    },
   );
   process.stderr.write(`${LOG_PREFIX} fleet Human alert delivered: ${message}\n`);
+}
+
+function resetHumanFleetAlert(): void {
+  acknowledgedFleetAlertChats.clear();
 }
 
 const autonomyKeepalive = new AutonomyKeepalive({
@@ -1588,6 +1598,7 @@ const autonomyKeepalive = new AutonomyKeepalive({
   listUnits: listSystemLaneUnits,
   nudge: autonomyNudge,
   alertHuman: alertHumanAboutFleet,
+  resetHumanAlert: resetHumanFleetAlert,
 });
 
 let laneEventTickRunning = false;

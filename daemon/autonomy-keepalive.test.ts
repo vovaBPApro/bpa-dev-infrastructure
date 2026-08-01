@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test';
 import {
   AutonomyKeepalive,
   deliverAutonomyNudge,
+  deliverFleetAlert,
   hasOpenWorkboardRows,
   parseFleetConfig,
   parseSystemdLaneUnits,
@@ -210,4 +211,66 @@ test('failed Human delivery remains armed for retry', async () => {
   await expect(keepalive.timerTick()).rejects.toThrow('Telegram unavailable');
   await keepalive.timerTick();
   expect(attempts).toBe(2);
+});
+
+test('REGRESSION fleet floor fail-closed: failed census alerts Human as unknown', async () => {
+  const alerts: string[] = [];
+  const keepalive = new AutonomyKeepalive({
+    floor: 10,
+    notifyHumanBelow: 3,
+    readWorkboard: () => OPEN_WORKBOARD,
+    listUnits: () => {
+      throw new Error('systemctl unavailable');
+    },
+    nudge: async () => {},
+    alertHuman: async (message) => void alerts.push(message),
+  });
+
+  await keepalive.timerTick();
+  expect(alerts).toEqual([
+    'fleet status unknown — systemd unit census failed; treating as below alert threshold (3)',
+  ]);
+});
+
+test('REGRESSION fleet floor fail-closed: failed workboard read alerts Human as unknown', async () => {
+  const alerts: string[] = [];
+  const keepalive = new AutonomyKeepalive({
+    floor: 10,
+    notifyHumanBelow: 3,
+    readWorkboard: () => {
+      throw new Error('read failed');
+    },
+    listUnits: () => [{ name: 'lane-a.service', active: true }],
+    nudge: async () => {},
+    alertHuman: async (message) => void alerts.push(message),
+  });
+
+  await keepalive.timerTick();
+  expect(alerts[0]).toContain('workboard read failed');
+});
+
+test('REGRESSION fleet floor delivery: partial success is not loudly resent in one episode', async () => {
+  const acknowledged = new Set<number>();
+  const deliveries: number[] = [];
+  let secondChatAvailable = false;
+  const keepalive = new AutonomyKeepalive({
+    floor: 10,
+    notifyHumanBelow: 3,
+    readWorkboard: () => '',
+    listUnits: () => [],
+    nudge: async () => {},
+    alertHuman: (message) =>
+      deliverFleetAlert(message, [101, 202], acknowledged, async (chatId) => {
+        deliveries.push(chatId);
+        if (chatId === 202 && !secondChatAvailable) throw new Error('unavailable');
+      }),
+    resetHumanAlert: () => acknowledged.clear(),
+  });
+
+  await expect(keepalive.timerTick()).rejects.toThrow('not delivered');
+  secondChatAvailable = true;
+  await keepalive.timerTick();
+  await keepalive.timerTick();
+
+  expect(deliveries).toEqual([101, 202, 202]);
 });

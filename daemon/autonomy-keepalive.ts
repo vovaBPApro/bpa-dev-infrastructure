@@ -1,5 +1,25 @@
 export type LaneUnit = { name: string; active: boolean };
 
+/** Retry only unacknowledged recipients within one fleet-drop episode. */
+export async function deliverFleetAlert<ChatId>(
+  message: string,
+  chatIds: ChatId[],
+  acknowledged: Set<ChatId>,
+  send: (chatId: ChatId, message: string) => Promise<void>,
+): Promise<void> {
+  const results = await Promise.allSettled(
+    chatIds
+      .filter((chatId) => !acknowledged.has(chatId))
+      .map(async (chatId) => {
+        await send(chatId, message);
+        acknowledged.add(chatId);
+      }),
+  );
+  if (results.some((result) => result.status === 'rejected')) {
+    throw new Error('fleet alert was not delivered to every Human chat');
+  }
+}
+
 export type FleetConfig = {
   floor: number;
   notifyHumanBelow: number;
@@ -80,12 +100,14 @@ type KeepaliveOptions = {
   listUnits: () => LaneUnit[];
   nudge: (message: string) => Promise<void>;
   alertHuman: (message: string) => Promise<void>;
+  resetHumanAlert?: () => void;
 };
 
 /** Independent event and timer paths which share only their delivery method. */
 export class AutonomyKeepalive {
   private previousRunning: Set<string> | null = null;
   private humanAlertActive = false;
+  private humanAlertAcknowledged = false;
 
   constructor(private readonly opts: KeepaliveOptions) {}
 
@@ -113,19 +135,45 @@ export class AutonomyKeepalive {
   }
 
   async timerTick(): Promise<void> {
-    const running = this.opts.listUnits().filter((unit) => unit.active).length;
-    if (running < this.opts.notifyHumanBelow) {
+    let running: number | null = null;
+    let workboard: string | null = null;
+    const unknown: string[] = [];
+    try {
+      running = this.opts.listUnits().filter((unit) => unit.active).length;
+    } catch {
+      unknown.push('systemd unit census failed');
+    }
+    try {
+      workboard = this.opts.readWorkboard();
+    } catch {
+      unknown.push('workboard read failed');
+    }
+
+    if (
+      unknown.length > 0 ||
+      running === null ||
+      running < this.opts.notifyHumanBelow
+    ) {
       if (!this.humanAlertActive) {
-        await this.opts.alertHuman(
-          `${running} lanes running — not enough work in flight (alert threshold: ${this.opts.notifyHumanBelow})`,
-        );
         this.humanAlertActive = true;
+        this.humanAlertAcknowledged = false;
+      }
+      if (!this.humanAlertAcknowledged) {
+        await this.opts.alertHuman(
+          unknown.length > 0
+            ? `fleet status unknown — ${unknown.join(' and ')}; treating as below alert threshold (${this.opts.notifyHumanBelow})`
+            : `${running} lanes running — not enough work in flight (alert threshold: ${this.opts.notifyHumanBelow})`,
+        );
+        this.humanAlertAcknowledged = true;
       }
     } else {
+      if (this.humanAlertActive) this.opts.resetHumanAlert?.();
       this.humanAlertActive = false;
+      this.humanAlertAcknowledged = false;
     }
+    if (unknown.length > 0 || running === null || workboard === null) return;
     if (running >= this.opts.floor) return;
-    if (!hasOpenWorkboardRows(this.opts.readWorkboard())) return;
+    if (!hasOpenWorkboardRows(workboard)) return;
     await this.opts.nudge(
       `fleet below floor: ${running}/${this.opts.floor} running with open workboard rows; dispatch more work`,
     );

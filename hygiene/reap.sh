@@ -53,10 +53,12 @@ reap_branches() {
   git -C "$repo" show-ref --verify --quiet "refs/heads/$main_branch" || die "main branch not found: $main_branch"
   local branch timestamp age now worktree
   now="$(date +%s)"
+  local worktree_list
+  worktree_list="$(git -C "$repo" worktree list --porcelain)"
   while IFS= read -r branch; do
     [[ "$branch" == "$main_branch" ]] && continue
     if git -C "$repo" merge-base --is-ancestor "$branch" "$main_branch"; then
-      worktree="$(git -C "$repo" worktree list --porcelain | awk -v wanted="refs/heads/$branch" '
+      worktree="$(printf '%s\n' "$worktree_list" | awk -v wanted="refs/heads/$branch" '
         $1 == "worktree" { path=$2 }
         $1 == "branch" && $2 == wanted { print path; exit }
       ')"

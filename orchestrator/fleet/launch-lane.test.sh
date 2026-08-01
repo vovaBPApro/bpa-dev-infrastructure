@@ -55,6 +55,7 @@ grep -Fq '# Dispatch proof' "$SCRATCH/lanes/lane-proof.prompt.md"
 git -C "$SCRATCH/lanes/proof" symbolic-ref --short HEAD | grep -Fxq ag-fleet-launch-proof
 grep -Fxq -- '--unit' "$SCRATCH/systemd.args"
 grep -Fxq 'lane-proof' "$SCRATCH/systemd.args"
+grep -Fxq -- '--property=IPAddressDeny=localhost' "$SCRATCH/systemd.args"
 if grep -Fxq -- '--user' "$SCRATCH/systemd.args"; then
   printf 'systemd-run incorrectly used the user manager\n' >&2
   exit 1

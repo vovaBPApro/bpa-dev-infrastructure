@@ -85,6 +85,7 @@ unit_path="$(dirname "$BUN_BIN"):$(dirname "$codex_bin"):/usr/local/bin:/usr/bin
 # Prompt expansion is intentionally deferred to the transient unit's shell.
 # shellcheck disable=SC2016,SC2251
 if ! systemd-run --collect --unit "$unit" \
+  --property=IPAddressDeny=localhost \
   --setenv="HOME=$HOME" --setenv="TMPDIR=$tmp_dir" --setenv="PATH=$unit_path" \
   --working-directory="$worktree" \
   /bin/bash -o pipefail -c '"$1" exec --dangerously-bypass-approvals-and-sandbox "$(cat "$2")" 2>&1 | "$3" "$4" >>"$5"' \

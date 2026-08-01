@@ -17,12 +17,24 @@ const UNKNOWN_FAILURE_PATTERNS = [
 ] as const;
 
 const INTERNAL_ALERT_BANNER = '[internal terminal failure alert]';
+const INTERNAL_ALERT_PAYLOAD_PREFIX = '[internal terminal failure payload] ';
+const INTERNAL_ALERT_END = '[/internal terminal failure alert]';
 const INTERNAL_ALERT_BANNER_PATTERN = INTERNAL_ALERT_BANNER.replace(
+  /[.*+?^${}()|[\]\\]/g,
+  '\\$&',
+);
+const INTERNAL_ALERT_PAYLOAD_PREFIX_PATTERN =
+  INTERNAL_ALERT_PAYLOAD_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const INTERNAL_ALERT_END_PATTERN = INTERNAL_ALERT_END.replace(
   /[.*+?^${}()|[\]\\]/g,
   '\\$&',
 );
 
 const INTERNAL_ALERT_ECHO = new RegExp(
+  `(^|\\n)(?:(?:\\d{4}-\\d{2}-\\d{2}[ T])?\\d{2}:\\d{2}(?::\\d{2})?\\s+)?${INTERNAL_ALERT_BANNER_PATTERN}\\nType: (?:usage-limit|429/overload|auth|stalled|failed|exited|network|fatal|unknown)\\nSession: [^\\n]{1,512}\\n\\n(?:${INTERNAL_ALERT_PAYLOAD_PREFIX_PATTERN}[^\\n]*\\n)+${INTERNAL_ALERT_END_PATTERN}(?=\\n|$)`,
+  'gi',
+);
+const INTERNAL_ALERT_LEGACY_ECHO = new RegExp(
   `(^|\\n)(?:(?:\\d{4}-\\d{2}-\\d{2}[ T])?\\d{2}:\\d{2}(?::\\d{2})?\\s+)?${INTERNAL_ALERT_BANNER_PATTERN}\\nType: (?:usage-limit|429/overload|auth|stalled|failed|exited|network|fatal|unknown)\\nSession: [^\\n]{1,512}\\n\\n[^\\n]{0,4096}(?=\\n|$)`,
   'gi',
 );
@@ -108,6 +120,7 @@ export function classifyTerminalFailure(
 ): TerminalFailureClass | null {
   line = stripTerminalNoise(line);
   line = line.replace(INTERNAL_ALERT_ECHO, '$1');
+  line = line.replace(INTERNAL_ALERT_LEGACY_ECHO, '$1');
   for (const entry of FAILURE_PATTERNS) {
     if (entry.patterns.some((pattern) => pattern.test(line))) return entry.kind;
   }
@@ -136,12 +149,16 @@ type AlertFetch = (
 ) => Promise<Response>;
 
 export function formatTerminalAlert(payload: AlertPayload): string {
+  const framedPayload = payload.line
+    .split('\n')
+    .map((line) => `${INTERNAL_ALERT_PAYLOAD_PREFIX}${line}`);
   return [
     '[internal terminal failure alert]',
     `Type: ${payload.kind}`,
     `Session: ${payload.session}`,
     '',
-    payload.line,
+    ...framedPayload,
+    INTERNAL_ALERT_END,
   ].join('\n');
 }
 

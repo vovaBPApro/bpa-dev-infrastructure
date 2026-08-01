@@ -64,6 +64,15 @@ test('REGRESSION terminal-alert-self-echo: pure rendered echo does not alert', (
   expect(classifyTerminalFailure(banner)).toBeNull();
 });
 
+test('REGRESSION terminal-alert-self-echo: pure multiline-payload echo does not alert', () => {
+  const echo = formatTerminalAlert({
+    kind: 'fatal',
+    line: 'benign first payload line\nRuntime fatal signal 11',
+    session: 'orchestrator',
+  });
+  expect(classifyTerminalFailure(echo)).toBeNull();
+});
+
 test('REGRESSION terminal-alert-self-echo: a real failure quoting the banner alerts', () => {
   expect(
     classifyTerminalFailure(
@@ -83,10 +92,22 @@ test('REGRESSION terminal-alert-self-echo: a failure after a valid multiline ban
   const chunk =
     formatTerminalAlert({
       kind: 'unknown',
-      line: 'Provider terminal failure: strange new condition',
+      line: 'benign first payload line\nRuntime fatal signal 11',
       session: 'orchestrator',
-    }) + '\nRuntime fatal signal 11';
-  expect(classifyTerminalFailure(chunk)).toBe('fatal');
+    }) + '\nWorker exited unexpectedly';
+  expect(classifyTerminalFailure(chunk)).toBe('exited');
+});
+
+test('REGRESSION terminal-alert-self-echo: an incomplete frame cannot hide a real failure', () => {
+  const incomplete = [
+    '[internal terminal failure alert]',
+    'Type: fatal',
+    'Session: orchestrator',
+    '',
+    '[internal terminal failure payload] benign',
+    'Worker exited unexpectedly',
+  ].join('\n');
+  expect(classifyTerminalFailure(incomplete)).toBe('exited');
 });
 
 test('REGRESSION ML-1: an unclassified terminal failure remains actionable', () => {
@@ -110,7 +131,11 @@ test('formats an internal alert with class and session', () => {
       line: 'network error',
       session: 'orchestrator',
     }),
-  ).toContain('Type: network\nSession: orchestrator\n\nnetwork error');
+  ).toContain(
+    'Type: network\nSession: orchestrator\n\n' +
+      '[internal terminal failure payload] network error\n' +
+      '[/internal terminal failure alert]',
+  );
 });
 
 test('REGRESSION ML-1: a rejected notify response is a delivery failure', async () => {

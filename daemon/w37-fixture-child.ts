@@ -1,11 +1,13 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
 type Mode = 'pass' | 'assertion' | 'deadline' | 'wait';
+type StartupInjection = '' | 'validation' | 'after-validation';
 
 const correlation = process.env.W37_FIXTURE_CORRELATION ?? '';
 const mode = process.env.W37_FIXTURE_MODE as Mode;
+const startupInjection = (process.env.W37_FIXTURE_STARTUP_INJECTION ?? '') as StartupInjection;
 const uid = process.getuid?.() ?? 0;
 const socketDir = join('/tmp', `tmux-${uid}`);
 const socketPath = join(socketDir, correlation);
@@ -22,6 +24,9 @@ if (!/^w37-lifecycle-[a-z0-9]+-\d+-\d+$/.test(correlation)) {
 if (!['pass', 'assertion', 'deadline', 'wait'].includes(mode)) {
   refuse('invalid mode');
 }
+if (!['', 'validation', 'after-validation'].includes(startupInjection)) {
+  refuse('invalid startup injection');
+}
 if (dirname(socketPath) !== socketDir || basename(socketPath) !== correlation) {
   refuse('socket did not resolve to the exact private tmux location');
 }
@@ -32,6 +37,8 @@ if (dirname(fixtureRoot) !== tmpdir() || basename(fixtureRoot) !== `w37-fixture-
 let watcher: ReturnType<typeof Bun.spawn> | undefined;
 let watcherPid: number | undefined;
 let cleanupPromise: Promise<void> | undefined;
+let ownsFixtureRoot = false;
+let ownsSocket = false;
 
 function pidExists(pid: number): boolean {
   try {
@@ -53,13 +60,30 @@ async function awaitPidGone(pid: number, timeoutMs = 5_000): Promise<void> {
 }
 
 function validateWatcher(pid: number): void {
-  const command = readFileSync(`/proc/${pid}/cmdline`, 'utf8').replaceAll('\0', ' ');
-  if (!command.includes(correlation) || !command.includes('w37-fixture-watcher')) {
-    refuse(`PID ${pid} command does not carry the exact correlation`);
-  }
   const group = Bun.spawnSync(['ps', '-o', 'pgid=', '-p', String(pid)]);
   if (group.exitCode !== 0 || Number(group.stdout.toString().trim()) !== pid) {
     refuse(`PID ${pid} is not the exact process-group leader`);
+  }
+}
+
+async function awaitWatcherIdentity(pid: number, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const command = readFileSync(`/proc/${pid}/cmdline`, 'utf8').replaceAll('\0', ' ');
+    if (command.includes(correlation) && command.includes('w37-fixture-watcher')) return;
+    await Bun.sleep(10);
+  }
+  refuse(`watcher PID ${pid} did not acquire the exact correlation identity`);
+}
+
+async function validateOwnedWatcherForCleanup(pid: number): Promise<void> {
+  await awaitWatcherIdentity(pid);
+  const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+  const commandEnd = stat.lastIndexOf(')');
+  const fields = stat.slice(commandEnd + 2).split(' ');
+  const processGroup = Number(fields[2]);
+  if (!Number.isSafeInteger(processGroup) || processGroup !== pid) {
+    refuse(`cleanup retained watcher PID ${pid} with ambiguous process group`);
   }
 }
 
@@ -67,7 +91,7 @@ async function cleanup(): Promise<void> {
   if (cleanupPromise) return cleanupPromise;
   cleanupPromise = (async () => {
     if (watcherPid !== undefined && pidExists(watcherPid)) {
-      validateWatcher(watcherPid);
+      await validateOwnedWatcherForCleanup(watcherPid);
       process.kill(-watcherPid, 'SIGKILL');
     }
     if (watcher !== undefined) {
@@ -88,9 +112,13 @@ async function cleanup(): Promise<void> {
     if (watcherPid !== undefined) {
       await awaitPidGone(watcherPid);
     }
-    Bun.spawnSync(['tmux', '-L', correlation, 'kill-server']);
-    rmSync(socketPath, { force: true });
-    rmSync(fixtureRoot, { recursive: true, force: true });
+    if (ownsSocket) {
+      Bun.spawnSync(['tmux', '-L', correlation, 'kill-server']);
+      rmSync(socketPath, { force: true });
+    }
+    if (ownsFixtureRoot) {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
   })();
   return cleanupPromise;
 }
@@ -115,26 +143,33 @@ if (existsSync(fixtureRoot)) {
   refuse(`fixture temp root already exists: ${fixtureRoot}`);
 }
 mkdirSync(fixtureRoot);
-writeFileSync(watcherMarker, correlation);
-const tmux = Bun.spawnSync([
-  'tmux', '-L', correlation, 'new-session', '-d', '-s', correlation,
-  'bash', '--noprofile', '--norc',
-]);
-if (tmux.exitCode !== 0 || !existsSync(socketPath)) {
-  await cleanup();
-  refuse(`private tmux server failed: ${tmux.stderr.toString()}`);
-}
-watcher = Bun.spawn([
-  'setsid', 'bash', '-c',
-  `exec -a w37-fixture-watcher-${correlation} sleep 300`,
-], { stdout: 'ignore', stderr: 'ignore' });
-watcherPid = watcher.pid;
-validateWatcher(watcherPid);
-
-console.log(JSON.stringify({ correlation, fixtureRoot, socketPath, watcherPid }));
-
+ownsFixtureRoot = true;
 let exitCode = 0;
 try {
+  writeFileSync(watcherMarker, correlation);
+  const tmux = Bun.spawnSync([
+    'tmux', '-L', correlation, 'new-session', '-d', '-s', correlation,
+    'bash', '--noprofile', '--norc',
+  ]);
+  ownsSocket = existsSync(socketPath);
+  if (tmux.exitCode !== 0 || !ownsSocket) {
+    refuse(`private tmux server failed: ${tmux.stderr.toString()}`);
+  }
+  watcher = Bun.spawn([
+    'setsid', 'bash', '-c',
+    `exec -a w37-fixture-watcher-${correlation} sleep 300`,
+  ], { stdout: 'ignore', stderr: 'ignore' });
+  watcherPid = watcher.pid;
+  await awaitWatcherIdentity(watcherPid);
+  writeSync(1, `${JSON.stringify({ correlation, fixtureRoot, socketPath, watcherPid })}\n`);
+  if (startupInjection === 'validation') {
+    refuse('injected watcher validation failure');
+  }
+  validateWatcher(watcherPid);
+  if (startupInjection === 'after-validation') {
+    throw new Error('injected later startup failure');
+  }
+
   if (mode === 'assertion') {
     throw new Error('forced fixture assertion failure');
   }

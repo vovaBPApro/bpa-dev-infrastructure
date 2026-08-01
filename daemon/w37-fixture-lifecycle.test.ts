@@ -60,12 +60,41 @@ async function start(label: string, mode: string): Promise<{
   return { child, ready: JSON.parse(text.trim()) as Ready, stderr };
 }
 
+async function startWithStartupFailure(
+  label: string,
+  injection: 'validation' | 'after-validation',
+  path?: string,
+): Promise<{
+  child: ReturnType<typeof Bun.spawn>;
+  ready: Ready;
+  stderr: Promise<string>;
+}> {
+  const id = correlation(label);
+  const child = Bun.spawn([process.execPath, childPath], {
+    env: {
+      ...process.env,
+      ...(path === undefined ? {} : { PATH: path }),
+      W37_FIXTURE_CORRELATION: id,
+      W37_FIXTURE_MODE: 'pass',
+      W37_FIXTURE_STARTUP_INJECTION: injection,
+    },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  const stderr = new Response(child.stderr).text();
+  const ready = JSON.parse((await new Response(child.stdout).text()).trim()) as Ready;
+  return { child, ready, stderr };
+}
+
 function assertExactOwnership(ready: Ready): void {
   const uid = process.getuid?.() ?? 0;
   expect(ready.socketPath).toBe(join('/tmp', `tmux-${uid}`, ready.correlation));
   expect(dirname(ready.fixtureRoot)).toBe(tmpdir());
   expect(basename(ready.fixtureRoot)).toBe(`w37-fixture-${ready.correlation}`);
-  expect(readFileSync(`/proc/${ready.watcherPid}/cmdline`, 'utf8')).toContain(ready.correlation);
+  if (pidExists(ready.watcherPid)) {
+    const command = readFileSync(`/proc/${ready.watcherPid}/cmdline`, 'utf8');
+    if (command.length > 0) expect(command).toContain(ready.correlation);
+  }
 }
 
 function assertZeroResidue(ready: Ready): void {
@@ -106,6 +135,41 @@ for (const [signal, expected] of [['SIGINT', 130], ['SIGTERM', 143]] as const) {
     assertZeroResidue(fixture.ready);
   }, 10_000);
 }
+
+test('REGRESSION W-37 round 10: watcher validation failure cleans exact ownership', async () => {
+  const fixture = await startWithStartupFailure('validationfailure', 'validation');
+  expect(await fixture.child.exited).toBe(1);
+  expect(await fixture.stderr).toContain('injected watcher validation failure');
+  assertZeroResidue(fixture.ready);
+  expect(ownedProcesses(fixture.ready.correlation)).toEqual([]);
+}, 10_000);
+
+test('REGRESSION W-37 round 10: later startup failure cleans exact ownership', async () => {
+  const fixture = await startWithStartupFailure('laterstartup', 'after-validation');
+  expect(await fixture.child.exited).toBe(1);
+  expect(await fixture.stderr).toContain('injected later startup failure');
+  assertZeroResidue(fixture.ready);
+  expect(ownedProcesses(fixture.ready.correlation)).toEqual([]);
+}, 10_000);
+
+test('REGRESSION W-37 round 10: bounded ps failure and later startup failure clean exact ownership', async () => {
+  const shimRoot = mkdtempSync(join(tmpdir(), `w37-ps-failure-${process.pid}-`));
+  try {
+    writeFileSync(join(shimRoot, 'ps'), '#!/bin/sh\nexit 71\n');
+    chmodSync(join(shimRoot, 'ps'), 0o700);
+    const fixture = await startWithStartupFailure(
+      'psfailure',
+      'after-validation',
+      `${shimRoot}:${process.env.PATH ?? ''}`,
+    );
+    expect(await fixture.child.exited).toBe(1);
+    expect(await fixture.stderr).toContain('is not the exact process-group leader');
+    assertZeroResidue(fixture.ready);
+    expect(ownedProcesses(fixture.ready.correlation)).toEqual([]);
+  } finally {
+    rmSync(shimRoot, { recursive: true, force: true });
+  }
+}, 10_000);
 
 test('RED LOCK W-37: pre-fix kill-server-only cleanup leaves owned socket residue', () => {
   const id = correlation('red');

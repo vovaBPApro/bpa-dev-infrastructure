@@ -215,18 +215,17 @@ read_live_lease || fail 'no live lease after an uncontested re-acquire'
 [[ "$(lease_file_owner)" == "$SELF_OWNER" ]] || fail 'lease file owner drifted'
 [[ ! -s "$ORCH_TEST_ACTIONS" ]] || fail 'self-expiry triggered a relaunch'
 
-# ── 2. Genuine displacement by a LIVE owner: the fence must still fire ──────
-# Our token aged out AND a different, still-running orchestrator took the lease.
-# That is what fencing exists for; weakening it here would allow two live
-# orchestrators on one control plane.
+# ── 2. Contradictory live ownership: preserve the configured live session ───
+# Lease bookkeeping alone cannot authorize killing the operator's live channel.
+# The launcher's singleton lock remains the mutual-exclusion boundary.
 new_case displaced-by-live-owner
 stale_self_token="$(cli "$ORCH_STATE_DB" lease acquire "$SELF_OWNER" orchestrator 1000 | token_of)"
 expire_lease
 held_token="$(cli "$ORCH_STATE_DB" lease acquire "$HOLDER_OWNER" orchestrator 600000 | token_of)"
 write_lease_file "$SELF_OWNER" "$stale_self_token"
 tick
-assert_killed
-log_has "WATCHDOG lease-displaced owner=$SELF_OWNER token=$stale_self_token holder=$HOLDER_OWNER"
+assert_not_killed
+log_has "WATCHDOG NO-GO reason=lease-displaced-session-live owner=$SELF_OWNER token=$stale_self_token holder=$HOLDER_OWNER"
 read_live_lease || fail 'the fence destroyed the live holder lease'
 [[ "$LEASE_OWNER_NOW" == "$HOLDER_OWNER" && "$LEASE_TOKEN_NOW" == "$held_token" ]] ||
   fail 'the fence stole the live holder lease instead of standing down'

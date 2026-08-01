@@ -70,7 +70,12 @@ cat > "$SHIM/curl" <<'EOF'
 printf '%s\n' "$*" >> "${ORCH_TEST_CURL_LOG:?}"
 [[ "${ORCH_TEST_DAEMON_UP:-1}" == 1 ]]
 EOF
-chmod +x "$SHIM/tmux" "$SHIM/df" "$SHIM/curl" "$SCRATCH/launch-shim.sh"
+cat > "$SCRATCH/daemon-health-shim.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "${TELEGRAM_DAEMON_HEALTH_URL:?}" >> "${ORCH_TEST_CURL_LOG:?}"
+[[ "${ORCH_TEST_DAEMON_UP:-1}" == 1 ]]
+EOF
+chmod +x "$SHIM/tmux" "$SHIM/df" "$SHIM/curl" "$SCRATCH/launch-shim.sh" "$SCRATCH/daemon-health-shim.sh"
 export PATH="$SHIM:$PATH"
 
 # ── Live-state isolation ────────────────────────────────────────────────────
@@ -86,6 +91,7 @@ export ORCH_INSTANCE_LOCK_FILE="$SCRATCH/instance.lock"
 export ORCH_SINGLETON_LOCK_FILE="$SCRATCH/orchestrator.singleton.lock"
 export ORCH_LOCK_FILE="$SCRATCH/launch.lock"
 export ORCH_LAUNCH_SCRIPT="$SCRATCH/launch-shim.sh"
+export ORCH_DAEMON_MCP_HEALTH_CHECK="$SCRATCH/daemon-health-shim.sh"
 export ORCH_TEST_ACTIONS="$SCRATCH/actions"
 export ORCH_TEST_TMUX_LOG="$SCRATCH/tmux.log"
 export ORCH_TEST_CURL_LOG="$SCRATCH/curl.log"
@@ -201,7 +207,7 @@ grep -Fq "rest reason=done-sentinel path=$expected_sentinel" "$resolved_log" ||
   fail 'the watchdog does not resolve the sentinel to the path the daemon writes'
 
 # ── B. Restart cooldown ─────────────────────────────────────────────────────
-# A provider that cannot come up must not be relaunched once a minute forever.
+# A proven successful restart gets cooldown protection.
 new_case restart-cooldown-suppresses
 export ORCH_TEST_SESSION_ALIVE=0
 export ORCH_RESTART_COOLDOWN=1800 ORCH_RESTART_COOLDOWN_NIGHT=1800
@@ -256,9 +262,15 @@ outbox_has "NUDGE watchdog-restarted session=$ORCH_SESSION reason=dead"
 new_case restart-failure-announced
 export ORCH_TEST_SESSION_ALIVE=0
 export ORCH_TEST_LAUNCH_STATUS=3
+export ORCH_RESTART_FAILURE_ALERT_AFTER=3
 tick
 outbox_has "NUDGE watchdog-restart-failed session=$ORCH_SESSION"
-outbox_has needs=manual-intervention
+assert_actions 1 0
+tick
+assert_actions 2 0
+tick
+assert_actions 3 0
+outbox_has "ALERT orchestrator-recovery-failed session=$ORCH_SESSION consecutive=3"
 log_has 'WATCHDOG NO-GO reason=restart-failed'
 
 # A stale heartbeat is a kill-then-relaunch, and must be announced the same
@@ -300,15 +312,15 @@ export ORCH_TEST_DAEMON_UP=1
 tick
 grep -Fq "$ORCH_DAEMON_HEALTH_URL" "$ORCH_TEST_CURL_LOG" ||
   fail '[daemon-health-probed] the daemon health endpoint was never probed'
-outbox_lacks 'NUDGE daemon-unreachable'
+outbox_lacks 'NUDGE daemon-mcp-unhealthy'
 
 new_case daemon-unreachable-reported
 export ORCH_DAEMON_HEALTH_URL="http://127.0.0.1:65535/health"
 export ORCH_TEST_DAEMON_UP=0
 export FLEET_NUDGE_REPEAT_MS=1
 tick
-log_has 'WATCHDOG daemon-unreachable'
-outbox_has 'NUDGE daemon-unreachable'
+log_has 'WATCHDOG daemon-mcp-unhealthy'
+outbox_has 'NUDGE daemon-mcp-unhealthy'
 # An unreachable daemon says nothing about the orchestrator; it must not
 # trigger a restart of a healthy session.
 assert_actions 0 0

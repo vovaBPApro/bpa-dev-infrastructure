@@ -59,6 +59,9 @@ fleet:
   fleet_idle_check: tools/state-contract/check.ts:FLEET-IDLE
 
 orchestrator:
+  session: bpa-orchestrator          # bootstrap/env.template: one instance session for launcher + watchdog
+  watchdog_interval_seconds: 600     # bootstrap/env.template and rendered watchdog timer
+  watchdog_restart_failure_alert_after: 3  # loud Human alert after bounded consecutive failures
   # A doc in THIS repo now states the vendor shape, so the long-standing "no
   # model/vendor map here" omission is lifted for these keys only.
   top_provider: claude             # HUMAN RULING: instance/decisions/HR-709.md (Vova, 2026-08-01).

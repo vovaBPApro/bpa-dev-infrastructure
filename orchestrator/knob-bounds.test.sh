@@ -51,6 +51,11 @@ expect_reject $'60\n[Service]\nExecStartPre=/tmp/evil' 10 86400 non-numeric
 cat > "$SHIM/systemctl" <<'EOF'
 #!/usr/bin/env bash
 printf 'systemctl %s\n' "$*" >> "${ORCH_TEST_SYSTEMCTL_CALLS:?}"
+case "$*" in
+  *" is-enabled "*) printf 'enabled\n' ;;
+  *" is-active "*) printf 'active\n' ;;
+  *" show "*) [[ "${ORCH_TEST_NO_NEXT_TRIGGER:-0}" == 1 ]] || printf 'Sat 2026-08-01 12:00:00 UTC\n' ;;
+esac
 exit 0
 EOF
 chmod +x "$SHIM/systemctl"
@@ -112,7 +117,7 @@ grep -q 'daemon-reload' "$ORCH_TEST_SYSTEMCTL_CALLS" ||
   fail 'install no longer reloads user systemd after rendering units'
 
 watchdog_action() { # <subcommand> — against the last try_install unit dir
-  env PATH="$SHIM:$PATH" ORCH_SYSTEMD_USER_DIR="$UNITS" ORCH_WATCHDOG_UNIT=bounds-fixture \
+  env PATH="$SHIM:$PATH" ORCH_TEST_TIMER_ARMED=1 ORCH_SYSTEMD_USER_DIR="$UNITS" ORCH_WATCHDOG_UNIT=bounds-fixture \
     "$SCRIPT_DIR/install-watchdog.sh" "$1"
 }
 
@@ -120,6 +125,11 @@ watchdog_action() { # <subcommand> — against the last try_install unit dir
 watchdog_action arm >/dev/null
 grep -qx 'systemctl --user enable --now bounds-fixture.timer' "$ORCH_TEST_SYSTEMCTL_CALLS" ||
   fail 'the explicit arm subcommand did not enable the timer'
+
+ARM_STATUS=0
+ORCH_TEST_NO_NEXT_TRIGGER=1 watchdog_action arm >/dev/null 2>&1 || ARM_STATUS=$?
+(( ARM_STATUS == 3 )) ||
+  fail "arm accepted an active timer with no finite next trigger (exit $ARM_STATUS)"
 
 : > "$ORCH_TEST_SYSTEMCTL_CALLS"
 watchdog_action disarm >/dev/null

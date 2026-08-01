@@ -112,6 +112,7 @@ DONE_SENTINEL="${ORCH_DONE_SENTINEL:-$TELEGRAM_STATE_DIR/daemon/runtime/orchestr
 # this old. Night (local 22:00–07:00) is stricter: the operator is asleep and
 # cannot intervene, so recover sooner.
 RESTART_STATE_FILE="${ORCH_RESTART_STATE_FILE:-$RUNTIME_DIR/watchdog-restart-state}"
+RESTART_FAILURE_ALERT_AFTER="${ORCH_RESTART_FAILURE_ALERT_AFTER:-3}"
 WATCHDOG_HOUR="${ORCH_WATCHDOG_HOUR:-$(date +%H)}"
 if (( 10#$WATCHDOG_HOUR >= 22 || 10#$WATCHDOG_HOUR < 7 )); then
   WATCHDOG_NIGHT=1
@@ -157,6 +158,7 @@ validate_bounded_knob LIVENESS_MAX_AGE 15 86400 120
 validate_bounded_knob LEASE_TTL_MS 1000 86400000 180000
 validate_bounded_knob WATCHDOG_INTERVAL_S 10 86400 60
 validate_bounded_knob DOCKER_STALE_TAG_KEEP 1 1000 3
+validate_bounded_knob RESTART_FAILURE_ALERT_AFTER 1 100 3
 if (( WATCHDOG_NIGHT == 1 )); then
   validate_bounded_knob RESTART_COOLDOWN_S 60 604800 900
 else
@@ -302,6 +304,10 @@ guard_lease_renew_failure() {
   fi
   liveness="$(owner_liveness "$HOLDER_OWNER")"
   if [[ "$liveness" == live ]]; then
+    if session_healthy; then
+      log "WATCHDOG NO-GO reason=lease-displaced-session-live owner=$LEASE_OWNER token=$LEASE_TOKEN holder=$HOLDER_OWNER holder-token=$HOLDER_TOKEN action=no-kill"
+      return 0
+    fi
     log "WATCHDOG lease-displaced owner=$LEASE_OWNER token=$LEASE_TOKEN holder=$HOLDER_OWNER holder-token=$HOLDER_TOKEN action=stop"
     stop_supervised_unit
     exit 0
@@ -652,18 +658,27 @@ last_restart_at() {
   printf '%s\n' "$value"
 }
 
-record_restart_at() {
-  local now="$1" tmp
+restart_failures() {
+  local value=0
+  if [[ -f "$RESTART_STATE_FILE" ]]; then
+    value="$(sed -n 's/^consecutive_failures=//p' "$RESTART_STATE_FILE" | head -n 1)"
+  fi
+  [[ "$value" =~ ^[0-9]+$ ]] || value=0
+  printf '%s\n' "$value"
+}
+
+record_restart_state() {
+  local now="$1" failures="$2" tmp
   mkdir -p "$(dirname "$RESTART_STATE_FILE")"
   tmp="$(mktemp "$(dirname "$RESTART_STATE_FILE")/.watchdog-restart-state.XXXXXX")"
-  printf 'last_restart=%s\n' "$now" > "$tmp"
+  printf 'last_restart=%s\nconsecutive_failures=%s\n' "$now" "$failures" > "$tmp"
   mv -f "$tmp" "$RESTART_STATE_FILE"
 }
 
 # supervise_restart <reason> <kill-first:0|1>
 # Always terminal: it either restarts (and says so) or declines (and says why).
 supervise_restart() {
-  local reason="$1" kill_first="$2" now last since
+  local reason="$1" kill_first="$2" now last since failures
   now="${ORCH_WATCHDOG_NOW:-$(date +%s)}"
   [[ "$now" =~ ^[0-9]+$ ]] || now="$(date +%s)"
   last="$(last_restart_at)"
@@ -686,16 +701,21 @@ supervise_restart() {
   fi
   log "WATCHDOG restarting session=$SESSION reason=$reason night=$WATCHDOG_NIGHT action=restart"
   append_nudge "NUDGE watchdog-restarting session=$SESSION reason=$reason"
-  record_restart_at "$now"
   if (( kill_first == 1 )); then
     "$LAUNCH_SCRIPT" stop || log "WATCHDOG restart-stop-failed session=$SESSION reason=$reason"
   fi
   if "$LAUNCH_SCRIPT" start; then
+    record_restart_state "$now" 0
     log "WATCHDOG restarted session=$SESSION reason=$reason action=restarted"
     append_nudge "NUDGE watchdog-restarted session=$SESSION reason=$reason"
   else
-    log "WATCHDOG NO-GO reason=restart-failed session=$SESSION trigger=$reason action=manual-intervention"
-    append_nudge "NUDGE watchdog-restart-failed session=$SESSION reason=$reason needs=manual-intervention"
+    failures=$(( $(restart_failures) + 1 ))
+    record_restart_state 0 "$failures"
+    log "WATCHDOG NO-GO reason=restart-failed session=$SESSION trigger=$reason consecutive=$failures action=retry-next-tick"
+    append_nudge "NUDGE watchdog-restart-failed session=$SESSION reason=$reason consecutive=$failures retry=next-tick"
+    if (( failures >= RESTART_FAILURE_ALERT_AFTER )); then
+      append_nudge "ALERT orchestrator-recovery-failed session=$SESSION consecutive=$failures action=human-required"
+    fi
   fi
   exit 0
 }

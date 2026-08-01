@@ -422,10 +422,19 @@ activate_units() {
     systemctl enable --now agentic-bpa-stand-verifier.service
     systemctl enable --now bpa-meteorite.timer
     if "$ARM_WATCHDOG"; then
-      echo 'ERROR: watchdog units are deliberately absent because unattended lease-loss handling is not approved' >&2
-      return 1
+      systemctl enable --now bpa-orchestrator-watchdog.timer
+      local watchdog_enabled watchdog_active watchdog_next
+      watchdog_enabled="$(systemctl is-enabled bpa-orchestrator-watchdog.timer 2>/dev/null || true)"
+      watchdog_active="$(systemctl is-active bpa-orchestrator-watchdog.timer 2>/dev/null || true)"
+      watchdog_next="$(systemctl show bpa-orchestrator-watchdog.timer --property=NextElapseUSecRealtime --value 2>/dev/null || true)"
+      if [[ "$watchdog_enabled" != enabled || "$watchdog_active" != active ||
+            -z "$watchdog_next" || "$watchdog_next" == n/a || "$watchdog_next" == 0 || "$watchdog_next" == "0us" ]]; then
+        echo "ERROR: watchdog arm unproven enabled=${watchdog_enabled:-unknown} active=${watchdog_active:-unknown} next=${watchdog_next:-none}" >&2
+        return 1
+      fi
+      systemctl start bpa-orchestrator-watchdog.service
     else
-      echo 'Watchdog units remain deliberately absent.'
+      echo 'Watchdog timer installed but remains unarmed.'
     fi
   else
     echo "Token remains a placeholder; units installed but not enabled. Edit $ENV_FILE, then re-run this installer."

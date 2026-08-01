@@ -22,7 +22,21 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 TEMPLATE="$REPO_DIR/bootstrap/env.template"
 TIMER_TEMPLATE="$REPO_DIR/bootstrap/units/bpa-orchestrator-watchdog.timer.in"
+SERVICE_TEMPLATE="$REPO_DIR/bootstrap/units/bpa-orchestrator-watchdog.service.in"
+LAUNCHER_TEMPLATE="$REPO_DIR/bootstrap/units/bpa-orchestrator.service.in"
 INSTALL_SH="$REPO_DIR/bootstrap/install.sh"
+
+# Wrong-session regression: the canonical installed watchdog and launcher
+# consume one instance config path, with no unit-local session override.
+grep -Fq 'Environment=ORCH_CONFIG_FILE=$ENV_FILE' "$SERVICE_TEMPLATE" ||
+  fail 'installed watchdog does not source the canonical launcher config'
+grep -Fq 'Environment=ORCH_CONFIG_FILE=$ENV_FILE' "$LAUNCHER_TEMPLATE" ||
+  fail 'installed launcher does not source the canonical config'
+grep -Eq '^ORCH_SESSION=[^[:space:]]+$' "$TEMPLATE" ||
+  fail 'instance config does not declare the orchestrator session'
+if grep -Eq 'Environment=ORCH_SESSION=' "$SERVICE_TEMPLATE" "$LAUNCHER_TEMPLATE"; then
+  fail 'an installed unit shadows the canonical configured session'
+fi
 
 template_value() { sed -n "s/^$1=//p" "$TEMPLATE" | tail -n 1; }
 # The effective numeric default baked into a `VAR="${KNOB:-…}"` expansion. The

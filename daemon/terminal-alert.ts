@@ -16,6 +16,8 @@ const UNKNOWN_FAILURE_PATTERNS = [
   /\b(?:agent|watchdog|process) crashed\b/i,
 ] as const;
 
+const INTERNAL_ALERT_BANNER = '[internal terminal failure alert]';
+
 const FAILURE_PATTERNS: ReadonlyArray<{
   kind: TerminalFailureClass;
   patterns: readonly RegExp[];
@@ -50,15 +52,24 @@ const FAILURE_PATTERNS: ReadonlyArray<{
   {
     kind: 'stalled',
     patterns: [
-      /\bagent stalled\b/i,
+      /\b(?:agent|watchdog|worker|provider|process) stalled\b/i,
       /\bstream watchdog did not recover\b/i,
       /\bno progress for(?: 600s)?\b/i,
     ],
   },
-  { kind: 'failed', patterns: [/\bagent "[^"]+" failed:/i] },
+  {
+    kind: 'failed',
+    patterns: [
+      /\bagent "[^"]+" failed:/i,
+      /\b(?:agent|provider|watchdog|worker|process) (?:error|failed)\b/i,
+    ],
+  },
   {
     kind: 'exited',
-    patterns: [/\[watchdog\] (?:claude|codex) exited \(code \d+\)/i],
+    patterns: [
+      /\[watchdog\] (?:claude|codex) exited \(code \d+\)/i,
+      /\b(?:agent|provider|watchdog|worker|process)(?:-[a-z]+)*[- ]exited\b/i,
+    ],
   },
   {
     kind: 'network',
@@ -78,6 +89,7 @@ const FAILURE_PATTERNS: ReadonlyArray<{
       /\buncaught exception\b/i,
       /\bunhandled rejection\b/i,
       /\bpanic:/i,
+      /\b(?:runtime )?fatal(?: error| signal)?\b/i,
     ],
   },
 ];
@@ -85,6 +97,7 @@ const FAILURE_PATTERNS: ReadonlyArray<{
 export function classifyTerminalFailure(
   line: string,
 ): TerminalFailureClass | null {
+  if (line.includes(INTERNAL_ALERT_BANNER)) return null;
   for (const entry of FAILURE_PATTERNS) {
     if (entry.patterns.some((pattern) => pattern.test(line))) return entry.kind;
   }

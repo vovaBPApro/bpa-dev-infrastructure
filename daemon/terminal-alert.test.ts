@@ -41,6 +41,29 @@ test('REGRESSION terminal-tool-error: a benign non-zero tool result does not ale
   ).toBeNull();
 });
 
+test.each([
+  ['ERROR orchestrator-provider-exited provider=codex session=fixture', 'exited'],
+  ['Provider failed permanently', 'failed'],
+  ['Worker exited unexpectedly', 'exited'],
+  ['Watchdog stalled awaiting heartbeat', 'stalled'],
+  ['Runtime fatal signal 11', 'fatal'],
+  ['Provider error: unavailable', 'failed'],
+] as const)(
+  'REGRESSION review-terminal-failure: classifies %s as %s',
+  (line, expected) => {
+    expect(classifyTerminalFailure(line)).toBe(expected);
+  },
+);
+
+test('REGRESSION terminal-alert-self-echo: ignores its own rendered banner', () => {
+  const banner = formatTerminalAlert({
+    kind: 'unknown',
+    line: 'Provider terminal failure: strange new condition',
+    session: 'orchestrator',
+  });
+  expect(classifyTerminalFailure(banner)).toBeNull();
+});
+
 test('REGRESSION ML-1: an unclassified terminal failure remains actionable', () => {
   expect(
     classifyTerminalFailure(

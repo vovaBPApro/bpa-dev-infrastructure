@@ -92,6 +92,24 @@ fi
 assert_output_has "$fixture_root/skipped-tests.out" 'LAND framework-check=test status=fail tests=1 passed=0 detail=no-tests-passed'
 assert test "$(git -C "$repo" rev-parse main)" = "$skipped_before"
 
+make_fixture count-collapse
+printf 'import { test, expect } from "bun:test";\nfor (const n of [1, 2, 3]) test(`baseline ${n}`, () => expect(true).toBe(true));\n' > "$repo/base.test.ts"
+git -C "$repo" commit -am baseline-three-tests >/dev/null
+git -C "$repo" push origin main >/dev/null
+collapse_before=$(git -C "$repo" rev-parse main)
+git -C "$repo" checkout -b ag-count-collapse >/dev/null
+printf 'import { test, expect } from "bun:test"; test("trivial survivor", () => expect(true).toBe(true));\n' > "$repo/base.test.ts"
+git -C "$repo" commit -am collapse-to-one-test >/dev/null
+collapse_sha=$(git -C "$repo" rev-parse HEAD)
+git -C "$repo" checkout main >/dev/null
+report "$fixture_root/count-collapse.md" "$collapse_sha"
+if "$land" --branch ag-count-collapse --report "$fixture_root/count-collapse.md" --repo "$repo" --no-push >"$fixture_root/count-collapse.out" 2>&1; then
+  echo 'count-collapse: single gate accepted a reduced test count' >&2
+  exit 1
+fi
+assert_output_has "$fixture_root/count-collapse.out" 'LAND framework-check=test status=fail tests=1 baseline=3 detail=test-count-regressed'
+assert test "$(git -C "$repo" rev-parse main)" = "$collapse_before"
+
 make_policy_lane() {
   repo="$1"
   lane="$2"

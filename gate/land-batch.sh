@@ -135,6 +135,12 @@ for branch in "${branches[@]}"; do
 done
 batch_pass disjoint-paths
 
+if ! land_run_declared_checks "$repo" 'BATCH BASELINE'; then
+  batch_fail baseline-checks
+fi
+baseline_test_count="$LAND_FRAMEWORK_TEST_COUNT"
+batch_pass baseline-checks
+
 integration_branch="batch-integration-$$"
 if ! git -C "$repo" checkout -b "$integration_branch" "$default_branch" >/dev/null; then batch_fail integration-branch; fi
 integration_cleanup() {
@@ -152,7 +158,7 @@ done
 merge_sha=$(git -C "$repo" rev-parse HEAD)
 batch_pass merge
 
-if ! land_run_declared_checks "$repo" BATCH; then
+if ! land_run_declared_checks "$repo" BATCH "$baseline_test_count"; then
   integration_cleanup
   batch_fail declared-checks
 fi

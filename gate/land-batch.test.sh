@@ -75,6 +75,26 @@ fi
 assert_output_has "$fixture_root/skipped-tests-batch.out" 'BATCH framework-check=test status=fail tests=1 passed=0 detail=no-tests-passed'
 assert test "$(git -C "$repo" rev-parse main)" = "$skipped_before"
 
+make_fixture count-collapse
+printf 'import { test, expect } from "bun:test";\nfor (const n of [1, 2, 3]) test(`baseline ${n}`, () => expect(true).toBe(true));\n' > "$repo/base.test.ts"
+git -C "$repo" commit -am baseline-three-tests >/dev/null
+git -C "$repo" push origin main >/dev/null
+collapse_before=$(git -C "$repo" rev-parse main)
+git -C "$repo" checkout -b ag-count-collapse >/dev/null
+printf 'import { test, expect } from "bun:test"; test("trivial survivor", () => expect(true).toBe(true));\n' > "$repo/base.test.ts"
+git -C "$repo" commit -am collapse-to-one-test >/dev/null
+collapse_sha=$(git -C "$repo" rev-parse HEAD)
+git -C "$repo" checkout main >/dev/null
+collapse_peer_sha=$(make_lane "$repo" ag-count-peer peer.txt peer)
+report "$fixture_root/count-collapse.md" "$collapse_sha"
+report "$fixture_root/count-peer.md" "$collapse_peer_sha"
+if "$batch" --branches ag-count-collapse,ag-count-peer --reports "$fixture_root/count-collapse.md,$fixture_root/count-peer.md" --repo "$repo" --no-push >"$fixture_root/count-collapse-batch.out" 2>&1; then
+  echo 'count-collapse: batch gate accepted a reduced test count' >&2
+  exit 1
+fi
+assert_output_has "$fixture_root/count-collapse-batch.out" 'BATCH framework-check=test status=fail tests=1 baseline=3 detail=test-count-regressed'
+assert test "$(git -C "$repo" rev-parse main)" = "$collapse_before"
+
 make_fixture disjoint
 bare_skip_before=$(git -C "$repo" rev-parse main)
 bare_skip_remote_before=$(git --git-dir="$bare" rev-parse main)

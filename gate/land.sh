@@ -171,6 +171,12 @@ if ! land_payload_guard "$repo" "$branch"; then
 fi
 land_pass payload-guard
 
+if ! land_run_declared_checks "$repo" 'LAND BASELINE'; then
+  land_fail baseline-checks
+fi
+baseline_test_count="$LAND_FRAMEWORK_TEST_COUNT"
+land_pass baseline-checks
+
 if ! git -C "$repo" merge --no-ff "$branch" -m "[ORCH] land lane $branch" -m "secret-scan: clean"; then
   git -C "$repo" merge --abort >/dev/null 2>&1 || true
   land_fail merge
@@ -179,7 +185,7 @@ merged=true
 merge_sha=$(git -C "$repo" rev-parse HEAD)
 land_pass merge
 
-if ! land_run_declared_checks "$repo" LAND; then
+if ! land_run_declared_checks "$repo" LAND "$baseline_test_count"; then
   git -C "$repo" reset --hard ORIG_HEAD >/dev/null
   merged=false
   merge_sha="none"

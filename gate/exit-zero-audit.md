@@ -64,8 +64,10 @@ the regression lock that exercises the boundary:
   by pinned Bun invoked directly with the explicit Git-produced test list and
   an empty, gate-owned config. The gate parses Bun's own final collection and
   pass counts, prints `tests=N passed=N`, and refuses a missing, malformed, or
-  zero value for either; the single and batch zero-suite and skipped-only locks
-  prove both entrypoints fail. Candidate `bunfig.toml` discovery cannot replace
+  zero value for either. It runs the same direct check on pre-merge `main` and
+  refuses an integrated count below that baseline; the single and batch
+  zero-suite, skipped-only, and count-collapse locks prove both entrypoints fail.
+  Candidate `bunfig.toml` discovery cannot replace
   that list or inject a preload.
 - Root `package.json` and its `lint`/`test` strings select additional checks
   only. Their exit status is accepted only in addition to the direct parse and

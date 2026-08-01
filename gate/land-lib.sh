@@ -39,7 +39,7 @@ land_resolve_bun() {
 # failure. The gate never installs dependencies: changing dependency state is
 # outside landing authority, and a non-reproducible checkout must be refused.
 land_run_declared_checks() {
-  local repo="$1" prefix="$2" manifest="$repo/package.json" scripts_file script parse_dir bun_config test_output test_count pass_count
+  local repo="$1" prefix="$2" minimum_test_count="${3:-0}" manifest="$repo/package.json" scripts_file script parse_dir bun_config test_output test_count pass_count
   local -a source_files=() test_files=()
   parse_dir=$(mktemp -d "${TMPDIR:-/tmp}/bpa-land-parse.XXXXXX") || return 1
   echo "$prefix declared-check=parse status=running"
@@ -86,6 +86,11 @@ land_run_declared_checks() {
     fi
     if [[ ! "$pass_count" =~ ^[0-9]+$ ]] || [ "$pass_count" -eq 0 ]; then
       echo "$prefix framework-check=test status=fail tests=$test_count passed=${pass_count:-unknown} detail=no-tests-passed" >&2
+      return 1
+    fi
+    LAND_FRAMEWORK_TEST_COUNT="$test_count"
+    if [ "$test_count" -lt "$minimum_test_count" ]; then
+      echo "$prefix framework-check=test status=fail tests=$test_count baseline=$minimum_test_count detail=test-count-regressed" >&2
       return 1
     fi
     echo "$prefix framework-check=test status=pass tests=$test_count passed=$pass_count"

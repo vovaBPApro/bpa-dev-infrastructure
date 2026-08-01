@@ -29,8 +29,9 @@ if (dirname(fixtureRoot) !== tmpdir() || basename(fixtureRoot) !== `w37-fixture-
   refuse('temp tree escaped the test-owned root');
 }
 
+let watcher: ReturnType<typeof Bun.spawn> | undefined;
 let watcherPid: number | undefined;
-let cleaned = false;
+let cleanupPromise: Promise<void> | undefined;
 
 function pidExists(pid: number): boolean {
   try {
@@ -38,6 +39,16 @@ function pidExists(pid: number): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+async function awaitPidGone(pid: number, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (pidExists(pid)) {
+    if (Date.now() >= deadline) {
+      refuse(`watcher PID ${pid} still exists after ${timeoutMs}ms`);
+    }
+    await Bun.sleep(10);
   }
 }
 
@@ -52,26 +63,57 @@ function validateWatcher(pid: number): void {
   }
 }
 
-function cleanup(): void {
-  if (cleaned) return;
-  if (watcherPid !== undefined && pidExists(watcherPid)) {
-    validateWatcher(watcherPid);
-    process.kill(-watcherPid, 'SIGKILL');
-  }
-  Bun.spawnSync(['tmux', '-L', correlation, 'kill-server']);
-  rmSync(socketPath, { force: true });
-  rmSync(fixtureRoot, { recursive: true, force: true });
-  cleaned = true;
+async function cleanup(): Promise<void> {
+  if (cleanupPromise) return cleanupPromise;
+  cleanupPromise = (async () => {
+    if (watcherPid !== undefined && pidExists(watcherPid)) {
+      validateWatcher(watcherPid);
+      process.kill(-watcherPid, 'SIGKILL');
+    }
+    if (watcher !== undefined) {
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const exitDeadline = new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => {
+          reject(new Error(
+            `W-37 fixture ownership refusal: watcher child ${watcherPid ?? 'unknown'} did not exit within 5000ms`,
+          ));
+        }, 5_000);
+      });
+      try {
+        await Promise.race([watcher.exited, exitDeadline]);
+      } finally {
+        if (timeout !== undefined) clearTimeout(timeout);
+      }
+    }
+    if (watcherPid !== undefined) {
+      await awaitPidGone(watcherPid);
+    }
+    Bun.spawnSync(['tmux', '-L', correlation, 'kill-server']);
+    rmSync(socketPath, { force: true });
+    rmSync(fixtureRoot, { recursive: true, force: true });
+  })();
+  return cleanupPromise;
 }
 
-function exitForSignal(signal: 'SIGINT' | 'SIGTERM'): never {
-  cleanup();
+async function exitForSignal(signal: 'SIGINT' | 'SIGTERM'): Promise<never> {
+  try {
+    await cleanup();
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
   process.exit(signal === 'SIGINT' ? 130 : 143);
 }
 
-process.once('SIGINT', () => exitForSignal('SIGINT'));
-process.once('SIGTERM', () => exitForSignal('SIGTERM'));
+process.once('SIGINT', () => void exitForSignal('SIGINT'));
+process.once('SIGTERM', () => void exitForSignal('SIGTERM'));
 
+if (existsSync(socketPath)) {
+  refuse(`socket path already exists: ${socketPath}`);
+}
+if (existsSync(fixtureRoot)) {
+  refuse(`fixture temp root already exists: ${fixtureRoot}`);
+}
 mkdirSync(fixtureRoot);
 writeFileSync(watcherMarker, correlation);
 const tmux = Bun.spawnSync([
@@ -79,10 +121,10 @@ const tmux = Bun.spawnSync([
   'bash', '--noprofile', '--norc',
 ]);
 if (tmux.exitCode !== 0 || !existsSync(socketPath)) {
-  cleanup();
+  await cleanup();
   refuse(`private tmux server failed: ${tmux.stderr.toString()}`);
 }
-const watcher = Bun.spawn([
+watcher = Bun.spawn([
   'setsid', 'bash', '-c',
   `exec -a w37-fixture-watcher-${correlation} sleep 300`,
 ], { stdout: 'ignore', stderr: 'ignore' });
@@ -108,6 +150,6 @@ try {
   console.error(error instanceof Error ? error.message : String(error));
   exitCode = mode === 'deadline' ? 124 : 1;
 } finally {
-  cleanup();
+  await cleanup();
 }
 process.exit(exitCode);

@@ -1,5 +1,8 @@
 import { expect, test } from 'bun:test';
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import {
+  chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync,
+  statSync, writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
@@ -10,7 +13,8 @@ type Ready = {
   watcherPid: number;
 };
 
-const childPath = join(import.meta.dir, 'w37-fixture-child.ts');
+const childPath = process.env.W37_FIXTURE_CHILD_PATH
+  ?? join(import.meta.dir, 'w37-fixture-child.ts');
 
 function correlation(label: string): string {
   return `w37-lifecycle-${label}-${process.pid}-${Date.now()}`;
@@ -70,6 +74,14 @@ function assertZeroResidue(ready: Ready): void {
   expect(existsSync(ready.fixtureRoot)).toBe(false);
 }
 
+function ownedProcesses(id: string): string[] {
+  const result = Bun.spawnSync(['ps', '-eo', 'pid=,args=']);
+  expect(result.exitCode).toBe(0);
+  return result.stdout.toString().split('\n')
+    .filter((line) => line.includes(id))
+    .filter((line) => line.includes('w37-fixture-watcher') || line.includes('tmux'));
+}
+
 for (const [label, mode, expected] of [
   ['pass', 'pass', 0],
   ['assertion', 'assertion', 1],
@@ -111,3 +123,64 @@ test('RED LOCK W-37: pre-fix kill-server-only cleanup leaves owned socket residu
   }
   expect(existsSync(socketPath)).toBe(false);
 });
+
+for (const target of ['socket', 'root', 'both'] as const) {
+  test(`REGRESSION W-37 ownership refusal: pre-existing ${target}`, async () => {
+    const id = correlation(`existing-${target}`);
+    const socketPath = join('/tmp', `tmux-${process.getuid?.() ?? 0}`, id);
+    const fixtureRoot = join(tmpdir(), `w37-fixture-${id}`);
+    const shimRoot = mkdtempSync(join(tmpdir(), `w37-refusal-shim-${process.pid}-`));
+    const tmuxCalls = join(shimRoot, 'tmux.calls');
+    const socketBytes = `historical-socket-${id}`;
+    const rootBytes = `historical-root-${id}`;
+    try {
+      writeFileSync(
+        join(shimRoot, 'tmux'),
+        `#!/bin/sh\nprintf 'called\\n' >> '${tmuxCalls}'\nexit 99\n`,
+      );
+      chmodSync(join(shimRoot, 'tmux'), 0o700);
+      if (target === 'socket' || target === 'both') {
+        writeFileSync(socketPath, socketBytes, { flag: 'wx' });
+      }
+      if (target === 'root' || target === 'both') {
+        mkdirSync(fixtureRoot);
+        writeFileSync(join(fixtureRoot, 'historical'), rootBytes);
+      }
+      const socketInode = existsSync(socketPath) ? lstatSync(socketPath).ino : undefined;
+      const rootInode = existsSync(fixtureRoot) ? statSync(fixtureRoot).ino : undefined;
+
+      const child = Bun.spawn([process.execPath, childPath], {
+        env: {
+          ...process.env,
+          PATH: `${shimRoot}:${process.env.PATH ?? ''}`,
+          W37_FIXTURE_CORRELATION: id,
+          W37_FIXTURE_MODE: 'pass',
+        },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      expect(await child.exited).not.toBe(0);
+      expect(await new Response(child.stdout).text()).toBe('');
+      expect(await new Response(child.stderr).text()).toContain('W-37 fixture ownership refusal');
+      expect(ownedProcesses(id)).toEqual([]);
+      expect(existsSync(tmuxCalls)).toBe(false);
+
+      if (socketInode !== undefined) {
+        expect(lstatSync(socketPath).ino).toBe(socketInode);
+        expect(readFileSync(socketPath, 'utf8')).toBe(socketBytes);
+      } else {
+        expect(existsSync(socketPath)).toBe(false);
+      }
+      if (rootInode !== undefined) {
+        expect(statSync(fixtureRoot).ino).toBe(rootInode);
+        expect(readFileSync(join(fixtureRoot, 'historical'), 'utf8')).toBe(rootBytes);
+      } else {
+        expect(existsSync(fixtureRoot)).toBe(false);
+      }
+    } finally {
+      rmSync(socketPath, { force: true });
+      rmSync(fixtureRoot, { recursive: true, force: true });
+      rmSync(shimRoot, { recursive: true, force: true });
+    }
+  }, 10_000);
+}

@@ -3,8 +3,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createNotifyHandler } from './notify-handler';
-import { deliverTerminalAlert } from './terminal-alert-delivery';
+import { EventEmitter } from 'node:events';
+import { createProductionTerminalAlertNotifyHandler } from './terminal-alert-notify';
 
 type TmuxResult = {
   exitCode: number;
@@ -54,23 +54,33 @@ test(
     const attempts: string[] = [];
     let rejectNetworkOnce = true;
 
-    const handler = createNotifyHandler({
-      notifyChatId: () => null,
-      relayHuman: () => {
-        throw new Error('terminal alert crossed into Human delivery');
-      },
-      relayInternal: async (frame) => {
+    const journalEvents = new EventEmitter();
+    const journalSink = Object.assign(journalEvents, {
+      write(
+        chunk: string,
+        callback: (error?: Error | null) => void,
+      ): boolean {
+        const line = String(chunk);
+        const frame = JSON.parse(line.slice('[terminal-alert] '.length));
         attempts.push(frame);
         if (
           rejectNetworkOnce &&
           frame.includes('network error: ECONNRESET retry-boundary')
         ) {
           rejectNetworkOnce = false;
-          throw new Error('synthetic journal outage');
+          callback(new Error('synthetic journal outage'));
+          return true;
         }
-        deliverTerminalAlert(frame, {
-          journal: (text) => journaled.push(text),
-        });
+        journaled.push(frame);
+        callback();
+        return true;
+      },
+    });
+    const handler = createProductionTerminalAlertNotifyHandler({
+      journal: journalSink,
+      notifyChatId: () => null,
+      relayHuman: () => {
+        throw new Error('terminal alert crossed into Human delivery');
       },
     });
     const server = createServer(handler);

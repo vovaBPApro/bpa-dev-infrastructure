@@ -1,6 +1,28 @@
-export type TerminalAlertDeliveryDependencies = {
-  journal: (frame: string) => void;
+export type JournalSink = {
+  once(event: 'error' | 'drain', listener: (...args: any[]) => void): unknown;
+  off(event: 'error' | 'drain', listener: (...args: any[]) => void): unknown;
+  write(
+    chunk: string,
+    callback: (error?: Error | null) => void,
+  ): boolean;
 };
+
+export type TerminalAlertDeliveryDependencies = {
+  journal: JournalSink;
+  acceptanceTimeoutMs?: number;
+};
+
+export const TERMINAL_ALERT_JOURNAL_PREFIX = '[terminal-alert] ';
+export const TERMINAL_ALERT_JOURNAL_FRAME_LIMIT = 16_384;
+
+export function composeTerminalAlertJournalLine(frame: string): string {
+  const encoded = JSON.stringify(frame);
+  const line = `${TERMINAL_ALERT_JOURNAL_PREFIX}${encoded}\n`;
+  if (line.length > TERMINAL_ALERT_JOURNAL_FRAME_LIMIT) {
+    throw new Error('terminal alert journal frame exceeds bounded limit');
+  }
+  return line;
+}
 
 /**
  * Terminal alerts cross an out-of-band boundary exactly once: the daemon
@@ -8,9 +30,72 @@ export type TerminalAlertDeliveryDependencies = {
  * are rendered in the pane that terminal-alert.ts watches, which makes any
  * in-band delivery (including an allegedly inert pointer) a feedback edge.
  */
-export function deliverTerminalAlert(
+export async function deliverTerminalAlert(
   frame: string,
   deps: TerminalAlertDeliveryDependencies,
-): void {
-  deps.journal(frame);
+): Promise<void> {
+  const line = composeTerminalAlertJournalLine(frame);
+  const timeoutMs = deps.acceptanceTimeoutMs ?? 5_000;
+
+  await new Promise<void>((resolve, reject) => {
+    let callbackAccepted = false;
+    let drainAccepted = false;
+    let settled = false;
+    let needsDrain = false;
+    let acceptanceScheduled = false;
+
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      deps.journal.off('error', onError);
+      deps.journal.off('drain', onDrain);
+    };
+    const finish = (): void => {
+      if (
+        !settled &&
+        callbackAccepted &&
+        (!needsDrain || drainAccepted) &&
+        !acceptanceScheduled
+      ) {
+        acceptanceScheduled = true;
+        setImmediate(() => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          resolve();
+        });
+      }
+    };
+    const fail = (error: unknown): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error instanceof Error ? error : new Error(String(error)));
+    };
+    const onError = (error: Error): void => fail(error);
+    const onDrain = (): void => {
+      drainAccepted = true;
+      finish();
+    };
+    const timer = setTimeout(
+      () => fail(new Error('terminal alert journal acceptance timed out')),
+      timeoutMs,
+    );
+
+    deps.journal.once('error', onError);
+    try {
+      const accepted = deps.journal.write(line, (error?: Error | null) => {
+        if (error) {
+          fail(error);
+          return;
+        }
+        callbackAccepted = true;
+        finish();
+      });
+      needsDrain = !accepted;
+      if (needsDrain) deps.journal.once('drain', onDrain);
+      finish();
+    } catch (error) {
+      fail(error);
+    }
+  });
 }

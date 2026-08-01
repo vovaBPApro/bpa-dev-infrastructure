@@ -16,8 +16,7 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
-import { createNotifyHandler } from './notify-handler';
-import { deliverTerminalAlert } from './terminal-alert-delivery';
+import { createProductionTerminalAlertNotifyHandler } from './terminal-alert-notify';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import {
@@ -2837,15 +2836,10 @@ async function readRequestBody(req: IncomingMessage): Promise<string> {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-const notifyHandler = createNotifyHandler({
+const notifyHandler = createProductionTerminalAlertNotifyHandler({
   notifyChatId,
   relayHuman: statusRelay,
-  relayInternal: async (text) => {
-    deliverTerminalAlert(text, {
-      journal: (frame) =>
-        process.stderr.write(`[terminal-alert] ${frame}\n`),
-    });
-  },
+  journal: process.stderr,
 });
 
 // ── HTTP server (SSE MCP endpoint) ───────────────────────────────────────────

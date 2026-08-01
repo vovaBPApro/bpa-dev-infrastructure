@@ -177,6 +177,32 @@ test('REGRESSION round-7-mangled-issued-frame: terminal wrapping and whitespace 
   expect(classifyTerminalFailure(mangled)).toBeNull();
 });
 
+test('REGRESSION round-8-doubled-cr-issued-frame: interior newline noise preserves suppression', () => {
+  const issued = formatTerminalAlert({
+    kind: 'fatal',
+    line: 'Runtime fatal signal 11',
+    session: 'orchestrator',
+  });
+  const mangled = issued
+    .split('\n')
+    .map((line) => `  ${line}\r`)
+    .join('\r\n');
+  expect(classifyTerminalFailure(mangled)).toBeNull();
+});
+
+test('REGRESSION round-8-blank-indented-payload: issued frame tolerates blank lines inside payload region', () => {
+  const issued = formatTerminalAlert({
+    kind: 'fatal',
+    line: 'Runtime fatal signal 11',
+    session: 'orchestrator',
+  }, () => 'issued-blank-indented-payload');
+  const mangled = issued
+    .split('\n')
+    .map((line) => `\t${line}`)
+    .join('\n  \n');
+  expect(classifyTerminalFailure(mangled)).toBeNull();
+});
+
 test('REGRESSION round-5-incomplete-legacy-frame: legacy shape cannot hide a real failure', () => {
   const forged = [
     '[internal terminal failure alert]',

@@ -27,6 +27,22 @@ EOF
 
 die() { printf 'launch-lane: %s\n' "$*" >&2; exit 2; }
 
+validate_task_body() {
+  local file="$1" compact line
+  compact="$(LC_ALL=C tr -d '[:space:]' <"$file")"
+  ((${#compact} > 0)) || die 'task body is empty'
+  ((${#compact} >= 24)) || die 'task body is too short (minimum: 24 non-whitespace characters)'
+
+  if [[ "$(awk 'END { print NR }' "$file")" -le 1 ]]; then
+    line="$(sed -n '1p' "$file")"
+    [[ ! "$line" =~ ^[[:space:]]*(/|\./|\.\./|~/)[^[:space:]]+[[:space:]]*$ ]] || \
+      die 'task body looks like a filesystem path, not a mission'
+  fi
+  [[ "$compact" != *'$('* ]] || die 'task body contains a raw command-substitution artifact: $('
+  ! grep -Eq '^[[:space:]]*`[[:space:]]*$' "$file" || \
+    die 'task body contains a lone backtick command-substitution artifact'
+}
+
 name=""; role=""; task_file=""; repo="$REPO_DEFAULT"
 lanes_dir="${XDG_CACHE_HOME:-$HOME/.cache}/infra-lanes"
 base="origin/main"; branch=""; codex_bin="${CODEX_BIN:-}"
@@ -48,6 +64,7 @@ done
 [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die '--name is missing or invalid'
 case "$role" in coder|reviewer|orchestrator|manager) ;; *) die '--role is missing or invalid' ;; esac
 [[ -f "$task_file" ]] || die "task file not found: $task_file"
+validate_task_body "$task_file"
 repo="$(cd "$repo" && pwd)"
 [[ -x "$BUN_BIN" ]] || die 'Bun is unavailable; install it with bootstrap/install.sh or set BUN_BIN'
 if [[ -z "$codex_bin" ]]; then codex_bin="$(command -v codex 2>/dev/null || true)"; fi

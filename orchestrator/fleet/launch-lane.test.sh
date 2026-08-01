@@ -4,7 +4,18 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SCRATCH="$(mktemp -d)"
-trap 'git -C "$REPO_DIR" worktree remove --force "$SCRATCH/lanes/proof" >/dev/null 2>&1 || true; git -C "$REPO_DIR" branch -D ag-fleet-launch-proof >/dev/null 2>&1 || true; rm -rf "$SCRATCH"' EXIT
+cleanup() {
+  local lane
+  for lane in proof empty path eaten dollarparen backtick refused; do
+    git -C "$REPO_DIR" worktree remove --force "$SCRATCH/lanes/$lane" >/dev/null 2>&1 || true
+  done
+  git -C "$REPO_DIR" branch -D ag-fleet-launch-proof >/dev/null 2>&1 || true
+  for lane in empty path eaten dollarparen backtick; do
+    git -C "$REPO_DIR" branch -D "ag-$lane" >/dev/null 2>&1 || true
+  done
+  rm -rf "$SCRATCH"
+}
+trap cleanup EXIT
 mkdir -p "$SCRATCH/bin" "$SCRATCH/lanes"
 
 cat >"$SCRATCH/task.md" <<'EOF'
@@ -40,6 +51,35 @@ done
 exec "$@"
 EOF
 chmod +x "$SCRATCH/bin/"*
+
+assert_task_refused() {
+  local case_name="$1" expected="$2" task
+  task="$SCRATCH/$case_name.task.md"
+  shift 2
+  printf '%s' "$@" >"$task"
+  if PATH="$SCRATCH/bin:$PATH" CODEX_BIN="$SCRATCH/bin/codex" \
+    "$SCRIPT_DIR/launch-lane.sh" --name "$case_name" --role coder --task-file "$task" \
+    --repo "$REPO_DIR" --lanes-dir "$SCRATCH/lanes" --base HEAD \
+    >"$SCRATCH/$case_name.output" 2>"$SCRATCH/$case_name.error"; then
+    printf 'invalid task body was accepted: %s\n' "$case_name" >&2
+    exit 1
+  fi
+  grep -Fq "$expected" "$SCRATCH/$case_name.error"
+  test ! -e "$SCRATCH/lanes/$case_name"
+  test ! -e "$SCRATCH/lanes/pack-$case_name"
+  test ! -e "$SCRATCH/lanes/lane-$case_name.prompt.md"
+}
+
+# Regression locks for the three observed hand-dispatch failures.
+assert_task_refused empty 'task body is empty' ''
+assert_task_refused path 'task body looks like a filesystem path' '/root/work/product-repository'
+assert_task_refused eaten 'task body is too short' 'mission'
+
+# Raw shell-expansion residue is refused even when the surrounding body is long.
+assert_task_refused dollarparen 'raw command-substitution artifact' \
+  'Investigate the dispatch failure by running $(broken helper) and report it.'
+assert_task_refused backtick 'lone backtick command-substitution artifact' \
+  $'Investigate why the dispatch mission lost shell quoting.\n`\nReport a regression lock.'
 
 PATH="$SCRATCH/bin:$PATH" CODEX_BIN="$SCRATCH/bin/codex" \
   MOCK_SYSTEMD_ARGS="$SCRATCH/systemd.args" MOCK_CODEX_ARGS="$SCRATCH/codex.args" \

@@ -60,7 +60,7 @@ function pidExists(pid: number): boolean {
 }
 
 function fixtureSocketPath(socket: string): string {
-  return join(tmpdir(), `tmux-${process.getuid?.() ?? 0}`, socket);
+  return join('/tmp', `tmux-${process.getuid?.() ?? 0}`, socket);
 }
 
 function validateFixtureLeader(pid: number, correlation: string): void {
@@ -153,6 +153,7 @@ test(
         process.kill(-watcherPid, 'SIGKILL');
       }
       Bun.spawnSync(['tmux', '-L', socket, 'kill-server']);
+      rmSync(fixtureSocketPath(socket), { force: true });
       rmSync(scratch, { recursive: true, force: true });
       cleanupComplete = true;
     };
@@ -297,6 +298,7 @@ test(
           .catch(() => process.kill(-watcherPid!, 'SIGKILL'));
       }
       await tmux(socket, 'kill-server');
+      rmSync(fixtureSocketPath(socket), { force: true });
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       rmSync(scratch, { recursive: true, force: true });

@@ -1,5 +1,5 @@
 import { unlinkSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 export type TerminalFailureClass =
   | 'usage-limit'
@@ -36,32 +36,52 @@ const INTERNAL_ALERT_NONCE_PREFIX_PATTERN =
   INTERNAL_ALERT_NONCE_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const INTERNAL_ALERT_ECHO_WITH_NONCE = new RegExp(
-  `(^|\\n)(?:(?:\\d{4}-\\d{2}-\\d{2}[ T])?\\d{2}:\\d{2}(?::\\d{2})?\\s+)?${INTERNAL_ALERT_BANNER_PATTERN}\\n${INTERNAL_ALERT_NONCE_PREFIX_PATTERN}([^\\n]{1,256})\\nType: (?:usage-limit|429/overload|auth|stalled|failed|exited|network|fatal|unknown)\\nSession: [^\\n]{1,512}\\n\\n(?:${INTERNAL_ALERT_PAYLOAD_PREFIX_PATTERN}[^\\n]*\\n)+${INTERNAL_ALERT_END_PATTERN}(?=\\n|$)`,
+  `(^|\\n)(?:(?:\\d{4}-\\d{2}-\\d{2}[ T])?\\d{2}:\\d{2}(?::\\d{2})?[ \\t]+)?(` +
+    `[ \\t]*${INTERNAL_ALERT_BANNER_PATTERN}[ \\t]*\\n` +
+    `[ \\t]*${INTERNAL_ALERT_NONCE_PREFIX_PATTERN}[ \\t]*([^\\n]{1,256}?)[ \\t]*\\n` +
+    `[ \\t]*Type:[ \\t]*(?:usage-limit|429/overload|auth|stalled|failed|exited|network|fatal|unknown)[ \\t]*\\n` +
+    `[ \\t]*Session:[^\\n]{1,512}\\n[ \\t]*\\n` +
+    `[ \\t]*${INTERNAL_ALERT_PAYLOAD_PREFIX_PATTERN}[^\\n]*(?:\\n[^\\n]*)*?\\n` +
+    `[ \\t]*${INTERNAL_ALERT_END_PATTERN}[ \\t]*)(?=\\n|$)`,
   'gi',
 );
 
 const ISSUED_NONCE_LIMIT = 256;
 const ISSUED_NONCE_TTL_MS = 60 * 60 * 1000;
-const issuedNonces = new Map<string, number>();
+const issuedNonces = new Map<string, { issuedAt: number; frameHash: string }>();
 
-function recordIssuedNonce(nonce: string, now = Date.now()): void {
-  for (const [issuedNonce, issuedAt] of issuedNonces) {
-    if (now - issuedAt > ISSUED_NONCE_TTL_MS) issuedNonces.delete(issuedNonce);
+function canonicalFrameHash(frame: string): string {
+  const canonical = stripTerminalNoise(frame)
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\t ]+/g, ' ')
+    .replace(/\s*\n\s*/g, ' ')
+    .trim();
+  return createHash('sha256').update(canonical).digest('hex');
+}
+
+function recordIssuedNonce(
+  nonce: string,
+  frame: string,
+  now = Date.now(),
+): void {
+  for (const [issuedNonce, issued] of issuedNonces) {
+    if (now - issued.issuedAt > ISSUED_NONCE_TTL_MS)
+      issuedNonces.delete(issuedNonce);
   }
   issuedNonces.delete(nonce);
-  issuedNonces.set(nonce, now);
+  issuedNonces.set(nonce, { issuedAt: now, frameHash: canonicalFrameHash(frame) });
   while (issuedNonces.size > ISSUED_NONCE_LIMIT) {
     issuedNonces.delete(issuedNonces.keys().next().value!);
   }
 }
 
-function isIssuedNonce(nonce: string, now = Date.now()): boolean {
-  const issuedAt = issuedNonces.get(nonce);
-  if (issuedAt === undefined || now - issuedAt > ISSUED_NONCE_TTL_MS) {
+function isIssuedFrame(nonce: string, frame: string, now = Date.now()): boolean {
+  const issued = issuedNonces.get(nonce);
+  if (issued === undefined || now - issued.issuedAt > ISSUED_NONCE_TTL_MS) {
     issuedNonces.delete(nonce);
     return false;
   }
-  return true;
+  return canonicalFrameHash(frame) === issued.frameHash;
 }
 
 const FAILURE_PATTERNS: ReadonlyArray<{
@@ -146,8 +166,8 @@ export function classifyTerminalFailure(
   line = stripTerminalNoise(line);
   line = line.replace(
     INTERNAL_ALERT_ECHO_WITH_NONCE,
-    (frame, prefix: string, nonce: string) =>
-      isIssuedNonce(nonce) ? prefix : frame,
+    (match, prefix: string, frame: string, nonce: string) =>
+      isIssuedFrame(nonce.trim(), frame) ? prefix : match,
   );
   for (const entry of FAILURE_PATTERNS) {
     if (entry.patterns.some((pattern) => pattern.test(line))) return entry.kind;
@@ -159,6 +179,7 @@ export function classifyTerminalFailure(
 
 export function stripTerminalNoise(line: string): string {
   return line
+    .replace(/\r\n?/g, '\n')
     .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, '')
     .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '')
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
@@ -181,11 +202,10 @@ export function formatTerminalAlert(
   nonceFactory: () => string = randomUUID,
 ): string {
   const nonce = nonceFactory();
-  recordIssuedNonce(nonce);
   const framedPayload = payload.line
     .split('\n')
     .map((line) => `${INTERNAL_ALERT_PAYLOAD_PREFIX}${line}`);
-  return [
+  const frame = [
     '[internal terminal failure alert]',
     `${INTERNAL_ALERT_NONCE_PREFIX}${nonce}`,
     `Type: ${payload.kind}`,
@@ -194,6 +214,8 @@ export function formatTerminalAlert(
     ...framedPayload,
     INTERNAL_ALERT_END,
   ].join('\n');
+  recordIssuedNonce(nonce, frame);
+  return frame;
 }
 
 export async function relayTerminalAlert(

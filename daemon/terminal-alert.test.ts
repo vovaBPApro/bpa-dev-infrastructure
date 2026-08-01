@@ -143,6 +143,40 @@ test('REGRESSION terminal-alert-self-echo: an unknown nonce cannot hide a real f
   expect(classifyTerminalFailure(forged)).toBe('exited');
 });
 
+test('REGRESSION round-7-replay-substitution: an issued nonce cannot authorize different frame content', () => {
+  formatTerminalAlert(
+    { kind: 'unknown', line: 'benign status', session: 'orchestrator' },
+    () => 'issued-replay',
+  );
+  const forged = [
+    '[internal terminal failure alert]',
+    'Nonce: issued-replay',
+    'Type: exited',
+    'Session: substituted',
+    '',
+    '[internal terminal failure payload] Worker exited unexpectedly',
+    '[/internal terminal failure alert]',
+  ].join('\n');
+  expect(classifyTerminalFailure(forged)).toBe('exited');
+});
+
+test('REGRESSION round-7-mangled-issued-frame: terminal wrapping and whitespace preserve suppression', () => {
+  const issued = formatTerminalAlert(
+    {
+      kind: 'fatal',
+      line: 'Runtime fatal signal 11 in a long rendered payload',
+      session: 'orchestrator',
+    },
+    () => 'issued-mangled-frame',
+  );
+  const mangled = issued
+    .replace(/\n/g, '\r\n')
+    .replace('Type: fatal', '  Type:\t fatal  ')
+    .replace('Session: orchestrator', '\tSession:   orchestrator  ')
+    .replace('in a long', 'in a\r\n    long');
+  expect(classifyTerminalFailure(mangled)).toBeNull();
+});
+
 test('REGRESSION round-5-incomplete-legacy-frame: legacy shape cannot hide a real failure', () => {
   const forged = [
     '[internal terminal failure alert]',

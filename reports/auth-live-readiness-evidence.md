@@ -75,3 +75,43 @@ returns nothing. Executed as the app role, changing only
 A three-way join across the tables the ledger surfaces depend on returns identical
 rows and identical totals under enforcement. `sum(amount) = 0.0000` is the
 expected double-entry result, not an empty read.
+
+## 5. Alternative scope paths and views (added after review round three)
+
+The third review asked whether a table could be organization-scoped by a DIFFERENT
+column and therefore be missed by a catalog query keyed on `organization_id`, and
+whether any view bypasses row-level security.
+
+Every `public` table WITHOUT an `organization_id` column, enumerated:
+
+    auth_rate_limits      auth_sessions      auth_tokens
+    auth_users            schema_migrations
+
+None carries `realm_id`, `tenant_id` or `company_id` either — checked explicitly.
+Four are `auth_*` infrastructure that exists to identify an actor before any
+organization is known; the fifth is the migration ledger. No business data table
+sits outside `organization_id` scoping.
+
+    views in schema public: NONE
+
+So there is no view path around RLS, because there are no views.
+
+## 6. Grants on the exempt table (added after review round three)
+
+`auth_organization_memberships` is the single org-scoped table without forced RLS.
+Its exemption is deliberate — membership is what RESOLVES an actor's organization,
+so it cannot itself be filtered by that organization without a circular dependency.
+
+    grants: agentic -> INSERT, SELECT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER
+    columns: user_id, organization_id, role, created_at, payroll_read, payroll_write
+    rows: 0
+
+Two observations, stated rather than glossed:
+
+- the table is EMPTY. With enforcement on and no memberships, no actor resolves to
+  an organization, so the operator must have a user and a membership created
+  before enabling — otherwise he will authenticate and be denied. This is a
+  prerequisite, not a defect, and it is the single most likely way enabling could
+  still go wrong for him.
+- the application role holds full DML on it, which is required to create members.
+  It carries no accounting data; its exposure is the membership graph itself.

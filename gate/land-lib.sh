@@ -2,21 +2,35 @@
 # Shared fail-closed checks for individual and batch landing.
 
 land_resolve_bun() {
-  local candidate trusted_path='/usr/local/bin:/usr/bin:/bin'
+  local name candidate resolved trusted_path='/usr/local/bin:/usr/bin:/bin'
   if [ -n "${BUN_BIN:-}" ]; then
     echo "LAND step=preflight status=fail detail=caller-bun-override-refused" >&2
     return 1
   fi
 
   candidate=$(PATH="$trusted_path" command -v bun 2>/dev/null || true)
-
-  if [ -z "$candidate" ] || [ ! -x "$candidate" ]; then
+  resolved=$(readlink -f -- "$candidate" 2>/dev/null || true)
+  if [ -z "$resolved" ] || [ ! -f "$resolved" ] || [ ! -x "$resolved" ]; then
     echo "LAND step=preflight status=fail detail=bun-not-found" >&2
     return 1
   fi
 
-  BUN_BIN="$candidate"
+  BUN_BIN="$resolved"
   export BUN_BIN
+
+  # Declared checks are an untrusted boundary. Resolve only from the fixed host
+  # baseline, canonicalize symlinks, and discard every caller binary selector.
+  LAND_CHECK_PATH="$trusted_path"
+  for name in node pnpm npx tsc; do
+    candidate=$(PATH="$trusted_path" command -v "$name" 2>/dev/null || true)
+    [ -z "$candidate" ] && continue
+    resolved=$(readlink -f -- "$candidate" 2>/dev/null || true)
+    if [ -z "$resolved" ] || [ ! -f "$resolved" ] || [ ! -x "$resolved" ]; then
+      echo "LAND step=preflight status=fail detail=invalid-verifier verifier=$name" >&2
+      return 1
+    fi
+  done
+  export LAND_CHECK_PATH
 }
 
 # Run every root quality script whose declaration makes it part of the landing
@@ -25,7 +39,17 @@ land_resolve_bun() {
 # failure. The gate never installs dependencies: changing dependency state is
 # outside landing authority, and a non-reproducible checkout must be refused.
 land_run_declared_checks() {
-  local repo="$1" prefix="$2" manifest="$repo/package.json" scripts_file script
+  local repo="$1" prefix="$2" manifest="$repo/package.json" scripts_file script parse_dir
+  parse_dir=$(mktemp -d "${TMPDIR:-/tmp}/bpa-land-parse.XXXXXX") || return 1
+  echo "$prefix declared-check=parse status=running"
+  if ! git -C "$repo" ls-files -z -- '*.js' '*.jsx' '*.mjs' '*.cjs' '*.ts' '*.tsx' | \
+    (cd "$repo" && xargs -0 -r "$BUN_BIN" build --no-bundle --outdir "$parse_dir" --) >/dev/null 2>&1; then
+    rm -rf "$parse_dir"
+    echo "$prefix declared-check=parse status=fail" >&2
+    return 1
+  fi
+  rm -rf "$parse_dir"
+  echo "$prefix declared-check=parse status=pass"
   if [ ! -e "$manifest" ]; then
     echo "$prefix declared-checks=none"
     return 0
@@ -42,6 +66,7 @@ land_run_declared_checks() {
     for (const name of ["lint", "test"]) {
       if (Object.prototype.hasOwnProperty.call(manifest.scripts ?? {}, name)) {
         if (typeof manifest.scripts[name] !== "string" || manifest.scripts[name].trim() === "") process.exit(2);
+        if (/(^|[^A-Za-z0-9_])(PATH|BUN_BIN|NODE(?:_BIN)?|PNPM(?:_BIN)?|NPX(?:_BIN)?|TSC(?:_BIN)?)\s*=/.test(manifest.scripts[name])) process.exit(2);
         console.log(name);
       }
     }
@@ -57,7 +82,8 @@ land_run_declared_checks() {
   fi
   while IFS= read -r script; do
     echo "$prefix declared-check=$script status=running"
-    if ! (cd "$repo" && "$BUN_BIN" run "$script"); then
+    if ! (cd "$repo" && env -i HOME="${HOME:-/nonexistent}" CI=1 \
+      PATH="$LAND_CHECK_PATH" "$BUN_BIN" run "$script"); then
       rm -f "$scripts_file"
       echo "$prefix declared-check=$script status=fail" >&2
       return 1

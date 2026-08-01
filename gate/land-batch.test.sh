@@ -89,7 +89,7 @@ for failure_kind in failing-test syntax-error; do
   if [ "$failure_kind" = failing-test ]; then
     failure_value='{"scripts":{"test":"false"}}'
   else
-    failure_value='{"scripts":{"test":"bun test"}}'
+    failure_value="{\"scripts\":{\"lint\":\"touch $fixture_root/parse-order-batch-ran\",\"test\":\"bun test\"}}"
   fi
   failure_sha=$(make_lane "$repo" "ag-$failure_kind" package.json "$failure_value")
   if [ "$failure_kind" = syntax-error ]; then
@@ -104,9 +104,27 @@ for failure_kind in failing-test syntax-error; do
   report "$fixture_root/$failure_kind.md" "$failure_sha"
   report "$fixture_root/$failure_kind-peer.md" "$peer_sha"
   if "$batch" --branches "ag-$failure_kind,ag-$failure_kind-peer" --reports "$fixture_root/$failure_kind.md,$fixture_root/$failure_kind-peer.md" --repo "$repo" --no-push >"$fixture_root/$failure_kind-batch.out" 2>&1; then exit 1; fi
-  assert_output_has "$fixture_root/$failure_kind-batch.out" 'BATCH declared-check=test status=fail'
+  if [ "$failure_kind" = syntax-error ]; then
+    assert_output_has "$fixture_root/$failure_kind-batch.out" 'BATCH declared-check=parse status=fail'
+    assert test ! -e "$fixture_root/parse-order-batch-ran"
+  else
+    assert_output_has "$fixture_root/$failure_kind-batch.out" 'BATCH declared-check=test status=fail'
+  fi
   assert_not git -C "$repo" merge-base --is-ancestor "$failure_sha" main
 done
+
+make_fixture shadowed-node
+shadow_before=$(git -C "$repo" rev-parse main)
+shadow_sha=$(make_lane "$repo" ag-shadowed-node package.json '{"scripts":{"test":"node -e '\''process.exit(1)'\''"}}')
+shadow_peer_sha=$(make_lane "$repo" ag-shadowed-node-peer peer.txt peer)
+report "$fixture_root/shadowed-node.md" "$shadow_sha"
+report "$fixture_root/shadowed-node-peer.md" "$shadow_peer_sha"
+mkdir "$fixture_root/shadow-bin"
+printf '#!/bin/sh\ntouch %s\nexit 0\n' "$fixture_root/shadow-ran" > "$fixture_root/shadow-bin/node"
+chmod +x "$fixture_root/shadow-bin/node"
+if PATH="$fixture_root/shadow-bin:$PATH" "$batch" --branches ag-shadowed-node,ag-shadowed-node-peer --reports "$fixture_root/shadowed-node.md,$fixture_root/shadowed-node-peer.md" --repo "$repo" --no-push >"$fixture_root/shadowed-node-batch.out" 2>&1; then exit 1; fi
+assert test ! -e "$fixture_root/shadow-ran"
+assert test "$(git -C "$repo" rev-parse main)" = "$shadow_before"
 
 make_fixture conflict
 conflict_before=$(git -C "$repo" rev-parse main)

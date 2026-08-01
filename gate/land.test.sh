@@ -354,7 +354,7 @@ for failure_kind in failing-test syntax-error; do
   if [ "$failure_kind" = failing-test ]; then
     printf '{"scripts":{"test":"false"}}\n' > "$failure_repo/package.json"
   else
-    printf '{"scripts":{"test":"bun test"}}\n' > "$failure_repo/package.json"
+    printf '{"scripts":{"lint":"touch %s","test":"bun test"}}\n' "$fixture_root/parse-order-ran" > "$failure_repo/package.json"
     printf 'this is not valid TypeScript !!!\n' > "$failure_repo/broken.test.ts"
   fi
   git -C "$failure_repo" add .
@@ -363,9 +363,30 @@ for failure_kind in failing-test syntax-error; do
   git -C "$failure_repo" checkout main >/dev/null
   report "$fixture_root/$failure_kind-report.md" "$failure_sha"
   if "$land" --branch "ag-$failure_kind" --report "$fixture_root/$failure_kind-report.md" --repo "$failure_repo" --no-push >"$fixture_root/$failure_kind.out" 2>&1; then exit 1; fi
-  assert_output_has "$fixture_root/$failure_kind.out" 'LAND declared-check=test status=fail'
+  if [ "$failure_kind" = syntax-error ]; then
+    assert_output_has "$fixture_root/$failure_kind.out" 'LAND declared-check=parse status=fail'
+    assert test ! -e "$fixture_root/parse-order-ran"
+  else
+    assert_output_has "$fixture_root/$failure_kind.out" 'LAND declared-check=test status=fail'
+  fi
   assert test "$(git -C "$failure_repo" rev-parse main)" = "$failure_before"
 done
+
+make_fixture shadowed-node
+shadow_before=$(git -C "$fixture_root/shadowed-node-repo" rev-parse main)
+git -C "$fixture_root/shadowed-node-repo" checkout -b ag-shadowed-node >/dev/null
+printf '{"scripts":{"test":"node -e '\''process.exit(1)'\''"}}\n' > "$fixture_root/shadowed-node-repo/package.json"
+git -C "$fixture_root/shadowed-node-repo" add package.json
+git -C "$fixture_root/shadowed-node-repo" commit -m shadowed-node >/dev/null
+shadow_sha=$(git -C "$fixture_root/shadowed-node-repo" rev-parse HEAD)
+git -C "$fixture_root/shadowed-node-repo" checkout main >/dev/null
+mkdir "$fixture_root/shadow-bin"
+printf '#!/bin/sh\ntouch %s\nexit 0\n' "$fixture_root/shadow-ran" > "$fixture_root/shadow-bin/node"
+chmod +x "$fixture_root/shadow-bin/node"
+report "$fixture_root/shadowed-node.md" "$shadow_sha"
+if PATH="$fixture_root/shadow-bin:$PATH" "$land" --branch ag-shadowed-node --report "$fixture_root/shadowed-node.md" --repo "$fixture_root/shadowed-node-repo" --no-push >"$fixture_root/shadowed-node.out" 2>&1; then exit 1; fi
+assert test ! -e "$fixture_root/shadow-ran"
+assert test "$(git -C "$fixture_root/shadowed-node-repo" rev-parse main)" = "$shadow_before"
 
 make_fixture bad-sha
 make_lane "$fixture_root/bad-sha-repo" ag-bad-sha >/dev/null

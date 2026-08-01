@@ -81,6 +81,15 @@ export async function deliverTerminalAlert(
     };
     const onError = (error: Error): void => fail(error);
     const onDrain = (): void => {
+      // A sink may emit drain from inside write(), before its return value says
+      // whether this write was backpressured. That event describes earlier
+      // work and must not satisfy this write. Re-arm immediately so a genuine
+      // drain cannot be lost between write() returning and our state update.
+      if (!returnKnown) {
+        deps.journal.once('drain', onDrain);
+        return;
+      }
+      if (!needsDrain) return;
       drainAccepted = true;
       finish();
     };

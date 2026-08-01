@@ -80,6 +80,47 @@ test('REGRESSION W-37: synchronous callback with backpressure succeeds after dra
   await delivery;
 });
 
+test('REGRESSION W-37 round 5: pre-return drain cannot satisfy false write', async () => {
+  const events = new EventEmitter();
+  const journal = Object.assign(events, {
+    write(_line: string, done: (error?: Error | null) => void): boolean {
+      events.emit('drain');
+      done();
+      return false;
+    },
+  });
+
+  await expect(
+    deliverTerminalAlert(frame(), { journal, acceptanceTimeoutMs: 20 }),
+  ).rejects.toThrow('acceptance timed out');
+  expect(events.listenerCount('drain')).toBe(0);
+  expect(events.listenerCount('error')).toBe(0);
+});
+
+test('REGRESSION W-37 round 5: false write waits for drain after pre-return drain', async () => {
+  const events = new EventEmitter();
+  const journal = Object.assign(events, {
+    write(_line: string, done: (error?: Error | null) => void): boolean {
+      events.emit('drain');
+      done();
+      return false;
+    },
+  });
+  let accepted = false;
+  const delivery = deliverTerminalAlert(frame(), {
+    journal,
+    acceptanceTimeoutMs: 100,
+  }).then(() => {
+    accepted = true;
+  });
+
+  await Bun.sleep(0);
+  expect(accepted).toBe(false);
+  events.emit('drain');
+  await delivery;
+  expect(accepted).toBe(true);
+});
+
 test('REGRESSION W-37: asynchronous stream error fails delivery', async () => {
   const events = new EventEmitter();
   const journal = Object.assign(events, {

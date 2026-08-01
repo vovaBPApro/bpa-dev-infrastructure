@@ -62,10 +62,11 @@ the regression lock that exercises the boundary:
   the gate's pinned Bun parser over the Git-produced file list.
 - Tracked test paths and bytes are corroborated before any package script runs
   by pinned Bun invoked directly with the explicit Git-produced test list and
-  an empty, gate-owned config. The gate parses Bun's own final collection count,
-  prints `tests=N`, and refuses a missing, malformed, or zero count; the single
-  and batch zero-suite locks prove both entrypoints fail. Candidate `bunfig.toml`
-  discovery cannot replace that list or inject a preload.
+  an empty, gate-owned config. The gate parses Bun's own final collection and
+  pass counts, prints `tests=N passed=N`, and refuses a missing, malformed, or
+  zero value for either; the single and batch zero-suite and skipped-only locks
+  prove both entrypoints fail. Candidate `bunfig.toml` discovery cannot replace
+  that list or inject a preload.
 - Root `package.json` and its `lint`/`test` strings select additional checks
   only. Their exit status is accepted only in addition to the direct parse and
   test-framework results; a repository wrapper cannot stand in for either.

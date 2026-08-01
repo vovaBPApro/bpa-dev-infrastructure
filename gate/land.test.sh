@@ -76,6 +76,22 @@ fi
 assert_output_has "$fixture_root/zero-tests.out" 'LAND framework-check=test status=fail tests=0 detail=no-tests-collected'
 assert test "$(git -C "$repo" rev-parse main)" = "$zero_before"
 
+make_fixture skipped-tests
+skipped_before=$(git -C "$repo" rev-parse main)
+git -C "$repo" checkout -b ag-skipped-tests >/dev/null
+printf 'import { test } from "bun:test"; test.skip("never runs", () => { throw new Error("must fail"); });\n' > "$repo/base.test.ts"
+git -C "$repo" add base.test.ts
+git -C "$repo" commit -m skipped-tests >/dev/null
+skipped_sha=$(git -C "$repo" rev-parse HEAD)
+git -C "$repo" checkout main >/dev/null
+report "$fixture_root/skipped-tests.md" "$skipped_sha"
+if "$land" --branch ag-skipped-tests --report "$fixture_root/skipped-tests.md" --repo "$repo" --no-push >"$fixture_root/skipped-tests.out" 2>&1; then
+  echo 'skipped-tests: single gate accepted a suite with no passing tests' >&2
+  exit 1
+fi
+assert_output_has "$fixture_root/skipped-tests.out" 'LAND framework-check=test status=fail tests=1 passed=0 detail=no-tests-passed'
+assert test "$(git -C "$repo" rev-parse main)" = "$skipped_before"
+
 make_policy_lane() {
   repo="$1"
   lane="$2"

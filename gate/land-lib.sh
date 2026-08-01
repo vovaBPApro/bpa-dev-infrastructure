@@ -39,7 +39,7 @@ land_resolve_bun() {
 # failure. The gate never installs dependencies: changing dependency state is
 # outside landing authority, and a non-reproducible checkout must be refused.
 land_run_declared_checks() {
-  local repo="$1" prefix="$2" manifest="$repo/package.json" scripts_file script parse_dir bun_config test_output test_count
+  local repo="$1" prefix="$2" manifest="$repo/package.json" scripts_file script parse_dir bun_config test_output test_count pass_count
   local -a source_files=() test_files=()
   parse_dir=$(mktemp -d "${TMPDIR:-/tmp}/bpa-land-parse.XXXXXX") || return 1
   echo "$prefix declared-check=parse status=running"
@@ -78,12 +78,17 @@ land_run_declared_checks() {
     fi
     cat "$test_output"
     test_count=$(sed -nE 's/^Ran ([0-9]+) tests? across .*/\1/p' "$test_output" | tail -n 1)
+    pass_count=$(sed -nE 's/^[[:space:]]*([0-9]+) pass$/\1/p' "$test_output" | tail -n 1)
     rm -f "$bun_config" "$test_output"
     if [[ ! "$test_count" =~ ^[0-9]+$ ]] || [ "$test_count" -eq 0 ]; then
       echo "$prefix framework-check=test status=fail tests=${test_count:-unknown} detail=no-tests-collected" >&2
       return 1
     fi
-    echo "$prefix framework-check=test status=pass tests=$test_count"
+    if [[ ! "$pass_count" =~ ^[0-9]+$ ]] || [ "$pass_count" -eq 0 ]; then
+      echo "$prefix framework-check=test status=fail tests=$test_count passed=${pass_count:-unknown} detail=no-tests-passed" >&2
+      return 1
+    fi
+    echo "$prefix framework-check=test status=pass tests=$test_count passed=$pass_count"
   else
     echo "$prefix framework-check=test status=fail tests=0 detail=no-tests-tracked" >&2
     return 1

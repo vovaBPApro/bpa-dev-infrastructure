@@ -7,6 +7,13 @@ telegram_read_bot_token() { # sets TELEGRAM_EFFECTIVE_BOT_TOKEN
   local env_file="$1" line trimmed token assignments=0
   TELEGRAM_EFFECTIVE_BOT_TOKEN=
   [[ -f "$env_file" && ! -L "$env_file" ]] || return 1
+  # Parse only a deliberately smaller EnvironmentFile language whose effective
+  # values are identical under this reader and systemd. Backslashes can join
+  # physical lines and quotes can span them, so neither is supported anywhere
+  # in the file. CR and the remaining non-tab control bytes are likewise
+  # rejected before physical-line parsing can disagree with systemd.
+  LC_ALL=C grep -q $'[\001-\010\013-\037\177]' "$env_file" && return 1
+  LC_ALL=C grep -q '["'"'"'\\]' "$env_file" && return 1
   while IFS= read -r line || [[ -n "$line" ]]; do
     trimmed="${line#"${line%%[!$' \t']*}"}"
     [[ -z "$trimmed" || "$trimmed" == \#* ]] && continue

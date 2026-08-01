@@ -428,6 +428,14 @@ invalid_token_rows=(
   'TELEGRAM_BOT_TOKEN=__OPERATOR_PASTE_TELEGRAM_BOT_TOKEN_HERE__'
   'TELEGRAM_BOT_TOKEN=fixture-token'
   $'TELEGRAM_BOT_TOKEN=123456789:abcdefghijklmnopqrstuvwxyz_ABCDE\nTELEGRAM_BOT_TOKEN=123456789:abcdefghijklmnopqrstuvwxyz_ABCDE'
+  $'UNRELATED=value\\\nTELEGRAM_BOT_TOKEN=123456789:abcdefghijklmnopqrstuvwxyz_ABCDE'
+  $'UNRELATED=\'first\nTELEGRAM_BOT_TOKEN=123456789:abcdefghijklmnopqrstuvwxyz_ABCDE\nlast\''
+  $'UNRELATED="first\nTELEGRAM_BOT_TOKEN=123456789:abcdefghijklmnopqrstuvwxyz_ABCDE\nlast"'
+  $'UNRELATED=escaped\\\\backslash\nTELEGRAM_BOT_TOKEN=123456789:abcdefghijklmnopqrstuvwxyz_ABCDE'
+  $'TELEGRAM_BOT_TOKEN=123456789:abcdefghijklmnopqrstuvwxyz_ABCDE\rTELEGRAM_BOT_TOKEN=bad'
+  $'TELEGRAM_BOT_TOKEN=123456789:abcdefghijklmnopqrstuvwxyz_ABCDE\r'
+  $'TELEGRAM_BOT_TOKEN=123456789:abcdefghijklmnopqrstuvwxyz_ABCDE\r\n'
+  $'TELEGRAM_BOT_TOKEN=123456789:abcdefghijklmnopqrstuvwxyz_ABCDE\n \t\rTELEGRAM_BOT_TOKEN=bad'
 )
 for token_row in "${invalid_token_rows[@]}"; do
   if [[ "$token_row" == __MISSING_FILE__ ]]; then
@@ -450,6 +458,9 @@ for token_row in "${invalid_token_rows[@]}"; do
   fi
   grep -Fq 'refusing watchdog arm without a configured Telegram alert channel' <<<"$token_output"
 done
+printf 'UNRELATED=ordinary\nTELEGRAM_BOT_TOKEN=%s\n' "$valid_bot_token" > "$arming_fixture/root/.env"
+BOOTSTRAP_LIB_ONLY=true ENV_FILE="$arming_fixture/root/.env" INSTALLER_PATH="$INSTALLER" \
+  bash -c 'source "$INSTALLER_PATH"; has_configured_token'
 printf 'TELEGRAM_BOT_TOKEN=%s\n' "$valid_bot_token" > "$arming_fixture/root/.env"
 
 BOOTSTRAP_LIB_ONLY=true ENV_FILE="$arming_fixture/root/.env" INSTALLER_PATH="$INSTALLER" \

@@ -53,6 +53,10 @@ for (const mode of ['auth', 'timeout', 'malformed', 'wrong-id', 'no-request'])
 
 const suffix = (n: number) => `123456789:${'z'.repeat(n)}`;
 const grammar: Array<[string, boolean, string]> = [
+  [`${'1'.repeat(6)}:${'z'.repeat(20)}`, true, 'bot id minimum'],
+  [`${'1'.repeat(15)}:${'z'.repeat(20)}`, true, 'bot id maximum'],
+  [`${'1'.repeat(5)}:${'z'.repeat(20)}`, false, 'bot id adjacent short'],
+  [`${'1'.repeat(16)}:${'z'.repeat(20)}`, false, 'bot id adjacent long'],
   [suffix(20), true, 'minimum'], [suffix(128), true, 'maximum'],
   [suffix(19), false, 'adjacent short'], [suffix(129), false, 'adjacent long'],
   [suffix(10_000), false, 'very long'],
@@ -71,6 +75,14 @@ const invalidShapes = [
   `TELEGRAM_BOT_TOKEN=${token}\nTELEGRAM_BOT_TOKEN=\n`,
   `TELEGRAM_BOT_TOKEN='${token}'\n`, `export TELEGRAM_BOT_TOKEN=${token}\n`,
   `TELEGRAM_BOT_TOKEN=${token} # comment\n`,
+  `UNRELATED=value\\\nTELEGRAM_BOT_TOKEN=${token}\n`,
+  `UNRELATED='first\nTELEGRAM_BOT_TOKEN=${token}\nlast'\n`,
+  `UNRELATED="first\nTELEGRAM_BOT_TOKEN=${token}\nlast"\n`,
+  `UNRELATED=escaped\\\\backslash\nTELEGRAM_BOT_TOKEN=${token}\n`,
+  `TELEGRAM_BOT_TOKEN=${token}\rTELEGRAM_BOT_TOKEN=bad\n`,
+  `TELEGRAM_BOT_TOKEN=${token.slice(0, -1)}\rX\n`,
+  `TELEGRAM_BOT_TOKEN=${token}\r\n`,
+  `TELEGRAM_BOT_TOKEN=${token}\n \t\rTELEGRAM_BOT_TOKEN=bad\n`,
 ];
 for (const [index, shape] of invalidShapes.entries()) {
   await writeFile(envFile, shape);
@@ -78,4 +90,37 @@ for (const [index, shape] of invalidShapes.entries()) {
     env: { PATH: process.env.PATH!, PREFLIGHT: helper, ENV_FILE: envFile }, stdout: 'ignore', stderr: 'ignore' });
   if ((await proc.exited) === 0) throw new Error(`invalid EnvironmentFile shape ${index}`);
 }
+
+await writeFile(envFile, `UNRELATED=ordinary\nTELEGRAM_BOT_TOKEN=${token}\n`);
+if (await preflight('success')) throw new Error('ordinary preceding assignment rejected');
+
+// Production mutation lock: widening either bot-id boundary must make the
+// adjacent real-parser fixtures fail.
+const production = await readFile(helper, 'utf8');
+for (const [needle, replacement, rejected, label] of [
+  ['{6,15}', '{5,15}', `${'1'.repeat(5)}:${'z'.repeat(20)}`, 'lower'],
+  ['{6,15}', '{6,16}', `${'1'.repeat(16)}:${'z'.repeat(20)}`, 'upper'],
+] as const) {
+  if (!production.includes(needle)) throw new Error(`production grammar missing for ${label} mutant`);
+  const mutant = join(scratch, `preflight-${label}-mutant.sh`);
+  await writeFile(mutant, production.replace(needle, replacement));
+  await writeFile(envFile, `TELEGRAM_BOT_TOKEN=${rejected}\n`);
+  const proc = Bun.spawn({ cmd: ['bash', '-c', 'source "$PREFLIGHT"; telegram_read_bot_token "$ENV_FILE"'],
+    env: { PATH: process.env.PATH!, PREFLIGHT: mutant, ENV_FILE: envFile }, stdout: 'ignore', stderr: 'ignore' });
+  if ((await proc.exited) !== 0) throw new Error(`${label} production mutation was not applied`);
+}
+
+const shapeMutant = join(scratch, 'preflight-physical-lines-mutant.sh');
+const shapeGuard = /  LC_ALL=C grep -q \$'\[[^\n]+\]' "\$env_file" && return 1\n  LC_ALL=C grep -q '\[[^\n]+\]' "\$env_file" && return 1\n/;
+const physicalOnly = production.replace(shapeGuard, '');
+if (physicalOnly === production) throw new Error('physical-line mutation was not applied');
+await writeFile(shapeMutant, physicalOnly);
+await writeFile(envFile, `UNRELATED=value\\\nTELEGRAM_BOT_TOKEN=${token}\n`);
+const shapeProc = Bun.spawn({
+  cmd: ['bash', '-c', 'source "$PREFLIGHT"; telegram_read_bot_token "$ENV_FILE"'],
+  env: { PATH: process.env.PATH!, PREFLIGHT: shapeMutant, ENV_FILE: envFile },
+  stdout: 'ignore', stderr: 'ignore',
+});
+if ((await shapeProc.exited) !== 0) throw new Error('physical-line mutant did not reproduce fail-before');
+console.log('MUTATION-RED physical-line parser and bot-id bounds');
 console.log('telegram transport preflight: PASS');

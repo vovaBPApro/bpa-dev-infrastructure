@@ -355,6 +355,19 @@ export const REGISTRY: Artifact[] = [
       'and nothing from it may ever be printed.',
   },
   {
+    id: 'access.declaration.json',
+    kind: 'repo-file',
+    trackedPath: 'database/access.declaration.json',
+    writers: [],
+    readers: ['database/check-access.ts'],
+    note:
+      'Declared roles, grants and ownership the product database must have. Git ' +
+      'is the durable writer; database/check-access.ts compares live grants ' +
+      'against it and reports drift. Added after the app role silently lost ' +
+      'CREATE on schema public (W-27) and took the live stand down, with the ' +
+      'required permissions existing nowhere in version control.',
+  },
+  {
     id: 'deployed-mechanisms.tsv',
     kind: 'repo-file',
     trackedPath: 'bootstrap/deployed-mechanisms.tsv',

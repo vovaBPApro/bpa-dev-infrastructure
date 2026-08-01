@@ -1547,8 +1547,8 @@ async function tmuxPasteText(text: string): Promise<boolean> {
 // SYSTEM units are intentional: this host has no user systemd bus. The timer
 // census is independent of the transition watcher, so a dirty death missed by
 // the event path still wakes the orchestrator on the next fleet interval.
-function listSystemLaneUnits() {
-  const result = Bun.spawnSync(
+async function listSystemLaneUnits() {
+  const proc = Bun.spawn(
     [
       'systemctl',
       'list-units',
@@ -1559,12 +1559,16 @@ function listSystemLaneUnits() {
       '--plain',
       '--no-pager',
     ],
-    { stdout: 'pipe', stderr: 'pipe', timeout: 10_000 },
+    { stdout: 'pipe', stderr: 'pipe' },
   );
-  if (result.exitedDueToTimeout || result.exitCode !== 0) {
-    throw new Error(`system lane census failed (exit ${result.exitCode})`);
+  const timeout = setTimeout(() => proc.kill(), 10_000);
+  timeout.unref();
+  const exitCode = await proc.exited;
+  clearTimeout(timeout);
+  if (exitCode !== 0) {
+    throw new Error(`system lane census failed (exit ${exitCode})`);
   }
-  return parseSystemdLaneUnits(result.stdout.toString());
+  return parseSystemdLaneUnits(await new Response(proc.stdout).text());
 }
 
 async function autonomyNudge(message: string): Promise<void> {

@@ -167,12 +167,38 @@ No gate accepts a lane narrative. Required evidence is executable at the exact
 reviewed SHA, rerun after canonical merge, then repeated against the deployed
 identity. Risky gates require an independent architectural/reliability reviewer.
 
+## Pre-stage-2 Human decision boundary
+
+Stage 1 and the current stabilization work may finish without granting any new
+authority. Repository-only design, inventory, classification, and other already
+authorized non-provisioning work may also continue. Crossing into stage 2 is a
+separate, explicit decision boundary: none of the external resources, secrets,
+dependency choices, or automated infrastructure authority below is currently
+approved by this plan. Before provisioning, the Human must decide or provide:
+
+| Required decision / provisioned input | Security and cost impact | Least-privilege authority | Safe degraded behavior while absent |
+| --- | --- | --- | --- |
+| Independent external compute and site selection, procurement, budget, ownership, and supported recovery target | Recurring compute/network/storage cost; creates a second administrative and data-retention boundary | One narrowly scoped project/account and host/site capable only of sentinel, gateway, durable queue, and disposable recovery-test duties; no product-data or lane-dispatch access | Keep on-host leaf containment and Human escalation; report `degraded: external-recovery-unavailable`; no host/site independence claim |
+| Secondary provider and operator transport selection plus dependency/lockfile policy | Provider and message costs, third-party availability/privacy exposure, and a new supply-chain dependency | Send/receive only on a dedicated operator endpoint, with explicit destinations, quotas, retention, and no access to the primary transport or orchestration session | Persist locally where already authorized and use existing Human escalation; do not fail over to an unapproved provider; G4 remains `NO-GO` |
+| Separate sentinel, transport, and infrastructure credentials, provisioned outside Git | Compromise could expose operator messages or infrastructure control; secret rotation/storage has operational cost | Distinct non-shared identities, each limited to its one API/endpoint and declared targets; read-only health credentials separated from mutation credentials; no product-data, repository-write, or general account-admin scope | Do not synthesize, copy, or reuse credentials; disable external transport and automated recovery, surface the missing-input state, and retain Human-only recovery |
+| Exact infrastructure fence/rebuild permission surface and affected disposable/production infrastructure | Fencing or rebuild is destructive and may cause outage, replacement-resource cost, or data loss if over-broad | Target allowlist, identity/fencing token, one-host fence and rebuild operations, quotas, cooldown, audit log, and deny-by-default access to networks, volumes, snapshots, and unrelated resources | Health observation and notification only; no automated mutation; G1/G4/G9 remain `NO-GO` |
+| Authorization policy for automated fencing/rebuilding, including promotion boundary, maintenance windows, abort/rollback rules, and whether production use is ever allowed | Delegates destructive infrastructure action and can extend outage or incur spend | Enable only for an exact independently reviewed deployment manifest after disposable proof, with bounded attempts, explicit target, rollback/fail-stop, and revocable credential | Keep automation disarmed even if APIs are reachable; require Human recovery and report it honestly as `NO-GO` |
+
+These decisions must be captured as instance inputs and approval records without
+recording secret values. This plan-writing mission neither requests an answer nor
+authorizes creating, buying, provisioning, deploying, or enabling any item in the
+table. Until a later Human decision supplies them, G1, G4, G9, topology promotion,
+and automatic host recovery remain `NO-GO`; current stabilization may still
+finish within its existing authority.
+
 ## Staged implementation order
 
 1. **Freeze and classify.** Keep hazardous feedback routes off. Land termination
    cause records, correlation IDs, route inventory, resource inventory, and the
    candidate/deployed identity surface. No topology change yet.
-2. **Provision the outside-domain owner.** Install the external sentinel/gateway
+2. **After the Human boundary, provision the outside-domain owner.** Only after
+   every applicable decision/input in the preceding table is durably approved,
+   install the external sentinel/gateway
    on independent compute, provider, and transport. Prove durable operator
    communication plus remote recovery-API reachability against a disposable
    target. Human-only or notification-only mode remains `NO-GO`; no later stage
@@ -250,16 +276,27 @@ identity. Risky gates require an independent architectural/reliability reviewer.
 
 ## Candidate-to-gate disposition
 
-Snapshot below is as of the original plan base (`853ca0a`, 2026-08-01
-16:50 +02:00) against immutable canonical remote-main SHA
-`45429a6d5dd2c3d3f2cacc11429018aa2c6debd8`. “Landed” means ancestor of that
-exact commit, never of a later moving `origin/main`; review/evidence commits on
-candidate refs do not become landed by association. A fresh reviewer can rerun
-the classification without trusting the timestamp:
+This revision pins a fresh immutable repository snapshot: fetched remote-main is
+`45429a6d5dd2c3d3f2cacc11429018aa2c6debd8` and local-main is
+`59631869a51923d5bc41bcbe483cab5ca1f9dcf2`. “Landed” means ancestor of that
+exact remote SHA; `local=present` means ancestor of that exact local SHA and does
+not imply remote landing. Candidate implementation, terminal-evidence, and
+review commits remain distinct. Moving branch names, their later tips, and any
+current worktree state are not evidence for this pinned snapshot. Before any
+implementation intake, a fresh reconciliation must pin new immutable remote and
+local SHAs and rerun the same classification; this historical snapshot must not
+silently float. A fresh reviewer can run:
 
 ```sh
-main=45429a6d5dd2c3d3f2cacc11429018aa2c6debd8
-git cat-file -e "$main^{commit}" && for sha in d790bc1 a3ad228 041fe6e 71b8770 0648138 9afd5cd 1409cf6 013c3bf 699e5ff d010755 2b49c9e 35221ab 637ad0d f63c93a 14f9ebf c52ac95 e3abd7b 019180f 7eee7db 1c81e33 54d7abf ea30c7f 0cc5215 3854864 a92e6b2 d743a12; do git merge-base --is-ancestor "$sha" "$main" && state=landed || state=unlanded; printf '%s %s\n' "$sha" "$state"; done
+remote=45429a6d5dd2c3d3f2cacc11429018aa2c6debd8
+local=59631869a51923d5bc41bcbe483cab5ca1f9dcf2
+git cat-file -e "$remote^{commit}" && git cat-file -e "$local^{commit}" &&
+for sha in d790bc1 a3ad228 041fe6e 71b8770 0648138 9afd5cd 1409cf6 013c3bf 699e5ff d010755 2b49c9e 35221ab 637ad0d f63c93a 14f9ebf c52ac95 e3abd7b 019180f 7eee7db 1c81e33 54d7abf ea30c7f 5b7c743 7accbbf 0cc5215 3854864 a92e6b2 446ca07 ca81786 2c54586 9fa5372 13cf795 309b9fa a607311 d92f75c d743a12; do
+  git cat-file -e "$sha^{commit}" || exit
+  git merge-base --is-ancestor "$sha" "$remote" && rs=landed || rs=unlanded
+  git merge-base --is-ancestor "$sha" "$local" && ls=present || ls=not-present
+  printf '%s remote=%s local=%s\n' "$sha" "$rs" "$ls"
+done
 ```
 
 Expected landed entries relevant here are `9afd5cd`, `0cc5215`, `3854864`,
@@ -284,11 +321,13 @@ completion:
   round-3 REJECT `f63c93a` and round-4 REJECT `14f9ebf`; round-5 REJECT
   `c52ac95`; round-6 REJECT `e3abd7b`; round-7 coder `019180f`, ACCEPT
   `7eee7db`; cumulative round-8 REJECT `1c81e33`; cumulative round-9 REJECT
-  `54d7abf`; and surviving round-10 coder tip `ea30c7f`. Thus `ea30c7f` is the
-  only current W-37 candidate from that snapshot that could supply narrow G2
-  journal-first/pane-edge/cleanup evidence, but it had no fresh cumulative ACCEPT
-  and was not an ancestor of pinned canonical main `45429a6d5dd2c3d3f2cacc11429018aa2c6debd8`;
-  it closed no gate. Even an ACCEPT
+  `54d7abf`; round-10 implementation `ea30c7f`, terminal-evidence tip `5b7c743`,
+  and independent cumulative ACCEPT review `7accbbf`. The evidence tip, not the
+  implementation commit, is the exact round-10 coder tip. All three are
+  unlanded and not present on the pinned local main, so the ACCEPT establishes
+  review disposition only: it does not land, deploy, or close any gate. This
+  round-10 chain is the current pinned W-37 candidate/evidence that could supply
+  narrow G2 journal-first/pane-edge/cleanup evidence. Even its ACCEPT
   would leave new work for the typed event journal source allowlist, generated
   DAG checker, lineage/hop limit, and circuit breaker required for full G2.
 - The watchdog restoration `0cc5215`, escalation `3854864`, and acknowledged
@@ -299,6 +338,15 @@ completion:
   compute/transport, persist a fenced retry state machine, and implement the
   remote automated fence/rebuild proof. Human-only degradation remains an
   explicit `NO-GO` for G1/G4/G9.
+- The watchdog round-6 chain is unlanded candidate evidence: implementation
+  `446ca07`, terminal-evidence tip `ca81786`, independent operations REJECT
+  `2c54586`, and independent regression/false-green REJECT `9fa5372`. Round 7 is
+  likewise unlanded: implementation `13cf795`, terminal-evidence tip `309b9fa`,
+  independent operations REJECT `a607311`, and independent regression REJECT
+  `d92f75c`. The two round-7 reviews reject the exact same evidence tip through
+  separate review commits; neither review is an implementation/evidence tip.
+  These chains are candidates and review evidence only, not landed or deployed
+  state, and both rounds remain `NO-GO`; they close neither G3 nor G4.
 - W-29 history logging (`d743a12`) supplies append-only transport evidence but
   does not close G4; new work is required for durable per-message semantic state,
   independent gateway availability, and locale/content gates.
@@ -394,6 +442,8 @@ credential, unit, or runtime file was changed while producing this plan.
 - orchestrator-fallback sha256:811f13bc3373 — Orchestrator Session Portability
 - autonomy-and-capacity sha256:18c43aaf7e14 — Autonomy and Capacity
 - landing-and-merge sha256:951d9781cffa — Landing and Merge
+- restart-recovery sha256:78ba6e704852 — Restart Recovery
+- vendor-routing sha256:2187035824a1 — Vendor Routing
 - roles sha256:cd4c40c4e640 — Roles
 - instruction-layers sha256:cd21f4ce0990 — Instruction Layers
 - reproducible-from-git sha256:822d9efe694b — Reproducible From Git

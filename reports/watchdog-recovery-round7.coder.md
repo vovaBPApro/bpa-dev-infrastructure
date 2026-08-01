@@ -54,7 +54,7 @@ No live service, session, timer, unit, credential, or runtime file was touched.
 Independent fresh dual Tier-A review is still mandatory and has not been
 performed by this coder lane.
 
-commit: PENDING [CODER] prove watchdog alert transport before arming
+commit: 13cf795e85180519ffef2f637e77b294e3e859a4 [CODER] prove watchdog alert transport before arming
 verify: bun bootstrap/telegram-transport-preflight.test.ts && bash bootstrap/bootstrap.test.sh && bash orchestrator/watchdog-supervision.test.sh && (cd daemon && bun test watchdog-turnend-a1.test.ts)
 result: NO-GO
 blocker: existing real-daemon transport and turn-end suites time out; TypeScript dependencies are absent

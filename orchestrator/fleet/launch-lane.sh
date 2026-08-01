@@ -86,6 +86,7 @@ unit_path="$(dirname "$BUN_BIN"):$(dirname "$codex_bin"):/usr/local/bin:/usr/bin
 # shellcheck disable=SC2016,SC2251
 if ! systemd-run --collect --unit "$unit" \
   --property=IPAddressDeny=localhost \
+  --property=IPAddressAllow=127.0.0.53 \
   --setenv="HOME=$HOME" --setenv="TMPDIR=$tmp_dir" --setenv="PATH=$unit_path" \
   --working-directory="$worktree" \
   /bin/bash -o pipefail -c '"$1" exec --dangerously-bypass-approvals-and-sandbox "$(cat "$2")" 2>&1 | "$3" "$4" >>"$5"' \

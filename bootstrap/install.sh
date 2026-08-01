@@ -417,6 +417,56 @@ render_units() {
   fi
 }
 
+query_timer_state() { # <system|user> <unit> <enabled-var> <active-var>
+  local scope="$1" unit="$2" enabled_var="$3" active_var="$4"
+  local queried_enabled queried_active enabled_rc active_rc
+  local -a prefix=()
+  [[ "$scope" == system ]] || prefix=(--user)
+  if queried_enabled="$(systemctl "${prefix[@]}" is-enabled "$unit")"; then
+    enabled_rc=0
+  else
+    enabled_rc=$?
+  fi
+  if queried_active="$(systemctl "${prefix[@]}" is-active "$unit")"; then
+    active_rc=0
+  else
+    active_rc=$?
+  fi
+  case "$queried_enabled/$enabled_rc" in
+    enabled/0|static/0|disabled/1|not-found/4) ;;
+    *) return 1 ;;
+  esac
+  case "$queried_active/$active_rc" in
+    active/0|inactive/3) ;;
+    *) return 1 ;;
+  esac
+  printf -v "$enabled_var" '%s' "$queried_enabled"
+  printf -v "$active_var" '%s' "$queried_active"
+}
+
+prove_watchdog_disarmed() { # <system|user> <unit>
+  local enabled active
+  query_timer_state "$1" "$2" enabled active &&
+    [[ "$enabled" == disabled || "$enabled" == not-found || "$enabled" == static ]] &&
+    [[ "$active" == inactive ]]
+}
+
+restore_legacy_watchdog_armed() {
+  local enabled active
+  systemctl --user enable --now orch-runtime-watchdog.timer &&
+    query_timer_state user orch-runtime-watchdog.timer enabled active &&
+    [[ "$enabled/$active" == enabled/active ]]
+}
+
+rollback_watchdog_arm() { # <legacy-was-armed>
+  local legacy_was_armed="$1"
+  systemctl disable --now bpa-orchestrator-watchdog.timer || return 1
+  prove_watchdog_disarmed system bpa-orchestrator-watchdog.timer || return 1
+  if "$legacy_was_armed"; then
+    restore_legacy_watchdog_armed || return 1
+  fi
+}
+
 activate_units() {
   systemd_system_available || { echo 'ERROR: system systemd is unavailable' >&2; return 1; }
   if has_configured_token; then
@@ -430,41 +480,55 @@ activate_units() {
     systemctl enable --now agentic-bpa-stand-verifier.service
     systemctl enable --now bpa-meteorite.timer
     if "$DISARM_WATCHDOG"; then
-      systemctl disable --now bpa-orchestrator-watchdog.timer
-      systemctl --user disable --now orch-runtime-watchdog.timer 2>/dev/null || true
-      echo 'Watchdog timers disarmed; rendered system units retained.'
-    elif "$ARM_WATCHDOG"; then
-      local legacy_enabled legacy_active
-      legacy_enabled="$(systemctl --user is-enabled orch-runtime-watchdog.timer 2>/dev/null || true)"
-      legacy_active="$(systemctl --user is-active orch-runtime-watchdog.timer 2>/dev/null || true)"
-      if [[ "$legacy_enabled" != enabled && "$legacy_enabled" != disabled &&
-            "$legacy_enabled" != not-found && "$legacy_enabled" != static ]] ||
-         [[ "$legacy_active" != active && "$legacy_active" != inactive &&
-            "$legacy_active" != failed && "$legacy_active" != unknown ]]; then
-        echo "ERROR: legacy user watchdog state is unverifiable; refusing system watchdog arm" >&2
+      if ! systemctl disable --now bpa-orchestrator-watchdog.timer ||
+         ! systemctl --user disable --now orch-runtime-watchdog.timer; then
+        echo 'ERROR: watchdog disarm command failed' >&2
         return 1
       fi
-      if [[ "$legacy_enabled" == enabled || "$legacy_active" == active ]]; then
-        systemctl --user disable --now orch-runtime-watchdog.timer
-        legacy_enabled="$(systemctl --user is-enabled orch-runtime-watchdog.timer 2>/dev/null || true)"
-        legacy_active="$(systemctl --user is-active orch-runtime-watchdog.timer 2>/dev/null || true)"
-        if [[ "$legacy_enabled" == enabled || "$legacy_active" == active ]]; then
+      if ! prove_watchdog_disarmed system bpa-orchestrator-watchdog.timer ||
+         ! prove_watchdog_disarmed user orch-runtime-watchdog.timer; then
+          echo 'ERROR: watchdog disarm could not be proven for both timer generations' >&2
+          return 1
+      fi
+      echo 'Watchdog timers disarmed; rendered system units retained.'
+    elif "$ARM_WATCHDOG"; then
+      local legacy_enabled legacy_active legacy_was_armed=false
+      query_timer_state user orch-runtime-watchdog.timer legacy_enabled legacy_active || {
+        echo "ERROR: legacy user watchdog state is unverifiable; refusing system watchdog arm" >&2
+        return 1
+      }
+      if [[ "$legacy_enabled/$legacy_active" == enabled/active ]]; then
+        legacy_was_armed=true
+        if ! systemctl --user disable --now orch-runtime-watchdog.timer; then
+          echo 'ERROR: legacy user watchdog retirement command failed' >&2
+          return 1
+        fi
+        if ! prove_watchdog_disarmed user orch-runtime-watchdog.timer; then
+          restore_legacy_watchdog_armed ||
+            echo 'ERROR: legacy watchdog retirement failed and prior state restoration is unproven' >&2
           echo 'ERROR: legacy user watchdog remains armed; refusing system watchdog arm' >&2
           return 1
         fi
+      elif [[ "$legacy_enabled/$legacy_active" != disabled/inactive &&
+              "$legacy_enabled/$legacy_active" != not-found/inactive &&
+              "$legacy_enabled/$legacy_active" != static/inactive ]]; then
+        echo "ERROR: legacy user watchdog state is inconsistent enabled=$legacy_enabled active=$legacy_active" >&2
+        return 1
       fi
-      systemctl enable --now bpa-orchestrator-watchdog.timer
       local watchdog_enabled watchdog_active watchdog_next
-      watchdog_enabled="$(systemctl is-enabled bpa-orchestrator-watchdog.timer 2>/dev/null || true)"
-      watchdog_active="$(systemctl is-active bpa-orchestrator-watchdog.timer 2>/dev/null || true)"
-      watchdog_next="$(systemctl show bpa-orchestrator-watchdog.timer --property=NextElapseUSecRealtime --value 2>/dev/null || true)"
-      if [[ "$watchdog_enabled" != enabled || "$watchdog_active" != active ]] ||
-         ! finite_future_systemd_trigger "$watchdog_next" "${ORCH_WATCHDOG_NOW:-$(date +%s)}"; then
-        systemctl disable --now bpa-orchestrator-watchdog.timer 2>/dev/null || true
+      if ! systemctl enable --now bpa-orchestrator-watchdog.timer ||
+         ! query_timer_state system bpa-orchestrator-watchdog.timer watchdog_enabled watchdog_active ||
+         [[ "$watchdog_enabled/$watchdog_active" != enabled/active ]] ||
+         ! watchdog_next="$(systemctl show bpa-orchestrator-watchdog.timer --property=NextElapseUSecRealtime --value)" ||
+         ! finite_future_systemd_trigger "$watchdog_next" "${ORCH_WATCHDOG_NOW:-$(date +%s)}" ||
+         ! systemctl start bpa-orchestrator-watchdog.service; then
+        rollback_watchdog_arm "$legacy_was_armed" || {
+          echo 'ERROR: watchdog arm failed and rollback could not be proven' >&2
+          return 1
+        }
         echo "ERROR: watchdog arm unproven enabled=${watchdog_enabled:-unknown} active=${watchdog_active:-unknown} next=${watchdog_next:-none}" >&2
         return 1
       fi
-      systemctl start bpa-orchestrator-watchdog.service
     else
       echo 'Watchdog timer installed but remains unarmed.'
     fi

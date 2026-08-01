@@ -301,18 +301,29 @@ for command_name in git curl tmux unzip xz crontab bun docker codex claude; do
 done
 printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "# BEGIN bpa-dev-infrastructure hygiene"' > "$arming_fixture/bin/crontab"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "Linger=yes"' > "$arming_fixture/bin/loginctl"
-# shellcheck disable=SC2016 # the recorder shim must expand $* at CALL time
+# The fake is a state machine, not a call logger: unknown operations fail and
+# enable/disable mutate the states observed by later postchecks.
+# shellcheck disable=SC2016
 printf '%s\n' '#!/usr/bin/env bash' \
-  'printf "%s\n" "$*" >> "${BOOTSTRAP_TEST_SYSTEMCTL_CALLS:?}"' \
-  'case "$*" in' \
-  '  "show-environment") exit 0 ;;' \
-  '  "--user is-enabled orch-runtime-watchdog.timer") if grep -q "^--user disable --now orch-runtime-watchdog.timer$" "${BOOTSTRAP_TEST_SYSTEMCTL_CALLS:?}"; then printf "disabled\n"; else printf "%s\n" "${BOOTSTRAP_TEST_LEGACY_ENABLED:-disabled}"; fi ;;' \
-  '  "--user is-active orch-runtime-watchdog.timer") if grep -q "^--user disable --now orch-runtime-watchdog.timer$" "${BOOTSTRAP_TEST_SYSTEMCTL_CALLS:?}"; then printf "inactive\n"; else printf "%s\n" "${BOOTSTRAP_TEST_LEGACY_ACTIVE:-inactive}"; fi ;;' \
-  '  "is-enabled bpa-orchestrator-watchdog.timer") printf "%s\n" "${BOOTSTRAP_TEST_SYSTEM_ENABLED:-enabled}" ;;' \
-  '  "is-active bpa-orchestrator-watchdog.timer") printf "%s\n" "${BOOTSTRAP_TEST_SYSTEM_ACTIVE:-active}" ;;' \
+  'set -u' \
+  'call="$*"; printf "%s\n" "$call" >> "${BOOTSTRAP_TEST_SYSTEMCTL_CALLS:?}"' \
+  '[[ "$call" != "${BOOTSTRAP_TEST_FAIL_COMMAND:-}" ]] || exit "${BOOTSTRAP_TEST_FAIL_RC:-41}"' \
+  'case "$call" in' \
+  '  "show-environment"|"daemon-reload"|"enable --now bpa-telegram-daemon.service"|"enable --now bpa-orchestrator.service"|"enable --now bpa-full-suite.timer"|"enable --now orch-morning-report.timer"|"enable --now bpa-deploy-drift-guard.timer"|"enable --now agentic-bpa-staleness.timer"|"enable --now agentic-bpa-db-grants.timer"|"enable --now agentic-bpa-stand-verifier.service"|"enable --now bpa-meteorite.timer") exit 0 ;;' \
+  '  "is-enabled --quiet bpa-orchestrator.service"|"is-active --quiet bpa-orchestrator.service"|"is-enabled --quiet bpa-telegram-daemon.service"|"is-active --quiet bpa-telegram-daemon.service"|"is-enabled --quiet bpa-full-suite.timer"|"is-enabled --quiet orch-morning-report.timer"|"is-enabled --quiet bpa-deploy-drift-guard.timer"|"is-enabled --quiet agentic-bpa-staleness.timer"|"is-enabled --quiet agentic-bpa-db-grants.timer"|"is-enabled --quiet agentic-bpa-stand-verifier.service"|"is-enabled --quiet bpa-meteorite.timer") exit 0 ;;' \
+  '  "is-enabled --quiet bpa-orchestrator-watchdog.timer") [[ "$(head -n1 "${BOOTSTRAP_TEST_SYSTEM_STATE:?}")" == enabled ]] ;;' \
+  '  "--user disable --now orch-runtime-watchdog.timer") printf "disabled\ninactive\n" > "${BOOTSTRAP_TEST_LEGACY_STATE:?}"; exit 0 ;;' \
+  '  "--user enable --now orch-runtime-watchdog.timer") printf "enabled\nactive\n" > "${BOOTSTRAP_TEST_LEGACY_STATE:?}"; exit 0 ;;' \
+  '  "disable --now bpa-orchestrator-watchdog.timer") printf "disabled\ninactive\n" > "${BOOTSTRAP_TEST_SYSTEM_STATE:?}"; exit 0 ;;' \
+  '  "enable --now bpa-orchestrator-watchdog.timer") printf "enabled\nactive\n" > "${BOOTSTRAP_TEST_SYSTEM_STATE:?}"; exit 0 ;;' \
+  '  "--user is-enabled orch-runtime-watchdog.timer") state="$(head -n1 "${BOOTSTRAP_TEST_LEGACY_STATE:?}")"; [[ "${BOOTSTRAP_TEST_BLANK_AFTER_LEGACY_DISABLE:-0}" != 1 || "$state" != disabled ]] || exit 0; printf "%s\n" "$state"; [[ "$state" == disabled ]] && exit 1; [[ "$state" == not-found ]] && exit 4; exit 0 ;;' \
+  '  "--user is-active orch-runtime-watchdog.timer") state="$(tail -n1 "${BOOTSTRAP_TEST_LEGACY_STATE:?}")"; printf "%s\n" "$state"; [[ "$state" == inactive ]] && exit 3; exit 0 ;;' \
+  '  "is-enabled bpa-orchestrator-watchdog.timer") state="$(head -n1 "${BOOTSTRAP_TEST_SYSTEM_STATE:?}")"; printf "%s\n" "$state"; [[ "$state" == disabled ]] && exit 1; [[ "$state" == not-found ]] && exit 4; exit 0 ;;' \
+  '  "is-active bpa-orchestrator-watchdog.timer") state="$(tail -n1 "${BOOTSTRAP_TEST_SYSTEM_STATE:?}")"; printf "%s\n" "$state"; [[ "$state" == inactive ]] && exit 3; exit 0 ;;' \
   '  "show bpa-orchestrator-watchdog.timer --property=NextElapseUSecRealtime --value") printf "%s\n" "${BOOTSTRAP_TEST_NEXT_TRIGGER:-Sat 2026-08-01 12:00:00 UTC}" ;;' \
-  'esac' \
-  'exit 0' > "$arming_fixture/bin/systemctl"
+  '  "start bpa-orchestrator-watchdog.service") exit "${BOOTSTRAP_TEST_IMMEDIATE_RC:-0}" ;;' \
+  '  *) printf "unknown systemctl operation: %s\n" "$call" >&2; exit 64 ;;' \
+  'esac' > "$arming_fixture/bin/systemctl"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$arming_fixture/root/workspace/workspace.test.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$arming_fixture/root/workspace/workspace.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$arming_fixture/root/hygiene/install-cron.sh"
@@ -329,6 +340,10 @@ chmod 700 "$arming_fixture/root/deploy/check-live-stand-staleness.sh"
 arming_calls="$arming_fixture/systemctl.calls"
 run_full_install() { # <extra installer args...>
   : > "$arming_calls"
+  printf '%s\n%s\n' "${BOOTSTRAP_TEST_LEGACY_ENABLED:-disabled}" \
+    "${BOOTSTRAP_TEST_LEGACY_ACTIVE:-inactive}" > "$arming_fixture/legacy.state"
+  printf '%s\n%s\n' "${BOOTSTRAP_TEST_SYSTEM_ENABLED:-disabled}" \
+    "${BOOTSTRAP_TEST_SYSTEM_ACTIVE:-inactive}" > "$arming_fixture/system.state"
   PATH="$arming_fixture/bin:$PATH" \
     INSTALL_ROOT="$arming_fixture/root" \
     ENV_FILE="$arming_fixture/root/.env" \
@@ -337,6 +352,14 @@ run_full_install() { # <extra installer args...>
     BUN_BIN="$arming_fixture/bin/bun" \
     RUNTIME_DIR="$arming_fixture/root/runtime" \
     BOOTSTRAP_TEST_SYSTEMCTL_CALLS="$arming_calls" \
+    BOOTSTRAP_TEST_LEGACY_STATE="$arming_fixture/legacy.state" \
+    BOOTSTRAP_TEST_SYSTEM_STATE="$arming_fixture/system.state" \
+    BOOTSTRAP_TEST_FAIL_COMMAND="${BOOTSTRAP_TEST_FAIL_COMMAND:-}" \
+    BOOTSTRAP_TEST_FAIL_RC="${BOOTSTRAP_TEST_FAIL_RC:-41}" \
+    BOOTSTRAP_TEST_BLANK_AFTER_LEGACY_DISABLE="${BOOTSTRAP_TEST_BLANK_AFTER_LEGACY_DISABLE:-0}" \
+    BOOTSTRAP_TEST_NEXT_TRIGGER="${BOOTSTRAP_TEST_NEXT_TRIGGER:-Sat 2026-08-01 12:00:00 UTC}" \
+    BOOTSTRAP_TEST_IMMEDIATE_RC="${BOOTSTRAP_TEST_IMMEDIATE_RC:-0}" \
+    ORCH_WATCHDOG_NOW="${ORCH_WATCHDOG_NOW:-1785582000}" \
     "$INSTALLER" "$@"
 }
 
@@ -364,8 +387,6 @@ grep -Fq 'Watchdog timer installed but remains unarmed.' <<<"$bare_install_outpu
 # and performs an immediate safe one-shot tick.
 BOOTSTRAP_TEST_LEGACY_ENABLED=enabled \
 BOOTSTRAP_TEST_LEGACY_ACTIVE=active \
-BOOTSTRAP_TEST_SYSTEM_ENABLED=enabled \
-BOOTSTRAP_TEST_SYSTEM_ACTIVE=active \
 BOOTSTRAP_TEST_NEXT_TRIGGER='Sat 2026-08-01 12:00:00 UTC' \
 ORCH_WATCHDOG_NOW=1785582000 \
 run_full_install --arm-watchdog >/dev/null
@@ -388,6 +409,61 @@ run_full_install --disarm-watchdog >/dev/null
 grep -Fxq -- 'disable --now bpa-orchestrator-watchdog.timer' "$arming_calls"
 grep -Fxq -- '--user disable --now orch-runtime-watchdog.timer' "$arming_calls"
 test -f "$arming_fixture/config/bpa-orchestrator-watchdog.timer"
+
+# Every failed command/query is terminal, emits no false success, and leaves
+# both timer generations in a modeled, inspectable state.
+for failed_command in \
+  'disable --now bpa-orchestrator-watchdog.timer' \
+  '--user disable --now orch-runtime-watchdog.timer' \
+  'is-enabled bpa-orchestrator-watchdog.timer' \
+  '--user is-active orch-runtime-watchdog.timer'; do
+  if disarm_output="$(BOOTSTRAP_TEST_FAIL_COMMAND="$failed_command" run_full_install --disarm-watchdog 2>&1)"; then
+    echo "ERROR: disarm accepted failed command: $failed_command" >&2
+    exit 1
+  fi
+  if grep -Fq 'Watchdog timers disarmed' <<<"$disarm_output"; then
+    echo "ERROR: disarm printed false success after: $failed_command" >&2
+    exit 1
+  fi
+done
+
+# Blank post-retirement state is unverifiable and restores the proven armed
+# legacy generation after proving the canonical generation inert.
+if blank_output="$(BOOTSTRAP_TEST_LEGACY_ENABLED=enabled BOOTSTRAP_TEST_LEGACY_ACTIVE=active \
+  BOOTSTRAP_TEST_BLANK_AFTER_LEGACY_DISABLE=1 run_full_install --arm-watchdog 2>&1)"; then
+  echo 'ERROR: arm accepted blank legacy post-retirement output' >&2
+  exit 1
+fi
+if grep -Fq 'Bootstrap completed' <<<"$blank_output"; then
+  echo 'ERROR: blank post-retirement query printed success' >&2
+  exit 1
+fi
+
+# Immediate recovery is in the arm transaction. Failure disables and proves
+# the canonical timer, then restores the exact prior armed legacy state.
+if immediate_output="$(BOOTSTRAP_TEST_LEGACY_ENABLED=enabled BOOTSTRAP_TEST_LEGACY_ACTIVE=active \
+  BOOTSTRAP_TEST_IMMEDIATE_RC=42 ORCH_WATCHDOG_NOW=1785582000 \
+  run_full_install --arm-watchdog 2>&1)"; then
+  echo 'ERROR: arm accepted a failed immediate watchdog service' >&2
+  exit 1
+fi
+grep -Fxq 'disabled' < <(head -n1 "$arming_fixture/system.state")
+grep -Fxq 'inactive' < <(tail -n1 "$arming_fixture/system.state")
+grep -Fxq 'enabled' < <(head -n1 "$arming_fixture/legacy.state")
+grep -Fxq 'active' < <(tail -n1 "$arming_fixture/legacy.state")
+if grep -Fq 'Bootstrap completed' <<<"$immediate_output"; then
+  echo 'ERROR: immediate failure printed success' >&2
+  exit 1
+fi
+
+# A rollback whose canonical disable fails is itself NO-GO.
+if rollback_output="$(BOOTSTRAP_TEST_NEXT_TRIGGER=n/a \
+  BOOTSTRAP_TEST_FAIL_COMMAND='disable --now bpa-orchestrator-watchdog.timer' \
+  ORCH_WATCHDOG_NOW=1785582000 run_full_install --arm-watchdog 2>&1)"; then
+  echo 'ERROR: arm accepted an unproven rollback disable' >&2
+  exit 1
+fi
+grep -Fq 'rollback could not be proven' <<<"$rollback_output"
 
 # Render deployable unit inputs without requiring host envsubst. Temporary test
 # fixtures are intentionally outside this sweep; bootstrap inputs may never

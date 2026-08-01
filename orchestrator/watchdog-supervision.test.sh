@@ -264,12 +264,12 @@ new_case restart-failure-announced
 export ORCH_TEST_SESSION_ALIVE=0
 export ORCH_TEST_LAUNCH_STATUS=3
 export ORCH_RESTART_FAILURE_ALERT_AFTER=3
-ORCH_WATCHDOG_INTERVAL=10 ORCH_WATCHDOG_NOW=100 tick
+! ORCH_WATCHDOG_INTERVAL=10 ORCH_WATCHDOG_NOW=100 tick
 outbox_has "NUDGE watchdog-restart-failed session=$ORCH_SESSION"
 assert_actions 1 0
-ORCH_WATCHDOG_INTERVAL=10 ORCH_WATCHDOG_NOW=110 tick
+! ORCH_WATCHDOG_INTERVAL=10 ORCH_WATCHDOG_NOW=110 tick
 assert_actions 2 0
-ORCH_WATCHDOG_INTERVAL=10 ORCH_WATCHDOG_NOW=130 tick
+! ORCH_WATCHDOG_INTERVAL=10 ORCH_WATCHDOG_NOW=130 tick
 assert_actions 3 0
 outbox_has "ALERT orchestrator-recovery-failed session=$ORCH_SESSION consecutive=3"
 log_has 'WATCHDOG NO-GO reason=restart-failed'
@@ -279,9 +279,6 @@ ORCH_WATCHDOG_INTERVAL=10 ORCH_WATCHDOG_NOW=131 tick
 assert_actions 3 0
 [[ "$(grep -c 'ALERT orchestrator-recovery-failed' "$NUDGE_OUTBOX_FILE")" == 1 ]] ||
   fail 'persistent failure appended more than one loud alert'
-# The executable boundary boots daemon/server.ts with test-owned state and a
-# loopback Telegram API. No tmux session exists; no direct callback can pass it.
-bun "$SCRIPT_DIR/watchdog-transport-boundary.test.ts"
 # A later success resets failures, backoff and escalation.
 export ORCH_TEST_LAUNCH_STATUS=0
 ORCH_WATCHDOG_INTERVAL=10 ORCH_WATCHDOG_NOW=170 tick
@@ -291,24 +288,44 @@ grep -Fxq 'consecutive_failures=0' "$ORCH_RESTART_STATE_FILE" ||
 grep -Fxq 'alerted=0' "$ORCH_RESTART_STATE_FILE" ||
   fail 'successful recovery did not reset escalation'
 
-# Torn/corrupt state is treated as no trustworthy suppression record and is
-# replaced atomically with a valid state after recovery.
-new_case restart-state-corrupt
-export ORCH_TEST_SESSION_ALIVE=0
-printf 'last_restart=not-a-number\nconsecutive_failures=\xff' > "$ORCH_RESTART_STATE_FILE"
-ORCH_WATCHDOG_NOW=500 tick
-assert_actions 1 0
-grep -Fxq 'last_restart=500' "$ORCH_RESTART_STATE_FILE" ||
-  fail 'corrupt restart state suppressed or survived recovery'
+# Every field belongs to one versioned record. A valid recent timestamp paired
+# with any torn/missing/duplicate/malformed companion must recover immediately,
+# never inherit the success cooldown.
+malformed_states=(
+  'version=1\nlast_restart=499\nalerted=0\n'
+  'version=1\nlast_restart=499\nconsecutive_failures=0\n'
+  'version=1\nlast_restart=499\nconsecutive_failures=x\nalerted=0\n'
+  'version=1\nlast_restart=499\nconsecutive_failures='
+  'version=1\nlast_restart=499\nconsecutive_failures=0\nconsecutive_failures=0\nalerted=0\n'
+  'version=1\nlast_restart=499\nconsecutive_failures=0\nalerted=0\nalerted=0\n'
+  'version=1\nlast_restart=499\nconsecutive_failures=0\nalerted=x\n'
+  'version=1\nlast_restart=499\nconsecutive_failures=0\nalerted='
+  'version=1\nlast_restart=499\nconsecutive_failures=0\nalerted=0'
+  'version=2\nlast_restart=499\nconsecutive_failures=0\nalerted=0\n'
+  'version=1\nversion=1\nlast_restart=499\nconsecutive_failures=0\nalerted=0\n'
+  'version=1\nlast_restart=499\nconsecutive_failures=0\nalerted=0\nextra=1\n'
+  'version=1\nlast_restart=499\nconsecutive_failures=0\nalerted=1\n'
+)
+for malformed_index in "${!malformed_states[@]}"; do
+  new_case "restart-state-malformed-$malformed_index"
+  export ORCH_TEST_SESSION_ALIVE=0
+  printf '%b' "${malformed_states[$malformed_index]}" > "$ORCH_RESTART_STATE_FILE"
+  ORCH_WATCHDOG_NOW=500 tick
+  assert_actions 1 0
+  grep -Fxq 'version=1' "$ORCH_RESTART_STATE_FILE" ||
+    fail "[$CASE] recovery did not replace the distrusted record"
+  grep -Fxq 'last_restart=500' "$ORCH_RESTART_STATE_FILE" ||
+    fail "[$CASE] valid-looking timestamp suppressed immediate recovery"
+done
 
 # Backward clock movement/future timestamps reset instead of suppressing until
 # wall time catches up.
 new_case restart-state-future
 export ORCH_TEST_SESSION_ALIVE=0
-printf 'last_restart=999999\nconsecutive_failures=4\nalerted=1\n' > "$ORCH_RESTART_STATE_FILE"
+printf 'version=1\nlast_restart=999999\nconsecutive_failures=4\nalerted=1\n' > "$ORCH_RESTART_STATE_FILE"
 ORCH_WATCHDOG_NOW=600 tick
 assert_actions 1 0
-log_has 'WATCHDOG restart-state-clock-skew'
+log_has 'WATCHDOG restart-state-invalid'
 grep -Fxq 'consecutive_failures=0' "$ORCH_RESTART_STATE_FILE"
 
 # Concurrent timer ticks serialize on the restart-state lock. Exactly one may
@@ -380,5 +397,9 @@ assert_actions 0 0
 [[ ! -s "$ORCH_TEST_TMUX_LOG" ]] ||
   fail '[daemon-unreachable-reported] a daemon outage killed the orchestrator session'
 unset FLEET_NUDGE_REPEAT_MS
+
+# The executable boundary boots daemon/server.ts with test-owned state and a
+# loopback Telegram API. No tmux session exists; no direct callback can pass it.
+bun "$SCRIPT_DIR/watchdog-transport-boundary.test.ts"
 
 printf 'watchdog supervision tests: PASS\n'

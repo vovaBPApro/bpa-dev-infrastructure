@@ -653,22 +653,33 @@ check_daemon_health() {
 # `launch.sh start` unconditionally, at the installed 60s cadence. A provider
 # that fails to come up therefore burned a launch (and its quota) once a minute,
 # indefinitely, in silence. A restart is now both throttled and announced.
-last_restart_at() {
-  local value=0
-  if [[ -f "$RESTART_STATE_FILE" ]]; then
-    value="$(sed -n 's/^last_restart=//p' "$RESTART_STATE_FILE" | head -n 1)"
-  fi
-  [[ "$value" =~ ^[0-9]+$ ]] || value=0
-  printf '%s\n' "$value"
-}
-
-restart_failures() {
-  local value=0
-  if [[ -f "$RESTART_STATE_FILE" ]]; then
-    value="$(sed -n 's/^consecutive_failures=//p' "$RESTART_STATE_FILE" | head -n 1)"
-  fi
-  [[ "$value" =~ ^[0-9]+$ ]] || value=0
-  printf '%s\n' "$value"
+read_restart_state() {
+  local now="$1" line key value
+  local -A seen=()
+  RESTART_LAST=0 RESTART_FAILURES=0 RESTART_ALERTED=0
+  [[ -f "$RESTART_STATE_FILE" ]] || return 0
+  [[ -s "$RESTART_STATE_FILE" &&
+     "$(tail -c 1 "$RESTART_STATE_FILE"; printf x)" == $'\nx' ]] || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" == *=* ]] || return 1
+    key="${line%%=*}"
+    value="${line#*=}"
+    [[ -z "${seen[$key]+x}" ]] || return 1
+    seen["$key"]=1
+    case "$key" in
+      version) [[ "$value" == 1 ]] || return 1 ;;
+      last_restart) [[ "$value" =~ ^[0-9]+$ ]] || return 1; RESTART_LAST="$value" ;;
+      consecutive_failures) [[ "$value" =~ ^[0-9]+$ ]] || return 1; RESTART_FAILURES="$value" ;;
+      alerted) [[ "$value" == 0 || "$value" == 1 ]] || return 1; RESTART_ALERTED="$value" ;;
+      *) return 1 ;;
+    esac
+  done < "$RESTART_STATE_FILE"
+  [[ ${#seen[@]} == 4 && -n "${seen[version]+x}" &&
+     -n "${seen[last_restart]+x}" && -n "${seen[consecutive_failures]+x}" &&
+     -n "${seen[alerted]+x}" ]] || return 1
+  (( RESTART_LAST <= now )) || return 1
+  (( RESTART_FAILURES > 0 || RESTART_ALERTED == 0 )) || return 1
+  (( RESTART_FAILURES == 0 || RESTART_LAST > 0 )) || return 1
 }
 
 record_restart_state() {
@@ -676,17 +687,9 @@ record_restart_state() {
   mkdir -p "$(dirname "$RESTART_STATE_FILE")"
   tmp="$(mktemp "$(dirname "$RESTART_STATE_FILE")/.watchdog-restart-state.XXXXXX")"
   chmod 0600 "$tmp"
-  printf 'last_restart=%s\nconsecutive_failures=%s\nalerted=%s\n' "$now" "$failures" "$alerted" > "$tmp"
+  printf 'version=1\nlast_restart=%s\nconsecutive_failures=%s\nalerted=%s\n' \
+    "$now" "$failures" "$alerted" > "$tmp"
   mv -f "$tmp" "$RESTART_STATE_FILE"
-}
-
-restart_alerted() {
-  local value=0
-  if [[ -f "$RESTART_STATE_FILE" ]]; then
-    value="$(sed -n 's/^alerted=//p' "$RESTART_STATE_FILE" | head -n 1)"
-  fi
-  [[ "$value" == 0 || "$value" == 1 ]] || value=0
-  printf '%s\n' "$value"
 }
 
 # supervise_restart <reason> <kill-first:0|1>
@@ -702,21 +705,16 @@ supervise_restart() {
   fi
   now="${ORCH_WATCHDOG_NOW:-$(date +%s)}"
   [[ "$now" =~ ^[0-9]+$ ]] || now="$(date +%s)"
-  last="$(last_restart_at)"
-  failures="$(restart_failures)"
-  alerted="$(restart_alerted)"
-  since=$(( now - last ))
-  # A restart recorded in the future means the clock moved backwards (or the
-  # state file was hand-edited). Suppressing on that would wedge recovery until
-  # real time caught up, so drop the stale record instead of trusting it.
-  if (( last > 0 && since < 0 )); then
-    log "WATCHDOG restart-state-clock-skew last=$last now=$now action=reset"
-    last=0
-    failures=0
-    alerted=0
-    since=0
+  if read_restart_state "$now"; then
+    last="$RESTART_LAST"
+    failures="$RESTART_FAILURES"
+    alerted="$RESTART_ALERTED"
+  else
+    log "WATCHDOG restart-state-invalid action=reset"
+    last=0 failures=0 alerted=0
     record_restart_state 0 0 0
   fi
+  since=$(( now - last ))
   backoff="$WATCHDOG_INTERVAL_S"
   if (( failures > 1 )); then
     for (( i=1; i<failures; i++ )); do
@@ -751,8 +749,9 @@ supervise_restart() {
       append_nudge "ALERT orchestrator-recovery-failed session=$SESSION consecutive=$failures action=human-required"
       record_restart_state "$now" "$failures" 1
     fi
+    return 1
   fi
-  exit 0
+  return 0
 }
 
 if state_available; then

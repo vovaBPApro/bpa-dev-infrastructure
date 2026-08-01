@@ -284,6 +284,18 @@ test('buildRuntimeStatus: missing state files degrade to honest n/a, no throw', 
   expect(joined).toContain('instance: stopped (no lock file)');
 });
 
+test('REGRESSION ML-6: /status uses honest local vendor quota lines verbatim', () => {
+  const lines = buildRuntimeStatus(statusDeps({
+    vendorQuotaLines: [
+      'vendor_quota_codex: 5h=unknown (no fresh event)',
+      'vendor_quota_claude: weekly=unknown (no local snapshot)',
+    ],
+  }));
+  expect(lines).toContain('vendor_quota_codex: 5h=unknown (no fresh event)');
+  expect(lines).toContain('vendor_quota_claude: weekly=unknown (no local snapshot)');
+  expect(lines.some((line) => line === 'vendor_quota: n/a (no orchestrator-state.json)')).toBe(false);
+});
+
 test('buildRuntimeStatus: present state file surfaces real fields', () => {
   const state = {
     current_plan: { id: 'PLAN_X', phase: 'impl' },

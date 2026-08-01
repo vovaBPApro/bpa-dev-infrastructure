@@ -93,7 +93,7 @@ BOUND_CHAT_ID="${TELEGRAM_BOUND_CHAT_ID:-${TELEGRAM_CHAT_ID:-}}"
 INSTANCE_LOCK_FILE="${ORCH_INSTANCE_LOCK_FILE:-${BOUND_CHAT_ID:+$HOME/.claude/orchestrator-chat-$BOUND_CHAT_ID.lock}}"
 
 usage() {
-  printf '%s\n' 'Usage: launch.sh [start|stop|status|model|--help]'
+  printf '%s\n' 'Usage: launch.sh [start|stop|status|model|identity|--help]'
 }
 
 # Machine-readable resolved model state, for the Telegram /model command.
@@ -106,6 +106,11 @@ model_report() {
   printf 'config_file=%s\n' "$CONFIG_FILE"
   printf 'claude_model=%s\n' "$CLAUDE_MODEL"
   printf 'codex_model=%s\n' "$CODEX_MODEL"
+}
+
+identity_report() {
+  printf 'session=%s\nruntime_dir=%s\nstate_db=%s\nlease_file=%s\nlauncher=%s\nconfig_file=%s\n' \
+    "$SESSION" "$RUNTIME_DIR" "$STATE_DB" "$LEASE_FILE" "$SCRIPT_DIR/launch.sh" "$CONFIG_FILE"
 }
 
 session_exists() { tmux has-session -t "$SESSION" 2>/dev/null; }
@@ -497,6 +502,7 @@ case "${1:-start}" in
   stop) stop ;;
   status) status ;;
   model) model_report ;;
+  identity) identity_report ;;
   -h|--help|help) usage ;;
   *) usage >&2; exit 2 ;;
 esac

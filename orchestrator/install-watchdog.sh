@@ -42,8 +42,9 @@ case "${1:-install}" in
     enabled="$(systemctl --user is-enabled "$UNIT_NAME.timer" 2>/dev/null || true)"
     active="$(systemctl --user is-active "$UNIT_NAME.timer" 2>/dev/null || true)"
     next_trigger="$(systemctl --user show "$UNIT_NAME.timer" --property=NextElapseUSecRealtime --value 2>/dev/null || true)"
-    if [[ "$enabled" != enabled || "$active" != active ||
-          -z "$next_trigger" || "$next_trigger" == n/a || "$next_trigger" == 0 || "$next_trigger" == "0us" ]]; then
+    if [[ "$enabled" != enabled || "$active" != active ]] ||
+       ! finite_future_systemd_trigger "$next_trigger" "${ORCH_WATCHDOG_NOW:-$(date +%s)}"; then
+      systemctl --user disable --now "$UNIT_NAME.timer" 2>/dev/null || true
       printf 'ERROR arm-unproven unit=%s enabled=%s active=%s next=%s\n' \
         "$UNIT_NAME" "${enabled:-unknown}" "${active:-unknown}" "${next_trigger:-none}" >&2
       exit 3

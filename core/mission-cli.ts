@@ -44,7 +44,16 @@ function status(store: StateStore): void {
 function run(args: string[]): void {
   const path = databasePath();
   mkdirSync(dirname(path), { recursive: true });
-  const store = new StateStore(path);
+  const injectedNow = process.env.BPA_ALLOW_TEST_CLOCK === "1"
+    ? Number(process.env.INFRA_TEST_NOW_MS)
+    : Number.NaN;
+  if (process.env.BPA_ALLOW_TEST_CLOCK === "1" && !Number.isSafeInteger(injectedNow)) {
+    throw new Error("INFRA_TEST_NOW_MS must be a safe integer when BPA_ALLOW_TEST_CLOCK=1");
+  }
+  const store = new StateStore(
+    path,
+    Number.isSafeInteger(injectedNow) ? { now: () => injectedNow } : {},
+  );
   try {
     const [group, action, ...values] = args;
     if (group === "mission" && action === "create" && values.length === 1) {

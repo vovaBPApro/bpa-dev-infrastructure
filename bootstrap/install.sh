@@ -10,6 +10,7 @@ VERIFY=false
 VERIFY_SOURCE=false
 NO_CRON=false
 ARM_WATCHDOG=false
+DISARM_WATCHDOG=false
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -26,7 +27,7 @@ FULL_SUITE_ON_CALENDAR="${FULL_SUITE_ON_CALENDAR:-}"
 
 usage() {
   cat <<'EOF'
-Usage: bootstrap/install.sh [--dry-run | --verify | --verify-source] [--no-cron] [--arm-watchdog]
+Usage: bootstrap/install.sh [--dry-run | --verify | --verify-source] [--no-cron] [--arm-watchdog|--disarm-watchdog]
 
 Environment overrides: INSTALL_ROOT, REPO_URL, BUN_VERSION, ENV_FILE, BUN_BIN,
 RUNTIME_DIR, INFRA_STATE_DB, CRONTAB_CMD, SYSTEMD_SYSTEM_DIR, BASH_BIN, and WHISPER_BIN
@@ -36,6 +37,7 @@ boundaries supported by a source/container test and may report explicit SKIPs.
 The Telegram token is never accepted as an argument. Paste it into .env locally.
 The watchdog timer is installed INERT; a configured token never arms it. Only
 the explicit --arm-watchdog flag enables bpa-orchestrator-watchdog.timer.
+--disarm-watchdog reversibly disables the system timer and leaves its units installed.
 EOF
 }
 
@@ -46,11 +48,17 @@ while (($#)); do
     --verify-source) VERIFY_SOURCE=true ;;
     --no-cron) NO_CRON=true ;;
     --arm-watchdog) ARM_WATCHDOG=true ;;
+    --disarm-watchdog) DISARM_WATCHDOG=true ;;
     -h|--help) usage; exit 0 ;;
     *) echo "ERROR: unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
   shift
 done
+
+if "$ARM_WATCHDOG" && "$DISARM_WATCHDOG"; then
+  echo "ERROR: --arm-watchdog and --disarm-watchdog are mutually exclusive" >&2
+  exit 2
+fi
 
 if "$DRY_RUN" && { "$VERIFY" || "$VERIFY_SOURCE" || "$NO_CRON"; }; then
   echo "ERROR: --dry-run cannot be combined with --verify or --no-cron" >&2
@@ -67,8 +75,8 @@ if "$VERIFY" && "$VERIFY_SOURCE"; then
   exit 2
 fi
 
-if "$ARM_WATCHDOG" && { "$DRY_RUN" || "$VERIFY" || "$VERIFY_SOURCE"; }; then
-  echo "ERROR: --arm-watchdog applies only to a real install run" >&2
+if { "$ARM_WATCHDOG" || "$DISARM_WATCHDOG"; } && { "$DRY_RUN" || "$VERIFY" || "$VERIFY_SOURCE"; }; then
+  echo "ERROR: watchdog arm/disarm applies only to a real install run" >&2
   exit 2
 fi
 
@@ -421,14 +429,38 @@ activate_units() {
     systemctl enable --now agentic-bpa-db-grants.timer
     systemctl enable --now agentic-bpa-stand-verifier.service
     systemctl enable --now bpa-meteorite.timer
-    if "$ARM_WATCHDOG"; then
+    if "$DISARM_WATCHDOG"; then
+      systemctl disable --now bpa-orchestrator-watchdog.timer
+      systemctl --user disable --now orch-runtime-watchdog.timer 2>/dev/null || true
+      echo 'Watchdog timers disarmed; rendered system units retained.'
+    elif "$ARM_WATCHDOG"; then
+      local legacy_enabled legacy_active
+      legacy_enabled="$(systemctl --user is-enabled orch-runtime-watchdog.timer 2>/dev/null || true)"
+      legacy_active="$(systemctl --user is-active orch-runtime-watchdog.timer 2>/dev/null || true)"
+      if [[ "$legacy_enabled" != enabled && "$legacy_enabled" != disabled &&
+            "$legacy_enabled" != not-found && "$legacy_enabled" != static ]] ||
+         [[ "$legacy_active" != active && "$legacy_active" != inactive &&
+            "$legacy_active" != failed && "$legacy_active" != unknown ]]; then
+        echo "ERROR: legacy user watchdog state is unverifiable; refusing system watchdog arm" >&2
+        return 1
+      fi
+      if [[ "$legacy_enabled" == enabled || "$legacy_active" == active ]]; then
+        systemctl --user disable --now orch-runtime-watchdog.timer
+        legacy_enabled="$(systemctl --user is-enabled orch-runtime-watchdog.timer 2>/dev/null || true)"
+        legacy_active="$(systemctl --user is-active orch-runtime-watchdog.timer 2>/dev/null || true)"
+        if [[ "$legacy_enabled" == enabled || "$legacy_active" == active ]]; then
+          echo 'ERROR: legacy user watchdog remains armed; refusing system watchdog arm' >&2
+          return 1
+        fi
+      fi
       systemctl enable --now bpa-orchestrator-watchdog.timer
       local watchdog_enabled watchdog_active watchdog_next
       watchdog_enabled="$(systemctl is-enabled bpa-orchestrator-watchdog.timer 2>/dev/null || true)"
       watchdog_active="$(systemctl is-active bpa-orchestrator-watchdog.timer 2>/dev/null || true)"
       watchdog_next="$(systemctl show bpa-orchestrator-watchdog.timer --property=NextElapseUSecRealtime --value 2>/dev/null || true)"
-      if [[ "$watchdog_enabled" != enabled || "$watchdog_active" != active ||
-            -z "$watchdog_next" || "$watchdog_next" == n/a || "$watchdog_next" == 0 || "$watchdog_next" == "0us" ]]; then
+      if [[ "$watchdog_enabled" != enabled || "$watchdog_active" != active ]] ||
+         ! finite_future_systemd_trigger "$watchdog_next" "${ORCH_WATCHDOG_NOW:-$(date +%s)}"; then
+        systemctl disable --now bpa-orchestrator-watchdog.timer 2>/dev/null || true
         echo "ERROR: watchdog arm unproven enabled=${watchdog_enabled:-unknown} active=${watchdog_active:-unknown} next=${watchdog_next:-none}" >&2
         return 1
       fi

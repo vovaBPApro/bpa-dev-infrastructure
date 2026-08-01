@@ -62,6 +62,7 @@ EOF
 cat > "$SCRATCH/launch-shim.sh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$1" >> "${ORCH_TEST_ACTIONS:?}"
+[[ -z "${ORCH_TEST_LAUNCH_SLEEP:-}" ]] || sleep "$ORCH_TEST_LAUNCH_SLEEP"
 exit "${ORCH_TEST_LAUNCH_STATUS:-0}"
 EOF
 # curl shim: never leaves the box. ORCH_TEST_DAEMON_UP decides the verdict.
@@ -263,15 +264,84 @@ new_case restart-failure-announced
 export ORCH_TEST_SESSION_ALIVE=0
 export ORCH_TEST_LAUNCH_STATUS=3
 export ORCH_RESTART_FAILURE_ALERT_AFTER=3
-tick
+ORCH_WATCHDOG_INTERVAL=10 ORCH_WATCHDOG_NOW=100 tick
 outbox_has "NUDGE watchdog-restart-failed session=$ORCH_SESSION"
 assert_actions 1 0
-tick
+ORCH_WATCHDOG_INTERVAL=10 ORCH_WATCHDOG_NOW=110 tick
 assert_actions 2 0
-tick
+ORCH_WATCHDOG_INTERVAL=10 ORCH_WATCHDOG_NOW=130 tick
 assert_actions 3 0
 outbox_has "ALERT orchestrator-recovery-failed session=$ORCH_SESSION consecutive=3"
 log_has 'WATCHDOG NO-GO reason=restart-failed'
+# Capped backoff and one-shot escalation: intermediate ticks do not relaunch or
+# append another loud alert.
+ORCH_WATCHDOG_INTERVAL=10 ORCH_WATCHDOG_NOW=131 tick
+assert_actions 3 0
+[[ "$(grep -c 'ALERT orchestrator-recovery-failed' "$NUDGE_OUTBOX_FILE")" == 1 ]] ||
+  fail 'persistent failure appended more than one loud alert'
+# End-to-end reachability boundary: with the orchestrator session still absent,
+# start a separate daemon-side consumer process against the exact watchdog
+# outbox. It must route and acknowledge the loud alert without any tmux actor.
+export ORCH_TEST_DELIVERED="$(dirname "$NUDGE_OUTBOX_FILE")/daemon-delivered"
+(
+  cd "$REPO_DIR"
+  ORCH_TEST_OUTBOX="$NUDGE_OUTBOX_FILE" bun -e '
+    import { appendFileSync } from "node:fs";
+    import { drainOutbox } from "./daemon/control.ts";
+    await drainOutbox(
+      process.env.ORCH_TEST_OUTBOX!,
+      "fixture-chat",
+      async (chat, text) => appendFileSync(process.env.ORCH_TEST_DELIVERED!, `${chat}\t${text}\n`),
+      () => {},
+    );
+  '
+)
+grep -Fq $'fixture-chat\tALERT orchestrator-recovery-failed' "$ORCH_TEST_DELIVERED" ||
+  fail 'independent daemon consumer did not route the watchdog loud alert'
+[[ ! -s "$NUDGE_OUTBOX_FILE" ]] || fail 'daemon consumer did not drain the watchdog outbox'
+# A later success resets failures, backoff and escalation.
+export ORCH_TEST_LAUNCH_STATUS=0
+ORCH_WATCHDOG_INTERVAL=10 ORCH_WATCHDOG_NOW=170 tick
+assert_actions 4 0
+grep -Fxq 'consecutive_failures=0' "$ORCH_RESTART_STATE_FILE" ||
+  fail 'successful recovery did not reset failures'
+grep -Fxq 'alerted=0' "$ORCH_RESTART_STATE_FILE" ||
+  fail 'successful recovery did not reset escalation'
+
+# Torn/corrupt state is treated as no trustworthy suppression record and is
+# replaced atomically with a valid state after recovery.
+new_case restart-state-corrupt
+export ORCH_TEST_SESSION_ALIVE=0
+printf 'last_restart=not-a-number\nconsecutive_failures=\xff' > "$ORCH_RESTART_STATE_FILE"
+ORCH_WATCHDOG_NOW=500 tick
+assert_actions 1 0
+grep -Fxq 'last_restart=500' "$ORCH_RESTART_STATE_FILE" ||
+  fail 'corrupt restart state suppressed or survived recovery'
+
+# Backward clock movement/future timestamps reset instead of suppressing until
+# wall time catches up.
+new_case restart-state-future
+export ORCH_TEST_SESSION_ALIVE=0
+printf 'last_restart=999999\nconsecutive_failures=4\nalerted=1\n' > "$ORCH_RESTART_STATE_FILE"
+ORCH_WATCHDOG_NOW=600 tick
+assert_actions 1 0
+log_has 'WATCHDOG restart-state-clock-skew'
+grep -Fxq 'consecutive_failures=0' "$ORCH_RESTART_STATE_FILE"
+
+# Concurrent timer ticks serialize on the restart-state lock. Exactly one may
+# launch; the other exits without corrupting or overwriting state.
+new_case restart-state-concurrent
+export ORCH_TEST_SESSION_ALIVE=0
+export ORCH_TEST_LAUNCH_SLEEP=1
+ORCH_WATCHDOG_NOW=700 tick &
+first_tick=$!
+ORCH_WATCHDOG_NOW=700 tick &
+second_tick=$!
+wait "$first_tick" "$second_tick"
+unset ORCH_TEST_LAUNCH_SLEEP
+assert_actions 1 0
+grep -Eq '^last_restart=700$' "$ORCH_RESTART_STATE_FILE" ||
+  fail 'concurrent ticks left torn restart state'
 
 # A stale heartbeat is a kill-then-relaunch, and must be announced the same
 # way. The kill now requires positive death evidence: a liveness pulse that WAS

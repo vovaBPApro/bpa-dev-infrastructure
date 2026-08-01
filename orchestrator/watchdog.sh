@@ -113,6 +113,7 @@ DONE_SENTINEL="${ORCH_DONE_SENTINEL:-$TELEGRAM_STATE_DIR/daemon/runtime/orchestr
 # cannot intervene, so recover sooner.
 RESTART_STATE_FILE="${ORCH_RESTART_STATE_FILE:-$RUNTIME_DIR/watchdog-restart-state}"
 RESTART_FAILURE_ALERT_AFTER="${ORCH_RESTART_FAILURE_ALERT_AFTER:-3}"
+RESTART_BACKOFF_CAP_S="${ORCH_RESTART_BACKOFF_CAP_S:-900}"
 WATCHDOG_HOUR="${ORCH_WATCHDOG_HOUR:-$(date +%H)}"
 if (( 10#$WATCHDOG_HOUR >= 22 || 10#$WATCHDOG_HOUR < 7 )); then
   WATCHDOG_NIGHT=1
@@ -159,6 +160,7 @@ validate_bounded_knob LEASE_TTL_MS 1000 86400000 180000
 validate_bounded_knob WATCHDOG_INTERVAL_S 10 86400 60
 validate_bounded_knob DOCKER_STALE_TAG_KEEP 1 1000 3
 validate_bounded_knob RESTART_FAILURE_ALERT_AFTER 1 100 3
+validate_bounded_knob RESTART_BACKOFF_CAP_S 10 86400 900
 if (( WATCHDOG_NIGHT == 1 )); then
   validate_bounded_knob RESTART_COOLDOWN_S 60 604800 900
 else
@@ -174,6 +176,12 @@ fi
 if (( DISK_CRITICAL_PCT < DISK_ALERT_PCT )); then
   log "WATCHDOG invalid-knob-ordering name=DISK_CRITICAL_PCT value=$DISK_CRITICAL_PCT floor=DISK_ALERT_PCT clamped=$DISK_ALERT_PCT"
   DISK_CRITICAL_PCT="$DISK_ALERT_PCT"
+fi
+
+if [[ "${1:-}" == identity ]]; then
+  printf 'session=%s\nruntime_dir=%s\nstate_db=%s\nlease_file=%s\nlauncher=%s\nconfig_file=%s\n' \
+    "$SESSION" "$RUNTIME_DIR" "$STATE_DB" "$LEASE_FILE" "$LAUNCH_SCRIPT" "$CONFIG_FILE"
+  exit 0
 fi
 
 # ── `/done` rest ────────────────────────────────────────────────────────────
@@ -304,10 +312,6 @@ guard_lease_renew_failure() {
   fi
   liveness="$(owner_liveness "$HOLDER_OWNER")"
   if [[ "$liveness" == live ]]; then
-    if session_healthy; then
-      log "WATCHDOG NO-GO reason=lease-displaced-session-live owner=$LEASE_OWNER token=$LEASE_TOKEN holder=$HOLDER_OWNER holder-token=$HOLDER_TOKEN action=no-kill"
-      return 0
-    fi
     log "WATCHDOG lease-displaced owner=$LEASE_OWNER token=$LEASE_TOKEN holder=$HOLDER_OWNER holder-token=$HOLDER_TOKEN action=stop"
     stop_supervised_unit
     exit 0
@@ -668,20 +672,39 @@ restart_failures() {
 }
 
 record_restart_state() {
-  local now="$1" failures="$2" tmp
+  local now="$1" failures="$2" alerted="${3:-0}" tmp
   mkdir -p "$(dirname "$RESTART_STATE_FILE")"
   tmp="$(mktemp "$(dirname "$RESTART_STATE_FILE")/.watchdog-restart-state.XXXXXX")"
-  printf 'last_restart=%s\nconsecutive_failures=%s\n' "$now" "$failures" > "$tmp"
+  chmod 0600 "$tmp"
+  printf 'last_restart=%s\nconsecutive_failures=%s\nalerted=%s\n' "$now" "$failures" "$alerted" > "$tmp"
   mv -f "$tmp" "$RESTART_STATE_FILE"
+}
+
+restart_alerted() {
+  local value=0
+  if [[ -f "$RESTART_STATE_FILE" ]]; then
+    value="$(sed -n 's/^alerted=//p' "$RESTART_STATE_FILE" | head -n 1)"
+  fi
+  [[ "$value" == 0 || "$value" == 1 ]] || value=0
+  printf '%s\n' "$value"
 }
 
 # supervise_restart <reason> <kill-first:0|1>
 # Always terminal: it either restarts (and says so) or declines (and says why).
 supervise_restart() {
-  local reason="$1" kill_first="$2" now last since failures
+  local reason="$1" kill_first="$2" now last since failures alerted backoff lock_file i
+  lock_file="${RESTART_STATE_FILE}.lock"
+  mkdir -p "$(dirname "$lock_file")"
+  exec {restart_lock_fd}>"$lock_file"
+  if ! flock -n "$restart_lock_fd"; then
+    log "WATCHDOG restart-suppressed reason=$reason state-lock=busy action=none"
+    exit 0
+  fi
   now="${ORCH_WATCHDOG_NOW:-$(date +%s)}"
   [[ "$now" =~ ^[0-9]+$ ]] || now="$(date +%s)"
   last="$(last_restart_at)"
+  failures="$(restart_failures)"
+  alerted="$(restart_alerted)"
   since=$(( now - last ))
   # A restart recorded in the future means the clock moved backwards (or the
   # state file was hand-edited). Suppressing on that would wedge recovery until
@@ -689,12 +712,23 @@ supervise_restart() {
   if (( last > 0 && since < 0 )); then
     log "WATCHDOG restart-state-clock-skew last=$last now=$now action=reset"
     last=0
+    failures=0
+    alerted=0
     since=0
+    record_restart_state 0 0 0
   fi
-  if (( last > 0 && since < RESTART_COOLDOWN_S )); then
-    log "WATCHDOG restart-suppressed reason=$reason since_s=$since cooldown_s=$RESTART_COOLDOWN_S night=$WATCHDOG_NIGHT action=none"
+  backoff="$WATCHDOG_INTERVAL_S"
+  if (( failures > 1 )); then
+    for (( i=1; i<failures; i++ )); do
+      backoff=$(( backoff * 2 ))
+      (( backoff >= RESTART_BACKOFF_CAP_S )) && { backoff="$RESTART_BACKOFF_CAP_S"; break; }
+    done
+  fi
+  (( failures == 0 )) && backoff="$RESTART_COOLDOWN_S"
+  if (( last > 0 && since < backoff )); then
+    log "WATCHDOG restart-suppressed reason=$reason since_s=$since cooldown_s=$backoff failures=$failures night=$WATCHDOG_NIGHT action=none"
     if nudge_due restart-suppressed "$SESSION" "$now"; then
-      append_nudge "NUDGE watchdog-restart-suppressed session=$SESSION reason=$reason since_s=$since cooldown_s=$RESTART_COOLDOWN_S"
+      append_nudge "NUDGE watchdog-restart-suppressed session=$SESSION reason=$reason since_s=$since cooldown_s=$backoff"
       record_nudge restart-suppressed "$SESSION" "$now"
     fi
     exit 0
@@ -705,16 +739,17 @@ supervise_restart() {
     "$LAUNCH_SCRIPT" stop || log "WATCHDOG restart-stop-failed session=$SESSION reason=$reason"
   fi
   if "$LAUNCH_SCRIPT" start; then
-    record_restart_state "$now" 0
+    record_restart_state "$now" 0 0
     log "WATCHDOG restarted session=$SESSION reason=$reason action=restarted"
     append_nudge "NUDGE watchdog-restarted session=$SESSION reason=$reason"
   else
-    failures=$(( $(restart_failures) + 1 ))
-    record_restart_state 0 "$failures"
-    log "WATCHDOG NO-GO reason=restart-failed session=$SESSION trigger=$reason consecutive=$failures action=retry-next-tick"
-    append_nudge "NUDGE watchdog-restart-failed session=$SESSION reason=$reason consecutive=$failures retry=next-tick"
-    if (( failures >= RESTART_FAILURE_ALERT_AFTER )); then
+    failures=$(( failures + 1 ))
+    record_restart_state "$now" "$failures" "$alerted"
+    log "WATCHDOG NO-GO reason=restart-failed session=$SESSION trigger=$reason consecutive=$failures action=retry-with-backoff"
+    append_nudge "NUDGE watchdog-restart-failed session=$SESSION reason=$reason consecutive=$failures retry=backoff"
+    if (( failures >= RESTART_FAILURE_ALERT_AFTER && alerted == 0 )); then
       append_nudge "ALERT orchestrator-recovery-failed session=$SESSION consecutive=$failures action=human-required"
+      record_restart_state "$now" "$failures" 1
     fi
   fi
   exit 0

@@ -304,6 +304,14 @@ printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "Linger=yes"' > "$arming_fix
 # shellcheck disable=SC2016 # the recorder shim must expand $* at CALL time
 printf '%s\n' '#!/usr/bin/env bash' \
   'printf "%s\n" "$*" >> "${BOOTSTRAP_TEST_SYSTEMCTL_CALLS:?}"' \
+  'case "$*" in' \
+  '  "show-environment") exit 0 ;;' \
+  '  "--user is-enabled orch-runtime-watchdog.timer") if grep -q "^--user disable --now orch-runtime-watchdog.timer$" "${BOOTSTRAP_TEST_SYSTEMCTL_CALLS:?}"; then printf "disabled\n"; else printf "%s\n" "${BOOTSTRAP_TEST_LEGACY_ENABLED:-disabled}"; fi ;;' \
+  '  "--user is-active orch-runtime-watchdog.timer") if grep -q "^--user disable --now orch-runtime-watchdog.timer$" "${BOOTSTRAP_TEST_SYSTEMCTL_CALLS:?}"; then printf "inactive\n"; else printf "%s\n" "${BOOTSTRAP_TEST_LEGACY_ACTIVE:-inactive}"; fi ;;' \
+  '  "is-enabled bpa-orchestrator-watchdog.timer") printf "%s\n" "${BOOTSTRAP_TEST_SYSTEM_ENABLED:-enabled}" ;;' \
+  '  "is-active bpa-orchestrator-watchdog.timer") printf "%s\n" "${BOOTSTRAP_TEST_SYSTEM_ACTIVE:-active}" ;;' \
+  '  "show bpa-orchestrator-watchdog.timer --property=NextElapseUSecRealtime --value") printf "%s\n" "${BOOTSTRAP_TEST_NEXT_TRIGGER:-Sat 2026-08-01 12:00:00 UTC}" ;;' \
+  'esac' \
   'exit 0' > "$arming_fixture/bin/systemctl"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$arming_fixture/root/workspace/workspace.test.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$arming_fixture/root/workspace/workspace.sh"
@@ -344,15 +352,42 @@ grep -Fxq -- 'enable --now bpa-orchestrator.service' "$arming_calls"
 grep -Fxq -- 'enable --now bpa-full-suite.timer' "$arming_calls"
 grep -Fxq -- 'enable --now orch-morning-report.timer' "$arming_calls"
 grep -Fxq -- 'daemon-reload' "$arming_calls"
-test ! -e "$arming_fixture/config/bpa-orchestrator-watchdog.service"
-test ! -e "$arming_fixture/config/bpa-orchestrator-watchdog.timer"
-grep -Fq 'Unit deliberately absent; not installing bpa-orchestrator-watchdog.timer.' <<<"$bare_install_output"
+test -f "$arming_fixture/config/bpa-orchestrator-watchdog.service"
+test -f "$arming_fixture/config/bpa-orchestrator-watchdog.timer"
+grep -Fq "EnvironmentFile=$arming_fixture/root/.env" "$arming_fixture/config/bpa-orchestrator-watchdog.service"
+grep -Fq "ExecStart=$arming_fixture/root/orchestrator/watchdog.sh" "$arming_fixture/config/bpa-orchestrator-watchdog.service"
+grep -Fq 'Persistent=true' "$arming_fixture/config/bpa-orchestrator-watchdog.timer"
+grep -Fq 'Watchdog timer installed but remains unarmed.' <<<"$bare_install_output"
 
-# The hazard ruling overrides even the old explicit opt-in.
-if run_full_install --arm-watchdog >/dev/null 2>&1; then
-  echo 'ERROR: --arm-watchdog revived a deliberately absent watchdog' >&2
+# Explicit arm retires an armed legacy user timer first, proves it inactive,
+# enables the canonical system timer, validates one explicit finite property,
+# and performs an immediate safe one-shot tick.
+BOOTSTRAP_TEST_LEGACY_ENABLED=enabled \
+BOOTSTRAP_TEST_LEGACY_ACTIVE=active \
+BOOTSTRAP_TEST_SYSTEM_ENABLED=enabled \
+BOOTSTRAP_TEST_SYSTEM_ACTIVE=active \
+BOOTSTRAP_TEST_NEXT_TRIGGER='Sat 2026-08-01 12:00:00 UTC' \
+ORCH_WATCHDOG_NOW=1785582000 \
+run_full_install --arm-watchdog >/dev/null
+grep -Fxq -- '--user disable --now orch-runtime-watchdog.timer' "$arming_calls"
+grep -Fxq -- 'enable --now bpa-orchestrator-watchdog.timer' "$arming_calls"
+grep -Fxq -- 'show bpa-orchestrator-watchdog.timer --property=NextElapseUSecRealtime --value' "$arming_calls"
+grep -Fxq -- 'start bpa-orchestrator-watchdog.service' "$arming_calls"
+
+# An active timer without a finite future trigger is not armed.
+if BOOTSTRAP_TEST_NEXT_TRIGGER=n/a ORCH_WATCHDOG_NOW=1785582000 \
+  run_full_install --arm-watchdog >/dev/null 2>&1; then
+  echo 'ERROR: bootstrap accepted an active watchdog with no next trigger' >&2
   exit 1
 fi
+grep -Fxq -- 'disable --now bpa-orchestrator-watchdog.timer' "$arming_calls"
+
+# Rollback/disarm leaves rendered units for a future arm but ensures neither
+# the canonical system timer nor legacy user timer remains armed.
+run_full_install --disarm-watchdog >/dev/null
+grep -Fxq -- 'disable --now bpa-orchestrator-watchdog.timer' "$arming_calls"
+grep -Fxq -- '--user disable --now orch-runtime-watchdog.timer' "$arming_calls"
+test -f "$arming_fixture/config/bpa-orchestrator-watchdog.timer"
 
 # Render deployable unit inputs without requiring host envsubst. Temporary test
 # fixtures are intentionally outside this sweep; bootstrap inputs may never

@@ -26,8 +26,9 @@ SERVICE_TEMPLATE="$REPO_DIR/bootstrap/units/bpa-orchestrator-watchdog.service.in
 LAUNCHER_TEMPLATE="$REPO_DIR/bootstrap/units/bpa-orchestrator.service.in"
 INSTALL_SH="$REPO_DIR/bootstrap/install.sh"
 
-# Wrong-session regression: the canonical installed watchdog and launcher
-# consume one instance config path, with no unit-local session override.
+# Wrong-session regression: render the canonical units, load their real
+# EnvironmentFile, and execute both production resolvers. Static template grep
+# alone can pass while one script resolves a different runtime boundary.
 grep -Fq 'Environment=ORCH_CONFIG_FILE=$ENV_FILE' "$SERVICE_TEMPLATE" ||
   fail 'installed watchdog does not source the canonical launcher config'
 grep -Fq 'Environment=ORCH_CONFIG_FILE=$ENV_FILE' "$LAUNCHER_TEMPLATE" ||
@@ -37,6 +38,32 @@ grep -Eq '^ORCH_SESSION=[^[:space:]]+$' "$TEMPLATE" ||
 if grep -Eq 'Environment=ORCH_SESSION=' "$SERVICE_TEMPLATE" "$LAUNCHER_TEMPLATE"; then
   fail 'an installed unit shadows the canonical configured session'
 fi
+
+IDENTITY_ENV="$SCRATCH/identity.env"
+IDENTITY_RUNTIME="$SCRATCH/identity-runtime"
+cat > "$IDENTITY_ENV" <<EOF
+ORCH_SESSION=identity-session
+ORCH_RUNTIME_DIR=$IDENTITY_RUNTIME
+ORCH_STATE_DB=$SCRATCH/identity-state.db
+ORCH_LEASE_FILE=$IDENTITY_RUNTIME/identity.lease
+ORCH_LAUNCH_SCRIPT=$SCRIPT_DIR/launch.sh
+ORCH_WATCHDOG_INTERVAL=60
+ORCH_LEASE_TTL_MS=180000
+EOF
+launcher_identity="$(ORCH_CONFIG_FILE="$IDENTITY_ENV" "$SCRIPT_DIR/launch.sh" identity)"
+watchdog_identity="$(ORCH_CONFIG_FILE="$IDENTITY_ENV" "$SCRIPT_DIR/watchdog.sh" identity)"
+[[ "$launcher_identity" == "$watchdog_identity" ]] ||
+  fail "installed launcher/watchdog resolve different behavioral identity"$'\n'"launcher:$launcher_identity"$'\n'"watchdog:$watchdog_identity"
+for expected in \
+  'session=identity-session' \
+  "runtime_dir=$IDENTITY_RUNTIME" \
+  "state_db=$SCRATCH/identity-state.db" \
+  "lease_file=$IDENTITY_RUNTIME/identity.lease" \
+  "launcher=$SCRIPT_DIR/launch.sh" \
+  "config_file=$IDENTITY_ENV"; do
+  grep -Fxq "$expected" <<<"$watchdog_identity" ||
+    fail "behavioral identity omitted $expected"
+done
 
 template_value() { sed -n "s/^$1=//p" "$TEMPLATE" | tail -n 1; }
 # The effective numeric default baked into a `VAR="${KNOB:-…}"` expansion. The

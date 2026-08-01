@@ -23,8 +23,8 @@ const INTERNAL_ALERT_BANNER_PATTERN = INTERNAL_ALERT_BANNER.replace(
 );
 
 const INTERNAL_ALERT_ECHO = new RegExp(
-  `^(?:(?:\\d{4}-\\d{2}-\\d{2}[ T])?\\d{2}:\\d{2}(?::\\d{2})?\\s+)?${INTERNAL_ALERT_BANNER_PATTERN}(?:\\nType: (?:usage-limit|429/overload|auth|stalled|failed|exited|network|fatal|unknown)\\nSession: [^\\n]+\\n\\n[\\s\\S]*)?$`,
-  'i',
+  `(^|\\n)(?:(?:\\d{4}-\\d{2}-\\d{2}[ T])?\\d{2}:\\d{2}(?::\\d{2})?\\s+)?${INTERNAL_ALERT_BANNER_PATTERN}\\nType: (?:usage-limit|429/overload|auth|stalled|failed|exited|network|fatal|unknown)\\nSession: [^\\n]{1,512}\\n\\n[^\\n]{0,4096}(?=\\n|$)`,
+  'gi',
 );
 
 const FAILURE_PATTERNS: ReadonlyArray<{
@@ -107,7 +107,7 @@ export function classifyTerminalFailure(
   line: string,
 ): TerminalFailureClass | null {
   line = stripTerminalNoise(line);
-  if (INTERNAL_ALERT_ECHO.test(line)) return null;
+  line = line.replace(INTERNAL_ALERT_ECHO, '$1');
   for (const entry of FAILURE_PATTERNS) {
     if (entry.patterns.some((pattern) => pattern.test(line))) return entry.kind;
   }

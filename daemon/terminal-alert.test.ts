@@ -79,6 +79,16 @@ test('REGRESSION terminal-alert-self-echo: 2026-08-01 09:14 loop transcript does
   expect(classifyTerminalFailure(transcript)).toBeNull();
 });
 
+test('REGRESSION terminal-alert-self-echo: a failure after a valid multiline banner alerts', () => {
+  const chunk =
+    formatTerminalAlert({
+      kind: 'unknown',
+      line: 'Provider terminal failure: strange new condition',
+      session: 'orchestrator',
+    }) + '\nRuntime fatal signal 11';
+  expect(classifyTerminalFailure(chunk)).toBe('fatal');
+});
+
 test('REGRESSION ML-1: an unclassified terminal failure remains actionable', () => {
   expect(
     classifyTerminalFailure(

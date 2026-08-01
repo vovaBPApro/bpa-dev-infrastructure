@@ -1,4 +1,5 @@
 import { unlinkSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
 
 export type TerminalFailureClass =
   | 'usage-limit'
@@ -11,8 +12,78 @@ export type TerminalFailureClass =
   | 'fatal'
   | 'unknown';
 
-const FAILURE_LIKE =
-  /\b(?:terminal failure|failure|failed|fatal|error|exited|stalled|crashed|panic)\b/i;
+const UNKNOWN_FAILURE_PATTERNS = [
+  /\bterminal failure\b/i,
+  /\b(?:agent|watchdog|process) crashed\b/i,
+] as const;
+
+const INTERNAL_ALERT_BANNER = '[internal terminal failure alert]';
+const INTERNAL_ALERT_NONCE_PREFIX = 'Nonce: ';
+const INTERNAL_ALERT_PAYLOAD_PREFIX = '[internal terminal failure payload] ';
+const INTERNAL_ALERT_END = '[/internal terminal failure alert]';
+const INTERNAL_ALERT_BANNER_PATTERN = INTERNAL_ALERT_BANNER.replace(
+  /[.*+?^${}()|[\]\\]/g,
+  '\\$&',
+);
+const INTERNAL_ALERT_PAYLOAD_PREFIX_PATTERN =
+  INTERNAL_ALERT_PAYLOAD_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const INTERNAL_ALERT_END_PATTERN = INTERNAL_ALERT_END.replace(
+  /[.*+?^${}()|[\]\\]/g,
+  '\\$&',
+);
+
+const INTERNAL_ALERT_NONCE_PREFIX_PATTERN =
+  INTERNAL_ALERT_NONCE_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const INTERNAL_ALERT_NOISY_LINE_BREAK = '(?:[ \\t]*\\n)+[ \\t]*';
+
+const INTERNAL_ALERT_ECHO_WITH_NONCE = new RegExp(
+  `(^|\\n)(?:(?:\\d{4}-\\d{2}-\\d{2}[ T])?\\d{2}:\\d{2}(?::\\d{2})?[ \\t]+)?(` +
+    `[ \\t]*${INTERNAL_ALERT_BANNER_PATTERN}[ \\t]*${INTERNAL_ALERT_NOISY_LINE_BREAK}` +
+    `${INTERNAL_ALERT_NONCE_PREFIX_PATTERN}[ \\t]*([^\\n]{1,256}?)[ \\t]*${INTERNAL_ALERT_NOISY_LINE_BREAK}` +
+    `Type:[ \\t]*(?:usage-limit|429/overload|auth|stalled|failed|exited|network|fatal|unknown)[ \\t]*${INTERNAL_ALERT_NOISY_LINE_BREAK}` +
+    `Session:[^\\n]{1,512}${INTERNAL_ALERT_NOISY_LINE_BREAK}` +
+    `[ \\t]*${INTERNAL_ALERT_PAYLOAD_PREFIX_PATTERN}[^\\n]*(?:\\n[^\\n]*)*?\\n` +
+    `[ \\t]*${INTERNAL_ALERT_END_PATTERN}[ \\t]*)(?=\\n|$)`,
+  'gi',
+);
+
+const ISSUED_NONCE_LIMIT = 256;
+const ISSUED_NONCE_TTL_MS = 60 * 60 * 1000;
+const issuedNonces = new Map<string, { issuedAt: number; frameHash: string }>();
+
+function canonicalFrameHash(frame: string): string {
+  const canonical = stripTerminalNoise(frame)
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\t ]+/g, ' ')
+    .replace(/\s*\n\s*/g, ' ')
+    .trim();
+  return createHash('sha256').update(canonical).digest('hex');
+}
+
+function recordIssuedNonce(
+  nonce: string,
+  frame: string,
+  now = Date.now(),
+): void {
+  for (const [issuedNonce, issued] of issuedNonces) {
+    if (now - issued.issuedAt > ISSUED_NONCE_TTL_MS)
+      issuedNonces.delete(issuedNonce);
+  }
+  issuedNonces.delete(nonce);
+  issuedNonces.set(nonce, { issuedAt: now, frameHash: canonicalFrameHash(frame) });
+  while (issuedNonces.size > ISSUED_NONCE_LIMIT) {
+    issuedNonces.delete(issuedNonces.keys().next().value!);
+  }
+}
+
+function isIssuedFrame(nonce: string, frame: string, now = Date.now()): boolean {
+  const issued = issuedNonces.get(nonce);
+  if (issued === undefined || now - issued.issuedAt > ISSUED_NONCE_TTL_MS) {
+    issuedNonces.delete(nonce);
+    return false;
+  }
+  return canonicalFrameHash(frame) === issued.frameHash;
+}
 
 const FAILURE_PATTERNS: ReadonlyArray<{
   kind: TerminalFailureClass;
@@ -48,15 +119,24 @@ const FAILURE_PATTERNS: ReadonlyArray<{
   {
     kind: 'stalled',
     patterns: [
-      /\bagent stalled\b/i,
+      /\b(?:agent|watchdog|worker|provider|process) stalled\b/i,
       /\bstream watchdog did not recover\b/i,
       /\bno progress for(?: 600s)?\b/i,
     ],
   },
-  { kind: 'failed', patterns: [/\bagent "[^"]+" failed:/i] },
+  {
+    kind: 'failed',
+    patterns: [
+      /\bagent "[^"]+" failed:/i,
+      /\b(?:agent|provider|watchdog|worker|process) (?:error|failed)\b/i,
+    ],
+  },
   {
     kind: 'exited',
-    patterns: [/\[watchdog\] (?:claude|codex) exited \(code \d+\)/i],
+    patterns: [
+      /\[watchdog\] (?:claude|codex) exited \(code \d+\)/i,
+      /\b(?:agent|provider|watchdog|worker|process)(?:-[a-z]+)*[- ]exited\b/i,
+    ],
   },
   {
     kind: 'network',
@@ -76,6 +156,7 @@ const FAILURE_PATTERNS: ReadonlyArray<{
       /\buncaught exception\b/i,
       /\bunhandled rejection\b/i,
       /\bpanic:/i,
+      /\b(?:runtime )?fatal(?: error| signal)?\b/i,
     ],
   },
 ];
@@ -83,14 +164,23 @@ const FAILURE_PATTERNS: ReadonlyArray<{
 export function classifyTerminalFailure(
   line: string,
 ): TerminalFailureClass | null {
+  line = stripTerminalNoise(line);
+  line = line.replace(
+    INTERNAL_ALERT_ECHO_WITH_NONCE,
+    (match, prefix: string, frame: string, nonce: string) =>
+      isIssuedFrame(nonce.trim(), frame) ? prefix : match,
+  );
   for (const entry of FAILURE_PATTERNS) {
     if (entry.patterns.some((pattern) => pattern.test(line))) return entry.kind;
   }
-  return FAILURE_LIKE.test(line) ? 'unknown' : null;
+  return UNKNOWN_FAILURE_PATTERNS.some((pattern) => pattern.test(line))
+    ? 'unknown'
+    : null;
 }
 
 export function stripTerminalNoise(line: string): string {
   return line
+    .replace(/\r\n?/g, '\n')
     .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, '')
     .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '')
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
@@ -108,14 +198,25 @@ type AlertFetch = (
   init?: RequestInit,
 ) => Promise<Response>;
 
-export function formatTerminalAlert(payload: AlertPayload): string {
-  return [
+export function formatTerminalAlert(
+  payload: AlertPayload,
+  nonceFactory: () => string = randomUUID,
+): string {
+  const nonce = nonceFactory();
+  const framedPayload = payload.line
+    .split('\n')
+    .map((line) => `${INTERNAL_ALERT_PAYLOAD_PREFIX}${line}`);
+  const frame = [
     '[internal terminal failure alert]',
+    `${INTERNAL_ALERT_NONCE_PREFIX}${nonce}`,
     `Type: ${payload.kind}`,
     `Session: ${payload.session}`,
     '',
-    payload.line,
+    ...framedPayload,
+    INTERNAL_ALERT_END,
   ].join('\n');
+  recordIssuedNonce(nonce, frame);
+  return frame;
 }
 
 export async function relayTerminalAlert(

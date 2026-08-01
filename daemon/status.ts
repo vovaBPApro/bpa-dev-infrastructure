@@ -61,6 +61,49 @@ export function isTransportSessionConnected(
   );
 }
 
+export type HumanStatusLane = { id: string; state: string };
+
+export type HumanStatusInput = {
+  mission: MissionStatusInput;
+  lanes: HumanStatusLane[] | null;
+  laneError?: string;
+  lastLanded: string | null;
+  lastLandedError?: string;
+  claudeConnected: boolean;
+};
+
+// The normal Telegram view is intentionally a projection, not a dump of the
+// diagnostic fields. Unknown inputs stay visibly unknown.
+export function buildHumanStatus(input: HumanStatusInput): string[] {
+  const mission = !input.mission.present
+    ? `невідомо (${input.mission.reason})`
+    : input.mission.mission
+      ? `${input.mission.mission.desc} — ${input.mission.mission.status}`
+      : 'немає активної місії';
+
+  const laneLine = input.lanes
+    ? input.lanes.length === 0
+      ? '0 активних'
+      : `${input.lanes.length}: ${input.lanes.map((lane) => `${lane.id} (${lane.state})`).join(', ')}`
+    : `невідомо (${input.laneError ?? 'джерело стану недоступне'})`;
+  const blocked = input.lanes
+    ? input.lanes.filter((lane) => lane.state === 'failed')
+    : [];
+  const blockedLine = input.lanes
+    ? blocked.length
+      ? blocked.map((lane) => `${lane.id}: стан failed`).join(', ')
+      : 'немає'
+    : `невідомо (${input.laneError ?? 'джерело стану недоступне'})`;
+
+  return [
+    `Зараз: ${mission}`,
+    `Лейни: ${laneLine}`,
+    `Останнє landed: ${input.lastLanded ?? `невідомо (${input.lastLandedError ?? 'git недоступний'})`}`,
+    `Блокери: ${blockedLine}`,
+    `Claude MCP: ${input.claudeConnected ? 'підключено' : 'не підключено'}`,
+  ];
+}
+
 // Build only from observations made for this status read. The buffer and its
 // counters are explicitly scoped to this daemon process lifetime.
 export function buildDaemonHealth(deps: DaemonHealthDeps) {

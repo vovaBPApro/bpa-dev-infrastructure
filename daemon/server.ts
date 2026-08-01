@@ -34,7 +34,9 @@ import {
 } from 'grammy';
 import type { ReactionTypeEmoji } from 'grammy/types';
 import { randomBytes } from 'crypto';
+import { Database } from 'bun:sqlite';
 import {
+  existsSync,
   readFileSync,
   writeFileSync,
   mkdirSync,
@@ -106,6 +108,7 @@ import {
 import {
   buildAgentLines,
   buildDaemonHealth,
+  buildHumanStatus,
   buildRuntimeStatus,
   isTransportSessionConnected,
   type ShRunner,
@@ -848,6 +851,10 @@ function bufferMsg(content: string, meta: Record<string, string>) {
 // Active MCP session (replaced on each Claude reconnect).
 let activeServer: Server | null = null;
 let activeTransport: SSEServerTransport | null = null;
+// Keep the public Node response we handed to the SDK. Depending on a private
+// SSEServerTransport field made /status report false on SDK versions that no
+// longer expose `_res`, even while this exact socket was serving MCP traffic.
+let activeConnectionResponse: ServerResponse | null = null;
 let mcpDetachedSince: number | null = null;
 
 // ── MCP server factory ────────────────────────────────────────────────────────
@@ -2047,6 +2054,43 @@ function buildOrchRuntimeStatus(): string[] {
   });
 }
 
+function readHumanStatusLanes(): {
+  lanes: Array<{ id: string; state: string }> | null;
+  reason?: string;
+} {
+  if (!existsSync(STATE_DB_PATH)) {
+    return { lanes: null, reason: `no state DB at ${STATE_DB_PATH}` };
+  }
+  let db: Database | undefined;
+  try {
+    db = new Database(STATE_DB_PATH, { readonly: true, strict: true });
+    const rows = db
+      .query(
+        `SELECT id, state FROM lanes
+          WHERE state != 'succeeded'
+          ORDER BY updated_at DESC, id ASC`,
+      )
+      .all() as Array<{ id: string; state: string }>;
+    return { lanes: rows };
+  } catch (error) {
+    return {
+      lanes: null,
+      reason: `state DB unreadable: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  } finally {
+    db?.close();
+  }
+}
+
+function readLastLanded(): { value: string | null; reason?: string } {
+  const result = shSync(
+    `git -C '${CANONICAL_REPO}' log -1 --format='%h %s' origin/main 2>/dev/null`,
+  );
+  if (result.timedOut) return { value: null, reason: 'git timeout' };
+  if (!result.ok || !result.out) return { value: null, reason: 'git log failed' };
+  return { value: result.out };
+}
+
 function commandToProviderCmd(cmd: string): string {
   if (cmd === '/start_codex') {
     return ORCHESTRATOR_CODEX_CMD;
@@ -2333,12 +2377,20 @@ async function handleSessionCommand(
       inMemoryBufferCount: msgBuffer.length,
       processStartedAt: PROCESS_STARTED_AT,
     });
-    const orch = buildOrchRuntimeStatus();
-    const agents = await activeAgentLines();
-    const msg =
-      `📊 Статус\n\n` +
-      `Daemon: ${JSON.stringify(daemonHealth)}\n\n` +
-      `Orchestrator:\n${orch.join('\n')}\n\n${agents.join('\n')}`;
+    const mission = readActiveMission(STATE_DB_PATH);
+    const laneRead = readHumanStatusLanes();
+    const landed = readLastLanded();
+    const msg = [
+      '📊 Статус',
+      ...buildHumanStatus({
+        mission,
+        lanes: laneRead.lanes,
+        laneError: laneRead.reason,
+        lastLanded: landed.value,
+        lastLandedError: landed.reason,
+        claudeConnected: daemonHealth.claude_connected,
+      }),
+    ].join('\n');
     await sendLong(chat_id, msg);
     return true;
   }
@@ -2765,13 +2817,10 @@ function mcpDetachedDurationSeconds(isDetached: boolean): number | null {
 // /status is fail-closed: an SDK transport without an inspectable response is
 // not evidence of a live connection.
 function isConnectionAliveForStatus(): boolean {
-  const response = (
-    activeTransport as unknown as { _res?: ServerResponse } | null
-  )?._res;
   return isTransportSessionConnected(
     activeServer !== null,
     activeTransport !== null,
-    response,
+    activeConnectionResponse ?? undefined,
   );
 }
 
@@ -2999,6 +3048,7 @@ const httpServer = createServer(
         const oldTransport = activeTransport;
         activeServer = null;
         activeTransport = null;
+        activeConnectionResponse = null;
         await oldServer?.close().catch(() => {});
         await oldTransport?.close().catch(() => {});
       }
@@ -3010,6 +3060,7 @@ const httpServer = createServer(
 
       activeTransport = transport;
       activeServer = server;
+      activeConnectionResponse = res;
       activeBinding = loadPersistedBinding();
       // Fresh session attached → reset no-session auto-reply cooldown so the
       // very next disconnect-time message gets an immediate notice (instead
@@ -3022,6 +3073,7 @@ const httpServer = createServer(
           process.stderr.write(`${LOG_PREFIX} primary session disconnected\n`);
           activeTransport = null;
           activeServer = null;
+          activeConnectionResponse = null;
         }
       });
 

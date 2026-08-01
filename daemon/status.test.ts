@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test';
 import {
   buildAgentLines,
   buildDaemonHealth,
+  buildHumanStatus,
   buildRuntimeStatus,
   countActiveLanes,
   isTransportSessionConnected,
@@ -36,6 +37,42 @@ test('transport session is connected only with server and live socket', () => {
   expect(isTransportSessionConnected(true, true, liveResponse)).toBe(true);
   expect(isTransportSessionConnected(false, true, liveResponse)).toBe(false);
   expect(isTransportSessionConnected(true, false, liveResponse)).toBe(false);
+});
+
+test('REGRESSION W-14: normal status is human-readable and keeps unknowns honest', () => {
+  const lines = buildHumanStatus({
+    mission: {
+      present: true,
+      mission: { status: 'running', desc: 'W-14 useful status' },
+    },
+    lanes: [
+      { id: 'status-human-useful', state: 'running' },
+      { id: 'review-status', state: 'failed' },
+    ],
+    lastLanded: 'abc1234 [CODER] previous change',
+    claudeConnected: true,
+  });
+  expect(lines).toEqual([
+    'Зараз: W-14 useful status — running',
+    'Лейни: 2: status-human-useful (running), review-status (failed)',
+    'Останнє landed: abc1234 [CODER] previous change',
+    'Блокери: review-status: стан failed',
+    'Claude MCP: підключено',
+  ]);
+  expect(lines.join('\n')).not.toContain('{"daemon"');
+
+  const unknown = buildHumanStatus({
+    mission: { present: false, reason: 'state DB unreadable' },
+    lanes: null,
+    laneError: 'state DB unreadable',
+    lastLanded: null,
+    lastLandedError: 'git timeout',
+    claudeConnected: false,
+  }).join('\n');
+  expect(unknown).toContain('Зараз: невідомо (state DB unreadable)');
+  expect(unknown).toContain('Лейни: невідомо (state DB unreadable)');
+  expect(unknown).toContain('Останнє landed: невідомо (git timeout)');
+  expect(unknown).toContain('Claude MCP: не підключено');
 });
 
 test('REGRESSION: daemon health uses process-local honest field names and epochs', () => {

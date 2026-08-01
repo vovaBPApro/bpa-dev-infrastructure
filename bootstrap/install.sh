@@ -16,6 +16,7 @@ SOURCE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ENV_FILE="${ENV_FILE:-/root/.config/bpa/orchestrator.env}"
 SYSTEMD_SYSTEM_DIR="${SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
 BUN_BIN="${BUN_BIN:-/usr/local/bin/bun}"
+BASH_BIN="${BASH_BIN:-/usr/bin/bash}"
 WHISPER_BIN="${WHISPER_BIN:-/opt/whisper.cpp/bin/whisper-cli}"
 RUNTIME_DIR="${RUNTIME_DIR:-$INSTALL_ROOT/runtime}"
 STATE_DB="${INFRA_STATE_DB:-$RUNTIME_DIR/state.db}"
@@ -28,7 +29,7 @@ usage() {
 Usage: bootstrap/install.sh [--dry-run | --verify | --verify-source] [--no-cron] [--arm-watchdog]
 
 Environment overrides: INSTALL_ROOT, REPO_URL, BUN_VERSION, ENV_FILE, BUN_BIN,
-RUNTIME_DIR, INFRA_STATE_DB, CRONTAB_CMD, SYSTEMD_SYSTEM_DIR, and WHISPER_BIN
+RUNTIME_DIR, INFRA_STATE_DB, CRONTAB_CMD, SYSTEMD_SYSTEM_DIR, BASH_BIN, and WHISPER_BIN
 (the last two are test/rehearsal overrides).
 --verify is the fail-closed deployed-host check. --verify-source checks only the
 boundaries supported by a source/container test and may report explicit SKIPs.
@@ -144,7 +145,7 @@ rendered_unit_exec_paths_status() {
       done
       read -r exec_path _ <<<"$command"
       [[ "$exec_path" == /* && -x "$exec_path" ]] || return 1
-      if [[ "$exec_path" != "$BUN_BIN" && "$exec_path" != "$INSTALL_ROOT"/* ]]; then
+      if [[ "$exec_path" != "$BUN_BIN" && "$exec_path" != "$BASH_BIN" && "$exec_path" != "$INSTALL_ROOT"/* ]]; then
         return 1
       fi
     done < "$unit"
@@ -193,6 +194,8 @@ verify() {
   check "stand staleness timer" test -f "$SYSTEMD_SYSTEM_DIR/agentic-bpa-staleness.timer"
   check "database grants service" test -f "$SYSTEMD_SYSTEM_DIR/agentic-bpa-db-grants.service"
   check "database grants timer" test -f "$SYSTEMD_SYSTEM_DIR/agentic-bpa-db-grants.timer"
+  check "meteorite service" test -f "$SYSTEMD_SYSTEM_DIR/bpa-meteorite.service"
+  check "meteorite timer" test -f "$SYSTEMD_SYSTEM_DIR/bpa-meteorite.timer"
   check "unit Exec paths" rendered_unit_exec_paths_status
   check "deployed unit drift" env \
     INSTALL_ROOT="$INSTALL_ROOT" ENV_FILE="$ENV_FILE" BUN_BIN="$BUN_BIN" \
@@ -223,6 +226,7 @@ verify() {
     check "deploy drift enabled" systemctl is-enabled --quiet bpa-deploy-drift-guard.timer
     check "stand staleness enabled" systemctl is-enabled --quiet agentic-bpa-staleness.timer
     check "database grants enabled" systemctl is-enabled --quiet agentic-bpa-db-grants.timer
+    check "meteorite enabled" systemctl is-enabled --quiet bpa-meteorite.timer
   fi
   return "$result"
 }
@@ -390,7 +394,7 @@ render_units() {
       echo "Unit deliberately absent; not installing $(basename "${source%.in}")."
       continue
     fi
-    INSTALL_ROOT="$INSTALL_ROOT" ENV_FILE="$ENV_FILE" BUN_BIN="$BUN_BIN" \
+    INSTALL_ROOT="$INSTALL_ROOT" ENV_FILE="$ENV_FILE" BUN_BIN="$BUN_BIN" BASH_BIN="$BASH_BIN" \
       FULL_SUITE_ON_CALENDAR="$FULL_SUITE_ON_CALENDAR" ORCH_WATCHDOG_INTERVAL="$ORCH_WATCHDOG_INTERVAL" \
       envsubst < "$source" > "$destination"
     chmod 644 "$destination"
@@ -413,6 +417,7 @@ activate_units() {
     systemctl enable --now bpa-deploy-drift-guard.timer
     systemctl enable --now agentic-bpa-staleness.timer
     systemctl enable --now agentic-bpa-db-grants.timer
+    systemctl enable --now bpa-meteorite.timer
     if "$ARM_WATCHDOG"; then
       echo 'ERROR: watchdog units are deliberately absent because unattended lease-loss handling is not approved' >&2
       return 1

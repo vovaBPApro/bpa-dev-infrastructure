@@ -120,7 +120,16 @@ skip() {
 }
 
 has_configured_token() {
-  [[ -f "$ENV_FILE" ]] && ! grep -q '^TELEGRAM_BOT_TOKEN=__OPERATOR_' "$ENV_FILE"
+  local line token
+  [[ -f "$ENV_FILE" ]] || return 1
+  line="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" 2>/dev/null)" || return 1
+  [[ "$(grep -Ec '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE")" == 1 ]] || return 1
+  token="${line#TELEGRAM_BOT_TOKEN=}"
+  # BotFather tokens are an unsigned decimal bot id, a colon, and a bounded
+  # URL-safe secret. Reject shell syntax, quoting, whitespace and documented
+  # operator placeholders instead of treating an env file's existence as proof.
+  [[ "$token" =~ ^[0-9]{6,15}:[A-Za-z0-9_-]{20,}$ ]] || return 1
+  [[ "$token" != *'__OPERATOR_'* ]]
 }
 
 state_db_status() {
@@ -556,7 +565,11 @@ activate_units() {
       echo 'Watchdog timer installed but remains unarmed.'
     fi
   else
-    echo "Token remains a placeholder; units installed but not enabled. Edit $ENV_FILE, then re-run this installer."
+    echo "Telegram bot token is missing or invalid; units installed but not enabled. Edit $ENV_FILE, then re-run this installer."
+    if "$ARM_WATCHDOG"; then
+      echo 'ERROR: refusing watchdog arm without a configured Telegram alert channel' >&2
+      return 1
+    fi
   fi
 }
 

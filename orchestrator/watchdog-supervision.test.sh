@@ -309,6 +309,9 @@ malformed_states=(
   'version=1\nlast_restart=18446744073709552115\nconsecutive_failures=0\nalerted=0\n'
   'version=1\nlast_restart=500\nconsecutive_failures=-1\nalerted=0\n'
   'version=1\nlast_restart=500\nconsecutive_failures=32\nalerted=0\n'
+  'version=1\nlast_restart=500\nconsecutive_failures=18446744073709551616\nalerted=0\n'
+  'version=1\nlast_restart=500\nconsecutive_failures=1\nalerted=2\n'
+  'version=1\nlast_restart=500\nconsecutive_failures=1\nalerted=18446744073709551616\n'
 )
 for malformed_index in "${!malformed_states[@]}"; do
   new_case "restart-state-malformed-$malformed_index"
@@ -340,6 +343,13 @@ assert_actions 1 0
 grep -Fxq 'consecutive_failures=31' "$ORCH_RESTART_STATE_FILE" ||
   fail 'accepted failure boundary was not safely saturated during recovery'
 unset ORCH_TEST_LAUNCH_STATUS
+
+new_case restart-state-alerted-boundary
+export ORCH_TEST_SESSION_ALIVE=0
+printf 'version=1\nlast_restart=1\nconsecutive_failures=1\nalerted=1\n' > "$ORCH_RESTART_STATE_FILE"
+ORCH_WATCHDOG_INTERVAL=10 ORCH_RESTART_BACKOFF_CAP_S=10 ORCH_WATCHDOG_NOW=5 tick
+assert_actions 0 0
+log_has 'WATCHDOG restart-suppressed'
 
 # Backward clock movement/future timestamps reset instead of suppressing until
 # wall time catches up.

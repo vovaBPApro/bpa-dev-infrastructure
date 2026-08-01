@@ -2841,21 +2841,9 @@ const notifyHandler = createNotifyHandler({
   notifyChatId,
   relayHuman: statusRelay,
   relayInternal: async (text) => {
-    await deliverTerminalAlert(text, {
+    deliverTerminalAlert(text, {
       journal: (frame) =>
         process.stderr.write(`[terminal-alert] ${frame}\n`),
-      notifyMcp: activeServer
-        ? async (pointer) =>
-            activeServer!.notification({
-              method: 'notifications/claude/channel',
-              params: {
-                content: pointer,
-                meta: { audience: 'internal', source: 'terminal-alert' },
-              },
-            })
-        : null,
-      tmuxAvailable: async () => Boolean(TMUX_SESSION) && (await tmuxAlive()),
-      pasteTmux: tmuxPasteText,
     });
   },
 });

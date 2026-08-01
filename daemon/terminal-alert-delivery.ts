@@ -1,23 +1,16 @@
-import { terminalAlertPointerFromFrame } from './terminal-alert';
-
 export type TerminalAlertDeliveryDependencies = {
   journal: (frame: string) => void;
-  notifyMcp: ((pointer: string) => Promise<void>) | null;
-  tmuxAvailable: () => Promise<boolean>;
-  pasteTmux: (pointer: string) => Promise<boolean>;
 };
 
-export async function deliverTerminalAlert(
+/**
+ * Terminal alerts cross an out-of-band boundary exactly once: the daemon
+ * journal. Never route them through MCP notifications or tmux. Both surfaces
+ * are rendered in the pane that terminal-alert.ts watches, which makes any
+ * in-band delivery (including an allegedly inert pointer) a feedback edge.
+ */
+export function deliverTerminalAlert(
   frame: string,
   deps: TerminalAlertDeliveryDependencies,
-): Promise<void> {
+): void {
   deps.journal(frame);
-  const pointer = terminalAlertPointerFromFrame(frame);
-
-  if (deps.notifyMcp) {
-    await deps.notifyMcp(pointer);
-    return;
-  }
-  if ((await deps.tmuxAvailable()) && (await deps.pasteTmux(pointer))) return;
-  throw new Error('orchestrator unavailable');
 }

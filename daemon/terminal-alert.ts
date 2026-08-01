@@ -35,42 +35,10 @@ const INTERNAL_ALERT_NONCE_PREFIX_PATTERN =
   INTERNAL_ALERT_NONCE_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const INTERNAL_ALERT_NOISY_LINE_BREAK = '(?:[ \\t]*\\n)+[ \\t]*';
 const INTERNAL_ALERT_KIND_SEPARATOR = '·';
-const CANONICAL_ALERT_NONCE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const INVALID_ALERT_NONCE = 'invalid-nonce';
+export const TERMINAL_ALERT_EVIDENCE_LIMIT = 2_048;
 
 export function encodeAlertKind(kind: TerminalFailureClass): string {
   return `${kind[0]}${INTERNAL_ALERT_KIND_SEPARATOR}${kind.slice(1)}`;
-}
-
-export function formatTerminalAlertPointer(
-  kind: TerminalFailureClass,
-  nonce: string,
-): string {
-  const renderedNonce = CANONICAL_ALERT_NONCE.test(nonce)
-    ? nonce
-    : INVALID_ALERT_NONCE;
-  return `terminal-alert: kind=${encodeAlertKind(kind)} nonce=${renderedNonce} — details in daemon journal`;
-}
-
-export function terminalAlertPointerFromFrame(frame: string): string {
-  const nonce = frame.match(/^Nonce: ([^\n]{1,256})$/m)?.[1]?.trim();
-  const encodedKind = frame.match(/^Type: ([^\n]+)$/m)?.[1]?.trim();
-  const kind = (
-    [
-      'usage-limit',
-      '429/overload',
-      'auth',
-      'stalled',
-      'failed',
-      'exited',
-      'network',
-      'fatal',
-      'unknown',
-    ] as const
-  ).find((candidate) => encodeAlertKind(candidate) === encodedKind);
-  if (!nonce || !kind) throw new Error('invalid terminal alert frame');
-  return formatTerminalAlertPointer(kind, nonce);
 }
 
 const INTERNAL_ALERT_KIND_PATTERN = [
@@ -259,16 +227,22 @@ export function formatTerminalAlert(
   nonceFactory: () => string = randomUUID,
 ): string {
   const nonce = nonceFactory();
-  const framedPayload = payload.line
-    .split('\n')
-    .map((line) => `${INTERNAL_ALERT_PAYLOAD_PREFIX}${line}`);
+  const normalizedEvidence = stripTerminalNoise(payload.line)
+    .replace(/\s*\n\s*/g, ' ↵ ');
+  const evidence =
+    normalizedEvidence.length > TERMINAL_ALERT_EVIDENCE_LIMIT
+      ? `${normalizedEvidence.slice(0, TERMINAL_ALERT_EVIDENCE_LIMIT)}…`
+      : normalizedEvidence;
+  const safeSession = stripTerminalNoise(payload.session)
+    .replace(/\s*\n\s*/g, ' ')
+    .slice(0, 256);
   const frame = [
     '[internal terminal failure alert]',
     `${INTERNAL_ALERT_NONCE_PREFIX}${nonce}`,
     `Type: ${encodeAlertKind(payload.kind)}`,
-    `Session: ${payload.session}`,
+    `Session: ${safeSession}`,
     '',
-    ...framedPayload,
+    `${INTERNAL_ALERT_PAYLOAD_PREFIX}${evidence}`,
     INTERNAL_ALERT_END,
   ].join('\n');
   recordIssuedNonce(nonce, frame);

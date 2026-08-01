@@ -17,6 +17,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { createNotifyHandler } from './notify-handler';
+import { deliverTerminalAlert } from './terminal-alert-delivery';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import {
@@ -2840,25 +2841,22 @@ const notifyHandler = createNotifyHandler({
   notifyChatId,
   relayHuman: statusRelay,
   relayInternal: async (text) => {
-    const wrapped = serializeTelegramChannel(text, {
-      audience: 'internal',
-      source: 'terminal-alert',
-      ts: new Date().toISOString(),
+    await deliverTerminalAlert(text, {
+      journal: (frame) =>
+        process.stderr.write(`[terminal-alert] ${frame}\n`),
+      notifyMcp: activeServer
+        ? async (pointer) =>
+            activeServer!.notification({
+              method: 'notifications/claude/channel',
+              params: {
+                content: pointer,
+                meta: { audience: 'internal', source: 'terminal-alert' },
+              },
+            })
+        : null,
+      tmuxAvailable: async () => Boolean(TMUX_SESSION) && (await tmuxAlive()),
+      pasteTmux: tmuxPasteText,
     });
-    if (TMUX_SESSION && (await tmuxAlive()) && (await tmuxPasteText(wrapped))) {
-      return;
-    }
-    if (activeServer) {
-      await activeServer.notification({
-        method: 'notifications/claude/channel',
-        params: {
-          content: text,
-          meta: { audience: 'internal', source: 'terminal-alert' },
-        },
-      });
-      return;
-    }
-    throw new Error('orchestrator unavailable');
   },
 });
 

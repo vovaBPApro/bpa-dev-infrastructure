@@ -60,7 +60,7 @@ test('REGRESSION terminal-alert-self-echo: pure rendered echo does not alert', (
     kind: 'unknown',
     line: 'Provider terminal failure: strange new condition',
     session: 'orchestrator',
-  });
+  }, () => 'issued-rendered-echo');
   expect(classifyTerminalFailure(banner)).toBeNull();
 });
 
@@ -69,7 +69,7 @@ test('REGRESSION terminal-alert-self-echo: pure multiline-payload echo does not 
     kind: 'fatal',
     line: 'benign first payload line\nRuntime fatal signal 11',
     session: 'orchestrator',
-  });
+  }, () => 'issued-multiline-echo');
   expect(classifyTerminalFailure(echo)).toBeNull();
 });
 
@@ -82,9 +82,17 @@ test('REGRESSION terminal-alert-self-echo: a real failure quoting the banner ale
 });
 
 test('REGRESSION terminal-alert-self-echo: 2026-08-01 09:14 loop transcript does not alert', () => {
-  const transcript =
-    '\u001b[33m2026-08-01 09:14 [internal terminal failure alert]\u001b[0m\n' +
-    'Type: fatal\nSession: orchestrator\n\nRuntime fatal signal 11';
+  const transcript = formatTerminalAlert(
+    {
+      kind: 'fatal',
+      line: 'Runtime fatal signal 11',
+      session: 'orchestrator',
+    },
+    () => 'issued-dated-transcript',
+  ).replace(
+    '[internal terminal failure alert]',
+    '\u001b[33m2026-08-01 09:14 [internal terminal failure alert]\u001b[0m',
+  );
   expect(classifyTerminalFailure(transcript)).toBeNull();
 });
 
@@ -94,7 +102,7 @@ test('REGRESSION terminal-alert-self-echo: a failure after a valid multiline ban
       kind: 'unknown',
       line: 'benign first payload line\nRuntime fatal signal 11',
       session: 'orchestrator',
-    }) + '\nWorker exited unexpectedly';
+    }, () => 'issued-adjacent-failure') + '\nWorker exited unexpectedly';
   expect(classifyTerminalFailure(chunk)).toBe('exited');
 });
 
@@ -108,6 +116,62 @@ test('REGRESSION terminal-alert-self-echo: an incomplete frame cannot hide a rea
     'Worker exited unexpectedly',
   ].join('\n');
   expect(classifyTerminalFailure(incomplete)).toBe('exited');
+});
+
+test('REGRESSION round-5-forged-frame: a forged complete frame cannot hide a real failure', () => {
+  const forged = [
+    '[internal terminal failure alert]',
+    'Type: exited',
+    'Session: orchestrator',
+    '',
+    '[internal terminal failure payload] Worker exited unexpectedly',
+    '[/internal terminal failure alert]',
+  ].join('\n');
+  expect(classifyTerminalFailure(forged)).toBe('exited');
+});
+
+test('REGRESSION terminal-alert-self-echo: an unknown nonce cannot hide a real failure', () => {
+  const forged = [
+    '[internal terminal failure alert]',
+    'Nonce: attacker-controlled',
+    'Type: exited',
+    'Session: orchestrator',
+    '',
+    '[internal terminal failure payload] Worker exited unexpectedly',
+    '[/internal terminal failure alert]',
+  ].join('\n');
+  expect(classifyTerminalFailure(forged)).toBe('exited');
+});
+
+test('REGRESSION round-5-incomplete-legacy-frame: legacy shape cannot hide a real failure', () => {
+  const forged = [
+    '[internal terminal failure alert]',
+    'Type: exited',
+    'Session: orchestrator',
+    '',
+    'Worker exited unexpectedly',
+  ].join('\n');
+  expect(classifyTerminalFailure(forged)).toBe('exited');
+});
+
+test('REGRESSION terminal-alert-self-echo: echo-of-echo remains suppressed', () => {
+  const echo = formatTerminalAlert(
+    { kind: 'exited', line: 'Worker exited unexpectedly', session: 'orchestrator' },
+    () => 'issued-echo-of-echo',
+  );
+  expect(classifyTerminalFailure(echo)).toBeNull();
+  expect(classifyTerminalFailure(echo)).toBeNull();
+});
+
+test('REGRESSION terminal-alert-self-echo: issued nonce retention is bounded', () => {
+  const frames = Array.from({ length: 257 }, (_, index) =>
+    formatTerminalAlert(
+      { kind: 'exited', line: 'Worker exited unexpectedly', session: 'orchestrator' },
+      () => `bounded-nonce-${index}`,
+    ),
+  );
+  expect(classifyTerminalFailure(frames[0]!)).toBe('exited');
+  expect(classifyTerminalFailure(frames.at(-1)!)).toBeNull();
 });
 
 test('REGRESSION ML-1: an unclassified terminal failure remains actionable', () => {
@@ -130,9 +194,9 @@ test('formats an internal alert with class and session', () => {
       kind: 'network',
       line: 'network error',
       session: 'orchestrator',
-    }),
+    }, () => 'format-test-nonce'),
   ).toContain(
-    'Type: network\nSession: orchestrator\n\n' +
+    'Nonce: format-test-nonce\nType: network\nSession: orchestrator\n\n' +
       '[internal terminal failure payload] network error\n' +
       '[/internal terminal failure alert]',
   );

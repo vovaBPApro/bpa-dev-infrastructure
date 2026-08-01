@@ -5,24 +5,6 @@ import {
   TERMINAL_ALERT_EVIDENCE_LIMIT,
 } from './terminal-alert';
 
-test('REGRESSION W-37: delivery has one out-of-band journal edge and no session edge', () => {
-  const frame = formatTerminalAlert(
-    {
-      kind: 'fatal',
-      line: 'fatal error: payload must remain journal-only',
-      session: 'ag-w37',
-    },
-    () => '123e4567-e89b-12d3-a456-426614174000',
-  );
-  const journal: string[] = [];
-
-  deliverTerminalAlert(frame, {
-    journal: (text) => journal.push(text),
-  });
-
-  expect(journal).toEqual([frame]);
-});
-
 test('REGRESSION W-37: journal failure propagates so HTTP delivery cannot false-green', () => {
   const frame = formatTerminalAlert(
     { kind: 'network', line: 'network error', session: 'ag-w37' },

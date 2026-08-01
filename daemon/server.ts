@@ -16,7 +16,7 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
-import { createNotifyHandler } from './notify-handler';
+import { createProductionTerminalAlertNotifyHandler } from './terminal-alert-notify';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import {
@@ -2836,30 +2836,10 @@ async function readRequestBody(req: IncomingMessage): Promise<string> {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-const notifyHandler = createNotifyHandler({
+const notifyHandler = createProductionTerminalAlertNotifyHandler({
   notifyChatId,
   relayHuman: statusRelay,
-  relayInternal: async (text) => {
-    const wrapped = serializeTelegramChannel(text, {
-      audience: 'internal',
-      source: 'terminal-alert',
-      ts: new Date().toISOString(),
-    });
-    if (TMUX_SESSION && (await tmuxAlive()) && (await tmuxPasteText(wrapped))) {
-      return;
-    }
-    if (activeServer) {
-      await activeServer.notification({
-        method: 'notifications/claude/channel',
-        params: {
-          content: text,
-          meta: { audience: 'internal', source: 'terminal-alert' },
-        },
-      });
-      return;
-    }
-    throw new Error('orchestrator unavailable');
-  },
+  journal: process.stderr,
 });
 
 // ── HTTP server (SSE MCP endpoint) ───────────────────────────────────────────

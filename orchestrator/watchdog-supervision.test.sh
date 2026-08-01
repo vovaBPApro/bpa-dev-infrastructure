@@ -279,26 +279,9 @@ ORCH_WATCHDOG_INTERVAL=10 ORCH_WATCHDOG_NOW=131 tick
 assert_actions 3 0
 [[ "$(grep -c 'ALERT orchestrator-recovery-failed' "$NUDGE_OUTBOX_FILE")" == 1 ]] ||
   fail 'persistent failure appended more than one loud alert'
-# End-to-end reachability boundary: with the orchestrator session still absent,
-# start a separate daemon-side consumer process against the exact watchdog
-# outbox. It must route and acknowledge the loud alert without any tmux actor.
-export ORCH_TEST_DELIVERED="$(dirname "$NUDGE_OUTBOX_FILE")/daemon-delivered"
-(
-  cd "$REPO_DIR"
-  ORCH_TEST_OUTBOX="$NUDGE_OUTBOX_FILE" bun -e '
-    import { appendFileSync } from "node:fs";
-    import { drainOutbox } from "./daemon/control.ts";
-    await drainOutbox(
-      process.env.ORCH_TEST_OUTBOX!,
-      "fixture-chat",
-      async (chat, text) => appendFileSync(process.env.ORCH_TEST_DELIVERED!, `${chat}\t${text}\n`),
-      () => {},
-    );
-  '
-)
-grep -Fq $'fixture-chat\tALERT orchestrator-recovery-failed' "$ORCH_TEST_DELIVERED" ||
-  fail 'independent daemon consumer did not route the watchdog loud alert'
-[[ ! -s "$NUDGE_OUTBOX_FILE" ]] || fail 'daemon consumer did not drain the watchdog outbox'
+# The executable boundary boots daemon/server.ts with test-owned state and a
+# loopback Telegram API. No tmux session exists; no direct callback can pass it.
+bun "$SCRIPT_DIR/watchdog-transport-boundary.test.ts"
 # A later success resets failures, backoff and escalation.
 export ORCH_TEST_LAUNCH_STATUS=0
 ORCH_WATCHDOG_INTERVAL=10 ORCH_WATCHDOG_NOW=170 tick

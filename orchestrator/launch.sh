@@ -311,6 +311,7 @@ process.stdout.write(JSON.stringify({
 }
 
 start() {
+  local singleton_guard_fd
   mkdir -p "$RUNTIME_DIR" "$(dirname "$SINGLETON_LOCK_FILE")"
   umask 077
   : >> "$SINGLETON_LOCK_FILE"
@@ -320,7 +321,20 @@ start() {
     printf 'launch already in progress\n' >&2
     return 1
   fi
+  # Reserve the process singleton in the caller before creating tmux.  The
+  # previous design let the pane race pipe-pane/readiness: when another
+  # orchestrator held the lock, tmux removed the dead pane first and the caller
+  # leaked the incidental "can't find pane" error instead of the refusal.
+  # Keep this descriptor until the terminal-alert consumer is ready.  The pane
+  # blocks on the same lock, then takes ownership as soon as we close it.
+  exec {singleton_guard_fd}>"$SINGLETON_LOCK_FILE"
+  if ! flock -n "$singleton_guard_fd"; then
+    exec {singleton_guard_fd}>&-
+    printf 'ERROR orchestrator-singleton-held lock=%s\n' "$SINGLETON_LOCK_FILE" >&2
+    return 1
+  fi
   if session_exists; then
+    exec {singleton_guard_fd}>&-
     printf 'session already exists: %s\n' "$SESSION" >&2
     return 1
   fi
@@ -367,11 +381,14 @@ start() {
       "$LIVENESS_PULSE" >&2
   fi
   printf -v singleton_command \
-    'exec 8>%q; flock -n 8 || exit 73; while [ ! -f %q ]; do sleep 0.01; done; . %q; %s%s' \
+    'exec 8>%q; flock 8 || exit 73; while [ ! -f %q ]; do sleep 0.01; done; . %q; %s%s' \
     "$SINGLETON_LOCK_FILE" "$startup_file" "$startup_file" "$pulse_command" "$command"
   # Do not leak the launch mutex into tmux/the provider process.
   exec 9>&-
-  tmux new-session -d -s "$SESSION" -c "$WORK_DIR" "sh -c $(printf '%q' "$singleton_command")" || return 1
+  if ! tmux new-session -d -s "$SESSION" -c "$WORK_DIR" "sh -c $(printf '%q' "$singleton_command")"; then
+    exec {singleton_guard_fd}>&-
+    return 1
+  fi
   terminal_alert_bun="$(command -v bun)"
   terminal_alert_ready="$TERMINAL_ALERT_READY_FILE"
   rm -f "$terminal_alert_ready"
@@ -380,6 +397,7 @@ start() {
   if ! tmux pipe-pane -o -t "$SESSION" "$terminal_alert_command"; then
     printf 'ERROR terminal-alert-pipe-failed session=%s\n' "$SESSION" >&2
     tmux kill-session -t "$SESSION" 2>/dev/null || true
+    exec {singleton_guard_fd}>&-
     return 1
   fi
   # pipe-pane reports only that its child was spawned. Require an affirmative
@@ -393,10 +411,11 @@ start() {
     printf 'ERROR terminal-alert-not-ready session=%s\n' "$SESSION" >&2
     tmux kill-session -t "$SESSION" 2>/dev/null || true
     rm -f "$terminal_alert_ready"
+    exec {singleton_guard_fd}>&-
     return 1
   fi
-  # tmux reports success before the pane command can reject a held flock.
-  # Give that command a bounded window to exit, then fail the launch loudly.
+  # Hand singleton ownership to the already-observable pane.
+  exec {singleton_guard_fd}>&-
   sleep 0.1
   if ! session_exists; then
     printf 'ERROR orchestrator-singleton-held lock=%s\n' "$SINGLETON_LOCK_FILE" >&2

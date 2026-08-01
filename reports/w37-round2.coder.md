@@ -36,7 +36,7 @@ placeholder. The original frame remains unchanged for journal-first delivery.
 - branching-policy sha256:98cd92116325 — Branching Policy
 - reproducible-from-git sha256:822d9efe694b — Reproducible From Git
 
-commit: pending [CODER] make W-37 alert nonce classifier-inert
+commit: d0107559fd3f56675b1f2a5ab6a97e47f070dbb8 [CODER] make W-37 alert nonce classifier-inert
 verify: cd daemon && bun install --frozen-lockfile && bun test terminal-alert-delivery.test.ts terminal-alert.test.ts && bunx tsc --noEmit && cd .. && git diff --check
 result: NO-GO
 blocker: host full-daemon re-verification and independent Tier A review remain required

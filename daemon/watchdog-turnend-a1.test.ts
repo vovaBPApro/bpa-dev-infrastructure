@@ -180,6 +180,12 @@ exit 0
   );
   chmodSync(tmux, 0o755);
 
+  // Startup also performs a lane census. Keep this harness isolated from the
+  // host systemd bus; a missing stub previously blocked Telegram polling.
+  const systemctl = join(binDir, 'systemctl');
+  writeFileSync(systemctl, '#!/usr/bin/env bash\nexit 0\n');
+  chmodSync(systemctl, 0o755);
+
   // ── Stub Telegram Bot API ────────────────────────────────────────────────
   const sent: SentMessage[] = [];
   const updates: unknown[] = [];
@@ -322,6 +328,7 @@ exit 0
               opts.provider === 'codex' ? 'codex_notify' : 'claude_stop_hook',
             ...payload,
           }),
+          signal: AbortSignal.timeout(5_000),
         },
       );
       return await res.text();
@@ -334,13 +341,12 @@ exit 0
   };
   harnesses.push(harness);
 
-  await waitFor('daemon health', async () => {
-    try {
-      return (await fetch(`http://127.0.0.1:${daemonPort}/health`)).ok;
-    } catch {
-      return false;
-    }
-  });
+  // Waiting via fetch used to make this test's own timeout ineffective when a
+  // host dropped loopback SYNs: the unresolved fetch trapped waitFor forever.
+  // The listen callback emits this only after the HTTP server is bound.
+  await waitFor('daemon health listener', () =>
+    stderrText.includes('[telegram-daemon] Health:'),
+  );
 
   return harness;
 }

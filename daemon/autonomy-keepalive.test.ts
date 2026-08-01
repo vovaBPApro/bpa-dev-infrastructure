@@ -30,6 +30,29 @@ test('system lane census uses SYSTEM systemd unit state', () => {
   ]);
 });
 
+test('regression lock: an asynchronous lane census yields instead of blocking daemon work', async () => {
+  let release!: (units: { name: string; active: boolean }[]) => void;
+  const census = new Promise<{ name: string; active: boolean }[]>((resolve) => {
+    release = resolve;
+  });
+  const keepalive = new AutonomyKeepalive({
+    floor: 1,
+    readWorkboard: () => '',
+    listUnits: () => census,
+    nudge: async () => {},
+  });
+
+  let settled = false;
+  const tick = keepalive.eventTick().then(() => {
+    settled = true;
+  });
+  await Bun.sleep(0);
+  expect(settled).toBe(false);
+  release([]);
+  await tick;
+  expect(settled).toBe(true);
+});
+
 test('REGRESSION ML-2: timer nudges with open rows and zero running lanes', async () => {
   const nudges: string[] = [];
   const keepalive = new AutonomyKeepalive({

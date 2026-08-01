@@ -65,7 +65,7 @@ export async function deliverAutonomyNudge(
 type KeepaliveOptions = {
   floor: number;
   readWorkboard: () => string;
-  listUnits: () => LaneUnit[];
+  listUnits: () => LaneUnit[] | Promise<LaneUnit[]>;
   nudge: (message: string) => Promise<void>;
 };
 
@@ -76,11 +76,9 @@ export class AutonomyKeepalive {
   constructor(private readonly opts: KeepaliveOptions) {}
 
   async eventTick(): Promise<void> {
+    const units = await this.opts.listUnits();
     const running = new Set(
-      this.opts
-        .listUnits()
-        .filter((unit) => unit.active)
-        .map((unit) => unit.name),
+      units.filter((unit) => unit.active).map((unit) => unit.name),
     );
     if (this.previousRunning) {
       const finished: string[] = [];
@@ -99,7 +97,8 @@ export class AutonomyKeepalive {
   }
 
   async timerTick(): Promise<void> {
-    const running = this.opts.listUnits().filter((unit) => unit.active).length;
+    const units = await this.opts.listUnits();
+    const running = units.filter((unit) => unit.active).length;
     if (running >= this.opts.floor) return;
     if (!hasOpenWorkboardRows(this.opts.readWorkboard())) return;
     await this.opts.nudge(

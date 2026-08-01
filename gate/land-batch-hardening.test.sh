@@ -21,7 +21,8 @@ make_fixture() {
   git -C "$repo" config user.email hardening@example.test
   git -C "$repo" config user.name Hardening
   printf 'base\n' >"$repo/base.txt"
-  git -C "$repo" add base.txt
+  printf 'import { test, expect } from "bun:test"; test("fixture", () => expect(true).toBe(true));\n' > "$repo/base.test.ts"
+  git -C "$repo" add base.txt base.test.ts
   git -C "$repo" commit -m base >/dev/null
   git -C "$repo" push -u origin main >/dev/null
   printf 'ref: refs/heads/main\n' >"$bare/HEAD"

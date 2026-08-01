@@ -39,7 +39,7 @@ land_resolve_bun() {
 # failure. The gate never installs dependencies: changing dependency state is
 # outside landing authority, and a non-reproducible checkout must be refused.
 land_run_declared_checks() {
-  local repo="$1" prefix="$2" manifest="$repo/package.json" scripts_file script parse_dir bun_config
+  local repo="$1" prefix="$2" manifest="$repo/package.json" scripts_file script parse_dir bun_config test_output test_count
   local -a source_files=() test_files=()
   parse_dir=$(mktemp -d "${TMPDIR:-/tmp}/bpa-land-parse.XXXXXX") || return 1
   echo "$prefix declared-check=parse status=running"
@@ -67,17 +67,26 @@ land_run_declared_checks() {
   done < <(git -C "$repo" ls-files -z)
   if [ "${#test_files[@]}" -gt 0 ]; then
     bun_config=$(mktemp "${TMPDIR:-/tmp}/bpa-land-bunfig.XXXXXX.toml") || return 1
+    test_output=$(mktemp "${TMPDIR:-/tmp}/bpa-land-test-output.XXXXXX") || { rm -f "$bun_config"; return 1; }
     echo "$prefix framework-check=test status=running"
     if ! (cd "$repo" && env -i HOME="${HOME:-/nonexistent}" CI=1 PATH="$LAND_CHECK_PATH" \
-      "$BUN_BIN" test --config "$bun_config" -- "${test_files[@]}"); then
-      rm -f "$bun_config"
+      "$BUN_BIN" test --config "$bun_config" -- "${test_files[@]}") >"$test_output" 2>&1; then
+      cat "$test_output"
+      rm -f "$bun_config" "$test_output"
       echo "$prefix framework-check=test status=fail" >&2
       return 1
     fi
-    rm -f "$bun_config"
-    echo "$prefix framework-check=test status=pass"
+    cat "$test_output"
+    test_count=$(sed -nE 's/^Ran ([0-9]+) tests? across .*/\1/p' "$test_output" | tail -n 1)
+    rm -f "$bun_config" "$test_output"
+    if [[ ! "$test_count" =~ ^[0-9]+$ ]] || [ "$test_count" -eq 0 ]; then
+      echo "$prefix framework-check=test status=fail tests=${test_count:-unknown} detail=no-tests-collected" >&2
+      return 1
+    fi
+    echo "$prefix framework-check=test status=pass tests=$test_count"
   else
-    echo "$prefix framework-check=test status=none"
+    echo "$prefix framework-check=test status=fail tests=0 detail=no-tests-tracked" >&2
+    return 1
   fi
   if [ ! -e "$manifest" ]; then
     echo "$prefix declared-checks=none"

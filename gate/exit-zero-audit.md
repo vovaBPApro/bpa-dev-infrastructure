@@ -26,14 +26,46 @@ entrypoints.
 
 ## Candidate-tree trust inventory
 
-The landed tree is input, never the authority for its own verdict:
+The landed tree is input, never the authority for its own verdict. This is the
+complete trust surface of both entrypoints; each row names its corroboration and
+the regression lock that exercises the boundary:
+
+- CLI branch, report, repository, worktree, push, verify, and review-skip inputs
+  are shape-checked, branch-resolved by Git, and tied together by exact report
+  SHA. Locks: `land.test.sh`, `land-batch.test.sh`, and
+  `land-batch-hardening.test.sh` cover missing/malformed arguments, stale or bad
+  SHA, rollback, interruption, and batch cardinality.
+- Repository and origin state (default ref, current checkout, cleanliness,
+  freshness, merge base, branch tips, object modes, overlap, ancestry, remote
+  presence) is believed only when independent Git queries agree at the point of
+  use. The same three landing suites lock stale main, dirty/ref-invalid cases,
+  conflicts, overlap, forbidden modes, rollback, and local/remote reap.
+- The coder report supplies result, verify command, claimed counts, and commit
+  SHA. `completion-guard.ts` checks its grammar and runs verification at the
+  branch commit; the landing entrypoint rechecks the branch tip, and optional
+  post-merge verification re-runs the command and count comparison. Locks:
+  `completion-guard.test.ts`, `land.test.sh`, and
+  `land-batch-hardening.test.sh` cover fabricated, failing, stale, and later
+  failing evidence.
+- Review policy prefixes and review artifacts select and attest risky review.
+  Exact candidate paths are matched against the gate-owned policy; artifact
+  shape, reviewed SHA, verdict, and reviewer independence are checked. Locks:
+  the review cases in `land.test.sh` and `land-batch.test.sh` cover missing,
+  malformed, rejected, stale, symlinked, self-authored, and skipped review.
+- Secret decisions consume Git diff bytes, paths, modes, and bounded decoded
+  additions. They are corroborated by the single gate-owned signature pattern
+  and fail closed on scanner errors. Locks: secret, secret-path, type-change,
+  binary, Unicode, and encoded cases in the landing suites and
+  `land-secret-scan.test.sh`.
 
 - Tracked JavaScript and TypeScript source paths and bytes are corroborated by
   the gate's pinned Bun parser over the Git-produced file list.
 - Tracked test paths and bytes are corroborated before any package script runs
   by pinned Bun invoked directly with the explicit Git-produced test list and
-  an empty, gate-owned config. Candidate `bunfig.toml` discovery cannot replace
-  that list or inject a preload.
+  an empty, gate-owned config. The gate parses Bun's own final collection count,
+  prints `tests=N`, and refuses a missing, malformed, or zero count; the single
+  and batch zero-suite locks prove both entrypoints fail. Candidate `bunfig.toml`
+  discovery cannot replace that list or inject a preload.
 - Root `package.json` and its `lint`/`test` strings select additional checks
   only. Their exit status is accepted only in addition to the direct parse and
   test-framework results; a repository wrapper cannot stand in for either.
@@ -48,3 +80,15 @@ The landed tree is input, never the authority for its own verdict:
 - Candidate changes to `gate/` do not alter the running gate: entrypoints source
   the already-landed library and policy before merging the candidate. Such
   risky paths additionally require independent review.
+- Executables believed by the gate are the invoking shell plus `git`, `flock`,
+  and fixed-path host utilities, and Bun resolved only from
+  `/usr/local/bin:/usr/bin:/bin` then canonicalized. Candidate scripts receive a
+  clean environment and the fixed PATH; caller binary overrides are refused.
+  Locks: `landing-entrypoints.test.sh` covers Bun override and legacy entrypoint,
+  while shadow-binary cases in both landing suites cover candidate PATH input.
+- Exit codes are believed only for the exact command just executed, under
+  `pipefail`; output-derived claims additionally require parseable structured
+  evidence (report counts or Bun's collection summary). Syntax checks and the
+  failing declared/verify/framework cases in both landing suites prove nonzero
+  propagation; `exit-zero-audit.md` itself is the inventory lock reviewed with
+  every gate change.

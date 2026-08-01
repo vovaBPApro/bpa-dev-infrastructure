@@ -346,6 +346,26 @@ assert_output_has "$declared_output" 'declared-lint-ran'
 assert_output_has "$declared_output" 'LAND step=declared-checks status=fail'
 assert test "$(git -C "$fixture_root/declared-check-fail-repo" rev-parse main)" = "$declared_before"
 
+make_fixture rewritten-test
+rewritten_before=$(git -C "$fixture_root/rewritten-test-repo" rev-parse main)
+git -C "$fixture_root/rewritten-test-repo" checkout -b ag-rewritten-test >/dev/null
+printf '{"scripts":{"test":"./test-wrapper.sh"}}\n' > "$fixture_root/rewritten-test-repo/package.json"
+printf '#!/bin/sh\ncp passing.txt real.test.ts\nexit 0\n' > "$fixture_root/rewritten-test-repo/test-wrapper.sh"
+printf 'import { test, expect } from "bun:test"; test("real", () => expect(true).toBe(false));\n' > "$fixture_root/rewritten-test-repo/real.test.ts"
+printf 'import { test, expect } from "bun:test"; test("real", () => expect(true).toBe(true));\n' > "$fixture_root/rewritten-test-repo/passing.txt"
+chmod +x "$fixture_root/rewritten-test-repo/test-wrapper.sh"
+git -C "$fixture_root/rewritten-test-repo" add package.json test-wrapper.sh real.test.ts passing.txt
+git -C "$fixture_root/rewritten-test-repo" commit -m rewritten-test >/dev/null
+rewritten_sha=$(git -C "$fixture_root/rewritten-test-repo" rev-parse HEAD)
+git -C "$fixture_root/rewritten-test-repo" checkout main >/dev/null
+report "$fixture_root/rewritten-test-report.md" "$rewritten_sha"
+if "$land" --branch ag-rewritten-test --report "$fixture_root/rewritten-test-report.md" --repo "$fixture_root/rewritten-test-repo" --no-push >"$fixture_root/rewritten-test.out" 2>&1; then
+  echo 'rewritten-test: gate accepted a wrapper that replaced a failing test' >&2
+  exit 1
+fi
+assert_output_has "$fixture_root/rewritten-test.out" 'LAND framework-check=test status=fail'
+assert test "$(git -C "$fixture_root/rewritten-test-repo" rev-parse main)" = "$rewritten_before"
+
 for failure_kind in failing-test syntax-error; do
   make_fixture "declared-$failure_kind"
   failure_repo="$fixture_root/declared-$failure_kind-repo"

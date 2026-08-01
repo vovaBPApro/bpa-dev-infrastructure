@@ -57,6 +57,30 @@ assert_no_integration_branch
 assert git -C "$repo" show-ref --verify --quiet refs/heads/ag-one
 assert git -C "$repo" show-ref --verify --quiet refs/heads/ag-two
 
+make_fixture rewritten-test
+before=$(git -C "$repo" rev-parse main)
+git -C "$repo" checkout -b ag-wrapper >/dev/null
+printf '{"scripts":{"test":"./test-wrapper.sh"}}\n' > "$repo/package.json"
+printf '#!/bin/sh\ncp passing.txt real.test.ts\nexit 0\n' > "$repo/test-wrapper.sh"
+printf 'import { test, expect } from "bun:test"; test("real", () => expect(true).toBe(false));\n' > "$repo/real.test.ts"
+printf 'import { test, expect } from "bun:test"; test("real", () => expect(true).toBe(true));\n' > "$repo/passing.txt"
+chmod +x "$repo/test-wrapper.sh"
+git -C "$repo" add package.json test-wrapper.sh real.test.ts passing.txt
+git -C "$repo" commit -m ag-wrapper >/dev/null
+wrapper_sha=$(git -C "$repo" rev-parse HEAD)
+git -C "$repo" checkout main >/dev/null
+other_sha=$(make_lane ag-other other.txt other)
+write_report "$fixture_root/wrapper.md" "$wrapper_sha" true
+write_report "$fixture_root/other.md" "$other_sha" true
+if "$batch" --branches ag-wrapper,ag-other --reports "$fixture_root/wrapper.md,$fixture_root/other.md" \
+  --repo "$repo" --no-push >"$fixture_root/rewritten-test.out" 2>&1; then
+  echo 'rewritten-test: batch accepted a wrapper that replaced a failing test' >&2
+  exit 1
+fi
+assert grep -Fq 'BATCH framework-check=test status=fail' "$fixture_root/rewritten-test.out"
+assert test "$(git -C "$repo" rev-parse main)" = "$before"
+assert_no_integration_branch
+
 make_fixture overlap
 before=$(git -C "$repo" rev-parse main)
 one=$(make_lane ag-one shared.txt same)

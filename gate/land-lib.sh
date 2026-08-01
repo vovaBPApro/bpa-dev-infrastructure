@@ -39,17 +39,46 @@ land_resolve_bun() {
 # failure. The gate never installs dependencies: changing dependency state is
 # outside landing authority, and a non-reproducible checkout must be refused.
 land_run_declared_checks() {
-  local repo="$1" prefix="$2" manifest="$repo/package.json" scripts_file script parse_dir
+  local repo="$1" prefix="$2" manifest="$repo/package.json" scripts_file script parse_dir bun_config
+  local -a source_files=() test_files=()
   parse_dir=$(mktemp -d "${TMPDIR:-/tmp}/bpa-land-parse.XXXXXX") || return 1
   echo "$prefix declared-check=parse status=running"
-  if ! git -C "$repo" ls-files -z -- '*.js' '*.jsx' '*.mjs' '*.cjs' '*.ts' '*.tsx' | \
-    (cd "$repo" && xargs -0 -r "$BUN_BIN" build --no-bundle --outdir "$parse_dir" --) >/dev/null 2>&1; then
-    rm -rf "$parse_dir"
-    echo "$prefix declared-check=parse status=fail" >&2
-    return 1
-  fi
+  mapfile -d '' -t source_files < <(git -C "$repo" ls-files -z -- '*.js' '*.jsx' '*.mjs' '*.cjs' '*.ts' '*.tsx')
+  for script in "${source_files[@]}"; do
+    if ! (cd "$repo" && "$BUN_BIN" build --no-bundle --outfile="$parse_dir/output" -- "$script") >/dev/null 2>&1; then
+      rm -rf "$parse_dir"
+      echo "$prefix declared-check=parse status=fail" >&2
+      return 1
+    fi
+  done
   rm -rf "$parse_dir"
   echo "$prefix declared-check=parse status=pass"
+
+  # A package script is candidate-controlled orchestration, not test evidence.
+  # Corroborate it first by giving the pinned framework an explicit immutable
+  # list of tracked tests and an empty config outside the candidate tree. This
+  # happens before any declared wrapper can rewrite the checkout.
+  while IFS= read -r -d '' script; do
+    case "$script" in
+      *.test.js|*.test.jsx|*.test.mjs|*.test.cjs|*.test.ts|*.test.tsx|*.spec.js|*.spec.jsx|*.spec.mjs|*.spec.cjs|*.spec.ts|*.spec.tsx|*_test.js|*_test.jsx|*_test.mjs|*_test.cjs|*_test.ts|*_test.tsx|*_spec.js|*_spec.jsx|*_spec.mjs|*_spec.cjs|*_spec.ts|*_spec.tsx)
+        test_files+=("$script")
+        ;;
+    esac
+  done < <(git -C "$repo" ls-files -z)
+  if [ "${#test_files[@]}" -gt 0 ]; then
+    bun_config=$(mktemp "${TMPDIR:-/tmp}/bpa-land-bunfig.XXXXXX.toml") || return 1
+    echo "$prefix framework-check=test status=running"
+    if ! (cd "$repo" && env -i HOME="${HOME:-/nonexistent}" CI=1 PATH="$LAND_CHECK_PATH" \
+      "$BUN_BIN" test --config "$bun_config" -- "${test_files[@]}"); then
+      rm -f "$bun_config"
+      echo "$prefix framework-check=test status=fail" >&2
+      return 1
+    fi
+    rm -f "$bun_config"
+    echo "$prefix framework-check=test status=pass"
+  else
+    echo "$prefix framework-check=test status=none"
+  fi
   if [ ! -e "$manifest" ]; then
     echo "$prefix declared-checks=none"
     return 0

@@ -5,7 +5,7 @@ locks=${LOCK_SHA:-HEAD}
 tmp=$(mktemp -d /tmp/v3-dispatch-red.XXXXXX)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 git archive "$target" | tar -x -C "$tmp"
-for file in core/schema.ts orchestrator/dispatcher.test.ts tests/fixtures/noop-worker.ts tests/fixtures/gated-worker.ts tests/fixtures/forged-worker.ts; do
+for file in core/schema.ts orchestrator/dispatcher.test.ts orchestrator/dispatch-wrapper.ts tests/fixtures/noop-worker.ts tests/fixtures/gated-worker.ts tests/fixtures/forged-worker.ts tests/fixtures/never-exit-worker.ts; do
   mkdir -p "$tmp/$(dirname "$file")"
   git show "$locks:$file" > "$tmp/$file"
 done

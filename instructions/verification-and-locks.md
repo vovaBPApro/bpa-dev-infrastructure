@@ -6,7 +6,7 @@ audience: all
 tags: [verification, regression-lock, testing]
 summary: Test, regression-lock, visual-lock, and false-green rules for features and bug fixes.
 floor: true
-floor-line: Green is fail-closed — never relabel a failure as a warning; missing evidence is `NO-GO`.
+floor-line: Green is fail-closed — failure, missing evidence, and unmeasured subjects are never pass.
 ---
 
 # Verification and Regression Locks
@@ -24,6 +24,21 @@ A missing, skipped, flaky, timed-out, partial, or unverifiable result is
 suites hermetic, isolated, parallel, or otherwise faster without weakening the
 required behavior. Runtime-dependent suites use disposable stands and retain
 teardown and rollback evidence.
+
+## Unmeasured is failed
+
+Source (`instance/decisions/HR-1439.md`, Human words verbatim):
+
+> Може нам це правило, невиміряне равнопровал, розповсюдити і більш якось ширше використовувати?
+
+Any automated gate, status surface, health ping, or claim that cannot externally
+measure its subject must report that subject as `UNMEASURED` and fail closed.
+Reporting pass or green for an unmeasured subject is a defect. Skips exist only
+as tracked, reasoned, grep-able markers that name their arming condition; a skip
+must remain visibly a skip and is never counted as a pass.
+
+This rule originated on 2026-08-02 when meteorite-gate review 7b found a gate
+reporting pass for subjects it had not measured.
 
 Changes to the evidence gate require independent Tier-A review. Preserve
 fail-before evidence for every regression class the gate previously omitted,

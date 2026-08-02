@@ -1,12 +1,23 @@
 import { expect, test } from "bun:test";
 import { checkCapability } from "./capabilities";
 
-const sandboxedCapabilities = ["inspect", "test", "commit", "push"] as const;
+const sandboxedCapabilities = ["inspect", "test", "commit"] as const;
+const approvalCapabilities = ["push"] as const;
 const trustedOnlyCapabilities = ["network", "docker", "worktree-reap", "service-ops", "land"] as const;
 
 test("sandboxed lanes may exercise local lane capabilities", () => {
   for (const capability of sandboxedCapabilities) {
     expect(checkCapability("sandboxed-lane", capability)).toEqual({ allowed: true });
+  }
+});
+
+test("sandboxed pushes cross the approval boundary", () => {
+  for (const capability of approvalCapabilities) {
+    expect(checkCapability("sandboxed-lane", capability)).toEqual({
+      allowed: false,
+      verdict: `NO-GO capability=${capability}`,
+    });
+    expect(checkCapability("trusted-executor", capability)).toEqual({ allowed: true });
   }
 });
 

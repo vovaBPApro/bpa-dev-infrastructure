@@ -16,7 +16,7 @@ export const laneModes = ["sandboxed-lane", "trusted-executor"] as const;
 export type LaneMode = (typeof laneModes)[number];
 
 export const laneCapabilities: Record<LaneMode, ReadonlySet<Capability>> = {
-  "sandboxed-lane": new Set(["inspect", "test", "commit", "push"]),
+  "sandboxed-lane": new Set(["inspect", "test", "commit"]),
   "trusted-executor": new Set(capabilities),
 };
 

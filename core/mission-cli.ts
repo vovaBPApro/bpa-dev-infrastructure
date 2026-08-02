@@ -1,123 +1,44 @@
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { LeaseHeldError, StateStore } from "./state";
+import { DurableStore, FencedTransitionError } from "./state";
 
-// Default only. A caller that renews on a timer MUST pass its own TTL: a
-// renewal shorter than the interval between renewals guarantees the lease is
-// already dead at the next one. Live consequence when it was fixed at 30s and
-// the sole renewer ticked every 60s — the orchestrator lease expired ~34s after
-// every launch and the watchdog read that self-expiry as a hostile takeover.
-const defaultRenewalTtlMs = 30_000;
-const hiddenMissionStates = new Set(["succeeded"]);
-const hiddenLaneStates = new Set(["succeeded"]);
-
-function databasePath(): string {
-  const configured = process.env.INFRA_STATE_DB;
-  return configured || resolve(import.meta.dir, "..", "runtime", "state.db");
-}
-
-function usage(): never {
-  throw new Error("usage: mission create <correlation-id> | mission transition <id> <state> | lane create <mission-id> <lane-id> | lane transition <lane-id> <state> | lease acquire <owner> <key> <ttl-ms> | lease renew <owner> <key> <token> [ttl-ms] | lease release <owner> <key> <token> | reap | status");
-}
-
-function required(value: string | undefined): string {
-  if (!value) usage();
-  return value;
-}
-
-function positiveInteger(value: string | undefined, label: string): number {
-  const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed <= 0) throw new Error(`${label} must be a positive integer`);
-  return parsed;
-}
-
-function status(store: StateStore): void {
-  const missions = store.db.query("SELECT id, correlation_id, state, created_at, updated_at FROM missions ORDER BY id").all() as Array<{ id: string; correlation_id: string; state: string; created_at: number; updated_at: number }>;
-  const lanes = store.db.query("SELECT id, mission_id, state, created_at, updated_at FROM lanes ORDER BY id").all() as Array<{ id: string; mission_id: string; state: string; created_at: number; updated_at: number }>;
-  console.log(JSON.stringify({
-    missions: missions.filter((mission) => !hiddenMissionStates.has(mission.state)).map((mission) => ({ id: mission.id, correlationId: mission.correlation_id, state: mission.state, createdAt: mission.created_at, updatedAt: mission.updated_at })),
-    lanes: lanes.filter((lane) => !hiddenLaneStates.has(lane.state)).map((lane) => ({ id: lane.id, missionId: lane.mission_id, state: lane.state, createdAt: lane.created_at, updatedAt: lane.updated_at })),
-    leases: store.listActive(),
-  }));
-}
+const path = () => process.env.INFRA_STATE_DB || resolve(import.meta.dir, "..", "runtime", "state.db");
+const required = (value: string | undefined, name: string): string => { if (!value) throw new Error(`${name} is required`); return value; };
+const integer = (value: string | undefined, name: string): number => {
+  const parsed = Number(value); if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error(`${name} must be a non-negative integer`); return parsed;
+};
 
 function run(args: string[]): void {
-  const path = databasePath();
-  mkdirSync(dirname(path), { recursive: true });
-  const injectedNow = process.env.BPA_ALLOW_TEST_CLOCK === "1"
-    ? Number(process.env.INFRA_TEST_NOW_MS)
-    : Number.NaN;
-  if (process.env.BPA_ALLOW_TEST_CLOCK === "1" && !Number.isSafeInteger(injectedNow)) {
-    throw new Error("INFRA_TEST_NOW_MS must be a safe integer when BPA_ALLOW_TEST_CLOCK=1");
-  }
-  const store = new StateStore(
-    path,
-    Number.isSafeInteger(injectedNow) ? { now: () => injectedNow } : {},
-  );
+  const database = path();
+  mkdirSync(dirname(database), { recursive: true });
+  const injected = process.env.BPA_ALLOW_TEST_CLOCK === "1" ? Number(process.env.INFRA_TEST_NOW_MS) : Number.NaN;
+  const store = new DurableStore(database, Number.isSafeInteger(injected) ? { now: () => injected } : {});
   try {
-    const [group, action, ...values] = args;
-    if (group === "mission" && action === "create" && values.length === 1) {
-      const mission = store.createMission(crypto.randomUUID(), required(values[0]));
-      console.log(`MISSION id=${mission.id} state=${mission.state}`);
-      return;
+    const [group, action, ...v] = args;
+    if (group === "mission" && action === "create" && v.length === 2) {
+      const id = crypto.randomUUID(); store.createMission({ id, correlationId: required(v[0], "correlation id"), acceptanceId: required(v[1], "acceptance id") });
+      console.log(`MISSION id=${id} state=queued`); return;
     }
-    if (group === "mission" && action === "transition" && values.length === 2) {
-      const mission = store.transitionMission(required(values[0]), required(values[1]) as never);
-      console.log(`MISSION id=${mission.id} state=${mission.state}`);
-      return;
+    if (group === "manager" && action === "create" && v.length === 2) {
+      store.createManager({ id: required(v[1], "manager id"), missionId: required(v[0], "mission id"), parentId: v[0]!, depth: 1 });
+      console.log(`MANAGER id=${v[1]} mission=${v[0]} state=ready`); return;
     }
-    if (group === "lane" && action === "create" && values.length === 2) {
-      const lane = store.createLane(required(values[1]), required(values[0]));
-      console.log(`LANE id=${lane.id} mission=${lane.missionId} state=${lane.state}`);
-      return;
+    if (group === "lane" && action === "create" && v.length === 5) {
+      const lane = store.createLane({ id: required(v[2], "lane id"), missionId: required(v[0], "mission id"), managerId: required(v[1], "manager id"), parentId: v[1]!, depth: 2, acceptanceId: required(v[3], "acceptance id"), retryBudget: integer(v[4], "retry budget") });
+      console.log(`LANE id=${lane.id} manager=${lane.managerId} state=${lane.state}`); return;
     }
-    if (group === "lane" && action === "transition" && values.length === 2) {
-      const lane = store.transitionLane(required(values[0]), required(values[1]) as never);
-      console.log(`LANE id=${lane.id} mission=${lane.missionId} state=${lane.state}`);
-      return;
+    if (group === "lane" && action === "claim" && v.length === 3) {
+      const claim = store.claimLane(required(v[0], "lane id"), required(v[1], "owner"), integer(v[2], "lease duration"));
+      console.log(`CLAIM lane=${v[0]} owner=${v[1]} token=${claim.fencingToken} deadline=${claim.deadlineAt}`); return;
     }
-    if (group === "lease" && action === "acquire" && values.length === 3) {
-      const owner = required(values[0]);
-      const key = required(values[1]);
-      const lease = store.acquireLease(owner, key, positiveInteger(values[2], "lease ttl"));
-      console.log(`LEASE key=${key} owner=${owner} token=${lease.fencingToken}`);
-      return;
-    }
-    if (group === "lease" && action === "renew" && (values.length === 3 || values.length === 4)) {
-      const owner = required(values[0]);
-      const key = required(values[1]);
-      const token = positiveInteger(values[2], "fencing token");
-      const ttlMs = values.length === 4 ? positiveInteger(values[3], "lease ttl") : defaultRenewalTtlMs;
-      store.renewLease(owner, key, token, ttlMs);
-      console.log(`LEASE key=${key} owner=${owner} token=${token}`);
-      return;
-    }
-    if (group === "lease" && action === "release" && values.length === 3) {
-      const owner = required(values[0]);
-      const key = required(values[1]);
-      const token = positiveInteger(values[2], "fencing token");
-      store.releaseLease(owner, key, token);
-      console.log(`LEASE key=${key} owner=${owner} token=${token}`);
-      return;
-    }
-    if (group === "reap" && action === undefined && values.length === 0) {
-      for (const lease of store.reapExpiredLeases()) console.log(`REAP key=${lease.key} owner=${lease.owner} token=${lease.fencingToken}`);
-      return;
-    }
-    if (group === "status" && action === undefined && values.length === 0) {
-      status(store);
-      return;
-    }
-    usage();
-  } finally {
-    store.close();
-  }
+    if (group === "lane" && action === "ack" && v.length === 3) { store.acknowledgeLane(v[0]!, v[1]!, integer(v[2], "token")); console.log("ACK"); return; }
+    if (group === "lane" && action === "progress" && v.length === 4) { store.recordSemanticProgress(v[0]!, v[1]!, integer(v[2], "token"), required(v[3], "evidence path")); console.log("PROGRESS"); return; }
+    if (group === "lane" && action === "complete" && v.length === 6) { store.completeLane(v[0]!, v[1]!, integer(v[2], "token"), { sha:v[3]!, reportPath:v[4]!, verdict:v[5] as "clean"|"NO-GO" }); console.log("TERMINAL"); return; }
+    if (group === "outbox" && action === "enqueue" && v.length === 4) { store.enqueueOutbox({ id:v[0]!, channel:v[1]!, dedupeKey:v[2]!, payload:JSON.parse(v[3]!) }); console.log("OUTBOX"); return; }
+    if (group === "status" && action === undefined) { console.log(JSON.stringify(store.reconstruct())); return; }
+    throw new Error("usage: mission create <correlation> <acceptance> | manager create <mission> <manager> | lane create <mission> <manager> <lane> <acceptance> <retries> | lane claim/ack/progress/complete ... | outbox enqueue ... | status");
+  } finally { store.close(); }
 }
 
-try {
-  run(Bun.argv.slice(2));
-} catch (error) {
-  const message = error instanceof LeaseHeldError ? "LEASE-HELD" : error instanceof Error ? error.message : String(error);
-  console.error(`ERROR ${message}`);
-  process.exitCode = 1;
-}
+try { run(Bun.argv.slice(2)); }
+catch (error) { console.error(`ERROR ${error instanceof FencedTransitionError ? "FENCED" : error instanceof Error ? error.message : String(error)}`); process.exitCode = 1; }

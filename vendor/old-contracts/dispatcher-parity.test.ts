@@ -1,0 +1,6 @@
+// Executed donor-parity fixture: the old launch counter contract remains observable.
+import {afterEach,expect,test} from "bun:test";
+import {mkdtemp,readFile,rm} from "node:fs/promises";import {tmpdir} from "node:os";import {resolve} from "node:path";
+import {DurableStore} from "../../core/schema";import {dispatchOnce} from "../../orchestrator/dispatcher";
+let root="";afterEach(async()=>{delete process.env.DISPATCH_COUNTER_PATH;if(root)await rm(root,{recursive:true,force:true})});
+test("donor launch-count fixture executes once",async()=>{root=await mkdtemp(resolve(tmpdir(),"donor-dispatch-"));const path=resolve(root,"state.sqlite"),s=new DurableStore(path);s.createMission({id:"m",correlationId:"c",acceptanceId:"a"});s.createManager({id:"g",missionId:"m",parentId:"m",depth:1});s.createLane({id:"l",missionId:"m",managerId:"g",parentId:"g",depth:2,retryBudget:0,acceptanceId:"a"});s.close();const counter=resolve(root,"launches");process.env.DISPATCH_COUNTER_PATH=counter;await dispatchOnce({storePath:path,runtimeDir:resolve(root,"runtime"),worker:[process.execPath,resolve(import.meta.dir,"../../tests/fixtures/noop-worker.ts")]});expect((await readFile(counter,"utf8")).trim().split("\n")).toHaveLength(1)});

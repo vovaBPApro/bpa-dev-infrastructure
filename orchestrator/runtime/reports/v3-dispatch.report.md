@@ -11,7 +11,7 @@ state seam because `ag-v3-state` had not published `core/schema.ts` when coding
 started. Integration must map it to that canonical schema; the fencing fields
 are `ownerToken` plus `attempt`, and heartbeat is deliberately absent.
 
-commit: implementation committed in this report's containing `[CODER]` commit
+commit: d016f05adc4fb0212344f1e77a8240fcd343544e
 verify: bun test orchestrator/dispatcher.test.ts (3 pass, 0 fail); bun build orchestrator/dispatcher.ts tests/fixtures/noop-worker.ts --outdir /tmp/v3-dispatch-build --target bun (exit 0)
 result: NO-GO
 secret-scan: NO-GO (scanner missing: gate/land-lib.sh is not present on the empty v3 base)

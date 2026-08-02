@@ -27,6 +27,17 @@ export type Lease = {
   expiresAt: number;
 };
 
+export type TickJournalKind = "cause" | "missed-tick";
+export type TickJournalInput = { intervalId: string; causeId: string; kind: TickJournalKind; observedAt: number; sourceId?: string };
+export type TickJournalRecord = TickJournalInput & { sequence: number; createdAt: number };
+export type IntervalAccounting = {
+  verdict: "clean" | "NO-GO";
+  measurement: "MEASURED" | "UNMEASURED";
+  rows: Array<{ intervalId: string; status: "MEASURED" | "UNKNOWN" | "AMBIGUOUS" | "IDENTITY_DRIFT"; missedTick: TickJournalRecord | null; cause: TickJournalRecord | null }>;
+  unknownIntervalIds: string[];
+};
+export type TickProducerIdentity = { producerId: string; unitName: string; unitFingerprint: string; invocationId: string };
+
 export class StateError extends Error {}
 export class LeaseHeldError extends StateError {}
 export class FencedLeaseError extends StateError {}
@@ -197,6 +208,55 @@ export class StateStore {
     return (this.db.query("SELECT id, kind, entity_type, entity_id, data_json, created_at FROM events ORDER BY id").all() as Array<{ id: number; kind: string; entity_type: string; entity_id: string; data_json: string; created_at: number }>).map((row) => ({ id: row.id, kind: row.kind, entityType: row.entity_type, entityId: row.entity_id, data: JSON.parse(row.data_json), createdAt: row.created_at }));
   }
 
+  appendTickJournal(input: TickJournalInput): TickJournalRecord {
+    this.nonEmpty(input.intervalId, "interval id");
+    this.nonEmpty(input.causeId, "cause id");
+    if (input.kind !== "cause" && input.kind !== "missed-tick") throw new StateError("invalid tick journal kind");
+    if (!Number.isSafeInteger(input.observedAt) || input.observedAt < 0) throw new StateError("observed at must be a non-negative integer");
+    return this.transaction(() => {
+      const sourceId = input.sourceId ?? "legacy-untrusted";
+      this.nonEmpty(sourceId, "source id");
+      this.db.query(`INSERT INTO tick_journal (interval_id, cause_id, kind, observed_at, created_at, source_id)
+        VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(interval_id, cause_id, kind, source_id) DO NOTHING`).run(
+          input.intervalId, input.causeId, input.kind, input.observedAt, this.now(), sourceId,
+        );
+      return this.tickJournal().find((row) => row.intervalId === input.intervalId && row.causeId === input.causeId && row.kind === input.kind && row.sourceId === sourceId)!;
+    });
+  }
+
+  tickJournal(): TickJournalRecord[] {
+    return (this.db.query("SELECT sequence, interval_id, cause_id, kind, observed_at, created_at, source_id FROM tick_journal ORDER BY sequence").all() as Array<{
+      sequence: number; interval_id: string; cause_id: string; kind: TickJournalKind; observed_at: number; created_at: number; source_id: string;
+    }>).map((row) => ({
+      sequence: row.sequence, intervalId: row.interval_id, causeId: row.cause_id,
+      kind: row.kind, observedAt: row.observed_at, createdAt: row.created_at, sourceId: row.source_id,
+    }));
+  }
+
+  accountMissedTicks(expectedIntervalIds: string[], identity?: TickProducerIdentity): IntervalAccounting {
+    if (new Set(expectedIntervalIds).size !== expectedIntervalIds.length || expectedIntervalIds.some((id) => !id)) {
+      throw new StateError("expected interval ids must be non-empty and unique");
+    }
+    const journal = this.tickJournal();
+    const missed = journal.filter((row) => row.kind === "missed-tick");
+    const expected = new Set(expectedIntervalIds);
+    const unknownIntervalIds = [...new Set(missed.filter((row) => !expected.has(row.intervalId)).map((row) => row.intervalId))].sort();
+    const rows = expectedIntervalIds.map((intervalId) => {
+      const misses = missed.filter((row) => row.intervalId === intervalId);
+      const causes = journal.filter((row) => row.kind === "cause" && row.intervalId === intervalId);
+      let status: "MEASURED" | "UNKNOWN" | "AMBIGUOUS" | "IDENTITY_DRIFT" = "MEASURED";
+      if (misses.length !== 1 || causes.length === 0) status = "UNKNOWN";
+      else if (causes.length !== 1) status = "AMBIGUOUS";
+      else if (misses[0].causeId !== causes[0].causeId || misses[0].sourceId !== causes[0].sourceId) status = "IDENTITY_DRIFT";
+      else if (causes[0].causeId.startsWith("UNKNOWN:")) status = "UNKNOWN";
+      return { intervalId, status, missedTick: misses.length === 1 ? misses[0] : null, cause: causes.length === 1 ? causes[0] : null };
+    });
+    const producer = identity ? this.db.query("SELECT unit_name, unit_fingerprint, invocation_id FROM tick_producer_state WHERE producer_id = ?").get(identity.producerId) as { unit_name: string; unit_fingerprint: string; invocation_id: string } | null : null;
+    const identityMeasured = !identity || (producer?.unit_name === identity.unitName && producer.unit_fingerprint === identity.unitFingerprint && producer.invocation_id === identity.invocationId);
+    const measured = journal.length > 0 && expectedIntervalIds.length > 0 && identityMeasured && unknownIntervalIds.length === 0 && rows.every((row) => row.status === "MEASURED");
+    return { verdict: measured ? "clean" : "NO-GO", measurement: measured ? "MEASURED" : "UNMEASURED", rows, unknownIntervalIds };
+  }
+
   private initialize(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS missions (id TEXT PRIMARY KEY, correlation_id TEXT NOT NULL, state TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
@@ -205,6 +265,40 @@ export class StateStore {
       CREATE INDEX IF NOT EXISTS leases_current_idx ON leases(lease_key, released_at, expires_at);
       CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, data_json TEXT NOT NULL, created_at INTEGER NOT NULL);
     `);
+    this.migrateTickJournal();
+  }
+
+  private migrateTickJournal(): void {
+    const version = (this.db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
+    if (version > 2) throw new StateError(`unsupported state schema version: ${version}`);
+    const exists = (this.db.query("SELECT count(*) AS count FROM sqlite_master WHERE type='table' AND name='tick_journal'").get() as { count: number }).count === 1;
+    if (version === 2) {
+      if (!exists || !this.tickSchemaIsV2()) throw new StateError("partial or corrupt tick journal migration");
+      return;
+    }
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (exists) {
+        const columns = this.db.query("PRAGMA table_info(tick_journal)").all() as Array<{ name: string }>;
+        if (!["sequence", "interval_id", "cause_id", "kind", "observed_at", "created_at"].every((name) => columns.some((column) => column.name === name))) throw new StateError("corrupt legacy tick journal schema");
+        this.db.exec("ALTER TABLE tick_journal RENAME TO tick_journal_v1");
+      }
+      this.db.exec("CREATE TABLE tick_journal (sequence INTEGER PRIMARY KEY, interval_id TEXT NOT NULL, cause_id TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('cause','missed-tick')), observed_at INTEGER NOT NULL, created_at INTEGER NOT NULL, source_id TEXT NOT NULL DEFAULT 'legacy-untrusted', UNIQUE(interval_id,cause_id,kind), UNIQUE(interval_id,cause_id,kind,source_id)); CREATE TABLE IF NOT EXISTS tick_producer_state (producer_id TEXT PRIMARY KEY, interval_number INTEGER NOT NULL, boot_id TEXT NOT NULL, updated_at INTEGER NOT NULL, unit_name TEXT NOT NULL DEFAULT 'legacy-untrusted', unit_fingerprint TEXT NOT NULL DEFAULT 'legacy-untrusted', invocation_id TEXT NOT NULL DEFAULT 'legacy-untrusted');");
+      if (exists) {
+        const oldColumns = this.db.query("PRAGMA table_info(tick_journal_v1)").all() as Array<{ name: string }>;
+        const source = oldColumns.some((column) => column.name === "source_id") ? "source_id" : "'legacy-untrusted'";
+        this.db.exec(`INSERT INTO tick_journal(sequence,interval_id,cause_id,kind,observed_at,created_at,source_id) SELECT sequence,interval_id,cause_id,kind,observed_at,created_at,${source} FROM tick_journal_v1; DROP TABLE tick_journal_v1;`);
+      }
+      const producerColumns = this.db.query("PRAGMA table_info(tick_producer_state)").all() as Array<{ name: string }>;
+      for (const [name, sql] of [["unit_name", "TEXT NOT NULL DEFAULT 'legacy-untrusted'"], ["unit_fingerprint", "TEXT NOT NULL DEFAULT 'legacy-untrusted'"], ["invocation_id", "TEXT NOT NULL DEFAULT 'legacy-untrusted'"]] as const) if (!producerColumns.some((column) => column.name === name)) this.db.exec(`ALTER TABLE tick_producer_state ADD COLUMN ${name} ${sql}`);
+      this.db.exec("CREATE TRIGGER tick_journal_no_update BEFORE UPDATE ON tick_journal BEGIN SELECT RAISE(ABORT, 'tick journal is append-only'); END; CREATE TRIGGER tick_journal_no_delete BEFORE DELETE ON tick_journal BEGIN SELECT RAISE(ABORT, 'tick journal is append-only'); END; PRAGMA user_version = 2; COMMIT;");
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  private tickSchemaIsV2(): boolean {
+    const sql = (this.db.query("SELECT sql FROM sqlite_master WHERE type='table' AND name='tick_journal'").get() as { sql: string } | null)?.sql ?? "";
+    const producer = this.db.query("PRAGMA table_info(tick_producer_state)").all() as Array<{ name: string }>;
+    return sql.includes("source_id") && (sql.match(/UNIQUE/g)?.length === 2) && ["unit_name", "unit_fingerprint", "invocation_id"].every((name) => producer.some((column) => column.name === name));
   }
 
   private transaction<T>(work: () => T): T {

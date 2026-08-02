@@ -8,7 +8,8 @@ User=root
 Group=root
 WorkingDirectory=$INSTALL_ROOT/orchestrator
 Environment=ORCH_CONFIG_FILE=$ENV_FILE
+Environment=ORCH_WATCHDOG_UNIT=bpa-orchestrator-watchdog.service
 EnvironmentFile=$ENV_FILE
-ExecStart=$INSTALL_ROOT/orchestrator/watchdog.sh
+ExecStart=/usr/bin/bash $INSTALL_ROOT/orchestrator/watchdog.sh
 NoNewPrivileges=true
 PrivateTmp=true

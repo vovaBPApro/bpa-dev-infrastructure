@@ -7,7 +7,9 @@ FULL_SUITE_SCRIPT="${FULL_SUITE_SCRIPT:-$SCRIPT_DIR/full-suite.sh}"
 SCRATCH="$(mktemp -d)"
 trap 'rm -rf "$SCRATCH"' EXIT
 
+# shellcheck disable=SC2016
 grep -Fxq 'EnvironmentFile=-$ENV_FILE' "$SCRIPT_DIR/../bootstrap/units/bpa-full-suite.service.in"
+# shellcheck disable=SC2016
 grep -Fxq 'EnvironmentFile=-$ENV_FILE' "$SCRIPT_DIR/../bootstrap/units/orch-morning-report.service.in"
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
@@ -47,6 +49,7 @@ LIVE_STATE="$SCRATCH/live.state.db"
 mkdir -p "$ISOLATION_ROOT"
 printf 'operator heartbeat\n' > "$LIVE_HEARTBEAT"
 printf 'operator state\n' > "$LIVE_STATE"
+# shellcheck disable=SC2016
 printf '%s\n' '#!/usr/bin/env bash' \
   'set -euo pipefail' \
   '[[ -z "${ORCH_HEARTBEAT_FILE+x}" ]]' \

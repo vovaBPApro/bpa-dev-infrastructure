@@ -44,6 +44,26 @@ When choosing review shape, ROLE/PERSONA diversity outranks vendor diversity
   unchanged; a consilium seat is a separate session, not a second opinion from
   the coder's own context.
 
+## Role-first model selection (any provider, per seat)
+
+HR-212 originally pinned the default review consilium to GPT models. That
+provider pin is lifted (instance ruling: `instance/decisions/HR-1459.md`):
+
+- Role/persona diversity (above) remains the primary axis. Provider and model
+  choice for each consilium SEAT is a capability-fit decision, not a fixed
+  default: raise a seat wherever its role and task are best served, including
+  on Anthropic, independent of which provider hosts the rest of the consilium.
+- Capability fit, quota/headroom, security tier, and exact provider/model
+  provenance for the seat are recorded with the review, same as any other
+  routing decision under this document.
+- Anthropic roles are appropriate wherever their capabilities fit the seat;
+  the constrained-cost/simple-mechanical tier (Spark-class routing, see
+  `HR-1430.md`) stays limited to non-Tier-A, simple/mechanical work regardless
+  of provider.
+- This does not relax the provider-economy default below or session
+  independence (`review-policy.md`): a scarce-provider seat still needs a
+  recorded justification, and every seat remains a separate session.
+
 ## Provider-economy default (quota-asymmetric routing)
 
 When the Human has directed load off one provider (see `instance/params.yaml:

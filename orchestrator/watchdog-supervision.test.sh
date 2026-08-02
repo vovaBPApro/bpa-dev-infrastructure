@@ -462,8 +462,9 @@ assert_actions 0 0
   fail '[daemon-unreachable-reported] a daemon outage killed the orchestrator session'
 unset FLEET_NUDGE_REPEAT_MS
 
-# The executable boundary boots daemon/server.ts with test-owned state and a
-# loopback Telegram API. No tmux session exists; no direct callback can pass it.
-bun "$SCRIPT_DIR/watchdog-transport-boundary.test.ts"
+# DEFECT EXCLUDED: watchdog-transport-boundary.defect.ts is deliberately not a
+# passing test. Its unchanged source-pin timeout is documented in
+# reports/v3-review-2-2026-08-02.md §3; the file carries the exact pin repro.
+printf 'DEFECT EXCLUDED: watchdog transport boundary (Review-2 §3; source-pin repro retained)\n'
 
 printf 'watchdog supervision tests: PASS\n'

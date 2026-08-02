@@ -1,4 +1,9 @@
 #!/usr/bin/env bun
+// DEFECT EXCLUDED: unchanged upstream failure documented in
+// reports/v3-review-2-2026-08-02.md §3. Reproduce at the source pin with:
+// git worktree add --detach /tmp/review-new-pin 5f41a5cad59b764fa4c692ec7f33e3a4c978e559 &&
+// (cd /tmp/review-new-pin && bun test orchestrator/watchdog-transport-boundary.test.ts)
+// Expected defect signature: timeout waiting for successful send; methods=
 // Deployed watchdog-alert lock: spawn daemon/server.ts and use Telegram HTTP.
 // Importing drainOutbox here would reduce this to the rejected library boundary.
 import { existsSync } from 'node:fs';

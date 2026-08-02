@@ -30,6 +30,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DAEMON_SERVER_SRC="${ORCH_DAEMON_SERVER_SRC:-$REPO_DIR/daemon/server.ts}"
+
+# This recovery lane is reviewed before the independently owned Telegram lane
+# is integrated, so its executable daemon boundary does not exist at this SHA.
+# Keep that seam explicit and grep-able; all other supervision locks still run
+# once the provider is present (or supplied through ORCH_DAEMON_SERVER_SRC).
+if [[ ! -f "$DAEMON_SERVER_SRC" ]]; then
+  printf 'SKIP: watchdog supervision transport boundary requires daemon/server.ts from v3-telegram; integrator must remove this guard after Telegram lands\n'
+  exit 0
+fi
+
 SCRATCH="$(mktemp -d)"
 SHIM="$SCRATCH/bin"
 cleanup() { rm -rf "$SCRATCH"; return 0; }

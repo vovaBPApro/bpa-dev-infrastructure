@@ -6,6 +6,15 @@ const PRIVATE_KEY = /(-----BEGIN\s+(?:[A-Z0-9]+\s+)?PRIVATE\s+KEY-----)([\s\S]*?
 
 let canonical: RegExp | undefined;
 
+export class CanonicalSecretPatternError extends Error {
+  readonly code = 'CANONICAL_SECRET_PATTERN_UNAVAILABLE';
+
+  constructor(detail: string, options?: ErrorOptions) {
+    super(`canonical secret pattern unavailable: ${detail}`, options);
+    this.name = 'CanonicalSecretPatternError';
+  }
+}
+
 function categoryMask(value: string): string {
   // Short credentials do not have enough entropy to safely disclose an edge.
   // For medium values, one character at either edge is sufficient to compare
@@ -16,17 +25,25 @@ function categoryMask(value: string): string {
   return `${value.slice(0, 3)}${'*'.repeat(stars)}${value.slice(-3)}`;
 }
 
-function canonicalPattern(): RegExp {
-  if (canonical) return canonical;
-  const repo = join(import.meta.dir, '..');
+export function loadCanonicalSecretPattern(repo = join(import.meta.dir, '..')): RegExp {
   const result = Bun.spawnSync(['bash', '-c', `eval "$(sed -n 's/^[[:space:]]*secret_pattern=/REPLY=/p' "$1/gate/land-lib.sh")"; printf '%s' "$REPLY"`, '_', repo], {
     stdout: 'pipe', stderr: 'pipe',
   });
-  if (result.exitCode !== 0) throw new Error('canonical secret pattern unavailable');
-  const javascriptPattern = result.stdout.toString()
+  if (result.exitCode !== 0) throw new CanonicalSecretPatternError('extraction failed');
+  const extractedPattern = result.stdout.toString();
+  if (extractedPattern.trim().length === 0) throw new CanonicalSecretPatternError('extracted pattern is empty');
+  const javascriptPattern = extractedPattern
     .replaceAll('[[:space:]]', '\\s')
     .replaceAll('[^[:space:]]', '[^\\s]');
-  canonical = new RegExp(javascriptPattern, 'gm');
+  try {
+    return new RegExp(javascriptPattern, 'gm');
+  } catch (error) {
+    throw new CanonicalSecretPatternError('extracted pattern is invalid', { cause: error });
+  }
+}
+
+function canonicalPattern(): RegExp {
+  if (!canonical) canonical = loadCanonicalSecretPattern();
   return canonical;
 }
 

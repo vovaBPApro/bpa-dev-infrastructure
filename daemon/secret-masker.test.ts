@@ -1,5 +1,8 @@
 import { expect, test } from 'bun:test';
-import { maskSecrets } from './secret-masker';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { CanonicalSecretPatternError, loadCanonicalSecretPattern, maskSecrets } from './secret-masker';
 import { SecretMaskStream } from './mask-stream';
 
 const assignments = [
@@ -7,6 +10,20 @@ const assignments = [
   ['ACCESS_TOKEN', `left-${'t'.repeat(24)}-right`],
   ['PASSWORD', `start-${'p'.repeat(24)}-finish`],
 ];
+
+test('regression lock: empty canonical scanner material fails closed with a typed error', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'empty-secret-pattern-'));
+  mkdirSync(join(repo, 'gate'));
+  writeFileSync(join(repo, 'gate', 'land-lib.sh'), 'secret_pattern=\n');
+
+  expect(() => loadCanonicalSecretPattern(repo)).toThrow(CanonicalSecretPatternError);
+  try {
+    loadCanonicalSecretPattern(repo);
+  } catch (error) {
+    expect(error).toBeInstanceOf(CanonicalSecretPatternError);
+    expect((error as CanonicalSecretPatternError).code).toBe('CANONICAL_SECRET_PATTERN_UNAVAILABLE');
+  }
+});
 
 test('regression lock: every credential-shaped assignment is masked at the sink', () => {
   for (const [key, secret] of assignments) {

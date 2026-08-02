@@ -48,7 +48,10 @@ systemctl daemon-reload
 
 systemctl set-environment FIXTURE_OBSERVED_AT=1000 FIXTURE_INTERVAL=known-1
 systemctl start --no-block "$UNIT"
-for _ in {1..50}; do [[ -s "$DB" ]] && break; sleep 0.1; done
+for _ in {1..50}; do
+  [[ -s "$DB" ]] && account all 2>/dev/null | grep -q '"verdict":"clean"' && break
+  sleep 0.1
+done
 FIRST="$(invocation)"
 [[ "$FIRST" =~ ^[0-9a-f]{32}$ ]] || fail 'first InvocationID unavailable'
 account all | grep -q '"verdict":"clean"' || fail 'live producer accounting was not clean'

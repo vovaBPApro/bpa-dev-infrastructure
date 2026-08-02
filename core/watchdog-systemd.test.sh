@@ -9,11 +9,10 @@ FRAGMENT="/run/systemd/system/$UNIT"
 DB="$SCRATCH/state.db"
 BACKUP="$SCRATCH/state.backup.db"
 cleaned=0
+. "$ROOT/test/systemd-unit-cleanup.sh"
 
 cleanup() {
-  systemctl stop "$UNIT" >/dev/null 2>&1 || true
-  rm -f "$FRAGMENT"
-  systemctl daemon-reload >/dev/null 2>&1 || true
+  systemd_unit_cleanup_owned "$UNIT" "fragment:$FRAGMENT" "$FRAGMENT" || return 1
   rm -rf "$SCRATCH"
   cleaned=1
 }
@@ -94,5 +93,5 @@ ORCH_WATCHDOG_UNIT="$UNIT" ORCH_WATCHDOG_FRAGMENT="$FRAGMENT" INFRA_STATE_DB="$D
 cleanup
 trap - EXIT
 [[ "$cleaned" == 1 && ! -e "$FRAGMENT" && ! -e "$SCRATCH" ]] || fail 'fixture paths remain after cleanup'
-[[ "$(systemctl show "$UNIT" --property=LoadState --value)" == not-found ]] || fail 'fixture unit remains loaded after cleanup'
+systemd_unit_assert_absent "$UNIT" || fail 'fixture unit remains manager-cached after cleanup'
 printf 'watchdog real-systemd matrix: PASS (start missed-tick restart stale-replay corruption partial cleanup rollback zero-residuals)\n'

@@ -4,7 +4,7 @@ import { DurableStore, FencedTransitionError, type LaneRecord, type TerminalVerd
 
 export interface DispatchOptions { storePath:string; runtimeDir:string; worker:string[]; leaseMs?:number; acknowledgementMs?:number; terminalMs?:number; afterSpawnBeforePersist?:(row:LaneRecord)=>void|Promise<void>; afterPersistBeforeRelease?:(row:LaneRecord)=>void|Promise<void>; afterLaunch?:(row:LaneRecord)=>void|Promise<void> }
 type Terminal={laneId:string;attempt:number;ownerToken:string;at:string;reportPath:string;sha:string;verdict:TerminalVerdict};
-type Intent={laneId:string;attempt:number;ownerToken:string;worker:string[];env:Record<string,string>;phase:"intended"|"identified";pid?:number;startTime?:string;commandIdentity?:string[]};
+type Intent={laneId:string;attempt:number;ownerToken:string;worker:string[];env:Record<string,string>;phase:"intended"|"identified"|"persisted";pid?:number;startTime?:string;commandIdentity?:string[]};
 const sleep=(n:number)=>new Promise(r=>setTimeout(r,n));
 const exists=async(p:string)=>{try{await stat(p);return true}catch{return false}};
 const waitFor=async(p:string,n:number)=>{const end=Date.now()+n;do{if(await exists(p))return true;await sleep(10)}while(Date.now()<end);return exists(p)};
@@ -19,7 +19,7 @@ export async function durableJson(path:string,value:unknown){
   try{await directory.sync()}finally{await directory.close()}
 }
 async function procIdentity(pid:number){try{const raw=await readFile(`/proc/${pid}/stat`,"utf8"),end=raw.lastIndexOf(") ");if(end<0)return;const startTime=raw.slice(end+2).trim().split(/\s+/)[19],cmdline=(await readFile(`/proc/${pid}/cmdline`)).toString().split("\0").filter(Boolean);return /^\d+$/.test(startTime)?{startTime,cmdline}:undefined}catch{return}}
-async function authenticIntent(path:string,row:LaneRecord){try{const i=JSON.parse(await readFile(path,"utf8")) as Intent;if(i.phase!=="identified"||i.laneId!==row.id||i.attempt!==row.fencingToken||i.ownerToken!==row.leaseOwner||!i.pid||!i.startTime||!Array.isArray(i.commandIdentity))return;const live=await procIdentity(i.pid);if(!live||live.startTime!==i.startTime||JSON.stringify(live.cmdline)!==JSON.stringify(i.commandIdentity)||!live.cmdline.some(x=>x.endsWith("dispatch-wrapper.ts"))||!live.cmdline.includes(path))return;return i}catch{return}}
+async function authenticIntent(path:string,row:LaneRecord){try{const i=JSON.parse(await readFile(path,"utf8")) as Intent;if(!(["identified","persisted"] as unknown[]).includes(i.phase)||i.laneId!==row.id||i.attempt!==row.fencingToken||i.ownerToken!==row.leaseOwner||!i.pid||!i.startTime||!Array.isArray(i.commandIdentity))return;const live=await procIdentity(i.pid);if(!live||live.startTime!==i.startTime||JSON.stringify(live.cmdline)!==JSON.stringify(i.commandIdentity)||!live.cmdline.some(x=>x.endsWith("dispatch-wrapper.ts"))||!live.cmdline.includes(path))return;return i}catch{return}}
 async function terminateIntent(i:Intent){if(!i.pid)return;const live=await procIdentity(i.pid);if(!live||live.startTime!==i.startTime)return;try{process.kill(i.pid,"SIGTERM");for(let n=0;n<50;n++){if(!(await procIdentity(i.pid)))return;await sleep(10)}const again=await procIdentity(i.pid);if(again?.startTime===i.startTime)process.kill(i.pid,"SIGKILL")}catch(e){if((e as NodeJS.ErrnoException).code!=="ESRCH")throw e}}
 async function validTerminal(path:string,row:LaneRecord):Promise<Terminal|undefined>{
   try { const t=JSON.parse(await readFile(path,"utf8")) as Terminal;
@@ -33,14 +33,14 @@ async function validTerminal(path:string,row:LaneRecord):Promise<Terminal|undefi
 }
 async function stop(child:ReturnType<typeof Bun.spawn>){child.kill("SIGTERM");await Promise.race([child.exited,sleep(500)]);if(child.exitCode===null){child.kill("SIGKILL");await child.exited}}
 async function failure(store:DurableStore,row:LaneRecord,reason:string,dir:string){
-  if(row.retriesUsed<row.retryBudget){store.retryLane(row.id,row.leaseOwner!,row.fencingToken);return}
+  if(row.retriesUsed<row.retryBudget)throw new Error("landed schema gap: no fenced retry/release transition");
   const sha=Bun.spawnSync(["git","rev-parse","HEAD"]).stdout.toString().trim(), report=resolve(dir,"report.md");
   await writeFile(report,`lane: ${row.id}\nattempt: ${row.fencingToken}\ncommit: ${sha}\nresult: NO-GO\nblocker: ${reason}\n`);
   store.completeLane(row.id,row.leaseOwner!,row.fencingToken,{sha,reportPath:report,verdict:"NO-GO"});
 }
 export async function dispatchOnce(o:DispatchOptions):Promise<LaneRecord|undefined>{
   const store=new DurableStore(o.storePath); try {
-    const ready=store.readyLane();if(!ready)return;
+    const ready=store.reconstruct().lanes.find(x=>x.state==="ready");if(!ready)return;
     const owner=crypto.randomUUID(),claim=store.claimLane(ready.id,owner,o.leaseMs??30_000),row=store.getLane(ready.id)!;
     const dir=dirFor(o.runtimeDir,row);await mkdir(dir,{recursive:true});const release=resolve(dir,"release"),ack=resolve(dir,"ack.json"),terminal=resolve(dir,"terminal.json"),artifact=resolve(dir,"artifact.txt");
     const log=await open(resolve(dir,"worker.log"),"a"),intentPath=intentFor(dir);
@@ -50,7 +50,7 @@ export async function dispatchOnce(o:DispatchOptions):Promise<LaneRecord|undefin
     await o.afterSpawnBeforePersist?.(row);
     let identity:Intent|undefined;for(let n=0;n<200&&!identity;n++){identity=await authenticIntent(intentPath,row);if(!identity)await sleep(5)}
     if(!identity){child.kill("SIGKILL");throw new Error("worker wrapper identity not confirmed")}
-    store.recordWorker(row.id,owner,claim.fencingToken,identity.pid!);await o.afterPersistBeforeRelease?.(store.getLane(row.id)!);await writeFile(release,"go\n");await o.afterLaunch?.(store.getLane(row.id)!);
+    await durableJson(intentPath,{...identity,phase:"persisted"} satisfies Intent);await o.afterPersistBeforeRelease?.(store.getLane(row.id)!);await writeFile(release,"go\n");await o.afterLaunch?.(store.getLane(row.id)!);
     if(!(await waitFor(ack,o.acknowledgementMs??2_000))){await stop(child);await failure(store,store.getLane(row.id)!,"worker acknowledgement timed out",dir);return row}
     const a=JSON.parse(await readFile(ack,"utf8"));if(a.attempt!==claim.fencingToken||a.ownerToken!==owner){await stop(child);await failure(store,store.getLane(row.id)!,"worker acknowledgement identity mismatch",dir);return row}
     store.acknowledgeLane(row.id,owner,claim.fencingToken);store.recordSemanticProgress(row.id,owner,claim.fencingToken,ack);
@@ -59,7 +59,7 @@ export async function dispatchOnce(o:DispatchOptions):Promise<LaneRecord|undefin
     store.completeLane(row.id,owner,claim.fencingToken,{sha:t.sha,reportPath:t.reportPath,verdict:t.verdict});return row;
   } finally {store.close()}
 }
-/** Reconciles every durable intent. Claimed intents are terminated; confirmed running intents are adopted. */
-export async function reconcileRunning(o:Omit<DispatchOptions,"worker">):Promise<number>{const store=new DurableStore(o.storePath);let n=0;try{for(const initial of store.lanes().filter(x=>x.state==="claimed"||x.state==="running")){let row=initial;const dir=dirFor(o.runtimeDir,row),terminal=resolve(dir,"terminal.json"),intentPath=intentFor(dir);let t=await validTerminal(terminal,row),identity=await authenticIntent(intentPath,row);if(!t&&row.state==="claimed"){if(identity)await terminateIntent(identity);await failure(store,row,"dispatcher died before worker identity confirmation",dir);n++;continue}if(!t&&row.state==="running"&&(!identity||identity.pid!==row.workerPid)){await failure(store,row,"recovered worker process identity mismatch",dir);n++;continue}if(!t&&row.state==="running"&&row.workerPid!==null&&identity?.pid===row.workerPid){const release=resolve(dir,"release");if(!(await exists(release)))await writeFile(release,"go\n");await waitFor(terminal,o.terminalMs??5_000);row=store.getLane(row.id)!;t=await validTerminal(terminal,row);if(!t){await terminateIntent(identity);await failure(store,row,"recovered worker terminal evidence timed out",dir);n++;continue}}
+/** Reconciles every durable intent. Pre-persist intents are terminated; persisted intents are adopted. */
+export async function reconcileRunning(o:Omit<DispatchOptions,"worker">):Promise<number>{const store=new DurableStore(o.storePath);let n=0;try{for(const initial of store.reconstruct().lanes.filter(x=>x.state==="running")){let row=initial;const dir=dirFor(o.runtimeDir,row),terminal=resolve(dir,"terminal.json"),intentPath=intentFor(dir);let t=await validTerminal(terminal,row),identity=await authenticIntent(intentPath,row);if(!t&&identity?.phase==="identified"){await terminateIntent(identity);await failure(store,row,"dispatcher died before worker identity persistence",dir);n++;continue}if(!t&&!identity){await failure(store,row,"recovered worker process identity mismatch",dir);n++;continue}if(!t&&identity?.phase==="persisted"){const release=resolve(dir,"release");if(!(await exists(release)))await writeFile(release,"go\n");await waitFor(terminal,o.terminalMs??5_000);row=store.getLane(row.id)!;t=await validTerminal(terminal,row);if(!t){await terminateIntent(identity);await failure(store,row,"recovered worker terminal evidence timed out",dir);n++;continue}}
     if(t){try{store.completeLane(row.id,row.leaseOwner!,row.fencingToken,{sha:t.sha,reportPath:t.reportPath,verdict:t.verdict});n++}catch(e){if(!(e instanceof FencedTransitionError))throw e}}
   }return n}finally{store.close()}}

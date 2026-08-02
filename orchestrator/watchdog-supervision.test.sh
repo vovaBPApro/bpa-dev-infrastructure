@@ -29,6 +29,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+if [[ "${BPA_LOOPBACK_FIXTURE:-0}" != 1 ]]; then
+  exec "$REPO_DIR/test/run-loopback-fixture.sh" bash "$0"
+fi
 SCRATCH="$(mktemp -d)"
 SHIM="$SCRATCH/bin"
 cleanup() { rm -rf "$SCRATCH"; return 0; }

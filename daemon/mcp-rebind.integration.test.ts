@@ -5,6 +5,30 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isolatedTestEnv } from './test-env';
 
+const ownsLoopbackTransport = process.env.BPA_LOOPBACK_FIXTURE === '1';
+
+if (!ownsLoopbackTransport) {
+  test('runs the loopback transport boundary in an isolated systemd resource', async () => {
+    const runner = Bun.spawn(
+      [
+        '../test/run-loopback-fixture.sh',
+        'bun',
+        'test',
+        'mcp-rebind.integration.test.ts',
+      ],
+      { cwd: import.meta.dir, stdout: 'pipe', stderr: 'pipe' },
+    );
+    const [output, error, status] = await Promise.all([
+      new Response(runner.stdout).text(),
+      new Response(runner.stderr).text(),
+      runner.exited,
+    ]);
+    expect(status, `${output}\n${error}`).toBe(0);
+    expect(output).toContain('loopback fixture resources: PASS');
+    expect(output).toContain('residuals=0');
+  }, 15_000);
+}
+
 type DaemonProcess = ReturnType<typeof Bun.spawn>;
 const temporaryPaths: string[] = [];
 const childProcesses: DaemonProcess[] = [];
@@ -63,7 +87,7 @@ afterAll(async () => {
   for (const path of temporaryPaths) rmSync(path, { recursive: true });
 });
 
-test('detached Claude MCP raises an alarm and /reply still delivers through Telegram', async () => {
+if (ownsLoopbackTransport) test('detached Claude MCP raises an alarm and /reply still delivers through Telegram', async () => {
   const deliveries: Array<{ method: string; body: string }> = [];
   const telegramApi = createServer(async (request, response) => {
     const method = request.url?.split('/').pop() ?? '';

@@ -1,12 +1,13 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { InboundStore } from './adapters/telegram';
+import { withFileLock } from './file-lock';
 
 export type OutboxItem = {
   id: string;
   chatId: string;
   text: string;
-  state: 'pending' | 'delivered';
+  state: 'pending' | 'sending' | 'delivered';
   attempts: number;
   attemptedEpochs: string[];
   lastError?: string;
@@ -18,39 +19,61 @@ type OutboxFile = { version: 1; items: OutboxItem[] };
 export class DurableOutbox {
   constructor(
     private readonly path: string,
-    private readonly send: (chatId: string, text: string) => Promise<{ message_id: number }>,
+    private readonly send: (chatId: string, text: string, idempotencyKey: string) => Promise<{ message_id: number }>,
     private readonly recoveryEpoch: string = crypto.randomUUID(),
+    private readonly reconcile: (idempotencyKey: string) => Promise<{ message_id: number } | null> = async () => null,
   ) {}
 
   async enqueue(item: Pick<OutboxItem, 'id' | 'chatId' | 'text'>): Promise<boolean> {
-    const file = await this.#read();
-    if (file.items.some((existing) => existing.id === item.id)) return false;
-    file.items.push({ ...item, state: 'pending', attempts: 0, attemptedEpochs: [] });
-    await this.#write(file);
-    return true;
+    await mkdir(dirname(this.path), { recursive: true });
+    return withFileLock(this.path, async () => {
+      const file = await this.#read();
+      if (file.items.some((existing) => existing.id === item.id)) return false;
+      file.items.push({ ...item, state: 'pending', attempts: 0, attemptedEpochs: [] });
+      await this.#write(file);
+      return true;
+    });
   }
 
   async flush(): Promise<void> {
-    const file = await this.#read();
-    for (const item of file.items) {
-      if (item.state !== 'pending' || item.attemptedEpochs.includes(this.recoveryEpoch)) continue;
-      item.attempts++;
-      item.attemptedEpochs.push(this.recoveryEpoch);
-      await this.#write(file);
-      try {
-        const sent = await this.send(item.chatId, item.text);
-        item.state = 'delivered';
-        item.deliveredMessageId = sent.message_id;
-        delete item.lastError;
-      } catch (error) {
-        item.lastError = error instanceof Error ? error.message : String(error);
+    await mkdir(dirname(this.path), { recursive: true });
+    await withFileLock(this.path, async () => {
+      const file = await this.#read();
+      for (const item of file.items) {
+        if (item.state === 'delivered' || item.attemptedEpochs.includes(this.recoveryEpoch)) continue;
+        if (item.state === 'sending') {
+          const reconciled = await this.reconcile(item.id);
+          if (reconciled) {
+            item.state = 'delivered';
+            item.deliveredMessageId = reconciled.message_id;
+            delete item.lastError;
+          } else {
+            item.lastError = 'delivery confirmation pending reconciliation';
+          }
+          await this.#write(file);
+          continue;
+        }
+        item.attempts++;
+        item.attemptedEpochs.push(this.recoveryEpoch);
+        item.state = 'sending';
+        await this.#write(file);
+        try {
+          const sent = await this.send(item.chatId, item.text, item.id);
+          item.state = 'delivered';
+          item.deliveredMessageId = sent.message_id;
+          delete item.lastError;
+        } catch (error) {
+          item.state = 'pending';
+          item.lastError = error instanceof Error ? error.message : String(error);
+        }
+        await this.#write(file);
       }
-      await this.#write(file);
-    }
+    });
   }
 
   async items(): Promise<OutboxItem[]> {
-    return (await this.#read()).items;
+    await mkdir(dirname(this.path), { recursive: true });
+    return withFileLock(this.path, async () => (await this.#read()).items);
   }
 
   async #read(): Promise<OutboxFile> {
@@ -66,7 +89,7 @@ export class DurableOutbox {
 
   async #write(file: OutboxFile): Promise<void> {
     await mkdir(dirname(this.path), { recursive: true });
-    const temporary = `${this.path}.${process.pid}.tmp`;
+    const temporary = `${this.path}.${process.pid}.${crypto.randomUUID()}.tmp`;
     await writeFile(temporary, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
     await rename(temporary, this.path);
   }
@@ -86,10 +109,10 @@ export async function telegramChannelStatus(
 ): Promise<TelegramChannelStatus> {
   try {
     const [inboxCount, items] = await Promise.all([inbox.count(), outbox.items()]);
-    const pending = items.filter((item) => item.state === 'pending');
+    const pending = items.filter((item) => item.state !== 'delivered');
     const lastError = pending.map((item) => item.lastError).filter(Boolean).at(-1);
     return {
-      state: pending.some((item) => item.lastError) ? 'degraded' : 'healthy',
+      state: pending.length > 0 ? 'degraded' : 'healthy',
       inboxCount,
       pendingCount: pending.length,
       deliveredCount: items.length - pending.length,

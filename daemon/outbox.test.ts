@@ -43,4 +43,54 @@ describe('durable outbound recovery regression lock', () => {
     );
     expect(status.state).toBe('unknown');
   });
+
+  test('REGRESSION pending without an error is degraded, never healthy', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'v3-telegram-pending-'));
+    dirs.push(dir);
+    const outbox = new DurableOutbox(join(dir, 'outbox.json'), async () => ({ message_id: 1 }));
+    await outbox.enqueue({ id: 'pending-1', chatId: '7', text: 'wait' });
+    expect(await telegramChannelStatus(new FileInboundStore(join(dir, 'inbox.json')), outbox)).toMatchObject({
+      state: 'degraded', pendingCount: 1,
+    });
+  });
+
+  test('REGRESSION success-before-local-commit reconciles by idempotency key without a duplicate send', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'v3-telegram-reconcile-'));
+    dirs.push(dir);
+    const path = join(dir, 'outbox.json');
+    await Bun.write(path, JSON.stringify({ version: 1, items: [{
+      id: 'reply-crash', chatId: '7', text: 'done', state: 'sending', attempts: 1,
+      attemptedEpochs: ['dead-epoch'],
+    }] }));
+    let sends = 0;
+    const recovered = new DurableOutbox(
+      path,
+      async () => ({ message_id: ++sends }),
+      'recovery-epoch',
+      async (key) => key === 'reply-crash' ? { message_id: 91 } : null,
+    );
+    await recovered.flush();
+    expect(sends).toBe(0);
+    expect(await recovered.items()).toEqual([
+      expect.objectContaining({ id: 'reply-crash', state: 'delivered', deliveredMessageId: 91 }),
+    ]);
+  });
+
+  test('REGRESSION concurrent enqueue and flush do not lose or duplicate items', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'v3-telegram-outbox-concurrent-'));
+    dirs.push(dir);
+    const path = join(dir, 'outbox.json');
+    const sent = new Set<string>();
+    const boxes = Array.from({ length: 30 }, (_, index) => new DurableOutbox(
+      path,
+      async (_chat, _text, key) => { sent.add(key); return { message_id: index + 1 }; },
+      `epoch-${index}`,
+    ));
+    await Promise.all(boxes.map((box, index) => box.enqueue({ id: `item-${index}`, chatId: '7', text: 'done' })));
+    await Promise.all(boxes.map((box) => box.flush()));
+    const items = await boxes[0]!.items();
+    expect(items).toHaveLength(30);
+    expect(items.every((item) => item.state === 'delivered')).toBe(true);
+    expect(sent.size).toBe(30);
+  });
 });

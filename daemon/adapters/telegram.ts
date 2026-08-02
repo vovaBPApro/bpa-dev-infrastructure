@@ -1,3 +1,7 @@
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
+import { withFileLock } from '../file-lock';
+
 export type TelegramUpdate = {
   update_id: number;
   message?: { message_id: number; chat: { id: number }; text?: string };
@@ -12,14 +16,16 @@ export class FileInboundStore implements InboundStore {
   constructor(private readonly path: string) {}
 
   async putIfAbsent(update: TelegramUpdate): Promise<boolean> {
-    const updates = await this.#read();
-    if (updates.some((item) => item.update_id === update.update_id)) return false;
-    updates.push(update);
     await mkdir(dirname(this.path), { recursive: true });
-    const temporary = `${this.path}.${process.pid}.tmp`;
-    await writeFile(temporary, `${JSON.stringify(updates, null, 2)}\n`, { mode: 0o600 });
-    await rename(temporary, this.path);
-    return true;
+    return withFileLock(this.path, async () => {
+      const updates = await this.#read();
+      if (updates.some((item) => item.update_id === update.update_id)) return false;
+      updates.push(update);
+      const temporary = `${this.path}.${process.pid}.${crypto.randomUUID()}.tmp`;
+      await writeFile(temporary, `${JSON.stringify(updates, null, 2)}\n`, { mode: 0o600 });
+      await rename(temporary, this.path);
+      return true;
+    });
   }
 
   async count(): Promise<number> {
@@ -96,5 +102,3 @@ export class TelegramAdapter {
     return updates.length;
   }
 }
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';

@@ -63,3 +63,30 @@ export function createNotifyHandler(deps: NotifyDependencies) {
     }
   };
 }
+
+export function createNotifyFetchHandler(deps: NotifyDependencies) {
+  return async (req: Request): Promise<Response> => {
+    const url = new URL(req.url);
+    if (req.method !== 'POST' || url.pathname !== '/notify') return new Response('not found', { status: 404 });
+    const raw = await req.text();
+    let text = '';
+    try {
+      text = String((JSON.parse(raw) as { text?: unknown }).text ?? '');
+    } catch {
+      text = raw;
+    }
+    if (!text.trim()) return new Response('missing text', { status: 400 });
+    try {
+      if (classifyNotifyAudience(req.headers.get('x-bpa-alarm-audience') ?? undefined) === 'internal') {
+        await deps.relayInternal(text);
+      } else {
+        const chat = deps.notifyChatId();
+        if (!chat) return new Response('missing chat', { status: 400 });
+        deps.relayHuman(chat, text);
+      }
+      return new Response('queued');
+    } catch (err) {
+      return new Response(`send_failed: ${err instanceof Error ? err.message : err}`, { status: 502 });
+    }
+  };
+}

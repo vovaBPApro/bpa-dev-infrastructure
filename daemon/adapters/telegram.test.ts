@@ -49,4 +49,14 @@ describe('TelegramAdapter durable inbound regression lock', () => {
     await expect(adapter.receiveOnce()).rejects.toThrow('disk full');
     expect(acknowledged).toBe(false);
   });
+
+  test('REGRESSION concurrent inbound writes preserve every unique update', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'v3-telegram-inbox-concurrent-'));
+    dirs.push(dir);
+    const path = join(dir, 'inbox.json');
+    const stores = Array.from({ length: 40 }, () => new FileInboundStore(path));
+    const inserted = await Promise.all(stores.map((store, update_id) => store.putIfAbsent({ update_id })));
+    expect(inserted.every(Boolean)).toBe(true);
+    expect(await new FileInboundStore(path).count()).toBe(40);
+  });
 });

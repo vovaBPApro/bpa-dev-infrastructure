@@ -10,7 +10,14 @@ const exists=async(p:string)=>{try{await stat(p);return true}catch{return false}
 const waitFor=async(p:string,n:number)=>{const end=Date.now()+n;do{if(await exists(p))return true;await sleep(10)}while(Date.now()<end);return exists(p)};
 const dirFor=(root:string,row:LaneRecord)=>resolve(root,row.id,`attempt-${row.fencingToken}`);
 const intentFor=(dir:string)=>resolve(dir,"worker-intent.json");
-async function durableJson(path:string,value:unknown){const temporary=`${path}.${process.pid}.tmp`;await writeFile(temporary,JSON.stringify(value));await rename(temporary,path);const d=await open(dirname(path),"r");try{await d.sync()}finally{await d.close()}}
+export async function durableJson(path:string,value:unknown){
+  const temporary=`${path}.${process.pid}.tmp`;
+  const file=await open(temporary,"w");
+  try{await file.writeFile(JSON.stringify(value));await file.sync()}finally{await file.close()}
+  await rename(temporary,path);
+  const directory=await open(dirname(path),"r");
+  try{await directory.sync()}finally{await directory.close()}
+}
 async function procIdentity(pid:number){try{const raw=await readFile(`/proc/${pid}/stat`,"utf8"),end=raw.lastIndexOf(") ");if(end<0)return;const startTime=raw.slice(end+2).trim().split(/\s+/)[19],cmdline=(await readFile(`/proc/${pid}/cmdline`)).toString().split("\0").filter(Boolean);return /^\d+$/.test(startTime)?{startTime,cmdline}:undefined}catch{return}}
 async function authenticIntent(path:string,row:LaneRecord){try{const i=JSON.parse(await readFile(path,"utf8")) as Intent;if(i.phase!=="identified"||i.laneId!==row.id||i.attempt!==row.fencingToken||i.ownerToken!==row.leaseOwner||!i.pid||!i.startTime||!Array.isArray(i.commandIdentity))return;const live=await procIdentity(i.pid);if(!live||live.startTime!==i.startTime||JSON.stringify(live.cmdline)!==JSON.stringify(i.commandIdentity)||!live.cmdline.some(x=>x.endsWith("dispatch-wrapper.ts"))||!live.cmdline.includes(path))return;return i}catch{return}}
 async function terminateIntent(i:Intent){if(!i.pid)return;const live=await procIdentity(i.pid);if(!live||live.startTime!==i.startTime)return;try{process.kill(i.pid,"SIGTERM");for(let n=0;n<50;n++){if(!(await procIdentity(i.pid)))return;await sleep(10)}const again=await procIdentity(i.pid);if(again?.startTime===i.startTime)process.kill(i.pid,"SIGKILL")}catch(e){if((e as NodeJS.ErrnoException).code!=="ESRCH")throw e}}

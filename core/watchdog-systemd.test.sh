@@ -4,7 +4,11 @@ set -euo pipefail
 ROOT="${GAP5_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 TOKEN="gap5-$BASHPID-$RANDOM"
 UNIT="bpa-watchdog-$TOKEN.service"
-SCRATCH="$(mktemp -d "$ROOT/.gap5-systemd.XXXXXX")"
+# The landing gate verifies from a detached checkout below /tmp. PrivateTmp
+# deliberately hides that checkout from the unit, and /run is noexec on the
+# supported host. Stage only the fixture's tracked runtime under /run and invoke
+# its script through Bash; neither constraint can suppress producer startup.
+SCRATCH="$(mktemp -d /run/bpa-gap5-systemd.XXXXXX)"
 FRAGMENT="/run/systemd/system/$UNIT"
 DB="$SCRATCH/state.db"
 BACKUP="$SCRATCH/state.backup.db"
@@ -29,14 +33,16 @@ account() {
 
 SYSTEM_STATE="$(systemctl is-system-running 2>/dev/null || true)"
 [[ "$SYSTEM_STATE" == running || "$SYSTEM_STATE" == degraded ]] || fail 'real systemd manager unavailable'
-mkdir -p "$SCRATCH/orchestrator"
+mkdir -p "$SCRATCH/orchestrator" "$SCRATCH/bootstrap/units"
+cp -a "$ROOT/core" "$SCRATCH/core"
+cp "$ROOT/bootstrap/units/bpa-orchestrator-watchdog.service.in" "$SCRATCH/bootstrap/units/"
 printf 'fixture only\n' > "$SCRATCH/runtime.env"
 cat > "$SCRATCH/orchestrator/watchdog.sh" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 export ORCH_WATCHDOG_UNIT="$UNIT" ORCH_WATCHDOG_FRAGMENT="$FRAGMENT" INFRA_STATE_DB="$DB"
-bun "$ROOT/core/tick-journal-cli.ts" reconcile --cadence-ms 1000 --observed-at "\${FIXTURE_OBSERVED_AT}"
-bun "$ROOT/core/tick-journal-cli.ts" record --interval "\${FIXTURE_INTERVAL}" --cause fixture --observed-at "\${FIXTURE_OBSERVED_AT}"
+bun "$SCRATCH/core/tick-journal-cli.ts" reconcile --cadence-ms 1000 --observed-at "\${FIXTURE_OBSERVED_AT}"
+bun "$SCRATCH/core/tick-journal-cli.ts" record --interval "\${FIXTURE_INTERVAL}" --cause fixture --observed-at "\${FIXTURE_OBSERVED_AT}"
 sleep 10
 EOF
 chmod +x "$SCRATCH/orchestrator/watchdog.sh"
@@ -49,6 +55,10 @@ systemctl set-environment FIXTURE_OBSERVED_AT=1000 FIXTURE_INTERVAL=known-1
 systemctl start --no-block "$UNIT"
 for _ in {1..50}; do
   [[ -s "$DB" ]] && account all 2>/dev/null | grep -q '"verdict":"clean"' && break
+  if systemctl is-failed --quiet "$UNIT"; then
+    STATUS="$(systemctl show "$UNIT" --property=Result --property=ExecMainStatus --value | tr '\n' ' ')"
+    fail "watchdog producer failed before epoch publication: $STATUS"
+  fi
   sleep 0.1
 done
 FIRST="$(invocation)"

@@ -49,7 +49,7 @@ export function verifyWatchdogSnapshot(snapshot: SystemdSnapshot, repoRoot: stri
     throw new Error("UNMEASURED: watchdog fragment is copied, linked, or outside the installed boundary");
   }
   const installed = (io.read ?? ((path) => readFileSync(path, "utf8")))(snapshot.fragmentPath);
-  const exec = installed.match(/^ExecStart=(.+)\/orchestrator\/watchdog\.sh$/m);
+  const exec = installed.match(/^ExecStart=\/usr\/bin\/bash (.+)\/orchestrator\/watchdog\.sh$/m);
   const environment = installed.match(/^Environment=ORCH_CONFIG_FILE=(.+)$/m);
   if (!exec || !environment) throw new Error("UNMEASURED: installed watchdog unit lacks tracked bindings");
   const installedRoot = exec[1];

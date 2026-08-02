@@ -2,12 +2,11 @@
 
 These files are immutable behavioral references, not production imports.
 
-Donor TypeScript tests whose implementation modules were intentionally not
-imported remain visible to Bun discovery with an explicit file-level
-`test.skip` guard. Each such fixture carries a grep-able `PARITY-GUARD` comment
-naming its parity classification and the v3 integration test that arms the
-retained contract; arming means replacing the guard with imports from the v3
-seam, not restoring donor implementation modules.
+Donor TypeScript fixtures whose implementation modules are intentionally absent
+for D1-D3 remain visible to Bun discovery with an explicit file-level
+`test.skip` guard and grep-able `PARITY-GUARD` classification. Implemented-tonight
+fixtures execute as integration projections through the tracked v3 seam; donor
+implementation modules are never restored.
 
 - Donor repository: `/root/legacy-donors/bpa-master`
 - Donor commit: `d0a99b8439f2731654e23b5e7759961f4602d0d3`

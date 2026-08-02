@@ -44,3 +44,15 @@
 Anthropic ~10% for today+tomorrow: top orchestrator on codex gpt-5.6-sol
 (pinned in runtime.env), Claude only for exceptional single calls if Vova
 explicitly approves. Fable/Opus untouched without his word.
+
+## UPDATE (last fable turn): review-14 outcome
+
+- state-r4b dee8ba19: ACCEPT — may land into v3 (independently additive).
+- dispatch-r10 4a5d8463: REJECT on LINEAGE ONLY (chain was rebased; r8/r9 not
+  ancestors; e99aae50 not even an object). Behavior fully green at tip (14/14
+  parity, 13/13 locks, all windows). Successor: add durable provenance mapping
+  the cherry-picked commits (32224ce, 119836c) to r8/r9 originals — or rebuild
+  the chain with true ancestry — then re-review the exact new tip
+  (v3-review-15) and land coupled with state-r4b. Review retained:
+  reports/v3-review-14-2026-08-02.md. genesis/oldorch addenda retained in
+  reports/ with UNROUTED items to route.

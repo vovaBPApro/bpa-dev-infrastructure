@@ -1,5 +1,5 @@
-commit: 82a1ddec953a65d91dbfdb53f0d1239ee52d7fa5
-code-sha: 17061d76a771f3945c4b557d1f41683f9270dd27
-verify: clean — red-before d8eda504: 7 pass, 1 fail at missing pre-rename file fsync; bun test: 9 pass, 0 fail; bun build: exit 0
-result: clean
+commit: 2a4eb16a8983b376657bb58ba84919cad74b94f5
+code-sha: 2a4eb16a8983b376657bb58ba84919cad74b94f5
+verify: clean — red-before: exit 1; dispatcher locks: 9 pass, 0 fail; foundation: 205 pass, 0 fail; bun build --target=bun: exit 0
+result: NO-GO — landed schema lacks a fenced retry/release transition required after a controlled worker failure
 secret-scan: clean — canonical scanner extracted from origin/v3 and run over origin/v3...HEAD

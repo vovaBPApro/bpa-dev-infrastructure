@@ -23,6 +23,8 @@ LOCK_FILE="${ORCH_LOCK_FILE:-$RUNTIME_DIR/launch.lock}"
 AUTH_PREFLIGHT="${ORCH_AUTH_PREFLIGHT:-$SCRIPT_DIR/preflight-cli-auth.sh}"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 SINGLETON_LOCK_FILE="${ORCH_SINGLETON_LOCK_FILE:-$REPO_DIR/runtime/orchestrator.singleton.lock}"
+SINGLETON_RECOVERY_LOCK_FILE="${ORCH_SINGLETON_RECOVERY_LOCK_FILE:-$SINGLETON_LOCK_FILE.recovery}"
+SINGLETON_OWNER_FILE="${ORCH_SINGLETON_OWNER_FILE:-$SINGLETON_LOCK_FILE.owner}"
 MISSION_CLI="${ORCH_MISSION_CLI:-$REPO_DIR/core/mission-cli.ts}"
 STATE_DB="${ORCH_STATE_DB:-$REPO_DIR/runtime/state.db}"
 TERMINAL_ALERT="${ORCH_TERMINAL_ALERT:-$REPO_DIR/daemon/terminal-alert.ts}"
@@ -284,7 +286,11 @@ process.stdout.write(JSON.stringify({
         mv -f "$mcp_tmp" "$CLAUDE_MCP_CONFIG"
         printf -v mcp ' --mcp-config %q' "$CLAUDE_MCP_CONFIG"
       fi
-      [[ -n "$CLAUDE_MODEL" ]] && printf 'exec claude --model %q --dangerously-skip-permissions%s%s' "$CLAUDE_MODEL" "$settings" "$mcp" || printf 'exec claude --dangerously-skip-permissions%s%s' "$settings" "$mcp"
+      # Claude refuses --dangerously-skip-permissions under root unless the
+      # caller explicitly declares this already-isolated control-plane host.
+      # Keep the declaration inside the Claude command: it must not bleed into
+      # codex or the daemon.
+      [[ -n "$CLAUDE_MODEL" ]] && printf 'export IS_SANDBOX=1; exec claude --model %q --dangerously-skip-permissions%s%s' "$CLAUDE_MODEL" "$settings" "$mcp" || printf 'export IS_SANDBOX=1; exec claude --dangerously-skip-permissions%s%s' "$settings" "$mcp"
       ;;
     codex)
       local relay="${ORCH_TURNEND_RELAY:-$SCRIPT_DIR/orchestrator-turnend-relay.sh}"
@@ -310,15 +316,108 @@ process.stdout.write(JSON.stringify({
   esac
 }
 
+process_identity_state() {
+  local recorded_pid="$1" recorded_starttime="$2" current_starttime
+  if ! [[ "$recorded_pid" =~ ^[1-9][0-9]*$ && "$recorded_starttime" =~ ^[0-9]+$ ]]; then
+    printf 'unknown\n'
+    return 0
+  fi
+  if [[ ! -d "/proc/$recorded_pid" ]]; then
+    printf 'gone\n'
+    return 0
+  fi
+  current_starttime="$(proc_starttime "$recorded_pid")"
+  if [[ -z "$current_starttime" ]]; then
+    printf 'unknown\n'
+  elif [[ "$current_starttime" == "$recorded_starttime" ]]; then
+    printf 'live\n'
+  else
+    # The PID was recycled. The process recorded by the launcher is gone even
+    # though an unrelated process now has its numeric PID.
+    printf 'gone\n'
+  fi
+}
+
+singleton_lock_key() {
+  local path="$1" major_minor inode
+  major_minor="$(findmnt -T "$path" -n -o MAJ:MIN 2>/dev/null | tr -d '[:space:]')"
+  inode="$(stat -Lc '%i' "$path" 2>/dev/null || true)"
+  [[ "$major_minor" =~ ^[0-9]+:[0-9]+$ && "$inode" =~ ^[0-9]+$ ]] ||
+    return 1
+  printf '%s:%s\n' "$major_minor" "$inode"
+}
+
+singleton_kernel_owner_pid() {
+  local target_key="$1"
+  local lock_type pid kernel_key
+  local major_hex minor_hex inode normalized_key
+  local -a owners=() fields=()
+  while read -ra fields; do
+    lock_type="${fields[1]:-}"
+    pid="${fields[4]:-}"
+    kernel_key="${fields[5]:-}"
+    [[ "$lock_type" == FLOCK ]] || continue
+    IFS=: read -r major_hex minor_hex inode <<<"$kernel_key"
+    [[ "$major_hex" =~ ^[0-9A-Fa-f]+$ && "$minor_hex" =~ ^[0-9A-Fa-f]+$ &&
+       "$inode" =~ ^[0-9]+$ ]] || continue
+    normalized_key="$((16#$major_hex)):$((16#$minor_hex)):$inode"
+    [[ "$normalized_key" == "$target_key" ]] || continue
+    [[ " ${owners[*]} " == *" $pid "* ]] || owners+=("$pid")
+  done < /proc/locks
+  ((${#owners[@]} == 1)) && [[ "${owners[0]}" =~ ^[1-9][0-9]*$ ]] &&
+    printf '%s\n' "${owners[0]}"
+}
+
+stale_singleton_recovery_proven() {
+  local current_key="$1"
+  local recorded_pid="" recorded_starttime="" recorded_key="" recorded_lock_owner=""
+  local source="shared-owner" kernel_owner state
+  if [[ -r "$SINGLETON_OWNER_FILE" ]]; then
+    recorded_pid="$(sed -n 's/^provider_pid=//p' "$SINGLETON_OWNER_FILE")"
+    recorded_starttime="$(sed -n 's/^provider_starttime=//p' "$SINGLETON_OWNER_FILE")"
+    recorded_lock_owner="$(sed -n 's/^lock_owner_pid=//p' "$SINGLETON_OWNER_FILE")"
+    recorded_key="$(sed -n 's/^lock_key=//p' "$SINGLETON_OWNER_FILE")"
+    [[ "$recorded_key" == "$current_key" ]] || return 1
+  else
+    # One-time compatibility for a lock leaked by the pre-owner-record
+    # launcher. The per-runtime identity is not authority by itself: it is
+    # accepted only when /proc/locks ties that exact original PID to the
+    # currently locked inode.
+    source="legacy-liveness"
+    [[ -r "$LIVENESS_FILE.identity" ]] || return 1
+    recorded_pid="$(sed -n 's/^pid=//p' "$LIVENESS_FILE.identity")"
+    recorded_starttime="$(sed -n 's/^starttime=//p' "$LIVENESS_FILE.identity")"
+    recorded_lock_owner="$recorded_pid"
+  fi
+  [[ "$recorded_lock_owner" =~ ^[1-9][0-9]*$ ]] || return 1
+  state="$(process_identity_state "$recorded_pid" "$recorded_starttime")"
+  [[ "$state" == gone ]] || return 1
+  kernel_owner="$(singleton_kernel_owner_pid "$current_key")"
+  [[ -n "$kernel_owner" && "$kernel_owner" == "$recorded_lock_owner" ]] || return 1
+  printf '%s\n' "$source"
+}
+
 start() {
-  local singleton_guard_fd
-  mkdir -p "$RUNTIME_DIR" "$(dirname "$SINGLETON_LOCK_FILE")"
+  local singleton_guard_fd singleton_recovery_fd
+  local stale_lock_key recovery_source
+  mkdir -p "$RUNTIME_DIR" "$(dirname "$SINGLETON_LOCK_FILE")" \
+    "$(dirname "$SINGLETON_RECOVERY_LOCK_FILE")"
   umask 077
   : >> "$SINGLETON_LOCK_FILE"
   chmod 0600 "$SINGLETON_LOCK_FILE"
   exec 9>"$LOCK_FILE"
   if ! flock -n 9; then
     printf 'launch already in progress\n' >&2
+    return 1
+  fi
+  # Serialize acquisition and stale-inode recovery independently of
+  # ORCH_RUNTIME_DIR. A per-runtime launch mutex cannot protect two differently
+  # named sessions that share this process singleton.
+  exec {singleton_recovery_fd}>"$SINGLETON_RECOVERY_LOCK_FILE"
+  if ! flock -n "$singleton_recovery_fd"; then
+    exec {singleton_recovery_fd}>&-
+    printf 'ERROR orchestrator-singleton-recovery-in-progress lock=%s\n' \
+      "$SINGLETON_RECOVERY_LOCK_FILE" >&2
     return 1
   fi
   # Reserve the process singleton in the caller before creating tmux.  The
@@ -330,8 +429,32 @@ start() {
   exec {singleton_guard_fd}>"$SINGLETON_LOCK_FILE"
   if ! flock -n "$singleton_guard_fd"; then
     exec {singleton_guard_fd}>&-
-    printf 'ERROR orchestrator-singleton-held lock=%s\n' "$SINGLETON_LOCK_FILE" >&2
-    return 1
+    # Never rotate merely because a lock is held: that would let a second
+    # provider start on a new inode while the first remains live on the old
+    # one. Recovery requires BOTH no target tmux session and affirmative,
+    # reuse-safe proof that the provider recorded beside liveness is gone.
+    stale_lock_key="$(singleton_lock_key "$SINGLETON_LOCK_FILE" || true)"
+    recovery_source=""
+    if [[ -n "$stale_lock_key" ]] && ! session_exists; then
+      recovery_source="$(stale_singleton_recovery_proven "$stale_lock_key" || true)"
+    fi
+    if [[ -z "$recovery_source" ]]; then
+      printf 'ERROR orchestrator-singleton-held lock=%s recovery=unproven\n' \
+        "$SINGLETON_LOCK_FILE" >&2
+      return 1
+    fi
+    rm -f "$SINGLETON_LOCK_FILE"
+    : > "$SINGLETON_LOCK_FILE"
+    chmod 0600 "$SINGLETON_LOCK_FILE"
+    exec {singleton_guard_fd}>"$SINGLETON_LOCK_FILE"
+    if ! flock -n "$singleton_guard_fd"; then
+      exec {singleton_guard_fd}>&-
+      printf 'ERROR orchestrator-singleton-recovery-raced lock=%s stale_key=%s\n' \
+        "$SINGLETON_LOCK_FILE" "$stale_lock_key" >&2
+      return 1
+    fi
+    printf 'WARN orchestrator-singleton-stale-recovered lock=%s stale_key=%s source=%s\n' \
+      "$SINGLETON_LOCK_FILE" "$stale_lock_key" "$recovery_source" >&2
   fi
   if session_exists; then
     exec {singleton_guard_fd}>&-
@@ -340,8 +463,8 @@ start() {
   fi
   local status_output="" held_owner=""
   if state_available; then
-    mission_cli reap
-    status_output="$(mission_cli status)"
+    mission_cli reap {singleton_guard_fd}>&- {singleton_recovery_fd}>&-
+    status_output="$(mission_cli status {singleton_guard_fd}>&- {singleton_recovery_fd}>&-)"
     held_owner="$(printf '%s\n' "$status_output" | lease_owner_from_status)"
     if [[ -n "$held_owner" ]]; then
       printf 'ERROR orchestrator-lease-held owner=%s\n' "$held_owner" >&2
@@ -362,30 +485,40 @@ start() {
   if [[ "$PROVIDER" == codex ]] && ! codex_trust_preflight; then
     return 2
   fi
-  local command provider_bin singleton_command startup_file pane_pid pane_pipe terminal_alert_bun terminal_alert_command terminal_alert_ready
+  local command provider_bin singleton_command startup_file handoff_file acquired_file provider_stage_file pane_pid provider_pid pane_pipe terminal_alert_bun terminal_alert_command terminal_alert_ready
   command="$(build_command)"
-  provider_bin="${command#exec }"; provider_bin="${provider_bin%% *}"
+  provider_bin="$PROVIDER"
   command -v "$provider_bin" >/dev/null 2>&1 || { printf 'provider not found: %s\n' "$provider_bin" >&2; return 2; }
   startup_file="$RUNTIME_DIR/orchestrator.startup"
-  rm -f "$startup_file"
+  handoff_file="$RUNTIME_DIR/orchestrator.singleton.handoff"
+  acquired_file="$RUNTIME_DIR/orchestrator.singleton.acquired"
+  provider_stage_file="$RUNTIME_DIR/orchestrator.provider-stage"
+  rm -f "$startup_file" "$handoff_file" "$acquired_file" "$provider_stage_file"
   # The pulse is backgrounded from the pane shell just before it exec's into
   # the provider, watching "$$" — which after the exec IS the provider PID. A
   # missing pulse script degrades to alert-only liveness in the watchdog
   # (never a kill), but say so loudly at launch time.
   local pulse_command=""
   if [[ -x "$LIVENESS_PULSE" ]]; then
-    printf -v pulse_command '%q "$$" %q %q & ' \
+    printf -v pulse_command '( exec 8>&-; %q "$$" %q %q ) & ' \
       "$LIVENESS_PULSE" "$LIVENESS_FILE" "$LIVENESS_PULSE_INTERVAL"
   else
     printf 'WARN liveness-pulse-missing path=%s; the watchdog cannot distinguish a silent turn from a corpse and will only alert\n' \
       "$LIVENESS_PULSE" >&2
   fi
+  # shellcheck disable=SC2016 # This is a command template evaluated by pane sh.
   printf -v singleton_command \
-    'exec 8>%q; flock 8 || exit 73; while [ ! -f %q ]; do sleep 0.01; done; . %q; %s%s' \
-    "$SINGLETON_LOCK_FILE" "$startup_file" "$startup_file" "$pulse_command" "$command"
+    'i=0; while [ ! -f %q ]; do i=$((i+1)); [ "$i" -lt 500 ] || { printf "ERROR orchestrator-singleton-handoff-timeout\\n" >&2; exit 74; }; sleep 0.01; done; exec 8>%q; flock -n 8 || { printf "ERROR orchestrator-singleton-held lock=%%s\\n" %q >&2; exit 73; }; printf "%%s\\n" "$$" > %q; i=0; while [ ! -f %q ]; do i=$((i+1)); [ "$i" -lt 1000 ] || { printf "ERROR orchestrator-startup-marker-timeout\\n" >&2; exit 75; }; sleep 0.01; done; . %q; %s: > %q; %s' \
+    "$handoff_file" "$SINGLETON_LOCK_FILE" "$SINGLETON_LOCK_FILE" \
+    "$acquired_file" "$startup_file" "$startup_file" "$pulse_command" \
+    "$provider_stage_file" "$command"
   # Do not leak the launch mutex into tmux/the provider process.
   exec 9>&-
-  if ! tmux new-session -d -s "$SESSION" -c "$WORK_DIR" "sh -c $(printf '%q' "$singleton_command")"; then
+  # The singleton and recovery descriptors belong only to this launcher. The
+  # tmux client/server and pane command must never inherit either descriptor.
+  if ! tmux new-session -d -s "$SESSION" -c "$WORK_DIR" \
+    "sh -c $(printf '%q' "$singleton_command")" \
+    {singleton_guard_fd}>&- {singleton_recovery_fd}>&-; then
     exec {singleton_guard_fd}>&-
     return 1
   fi
@@ -416,9 +549,15 @@ start() {
   fi
   # Hand singleton ownership to the already-observable pane.
   exec {singleton_guard_fd}>&-
-  sleep 0.1
-  if ! session_exists; then
-    printf 'ERROR orchestrator-singleton-held lock=%s\n' "$SINGLETON_LOCK_FILE" >&2
+  : > "$handoff_file"
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    [[ -f "$acquired_file" ]] && break
+    session_exists || break
+    sleep 0.05
+  done
+  if ! session_exists || [[ ! -f "$acquired_file" ]]; then
+    printf 'ERROR orchestrator-singleton-acquire-timeout lock=%s\n' "$SINGLETON_LOCK_FILE" >&2
+    tmux kill-session -t "$SESSION" 2>/dev/null || true
     return 1
   fi
   pane_pid="$(tmux list-panes -t "$SESSION" -F '#{pane_pid}' | head -n 1)"
@@ -427,10 +566,33 @@ start() {
     tmux kill-session -t "$SESSION" 2>/dev/null || true
     return 1
   }
+  provider_pid="$(cat "$acquired_file" 2>/dev/null || true)"
+  if ! [[ "$provider_pid" =~ ^[1-9][0-9]*$ ]] ||
+     ! kill -0 "$provider_pid" 2>/dev/null; then
+    printf 'ERROR orchestrator-provider-pid-invalid pane_pid=%s provider_pid=%s\n' \
+      "$pane_pid" "${provider_pid:-missing}" >&2
+    tmux kill-session -t "$SESSION" 2>/dev/null || true
+    return 1
+  fi
+  local singleton_lock_identity singleton_kernel_owner singleton_owner_tmp
+  singleton_lock_identity="$(singleton_lock_key "$SINGLETON_LOCK_FILE" || true)"
+  singleton_kernel_owner="$(singleton_kernel_owner_pid "$singleton_lock_identity")"
+  if [[ -z "$singleton_lock_identity" || ! "$singleton_kernel_owner" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'ERROR orchestrator-singleton-owner-unverified provider_pid=%s kernel_owner=%s\n' \
+      "$provider_pid" "${singleton_kernel_owner:-unknown}" >&2
+    tmux kill-session -t "$SESSION" 2>/dev/null || true
+    return 1
+  fi
+  singleton_owner_tmp="$(mktemp "$(dirname "$SINGLETON_OWNER_FILE")/.orchestrator-singleton-owner.XXXXXX")"
+  printf 'provider_pid=%s\nprovider_starttime=%s\nlock_owner_pid=%s\nlock_key=%s\n' \
+    "$provider_pid" "$(proc_starttime "$provider_pid")" "$singleton_kernel_owner" \
+    "$singleton_lock_identity" > "$singleton_owner_tmp"
+  mv -f "$singleton_owner_tmp" "$SINGLETON_OWNER_FILE"
   if state_available; then
     local lease_output owner token
-    owner="$(hostname):$pane_pid"
-    if ! lease_output="$(mission_cli lease acquire "$owner" orchestrator "$LEASE_TTL_MS" 2>&1)"; then
+    owner="$(hostname):$provider_pid"
+    if ! lease_output="$(mission_cli lease acquire "$owner" orchestrator "$LEASE_TTL_MS" \
+      {singleton_recovery_fd}>&- 2>&1)"; then
       tmux kill-session -t "$SESSION" 2>/dev/null || true
       if [[ -n "$held_owner" ]]; then
         printf 'ERROR orchestrator-lease-held owner=%s\n' "$held_owner" >&2
@@ -447,7 +609,7 @@ start() {
     }
     write_lease_state "$owner" "$token"
     printf 'export ORCH_FENCING_TOKEN=%q ORCH_LEASE_OWNER=%q\n' "$token" "$owner" > "$startup_file"
-    mission_cli status
+    mission_cli status {singleton_recovery_fd}>&-
   else
     printf 'SKIP state-db-absent path=%s\n' "$STATE_DB" >&2
     : > "$startup_file"
@@ -457,7 +619,8 @@ start() {
   # CLI applies its 30s default, so a probe silently SHRANK a 120s lease to 30s
   # — measured live: session created at 1785424061, lease expires_at
   # 1785424095167, i.e. dead 34s after start with nothing left to renew it.
-  if state_available && ! mission_cli lease renew "$owner" orchestrator "$token" "$LEASE_TTL_MS" >/dev/null 2>&1; then
+  if state_available && ! mission_cli lease renew "$owner" orchestrator "$token" \
+    "$LEASE_TTL_MS" {singleton_recovery_fd}>&- >/dev/null 2>&1; then
     tmux kill-session -t "$SESSION" 2>/dev/null || true
     release_current_lease
     printf 'ERROR orchestrator-lease-renew-failed owner=%s\n' "$owner" >&2
@@ -466,7 +629,7 @@ start() {
   local readiness_deadline
   readiness_deadline="$(( $(now_ms) + READINESS_WINDOW_MS ))"
   while (( $(now_ms) < readiness_deadline )); do
-    if ! session_exists || ! kill -0 "$pane_pid" 2>/dev/null; then
+    if ! session_exists || ! kill -0 "$provider_pid" 2>/dev/null; then
       tmux kill-session -t "$SESSION" 2>/dev/null || true
       if state_available; then
         release_current_lease
@@ -478,17 +641,20 @@ start() {
     fi
     sleep "$READINESS_POLL_SECONDS"
   done
-  if ! session_exists || ! kill -0 "$pane_pid" 2>/dev/null; then
+  if ! session_exists || ! kill -0 "$provider_pid" 2>/dev/null ||
+     [[ ! -f "$provider_stage_file" ]]; then
     tmux kill-session -t "$SESSION" 2>/dev/null || true
     if state_available; then
       release_current_lease
     else
       rm -f "$LEASE_FILE"
     fi
-    printf 'ERROR orchestrator-provider-exited provider=%s session=%s\n' "$PROVIDER" "$SESSION" >&2
+    printf 'ERROR orchestrator-provider-start-failed provider=%s session=%s stage=%s\n' \
+      "$PROVIDER" "$SESSION" "$([[ -f "$provider_stage_file" ]] && printf reached || printf missing)" >&2
     return 1
   fi
-  if state_available && ! mission_cli lease renew "$owner" orchestrator "$token" "$LEASE_TTL_MS" >/dev/null 2>&1; then
+  if state_available && ! mission_cli lease renew "$owner" orchestrator "$token" \
+    "$LEASE_TTL_MS" {singleton_recovery_fd}>&- >/dev/null 2>&1; then
     tmux kill-session -t "$SESSION" 2>/dev/null || true
     release_current_lease
     printf 'ERROR orchestrator-lease-renew-failed owner=%s\n' "$owner" >&2
@@ -504,15 +670,17 @@ start() {
   # shell's exec into the provider). The watchdog may kill on a stale stamp
   # ONLY against affirmative proof that THIS identity is gone — so the fence
   # holds even if the in-pane pulse crashes before writing its own record.
-  printf 'pid=%s\nstarttime=%s\n' "$pane_pid" "$(proc_starttime "$pane_pid")" > "$LIVENESS_FILE.identity"
+  printf 'pid=%s\nstarttime=%s\n' "$provider_pid" "$(proc_starttime "$provider_pid")" > "$LIVENESS_FILE.identity"
   if [[ -n "$INSTANCE_LOCK_FILE" ]]; then
     local lock_tmp
     mkdir -p "$(dirname "$INSTANCE_LOCK_FILE")"
     lock_tmp="$(mktemp "$(dirname "$INSTANCE_LOCK_FILE")/.orchestrator-lock.XXXXXX")"
     printf '{"pid":%s,"pid_started_at":"%s"}\n' \
-      "$pane_pid" "$(date --iso-8601=seconds)" > "$lock_tmp"
+      "$provider_pid" "$(date --iso-8601=seconds)" > "$lock_tmp"
     mv -f "$lock_tmp" "$INSTANCE_LOCK_FILE"
   fi
+  exec {singleton_recovery_fd}>&-
+  rm -f "$handoff_file" "$acquired_file" "$provider_stage_file"
   printf 'started: %s (%s)\n' "$SESSION" "$PROVIDER"
 }
 

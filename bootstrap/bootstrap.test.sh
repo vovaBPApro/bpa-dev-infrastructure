@@ -69,7 +69,7 @@ printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/root/bootstrap/c
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/root/deploy/check-live-stand-staleness.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/opt/whisper.cpp/bin/whisper-cli"
 printf '%s\n' 'disabled by --no-cron' > "$verify_fixture/root/runtime/hygiene-cron.skip"
-for command_name in git curl tmux docker codex claude; do
+for command_name in git curl tmux flock findmnt docker codex claude; do
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/bin/$command_name"
 done
 chmod 700 "$verify_fixture/bin"/*
@@ -298,7 +298,7 @@ install -d -m 700 \
   "$arming_fixture/bin"
 printf 'TELEGRAM_BOT_TOKEN=%s\n' "$valid_bot_token" > "$arming_fixture/root/.env"
 chmod 600 "$arming_fixture/root/.env"
-for command_name in git curl tmux unzip xz crontab bun docker codex claude; do
+for command_name in git curl tmux flock findmnt unzip xz crontab bun docker codex claude; do
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$arming_fixture/bin/$command_name"
 done
 # Authenticated transport fixture: consume curl's stdin config, record the

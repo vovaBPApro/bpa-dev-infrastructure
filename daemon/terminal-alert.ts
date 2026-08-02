@@ -138,6 +138,9 @@ const FAILURE_PATTERNS: ReadonlyArray<{
       /\binvalid api key\b/i,
       /\bpermission denied\b/i,
       /\bunauthorized\b/i,
+      /\b401\b/,
+      /\bre-?authenticate\b/i,
+      /\bplease (?:log in|login)\b/i,
     ],
   },
   {

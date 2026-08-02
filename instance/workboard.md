@@ -55,6 +55,7 @@ pointers: `instance/product-docs-index.md`. Evidence:
   (~7,129 LOC with tests, history checkpoints, attachment materialization).
   The MS Graph/Outlook code under `packages/integrations/src/email/msgraph/`
   stays a STUB and is explicitly out of scope.
+- <!-- status: open --> **PR-14 — self-hosted, user-teachable OCR from day one** (HR-1418, 2026-08-02, his verbatim words in `instance/decisions/HR-1418.md`). Deploy our own OCR on this hardware; per-supplier templates learned from user corrections (region select / text hint) as a USER-FACING product capability; test email imports run on the production OCR path from day one — no temporary OpenAI-CLI extraction. Feeds PR-3/PR-7. Sequenced after infra per HR-1379.
 - <!-- status: open --> **PR-5 — shell first**: no implementation or landing evidence exists; chat properly connected and the agent switcher, with
   ALL shell functionality carried over before Bill work starts.
 - <!-- status: open --> **PR-6 — storage layout**: no product-repo implementation or landing evidence exists; `/srv/projects/<product>/` for repos and

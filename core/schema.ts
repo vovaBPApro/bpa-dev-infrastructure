@@ -72,7 +72,7 @@ export class DurableStore {
       if (lane.terminalVerdict) throw new FencedTransitionError(`lane is terminal: ${id}`);
       if (lane.leaseOwner && lane.leaseDeadlineAt! > at) throw new FencedTransitionError(`lane has a live owner: ${id}`);
       const token = lane.fencingToken + 1;
-      const retries = lane.fencingToken === 0 ? lane.retriesUsed : lane.retriesUsed + 1;
+      const retries = lane.state === "running" ? lane.retriesUsed + 1 : lane.retriesUsed;
       if (retries > lane.retryBudget) throw new FencedTransitionError(`retry budget exhausted: ${id}`);
       const deadline = at + leaseMs;
       this.db.query("UPDATE lanes SET state='running', lease_owner=?, fencing_token=?, lease_deadline_at=?, retries_used=?, updated_at=? WHERE id=?").run(owner, token, deadline, retries, at, id);
@@ -87,6 +87,24 @@ export class DurableStore {
   recordSemanticProgress(id: string, owner: string, token: number, evidencePath: string): void {
     this.required(evidencePath, "semantic evidence path");
     this.guardedUpdate(id, owner, token, "generation = generation + 1, semantic_progress_at = ?, semantic_evidence_path = ?", [this.now(), evidencePath]);
+  }
+
+  retryLane(id: string, owner: string, token: number): void {
+    this.required(owner, "lease owner");
+    this.tx(() => {
+      const lane = this.mustLane(id);
+      if (lane.retriesUsed >= lane.retryBudget) throw new FencedTransitionError(`retry budget exhausted: ${id}`);
+      const at = this.now();
+      const changed = this.db.query(`UPDATE lanes SET
+        state='ready', generation=generation+1, retries_used=retries_used+1,
+        lease_owner=NULL, lease_deadline_at=NULL, acknowledgement_at=NULL,
+        semantic_progress_at=NULL, semantic_evidence_path=NULL,
+        terminal_sha=NULL, terminal_report_path=NULL, terminal_verdict=NULL,
+        updated_at=?
+        WHERE id=? AND state='running' AND lease_owner=? AND fencing_token=?
+          AND lease_deadline_at>? AND terminal_verdict IS NULL`).run(at, id, owner, token, at).changes;
+      if (changed !== 1) throw new FencedTransitionError(`stale or expired lane owner: ${id}`);
+    });
   }
 
   completeLane(id: string, owner: string, token: number, terminal: { sha: string; reportPath: string; verdict: TerminalVerdict }): void {

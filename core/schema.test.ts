@@ -72,6 +72,44 @@ describe("v3 durable hierarchy contract", () => {
     restarted.close();
   });
 
+  test("fenced retry releases a controlled failure and reconstructs it ready", () => {
+    const { store, path } = open();
+    store.createMission({ id: "mission-1", correlationId: "corr-1", acceptanceId: "mission-accept" });
+    store.createManager({ id: "manager-1", missionId: "mission-1", parentId: "mission-1", depth: 1 });
+    store.createLane(lane({ retryBudget: 1 }));
+    const claim = store.claimLane("lane-1", "dispatcher-a", 500);
+    store.acknowledgeLane("lane-1", "dispatcher-a", claim.fencingToken);
+    store.recordSemanticProgress("lane-1", "dispatcher-a", claim.fencingToken, "/evidence/failed-attempt.json");
+
+    expect(() => store.retryLane("lane-1", "stale-dispatcher", claim.fencingToken)).toThrow(FencedTransitionError);
+    expect(() => store.retryLane("lane-1", "dispatcher-a", claim.fencingToken + 1)).toThrow(FencedTransitionError);
+    store.retryLane("lane-1", "dispatcher-a", claim.fencingToken);
+    expect(() => store.retryLane("lane-1", "dispatcher-a", claim.fencingToken)).toThrow(FencedTransitionError);
+    store.close();
+
+    const restarted = new DurableStore(path);
+    expect(restarted.reconstruct().lanes[0]).toMatchObject({
+      state: "ready", generation: 2, retriesUsed: 1, fencingToken: claim.fencingToken,
+      leaseOwner: null, leaseDeadlineAt: null, acknowledgementAt: null,
+      semanticProgressAt: null, semanticEvidencePath: null,
+      terminalSha: null, terminalReportPath: null, terminalVerdict: null,
+    });
+    const retryClaim = restarted.claimLane("lane-1", "dispatcher-b", 500);
+    expect(retryClaim.fencingToken).toBe(claim.fencingToken + 1);
+    restarted.close();
+  });
+
+  test("fenced retry refuses to exceed the lane retry budget", () => {
+    const { store } = open();
+    store.createMission({ id: "mission-1", correlationId: "corr-1", acceptanceId: "mission-accept" });
+    store.createManager({ id: "manager-1", missionId: "mission-1", parentId: "mission-1", depth: 1 });
+    store.createLane(lane({ retryBudget: 0 }));
+    const claim = store.claimLane("lane-1", "dispatcher-a", 500);
+    expect(() => store.retryLane("lane-1", "dispatcher-a", claim.fencingToken)).toThrow("retry budget exhausted");
+    expect(store.getLane("lane-1")).toMatchObject({ state: "running", retriesUsed: 0, leaseOwner: "dispatcher-a" });
+    store.close();
+  });
+
   test("rejects invalid hierarchy and terminal evidence", () => {
     const { store } = open();
     store.createMission({ id: "mission-1", correlationId: "corr-1", acceptanceId: "mission-accept" });

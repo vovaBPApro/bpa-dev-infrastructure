@@ -1,0 +1,27 @@
+# Runtime state and logs live on the host, never in git (the predecessor repo
+# died from committed secrets/state). Subtrees that also carry runtime state keep
+# their own .gitignore (daemon/, instance/decisions/); this root list covers the
+# orchestrator runtime dir the ops journal and lane state live in, plus the
+# repo-root runtime dir the tmux launcher puts the singleton lock and state.db in
+# (unignored it left the tree permanently dirty, so every session load reported
+# `startup: degraded` and the real signal was lost).
+orchestrator/runtime/
+/runtime/
+# Per-host launcher configuration (ports, chat binding, provider/model choice for
+# THIS box). It is sourced by orchestrator/*.sh and overrides the environment, so
+# it is host state by definition and a natural place for someone to paste a chat
+# id or token. The tracked contract is runtime.env.example; defaults that must
+# survive a fresh clone belong in launch.sh, not here.
+orchestrator/runtime.env
+
+# Harness-created git worktrees for isolated agent lanes. They hold checkouts of
+# this same repo, so leaving them untracked made `git status` dirty for the whole
+# session and buried the real signal — the same failure mode as the repo-root
+# runtime dir above.
+.claude/worktrees/
+
+node_modules/
+*.log
+
+# Ephemeral stand workspaces created by morning.sh / stand scenarios
+stand/workspaces/

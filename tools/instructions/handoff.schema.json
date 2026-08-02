@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bpa.dev/schemas/orchestrator-handoff-v1.json",
+  "title": "Orchestrator vendor/session handoff",
+  "$comment": "The CLI additionally refuses encoded handoff files above 1048576 bytes before parsing.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source_sha",
+    "timestamp",
+    "from",
+    "to",
+    "from_vendor",
+    "from_session",
+    "to_vendor",
+    "to_session",
+    "worktrees",
+    "unlanded_reports",
+    "open_decisions"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "source_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$", "maxLength": 4096 },
+    "timestamp": { "type": "string", "format": "date-time", "maxLength": 4096 },
+    "from": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "to": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "from_vendor": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "from_session": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "to_vendor": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "to_session": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "worktrees": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "head", "branch"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "description": "Absolute filesystem path to the worktree; unlike instance artifact paths, this is not repository-relative."
+          },
+          "head": { "type": "string", "pattern": "^[0-9a-f]{40}$", "maxLength": 4096 },
+          "branch": { "type": ["string", "null"], "maxLength": 4096 }
+        }
+      }
+    },
+    "unlanded_reports": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4096,
+        "description": "Absolute filesystem path to an unlanded report; unlike instance artifact paths, this is not repository-relative."
+      }
+    },
+    "open_decisions": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "path"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1, "maxLength": 4096 },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "description": "Repository-relative instance decision path; unlike worktree and report paths, this is not absolute."
+          }
+        }
+      }
+    }
+  }
+}

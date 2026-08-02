@@ -1,0 +1,11 @@
+{
+  "name": "bpa-dev-infrastructure",
+  "private": true,
+  "packageManager": "bun@1.2.22",
+  "scripts": {
+    "test:foundation": "bun test tools/instructions gate/completion-guard.test.ts gate/land.test.sh"
+  },
+  "engines": {
+    "bun": ">=1.2.22"
+  }
+}

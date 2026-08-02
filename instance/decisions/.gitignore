@@ -1,0 +1,4 @@
+# Runtime capture artifact — raw inbound chat may contain credentials and other
+# untriaged host state, so it is never committed. HR-*.md and secret-scanned
+# triage.jsonl records preserve the operator's verbatim words in Git.
+inbox.jsonl

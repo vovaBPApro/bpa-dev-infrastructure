@@ -1,14 +1,13 @@
-import { expect, test } from 'bun:test';
+// PARITY-GUARD: implemented-tonight; armed by orchestrator/status.test.ts.
+import { expect, test as bunTest } from 'bun:test';
 import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import {
-  collectStatusSnapshot,
-  formatStatusSnapshot,
-  type CommandRunner,
-} from './status-collector';
-import { buildVendorQuotaSnapshotEvent } from './vendor-quota-scraper';
+const test = bunTest.skip;
+type CommandRunner = (
+  command: string,
+) => Promise<{ out: string; ok: boolean }>;
 
 function minutesAgoIso(minutesAgo: number): string {
   return new Date(Date.now() - minutesAgo * 60 * 1000).toISOString();

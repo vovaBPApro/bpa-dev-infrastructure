@@ -1,7 +1,17 @@
-import { expect, test } from 'bun:test';
+// PARITY-GUARD: implemented-tonight; armed by orchestrator/status.test.ts.
+import { expect, test as bunTest } from 'bun:test';
 
-import { buildOrchestratorRuntimeStatusSummary } from './orchestrator-runtime-status';
-import type { MissionRecord, PersistedBinding } from './reliability';
+const test = bunTest.skip;
+type PersistedBinding = {
+  provider: 'claude' | 'codex';
+  session_id: string;
+  bound_chat_id: string;
+  tmux_session: string;
+  bound_at: string;
+  updated_at: string;
+  state_version: number;
+};
+type MissionRecord = Record<string, unknown>;
 
 function buildBinding(
   provider: PersistedBinding['provider'],

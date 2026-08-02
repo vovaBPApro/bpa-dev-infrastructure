@@ -70,15 +70,25 @@ export class BotApiClient {
     return body.result;
   }
 
-  async sendMessage(chatId: string, text: string): Promise<{ message_id: number }> {
+  async sendMessage(chatId: string, text: string, idempotencyKey: string): Promise<{ message_id: number }> {
     const response = await this.#fetch(`${this.#apiRoot}/sendMessage`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text }),
+      headers: { 'content-type': 'application/json', 'idempotency-key': idempotencyKey },
+      body: JSON.stringify({ chat_id: chatId, text, idempotency_key: idempotencyKey }),
     });
     if (!response.ok) throw new Error(`sendMessage failed: HTTP ${response.status}`);
     const body = (await response.json()) as { ok: boolean; result?: { message_id: number } };
     if (!body.ok || !body.result) throw new Error('sendMessage returned an invalid response');
+    return body.result;
+  }
+
+  async reconcileMessage(idempotencyKey: string): Promise<{ message_id: number } | null> {
+    const query = new URLSearchParams({ idempotency_key: idempotencyKey });
+    const response = await this.#fetch(`${this.#apiRoot}/delivery?${query}`);
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error(`delivery reconciliation failed: HTTP ${response.status}`);
+    const body = (await response.json()) as { ok: boolean; result?: { message_id: number } };
+    if (!body.ok || !body.result) throw new Error('delivery reconciliation returned an invalid response');
     return body.result;
   }
 }

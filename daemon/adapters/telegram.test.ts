@@ -8,6 +8,20 @@ const dirs: string[] = [];
 afterEach(async () => Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))));
 
 describe('TelegramAdapter durable inbound regression lock', () => {
+  test('REGRESSION sends the idempotency key across the HTTP boundary', async () => {
+    let request: Request | undefined;
+    const api = new BotApiClient({
+      baseUrl: 'http://fake.invalid', token: 'test',
+      fetch: async (input, init) => {
+        request = new Request(input, init);
+        return new Response(JSON.stringify({ ok: true, result: { message_id: 8 } }));
+      },
+    });
+    await api.sendMessage('7', 'done', 'reply-7');
+    expect(request?.headers.get('idempotency-key')).toBe('reply-7');
+    expect(await request?.json()).toMatchObject({ idempotency_key: 'reply-7' });
+  });
+
   test('persists an inbound update before acknowledgement and deduplicates replay', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'v3-telegram-inbox-'));
     dirs.push(dir);

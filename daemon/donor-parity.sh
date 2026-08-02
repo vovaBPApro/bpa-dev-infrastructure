@@ -16,3 +16,8 @@ printf '%s\n' '{"private":true,"dependencies":{"vitest":"2.1.8"}}' > "$tmp/vites
 ln -s "$tmp/vitest-runner/node_modules" "$tmp/packages/master-orchestrator/node_modules"
 (cd "$tmp/packages/master-orchestrator" && \
   ./node_modules/.bin/vitest run src/__tests__/mailbox-ipc.test.ts src/__tests__/mailbox-replay.test.ts)
+echo 'donor baseline: completed (not implementation parity)'
+
+cd "$(git rev-parse --show-toplevel)"
+bun test daemon/donor-contract-mapping.test.ts
+echo 'R2 contract mapping: donor status/mailbox/replay expectations exercised against R2 implementation'

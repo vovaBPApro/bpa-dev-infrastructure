@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { FileInboundStore } from './adapters/telegram';
@@ -92,5 +93,19 @@ describe('durable outbound recovery regression lock', () => {
     expect(items).toHaveLength(30);
     expect(items.every((item) => item.state === 'delivered')).toBe(true);
     expect(sent.size).toBe(30);
+  });
+
+  test('REGRESSION dead-owner lock is taken over without waiting for timeout', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'v3-telegram-stale-lock-'));
+    dirs.push(dir);
+    const path = join(dir, 'outbox.json');
+    await mkdir(`${path}.lock`);
+    await writeFile(`${path}.lock/owner.json`, JSON.stringify({
+      token: 'dead-owner', pid: 999_999_999, hostname: hostname(), leaseExpiresAt: Date.now() + 60_000,
+    }));
+    const started = Date.now();
+    const outbox = new DurableOutbox(path, async () => ({ message_id: 1 }));
+    expect(await outbox.enqueue({ id: 'after-crash', chatId: '7', text: 'ok' })).toBe(true);
+    expect(Date.now() - started).toBeLessThan(1_000);
   });
 });

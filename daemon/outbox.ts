@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import type { InboundStore } from './adapters/telegram';
+import { BotApiClient, type InboundStore } from './adapters/telegram';
 import { withFileLock } from './file-lock';
 
 export type OutboxItem = {
@@ -93,6 +93,15 @@ export class DurableOutbox {
     await writeFile(temporary, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
     await rename(temporary, this.path);
   }
+}
+
+export function createProductionTelegramOutbox(path: string, api: BotApiClient): DurableOutbox {
+  return new DurableOutbox(
+    path,
+    (chatId, text, idempotencyKey) => api.sendMessage(chatId, text, idempotencyKey),
+    crypto.randomUUID(),
+    (idempotencyKey) => api.reconcileMessage(idempotencyKey),
+  );
 }
 
 export type TelegramChannelStatus = {

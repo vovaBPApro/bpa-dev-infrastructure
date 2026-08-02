@@ -5,24 +5,25 @@ import { join } from "node:path";
 import { StateStore } from "./state";
 import { Database } from "bun:sqlite";
 
-test("REGRESSION GAP-5 r3: producer restart/reboot replay dedupes and teardown is complete", async () => {
+test("REGRESSION GAP-5 r5: direct CLI cannot fabricate producer epoch or journal", async () => {
   const directory = await mkdtemp(join(tmpdir(), "gap5-runtime-"));
   const database = join(directory, "state.db");
   const cli = join(import.meta.dir, "tick-journal-cli.ts");
-  const unit = join(directory, "bpa-orchestrator-watchdog.service");
-  await Bun.write(unit, "[Service]\nEnvironment=ORCH_WATCHDOG_UNIT=bpa-orchestrator-watchdog.service\nExecStart=/opt/bpa/orchestrator/watchdog.sh\n");
   const run = async (...args: string[]) => {
-    const child = Bun.spawn(["bun", cli, ...args, "--unit", "bpa-orchestrator-watchdog.service", "--unit-file", unit, "--invocation-id", "abcdef0123456789abcdef0123456789"], { env: { ...process.env, INFRA_STATE_DB: database }, stdout: "pipe", stderr: "pipe" });
+    const child = Bun.spawn(["bun", cli, ...args], { env: { ...process.env, INFRA_STATE_DB: database }, stdout: "pipe", stderr: "pipe" });
     const [exit, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
-    if (exit !== 0) throw new Error(stderr);
+    expect(exit).not.toBe(0);
+    expect(stderr).toContain("UNMEASURED");
   };
   try {
-    await run("reconcile", "--producer", "watchdog", "--cadence-ms", "1000", "--observed-at", "1000", "--boot-id", "boot-a");
-    await run("reconcile", "--producer", "watchdog", "--cadence-ms", "1000", "--observed-at", "4000", "--boot-id", "boot-b");
-    await run("reconcile", "--producer", "watchdog", "--cadence-ms", "1000", "--observed-at", "4000", "--boot-id", "boot-b");
+    await run("reconcile", "--producer", "forged", "--cadence-ms", "1000", "--observed-at", "4000",
+      "--boot-id", "caller", "--unit", "copied.service", "--unit-file", "/tmp/copied.service",
+      "--invocation-id", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    await run("record", "--interval", "arbitrary", "--cause", "forged", "--unit", "copied.service",
+      "--boot-id", "caller", "--invocation-id", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     const store = new StateStore(database);
-    expect(store.tickJournal()).toHaveLength(4);
-    expect(store.accountMissedTicks(["watchdog:2:1000", "watchdog:3:1000"])).toMatchObject({ verdict: "clean", measurement: "MEASURED" });
+    expect(store.tickJournal()).toEqual([]);
+    expect(store.db.query("SELECT * FROM tick_producer_state").all()).toEqual([]);
     store.close();
   } finally {
     await rm(directory, { recursive: true, force: true });

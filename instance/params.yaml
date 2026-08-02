@@ -1,0 +1,119 @@
+# Instance parameters for this BPA control-plane deployment.
+#
+# Every value here is a this-installation fact. Generic instructions/ rules cite
+# these parameters by name instead of hard-coding a name or number. Each entry
+# cites the source doc in THIS repo that establishes it. No secrets/tokens/keys.
+
+operator:
+  name: Vova                       # instructions/repo-layout.md, STACK_DECISION.md verbatim blocks (Vova)
+  language: uk                     # CLAUDE.md Hard Rule 17 (chat with the Human in Ukrainian)
+  timezone: Europe/Warsaw          # migration-prep/HUMAN_REQUIREMENTS_MATRIX_2026-07-28.md (Kraków clock; morning rhythm)
+
+phase:
+  current: sole-mission            # instance/README + CLAUDE.md Mission (this repo is the sole current mission)
+  # Predicate used by instruction `sunset:` frontmatter, per
+  # migration-prep/INSTRUCTIONS_CONSILIUM_FINAL.md §2.1, §4.2.
+  active_scope: instruction-mechanics-only   # instance/decisions/HR-11570.md (Vova 11570): active work is ONLY the
+  # L1 instruction tooling/restructure in this repo (checker, frontmatter, generated
+  # index, compose/packs, inbox capture, scaffold), each with thorough tests and a
+  # real-repo run before landing. VM migration and stack Phase 0 are parked awaiting
+  # his go. This is the pack-visible home of the HR-11570 restriction (that row is
+  # state: routed, so it is provenance, not pack-delivered — see instruction-layers.md).
+
+repos:
+  control_plane: bpa-dev-infrastructure   # instructions/repo-layout.md (this repo, control plane only)
+  framework: planned                      # instructions/repo-layout.md (a NEW separate repo, not yet created)
+  per_agent: planned                      # instructions/repo-layout.md (one NEW repo per agent: Bill, Mila, future)
+  legacy_donors:                          # instructions/repo-layout.md (read-only donors, deleted over time)
+    - bpa-master
+    - agent-bill
+    - agent-mila
+  legacy_rescue_branch: rescue/vm-final-20260728   # instructions/repo-layout.md
+  canonical_root: /root/bpa-dev-infrastructure     # AS BUILT on bpa-infra after the 2026-07-30 cutover.
+  account: root                     # SYSTEM-unit deployment contract; bootstrap refuses non-root activation.
+  git_remote: git@github.com:vovaBPApro/bpa-dev-infrastructure.git  # instance/migration-day.md (clone step)
+
+vm:
+  os: Ubuntu 24.04                 # instance/migration-day.md
+  host: bpa-infra                  # AS BUILT (hostname), 2026-07-30 cutover per instance/decisions/HR-11736.md
+  ip: 144.76.185.238               # AS BUILT, cutover target named in instance/decisions/HR-11736.md
+  cores: 12                        # AS BUILT (nproc)
+  ram_gb: 251                      # AS BUILT (free -g). The 64 GB in migration-day.md / repo-layout.md
+  # (msg 11555) was Vova's sizing FLOOR, not this box; the delivered machine exceeds it.
+
+fleet:
+  # ACTIVE as of 2026-07-31 — instance/decisions/HR-281.md (Vova, verbatim; the
+  # row covers his Telegram 275 + 281 together, so cite 281 — HR-275.md does not
+  # exist and an earlier version of this comment pointed at it).
+  # This band was marked `suspended` as a leftover of the legacy control plane,
+  # and the orchestrator used that as licence to work single-threaded on a
+  # 12-core / 251 GB box while Codex sat at 92% unused quota. He called that out
+  # directly: parallelism is the reason the server is paid for.
+  floor: 10                        # HIS TARGET (2026-07-31): «У тебе задача — десять лейнів стабільно тримати»
+  ceiling: 15                      # upper bound; raise only with measured host headroom
+  notify_human_below: 3            # below this the watchdog messages HIM directly, not just the orchestrator
+  keepalive_interval_minutes: 15   # daemon timer backstop; independent of lane exit events
+  status: active
+  # Enforced by the state-contract checker: open work plus zero measured system
+  # lane units is FLEET-IDLE; an unavailable system lane count also fails closed.
+  fleet_idle_check: tools/state-contract/check.ts:FLEET-IDLE
+
+orchestrator:
+  session: bpa-orchestrator          # bootstrap/env.template: one instance session for launcher + watchdog
+  watchdog_interval_seconds: 600     # bootstrap/env.template and rendered watchdog timer
+  watchdog_restart_failure_alert_after: 3  # loud Human alert after bounded consecutive failures
+  # A doc in THIS repo now states the vendor shape, so the long-standing "no
+  # model/vendor map here" omission is lifted for these keys only.
+  top_provider: claude             # HUMAN RULING: instance/decisions/HR-709.md (Vova, 2026-08-01).
+  # SUPERSEDES HR-271 item 1. He corrected the record: Codex gpt-5.6-sol is a
+  # quota-exhaustion FALLBACK only, not the resting top-orchestrator provider.
+  top_posture: thin                # unchanged in KIND — routing/decisions/Human contact only
+  # Pinned in source (orchestrator/launch.sh CLAUDE_MODEL) for the same reason
+  # as fallback_model below: an unpinned claude launch emits no --model and the
+  # top orchestrator silently becomes the account default.
+  top_model: claude-fable-5        # HUMAN RULING: instance/decisions/HR-709.md (Vova, 2026-08-01).
+  # SUPERSEDES HR-269 item 1 and HR-271's "Claude reserved entirely" framing.
+  # Rest on FABLE, not Sonnet, not Opus, not Codex. His words: "на fable було
+  # мінімальне навантаження... всі дочірні агенти піднімаються на кодексах".
+  # Child/lane agents stay on Codex (HR-269 item 2 / HR-271, unchanged) and must
+  # be lean/autonomous enough not to round-trip the top orchestrator often — the
+  # goal is minimizing FABLE quota burn, not avoiding Claude altogether.
+  # DRIFT FOUND 2026-08-01: `bash orchestrator/launch.sh model` already reported
+  # claude_model=claude-fable-5 (the runtime.env pin was already correct) at the
+  # moment this ruling arrived, yet the LIVE session was running claude-sonnet-5.
+  # The restart path that brought this session up did not honor the pin — a
+  # separate open defect, not resolved by this key. See workboard.
+  top_model_source: runtime.env    # host pin; orchestrator/launch.sh CLAUDE_MODEL is the fallback default
+  top_model_status: pinned         # orchestrator/model-command.test.sh locks the emitted --model;
+  # ORCH_CLAUDE_MODEL in runtime.env overrides the source default per host, and
+  # the Telegram /model command writes that same name, so an operator switch and
+  # this pin cannot disagree.
+  # Escalation tier reachable from Telegram (`/model fable`); switch up for a
+  # hairy incident, back down after. Selectable set: daemon/model-registry.ts.
+  # NOTE: fable is now the RESTING tier (top_model above), not escalation-only —
+  # HR-709 repurposed it. This key name is stale (kept as the Telegram catalog
+  # label, not a claim about posture); do not read it as contradicting top_model.
+  escalation_model: claude-fable-5 # instance/handoff-oldorch-2026-07-30.md §1; verified runnable 2026-07-30
+  lean_model: claude-sonnet-5      # ibid (thin/lean top); verified runnable 2026-07-30
+  model_switch: telegram-/model    # daemon/server.ts handleModelCommand; relaunch-scoped, persisted to runtime.env
+  manager_provider: codex          # ibid — Codex managers between orchestrator and workers
+  coder_provider: codex            # ibid — Codex coders below the managers
+  # Fallback/alternate top orchestrator (instructions/orchestrator-fallback.md,
+  # instance/decisions/HR-11573.md). The model is now pinned in source
+  # (orchestrator/launch.sh CODEX_MODEL) rather than left to the account default,
+  # so a fresh clone with no runtime.env still starts codex on this model;
+  # ORCH_CODEX_MODEL in runtime.env overrides it per host.
+  fallback_provider: codex
+  fallback_model: gpt-5.6-sol      # /root/.codex/config.toml; verified runnable on this box 2026-07-30
+  fallback_model_status: pinned    # orchestrator/codex-notify-wiring.test.sh locks the emitted --model
+  fallback_reasoning_effort: high  # codex-cli defaults to `none`, inadequate for orchestrator judgement
+
+capture:
+  # How Human directives reach the decisions ledger. `manual`: the orchestrator
+  # captures every directive by hand before dispatch; a missing inbox transport is
+  # a visible degraded mode, not "no special handling". Flip to `daemon` only when
+  # the mirror is proven live writing instance/decisions/inbox.jsonl.
+  mode: manual                     # instructions/orchestrator-fallback.md, instruction-layers.md (daemon mirror planned, not yet wired)
+
+db:
+  legacy_carry_over: none          # instructions/repo-layout.md (msg 11543: no legacy DB carry-over)

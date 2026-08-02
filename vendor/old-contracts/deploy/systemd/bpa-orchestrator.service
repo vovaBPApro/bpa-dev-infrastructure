@@ -1,0 +1,17 @@
+[Unit]
+Description=BPA master orchestrator tmux session
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=HOME=/home/bpa-shell
+Environment=TELEGRAM_STATE_DIR=/home/bpa-shell/.claude/channels/telegram
+Environment=CLAUDE_TMUX_SESSION=master-orchestrator
+Environment=ORCH_WORK_DIR=/home/bpa-shell
+ExecStart=/home/bpa-shell/tools/claude-telegram-daemon/launch-orchestrator.sh --provider claude --session master-orchestrator --workdir /home/bpa-shell
+ExecStop=/usr/bin/tmux kill-session -t master-orchestrator
+
+[Install]
+WantedBy=default.target

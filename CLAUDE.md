@@ -62,7 +62,7 @@ Generated from `instructions/*` docs carrying `floor: true` (edit the source doc
 4. Zero secrets in git — secret-scan before every commit and record `secret-scan: clean`. (`repository-hygiene`)
 5. Every infrastructure or configuration change lands in git — a destroyed host must be rebuildable from the repository alone. (`reproducible-from-git`)
 6. Keep the permission surface versioned and fail-closed; ask the Human only for the irreversible set. (`tool-permissions`)
-7. Green is fail-closed — never relabel a failure as a warning; missing evidence is `NO-GO`. (`verification-and-locks`)
+7. Green is fail-closed — failure, missing evidence, and unmeasured subjects are never pass. (`verification-and-locks`)
 <!-- hard-floor:end -->
 
 ## Hard Rules

@@ -60,6 +60,34 @@ report() {
   printf 'commit: %s fixture\nverify: true\nresult: clean\nsecret-scan: clean\nremaining: none\n' "$sha" > "$path"
 }
 
+# Regression lock: the copied gate must support the orphan v3 family range,
+# while callers that do not select a family still resolve against main.
+# shellcheck source=gate/land-lib.sh
+source "$root/gate/land-lib.sh"
+make_fixture changed-range-main
+main_base=$(git -C "$repo" rev-parse main)
+main_lane=$(make_lane "$repo" ag-main-range)
+unset LAND_DEFAULT_BRANCH
+assert test "$(land_changed_base "$repo" "$main_lane")" = "$main_base"
+
+git -C "$repo" checkout --orphan v3 >/dev/null
+git -C "$repo" rm -rf . >/dev/null
+printf 'v3 root\n' > "$repo/v3.txt"
+git -C "$repo" add v3.txt
+git -C "$repo" commit -m v3-root >/dev/null
+v3_root=$(git -C "$repo" rev-parse HEAD)
+git -C "$repo" push origin v3 >/dev/null
+git -C "$repo" checkout -b ag-v3-range >/dev/null
+printf 'v3 lane\n' >> "$repo/v3.txt"
+git -C "$repo" commit -am v3-lane >/dev/null
+v3_lane=$(git -C "$repo" rev-parse HEAD)
+git -C "$repo" checkout main >/dev/null
+LAND_DEFAULT_BRANCH=origin/v3
+assert test "$(land_changed_base "$repo" "$v3_lane")" = "$v3_root"
+git -C "$repo" update-ref -d refs/remotes/origin/v3
+assert test "$(land_changed_base "$repo" "$v3_lane")" = "$v3_root"
+unset LAND_DEFAULT_BRANCH
+
 make_fixture zero-tests
 zero_before=$(git -C "$repo" rev-parse main)
 git -C "$repo" checkout -b ag-zero-tests >/dev/null

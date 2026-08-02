@@ -1,6 +1,20 @@
 #!/usr/bin/env bash
 # Shared fail-closed checks for individual and batch landing.
 
+# Resolve the canonical changed-range base. Normal landings set
+# LAND_DEFAULT_BRANCH to their integration branch; standalone family scans may
+# set it to a remote ref such as origin/v3. An orphan family whose remote ref is
+# not present is scanned from its own root commit instead of failing open.
+land_changed_base() {
+  local repo="$1" branch="$2" base_ref="${LAND_DEFAULT_BRANCH:-main}" merge_base
+  if git -C "$repo" rev-parse --verify --quiet "${base_ref}^{commit}" >/dev/null; then
+    merge_base=$(git -C "$repo" merge-base "$base_ref" "$branch") || return 2
+    printf '%s\n' "$merge_base"
+    return 0
+  fi
+  git -C "$repo" rev-list --max-parents=0 --reverse "$branch" | head -n 1
+}
+
 land_resolve_bun() {
   local name candidate resolved trusted_path='/usr/local/bin:/usr/bin:/bin'
   if [ -n "${BUN_BIN:-}" ]; then
@@ -150,7 +164,7 @@ land_review_check() {
   local author_name_normalized author_email_normalized reviewer_name_tokens author_name_tokens
   local reviewer_name_sorted author_name_sorted nul_status
   export LAND_REVIEW_VERDICT="not-required"
-  merge_base=$(git -C "$repo" merge-base "$LAND_DEFAULT_BRANCH" "$branch") || return 2
+  merge_base=$(land_changed_base "$repo" "$branch") || return 2
   if [ ! -r "$policy_file" ]; then
     echo "ERROR review-required policy-unreadable file=$policy_file" >&2
     return 2
@@ -282,7 +296,7 @@ land_secret_scan() {
   local repo="$1" branch="$2" merge_base changed_file scan_result scan_status_line line_count diff_file diff_fd
   local scan_marker scan_show_status scan_grep_status secret_hits=0
   local secret_pattern added_diff_file candidate_file decoded_file candidate
-  merge_base=$(git -C "$repo" merge-base "$LAND_DEFAULT_BRANCH" "$branch") || return 2
+  merge_base=$(land_changed_base "$repo" "$branch") || return 2
   secret_pattern=$(printf '%s%s%s%s%s%s%s%s%s%s%s' '[0-9]{8,10}:AA|' 'gh' 'p_|github' '_pat|client' '_secret|PRIVATE ' 'KEY|AK' 'IA[0-9A-Z]{16}|' 'sk' '-ant-|' '(^|[^0-9A-Za-z_-])AIza[0-9A-Za-z_-]{35}([^0-9A-Za-z_-]|$)|' '(^|[^0-9A-Za-z])xox[baprs]-[0-9A-Za-z-]{10,}([^0-9A-Za-z]|$)')
   diff_file=$(mktemp "${TMPDIR:-/tmp}/bpa-land-secret-diff.XXXXXX") || return 2
   if ! git -C "$repo" -c core.quotepath=false diff --name-only -z "$merge_base..$branch" > "$diff_file"; then
@@ -466,7 +480,7 @@ land_verify_count() {
 land_payload_guard() {
   local repo="$1" branch="$2" merge_base raw_entry changed_file diff_file diff_fd
   local old_mode new_mode change_status
-  merge_base=$(git -C "$repo" merge-base "$LAND_DEFAULT_BRANCH" "$branch") || return 2
+  merge_base=$(land_changed_base "$repo" "$branch") || return 2
   diff_file=$(mktemp "${TMPDIR:-/tmp}/bpa-land-payload-diff.XXXXXX") || return 2
   if ! git -C "$repo" -c core.quotepath=false diff --raw -z --no-renames --diff-filter=AMT "$merge_base..$branch" > "$diff_file"; then
     rm -f "$diff_file"

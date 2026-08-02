@@ -169,6 +169,8 @@ verify() {
   check "git" command -v git
   check "curl" command -v curl
   check "tmux" command -v tmux
+  check "flock" command -v flock
+  check "findmnt" command -v findmnt
   check "bun" test -x "$BUN_BIN"
   check "repository" test -d "$INSTALL_ROOT/.git"
   check "environment file" test -f "$ENV_FILE"
@@ -263,6 +265,8 @@ ensure_prerequisites() {
     [git]=git
     [curl]=curl
     [tmux]=tmux
+    [flock]=util-linux
+    [findmnt]=util-linux
     [envsubst]=gettext-base
     [unzip]=unzip
     [xz]=xz-utils

@@ -57,7 +57,7 @@ if (JSON.stringify(actual) !== JSON.stringify(expected)) {
 }
 ' "$TRANSCRIPT"
 
-mkdir -p "$SCRATCH/bin" "$SCRATCH/runtime"
+mkdir -p "$SCRATCH/bin" "$SCRATCH/runtime" "$SCRATCH/home"
 cat > "$SCRATCH/bin/tmux" <<'EOF'
 #!/usr/bin/env bash
 exec /usr/bin/tmux -L "${ORCH_TEST_TMUX_SOCKET:?}" "$@"
@@ -74,6 +74,7 @@ EOF
 chmod +x "$SCRATCH/bin/tmux" "$SCRATCH/bin/claude" "$SCRATCH/preflight.sh"
 
 export PATH="$SCRATCH/bin:$PATH"
+export HOME="$SCRATCH/home"
 export ORCH_TEST_TMUX_SOCKET="$TMUX_SOCKET"
 export ORCH_TEST_CLAUDE_ARGS="$SCRATCH/claude-args"
 export ORCH_CONFIG_FILE="$SCRATCH/no-runtime.env"

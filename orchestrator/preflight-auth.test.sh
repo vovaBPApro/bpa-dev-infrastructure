@@ -35,7 +35,7 @@ AUTH_SUBSCRIPTION="$SCRATCH/auth-subscription.json"
 printf '{"OPENAI_API_KEY":null,"tokens":{"access_token":"%s","account_id":"fixture"},"last_refresh":"2026-07-30"}\n' \
   "$CODEX_TOKEN" > "$AUTH_SUBSCRIPTION"
 CLAUDE_SUBSCRIPTION="$SCRATCH/claude-credentials.json"
-printf '{"claudeAiOauth":{"accessToken":"%s","refreshToken":"fixture-refresh","expiresAt":1,"scopes":["user:inference"],"subscriptionType":"max"}}\n' \
+printf '{"claudeAiOauth":{"accessToken":"%s","refreshToken":"fixture-refresh","expiresAt":4102444800000,"scopes":["user:inference"],"subscriptionType":"max"}}\n' \
   "$CLAUDE_TOKEN" > "$CLAUDE_SUBSCRIPTION"
 
 # `env -i` on purpose. This lane runs inside the orchestrator's own process tree
@@ -175,6 +175,20 @@ CLAUDE_WRONG_SHAPE="$SCRATCH/claude-wrong-shape.json"
 printf '%s\n' '{"somethingElse":true}' > "$CLAUDE_WRONG_SHAPE"
 refuses 'claude with an unknown schema' "$CLAUDE_WRONG_SHAPE" \
   ORCH_CLAUDE_CRED_FILE="$CLAUDE_WRONG_SHAPE" -- claude
+
+# Expired OAuth was the live Telegram failure behind the silent empty Claude
+# pane. Refuse before tmux is created and give the operator one actionable,
+# credential-free recovery command; launchProvider forwards this stderr to the
+# bound Telegram chat.
+CLAUDE_EXPIRED="$SCRATCH/claude-expired.json"
+printf '{"claudeAiOauth":{"accessToken":"%s","refreshToken":"fixture-refresh","expiresAt":1,"subscriptionType":"max"}}\n' \
+  "$CLAUDE_TOKEN" > "$CLAUDE_EXPIRED"
+output="$(ORCH_CLAUDE_CRED_FILE="$CLAUDE_EXPIRED" run_preflight -- claude)" && status=0 || status=$?
+(( status == 1 )) || fail "expired Claude OAuth returned $status instead of refusing"
+grep -Fq 'ERROR claude-auth-expired' <<<"$output" ||
+  fail 'expired Claude OAuth was not classified loudly for Telegram'
+grep -Fq "run 'claude' interactively and re-authenticate" <<<"$output" ||
+  fail 'expired Claude OAuth refusal did not give the operator a re-login action'
 
 # no trusted parser: with Bun unreachable the files cannot be verified
 # structurally, and unverifiable must refuse — even over a WELL-FORMED

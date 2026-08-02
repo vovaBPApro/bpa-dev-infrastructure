@@ -17,7 +17,7 @@ docker run --rm -v "$scratch/source:/src:ro" ubuntu:24.04 bash -lc '
   set -euo pipefail
   apt-get update >/dev/null
   DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    git curl ca-certificates tmux gettext-base unzip xz-utils >/dev/null
+    git curl ca-certificates tmux util-linux gettext-base unzip xz-utils >/dev/null
   git config --global --add safe.directory /src/.git
   git clone /src /work/source >/dev/null
   cd /work/source

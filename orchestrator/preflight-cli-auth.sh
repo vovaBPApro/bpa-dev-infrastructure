@@ -153,18 +153,28 @@ try {
 }
 if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) process.exit(3);
 const oauth = parsed.claudeAiOauth;
-const proven =
+const hasOauth =
   oauth !== null &&
   typeof oauth === "object" &&
   !Array.isArray(oauth) &&
   typeof oauth.accessToken === "string" &&
   oauth.accessToken.length > 0;
-process.exit(proven ? 0 : 3);
+if (!hasOauth) process.exit(3);
+if (
+  typeof oauth.expiresAt !== "number" ||
+  !Number.isFinite(oauth.expiresAt)
+) process.exit(3);
+process.exit(oauth.expiresAt > Date.now() ? 0 : 4);
 ' "$CLAUDE_CRED_FILE" || verdict=$?
   case "$verdict" in
     0) ;;
     2) refuse "$CLAUDE_CRED_FILE is unreadable or not valid JSON, so subscription auth cannot be proven" ;;
-    3) refuse "$CLAUDE_CRED_FILE carries no subscription OAuth record (unknown schema or logged out); run claude /login" ;;
+    3) refuse "$CLAUDE_CRED_FILE carries no complete subscription OAuth record (unknown schema or logged out); run claude /login" ;;
+    4)
+      printf "ERROR claude-auth-expired credential=%s; launch aborted before tmux; run 'claude' interactively and re-authenticate\n" \
+        "$CLAUDE_CRED_FILE" >&2
+      exit 1
+      ;;
     *) refuse "$CLAUDE_CRED_FILE verification failed unexpectedly (exit $verdict)" ;;
   esac
 fi

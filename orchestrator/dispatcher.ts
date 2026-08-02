@@ -33,7 +33,7 @@ async function validTerminal(path:string,row:LaneRecord):Promise<Terminal|undefi
 }
 async function stop(child:ReturnType<typeof Bun.spawn>){child.kill("SIGTERM");await Promise.race([child.exited,sleep(500)]);if(child.exitCode===null){child.kill("SIGKILL");await child.exited}}
 async function failure(store:DurableStore,row:LaneRecord,reason:string,dir:string){
-  if(row.retriesUsed<row.retryBudget)throw new Error("landed schema gap: no fenced retry/release transition");
+  if(row.retriesUsed<row.retryBudget){store.retryLane(row.id,row.leaseOwner!,row.fencingToken);return}
   const sha=Bun.spawnSync(["git","rev-parse","HEAD"]).stdout.toString().trim(), report=resolve(dir,"report.md");
   await writeFile(report,`lane: ${row.id}\nattempt: ${row.fencingToken}\ncommit: ${sha}\nresult: NO-GO\nblocker: ${reason}\n`);
   store.completeLane(row.id,row.leaseOwner!,row.fencingToken,{sha,reportPath:report,verdict:"NO-GO"});

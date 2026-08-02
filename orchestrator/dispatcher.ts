@@ -1,188 +1,46 @@
-import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { DurableStore, FencedTransitionError, type LaneRecord, type TerminalVerdict } from "../core/schema";
 
-export type MissionVerdict = "clean" | "NO-GO";
-
-export interface DispatchRow {
-  id: string;
-  state: "ready" | "claimed" | "running" | "terminal";
-  worker: string[];
-  retryBudget: number;
-  attempt: number;
-  ownerToken?: string;
-  leaseDeadline?: string;
-  workerPid?: number;
-  acknowledgement?: { at: string; attempt: number };
-  semanticProgress?: { at: string; evidencePath: string };
-  terminal?: { at: string; reportPath: string; sha: string; verdict: MissionVerdict };
-  blocker?: string;
+export interface DispatchOptions { storePath:string; runtimeDir:string; worker:string[]; leaseMs?:number; acknowledgementMs?:number; terminalMs?:number; afterSpawnBeforePersist?:(row:LaneRecord)=>void|Promise<void>; afterLaunch?:(row:LaneRecord)=>void|Promise<void> }
+type Terminal={laneId:string;attempt:number;ownerToken:string;at:string;reportPath:string;sha:string;verdict:TerminalVerdict};
+const sleep=(n:number)=>new Promise(r=>setTimeout(r,n));
+const exists=async(p:string)=>{try{await stat(p);return true}catch{return false}};
+const waitFor=async(p:string,n:number)=>{const end=Date.now()+n;do{if(await exists(p))return true;await sleep(10)}while(Date.now()<end);return exists(p)};
+const dirFor=(root:string,row:LaneRecord)=>resolve(root,row.id,`attempt-${row.fencingToken}`);
+async function validTerminal(path:string,row:LaneRecord):Promise<Terminal|undefined>{
+  try { const t=JSON.parse(await readFile(path,"utf8")) as Terminal;
+    if(typeof t!=="object"||t.laneId!==row.id||t.attempt!==row.fencingToken||t.ownerToken!==row.leaseOwner||!/^\d{4}-\d\d-\d\dT/.test(t.at)||!(["clean","NO-GO"] as unknown[]).includes(t.verdict))return;
+    if(resolve(t.reportPath)!==resolve(dirname(path),"report.md")||!(await exists(t.reportPath)))return;
+    const git=Bun.spawnSync(["git","cat-file","-e",`${t.sha}^{commit}`]); if(git.exitCode!==0)return;
+    const report=await readFile(t.reportPath,"utf8");
+    if(!report.includes(`lane: ${row.id}`)||!report.includes(`attempt: ${row.fencingToken}`)||!report.includes(`commit: ${t.sha}`)||!report.includes(`result: ${t.verdict}`))return;
+    return t;
+  } catch { return }
 }
-
-export interface DispatchSnapshot { rows: DispatchRow[] }
-
-export interface DispatchOptions {
-  storePath: string;
-  runtimeDir: string;
-  leaseMs?: number;
-  acknowledgementMs?: number;
-  terminalMs?: number;
-  now?: () => Date;
-  afterLaunch?: (row: DispatchRow) => void | Promise<void>;
+async function stop(child:ReturnType<typeof Bun.spawn>){child.kill("SIGTERM");await Promise.race([child.exited,sleep(500)]);if(child.exitCode===null){child.kill("SIGKILL");await child.exited}}
+async function failure(store:DurableStore,row:LaneRecord,reason:string,dir:string){
+  if(row.retriesUsed<row.retryBudget){store.retryLane(row.id,row.leaseOwner!,row.fencingToken);return}
+  const sha=Bun.spawnSync(["git","rev-parse","HEAD"]).stdout.toString().trim(), report=resolve(dir,"report.md");
+  await writeFile(report,`lane: ${row.id}\nattempt: ${row.fencingToken}\ncommit: ${sha}\nresult: NO-GO\nblocker: ${reason}\n`);
+  store.completeLane(row.id,row.leaseOwner!,row.fencingToken,{sha,reportPath:report,verdict:"NO-GO"});
 }
-
-const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
-const attemptDir = (runtimeDir: string, row: DispatchRow) =>
-  resolve(runtimeDir, row.id, `attempt-${row.attempt}`);
-
-async function load(path: string): Promise<DispatchSnapshot> {
-  return JSON.parse(await readFile(path, "utf8")) as DispatchSnapshot;
+export async function dispatchOnce(o:DispatchOptions):Promise<LaneRecord|undefined>{
+  const store=new DurableStore(o.storePath); try {
+    const ready=store.readyLane();if(!ready)return;
+    const owner=crypto.randomUUID(),claim=store.claimLane(ready.id,owner,o.leaseMs??30_000),row=store.getLane(ready.id)!;
+    const dir=dirFor(o.runtimeDir,row);await mkdir(dir,{recursive:true});const release=resolve(dir,"release"),ack=resolve(dir,"ack.json"),terminal=resolve(dir,"terminal.json"),artifact=resolve(dir,"artifact.txt");
+    const log=await open(resolve(dir,"worker.log"),"a");
+    const child=Bun.spawn(o.worker,{stdin:"ignore",stdout:log.fd,stderr:log.fd,env:{...process.env,DISPATCH_RELEASE_PATH:release,DISPATCH_ACK_PATH:ack,DISPATCH_TERMINAL_PATH:terminal,DISPATCH_ARTIFACT_PATH:artifact,DISPATCH_REPORT_PATH:resolve(dir,"report.md"),DISPATCH_LANE_ID:row.id,DISPATCH_ATTEMPT:String(claim.fencingToken),DISPATCH_OWNER_TOKEN:owner}});child.unref();
+    await o.afterSpawnBeforePersist?.(row); // adversarial crash hook: worker remains gated
+    store.recordWorker(row.id,owner,claim.fencingToken,child.pid);await writeFile(release,"go\n");await o.afterLaunch?.(store.getLane(row.id)!);
+    if(!(await waitFor(ack,o.acknowledgementMs??2_000))){await stop(child);await failure(store,store.getLane(row.id)!,"worker acknowledgement timed out",dir);return row}
+    const a=JSON.parse(await readFile(ack,"utf8"));if(a.attempt!==claim.fencingToken||a.ownerToken!==owner){await stop(child);await failure(store,store.getLane(row.id)!,"worker acknowledgement identity mismatch",dir);return row}
+    store.acknowledgeLane(row.id,owner,claim.fencingToken);store.recordSemanticProgress(row.id,owner,claim.fencingToken,ack);
+    if(!(await waitFor(terminal,o.terminalMs??5_000))){await stop(child);await failure(store,store.getLane(row.id)!,"worker terminal evidence timed out",dir);return row}
+    const t=await validTerminal(terminal,store.getLane(row.id)!);if(!t){await stop(child);await failure(store,store.getLane(row.id)!,"worker terminal evidence invalid",dir);return row}
+    store.completeLane(row.id,owner,claim.fencingToken,{sha:t.sha,reportPath:t.reportPath,verdict:t.verdict});return row;
+  } finally {store.close()}
 }
-
-async function save(path: string, value: DispatchSnapshot): Promise<void> {
-  const temporary = `${path}.${process.pid}.${crypto.randomUUID()}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-  await rename(temporary, path);
-}
-
-async function locked<T>(storePath: string, action: (state: DispatchSnapshot) => Promise<T>): Promise<T> {
-  const lock = `${storePath}.lock`;
-  await mkdir(dirname(storePath), { recursive: true });
-  for (let index = 0; ; index++) {
-    try {
-      await mkdir(lock);
-      break;
-    } catch (error: any) {
-      if (error?.code !== "EEXIST" || index >= 200) throw error;
-      await sleep(5);
-    }
-  }
-  try {
-    const state = await load(storePath);
-    const result = await action(state);
-    await save(storePath, state);
-    return result;
-  } finally {
-    await rm(lock, { recursive: true, force: true });
-  }
-}
-
-async function exists(path: string): Promise<boolean> {
-  try { await stat(path); return true; } catch { return false; }
-}
-
-async function claimOne(options: DispatchOptions): Promise<DispatchRow | undefined> {
-  const now = options.now?.() ?? new Date();
-  return locked(options.storePath, async (snapshot) => {
-    const row = snapshot.rows.find((candidate) => candidate.state === "ready");
-    if (!row) return undefined;
-    row.attempt += 1;
-    row.state = "claimed";
-    row.ownerToken = crypto.randomUUID();
-    row.leaseDeadline = new Date(now.getTime() + (options.leaseMs ?? 30_000)).toISOString();
-    delete row.blocker;
-    return structuredClone(row);
-  });
-}
-
-async function updateOwned(options: DispatchOptions, claimed: DispatchRow, mutate: (row: DispatchRow) => void): Promise<boolean> {
-  return locked(options.storePath, async (snapshot) => {
-    const row = snapshot.rows.find((candidate) => candidate.id === claimed.id);
-    if (!row || row.ownerToken !== claimed.ownerToken || row.attempt !== claimed.attempt) return false;
-    mutate(row);
-    return true;
-  });
-}
-
-async function waitFor(path: string, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  do {
-    if (await exists(path)) return true;
-    await sleep(10);
-  } while (Date.now() < deadline);
-  return exists(path);
-}
-
-async function failOrRetry(options: DispatchOptions, claimed: DispatchRow, reason: string): Promise<void> {
-  await updateOwned(options, claimed, (row) => {
-    row.blocker = reason;
-    delete row.ownerToken;
-    delete row.leaseDeadline;
-    if (row.attempt <= row.retryBudget) row.state = "ready";
-    else {
-      row.state = "terminal";
-      row.terminal = {
-        at: new Date().toISOString(), reportPath: "", sha: "", verdict: "NO-GO",
-      };
-    }
-  });
-}
-
-/** Claims and advances at most one row. Safe to call after dispatcher restart. */
-export async function dispatchOnce(options: DispatchOptions): Promise<DispatchRow | undefined> {
-  const claimed = await claimOne(options);
-  if (!claimed) return undefined;
-  const dir = attemptDir(options.runtimeDir, claimed);
-  await mkdir(dir, { recursive: true });
-  const ackPath = resolve(dir, "ack.json");
-  const terminalPath = resolve(dir, "terminal.json");
-  const artifactPath = resolve(dir, "artifact.txt");
-  const log = await open(resolve(dir, "worker.log"), "a");
-  const child = Bun.spawn(claimed.worker, {
-    cwd: process.cwd(), stdin: "ignore", stdout: log.fd, stderr: log.fd,
-    env: { ...process.env, DISPATCH_ACK_PATH: ackPath, DISPATCH_TERMINAL_PATH: terminalPath,
-      DISPATCH_ARTIFACT_PATH: artifactPath, DISPATCH_ATTEMPT: String(claimed.attempt) },
-  });
-  child.unref();
-  await updateOwned(options, claimed, (row) => { row.state = "running"; row.workerPid = child.pid; });
-  await options.afterLaunch?.(claimed);
-
-  if (!(await waitFor(ackPath, options.acknowledgementMs ?? 2_000))) {
-    await failOrRetry(options, claimed, "worker acknowledgement timed out");
-    return claimed;
-  }
-  const acknowledgement = JSON.parse(await readFile(ackPath, "utf8"));
-  if (acknowledgement.attempt !== claimed.attempt) {
-    await failOrRetry(options, claimed, "worker acknowledgement attempt mismatch");
-    return claimed;
-  }
-  await updateOwned(options, claimed, (row) => {
-    row.acknowledgement = acknowledgement;
-    row.semanticProgress = { at: acknowledgement.at, evidencePath: ackPath };
-  });
-
-  if (!(await waitFor(terminalPath, options.terminalMs ?? 5_000))) {
-    await failOrRetry(options, claimed, "worker terminal evidence timed out");
-    return claimed;
-  }
-  const terminal = JSON.parse(await readFile(terminalPath, "utf8"));
-  if (!(await exists(terminal.reportPath)) || !terminal.sha || !["clean", "NO-GO"].includes(terminal.verdict)) {
-    await failOrRetry(options, claimed, "worker terminal evidence invalid");
-    return claimed;
-  }
-  await updateOwned(options, claimed, (row) => {
-    row.state = "terminal";
-    row.terminal = terminal;
-    row.semanticProgress = { at: terminal.at, evidencePath: terminal.reportPath };
-    delete row.ownerToken;
-    delete row.leaseDeadline;
-  });
-  return claimed;
-}
-
-/** Reconciles evidence left by a detached worker without launching another worker. */
-export async function reconcileRunning(options: DispatchOptions): Promise<number> {
-  const snapshot = await load(options.storePath);
-  let reconciled = 0;
-  for (const row of snapshot.rows.filter((candidate) => candidate.state === "running")) {
-    const terminalPath = resolve(attemptDir(options.runtimeDir, row), "terminal.json");
-    if (!(await exists(terminalPath))) continue;
-    const terminal = JSON.parse(await readFile(terminalPath, "utf8"));
-    if (!(await exists(terminal.reportPath)) || !terminal.sha || !["clean", "NO-GO"].includes(terminal.verdict)) continue;
-    if (await updateOwned(options, row, (current) => {
-      current.state = "terminal"; current.terminal = terminal;
-      current.semanticProgress = { at: terminal.at, evidencePath: terminal.reportPath };
-      delete current.ownerToken; delete current.leaseDeadline;
-    })) reconciled++;
-  }
-  return reconciled;
-}
+/** Reconciles both pre-PID claimed rows and running rows without duplicate launch. */
+export async function reconcileRunning(o:Omit<DispatchOptions,"worker">):Promise<number>{const store=new DurableStore(o.storePath);let n=0;try{for(const row of store.lanes().filter(x=>x.state==="claimed"||x.state==="running")){const t=await validTerminal(resolve(dirFor(o.runtimeDir,row),"terminal.json"),row);if(t){try{store.completeLane(row.id,row.leaseOwner!,row.fencingToken,{sha:t.sha,reportPath:t.reportPath,verdict:t.verdict});n++}catch(e){if(!(e instanceof FencedTransitionError))throw e}}}return n}finally{store.close()}}

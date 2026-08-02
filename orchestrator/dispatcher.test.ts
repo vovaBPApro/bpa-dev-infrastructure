@@ -1,61 +1,15 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { resolve } from "node:path";
-import { dispatchOnce, reconcileRunning, type DispatchSnapshot } from "./dispatcher";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
-async function fixture(retryBudget = 0) {
-  const root = await mkdtemp(resolve(tmpdir(), "v3-dispatch-")); roots.push(root);
-  const storePath = resolve(root, "state.json");
-  const snapshot: DispatchSnapshot = { rows: [{ id: "mission-1", state: "ready", worker: [process.execPath, resolve(import.meta.dir, "../tests/fixtures/noop-worker.ts")], retryBudget, attempt: 0 }] };
-  await writeFile(storePath, JSON.stringify(snapshot));
-  return { root, storePath, runtimeDir: resolve(root, "runtime") };
-}
-
-const state = async (path: string) => JSON.parse(await readFile(path, "utf8")) as DispatchSnapshot;
-
-describe("confirmed durable dispatch", () => {
-  test("claims once, requires acknowledgement, and persists terminal evidence", async () => {
-    const options = await fixture();
-    await Promise.all([dispatchOnce(options), dispatchOnce(options)]);
-    const row = (await state(options.storePath)).rows[0];
-    expect(row.attempt).toBe(1);
-    expect(row.acknowledgement?.attempt).toBe(1);
-    expect(row.terminal?.verdict).toBe("clean");
-    expect(await readFile(row.terminal!.reportPath, "utf8")).toContain("result: clean");
-  });
-
-  test("dispatcher death leaves detached worker and restart does not duplicate it", async () => {
-    const options = await fixture();
-    const counter = resolve(options.root, "launches");
-    process.env.DISPATCH_COUNTER_PATH = counter;
-    process.env.DISPATCH_WORK_MS = "150";
-    try {
-      await expect(dispatchOnce({ ...options, afterLaunch: () => { throw new Error("dispatcher died"); } })).rejects.toThrow("dispatcher died");
-      await Bun.sleep(250);
-      expect(await reconcileRunning(options)).toBe(1);
-      expect(await dispatchOnce(options)).toBeUndefined();
-      expect((await readFile(counter, "utf8")).trim().split("\n")).toHaveLength(1);
-      expect((await state(options.storePath)).rows[0].state).toBe("terminal");
-    } finally {
-      delete process.env.DISPATCH_COUNTER_PATH; delete process.env.DISPATCH_WORK_MS;
-    }
-  });
-
-  test("acknowledgement failure retries boundedly then records loud NO-GO", async () => {
-    const options = await fixture(1);
-    const snapshot = await state(options.storePath);
-    snapshot.rows[0].worker = [process.execPath, "-e", "process.exit(0)"];
-    await writeFile(options.storePath, JSON.stringify(snapshot));
-    await dispatchOnce({ ...options, acknowledgementMs: 30 });
-    expect((await state(options.storePath)).rows[0].state).toBe("ready");
-    await dispatchOnce({ ...options, acknowledgementMs: 30 });
-    const row = (await state(options.storePath)).rows[0];
-    expect(row.state).toBe("terminal");
-    expect(row.terminal?.verdict).toBe("NO-GO");
-    expect(row.blocker).toContain("acknowledgement");
-  });
+import {afterEach,describe,expect,test} from "bun:test";
+import {mkdtemp,readFile,rm,writeFile} from "node:fs/promises";
+import {tmpdir} from "node:os";import {resolve} from "node:path";
+import {DurableStore} from "../core/schema";import {dispatchOnce,reconcileRunning} from "./dispatcher";
+const roots:string[]=[];afterEach(async()=>{delete process.env.DISPATCH_COUNTER_PATH;delete process.env.DISPATCH_WORK_MS;await Promise.all(roots.splice(0).map(x=>rm(x,{recursive:true,force:true})))});
+async function fixture(retryBudget=0,worker=[process.execPath,resolve(import.meta.dir,"../tests/fixtures/noop-worker.ts")]){const root=await mkdtemp(resolve(tmpdir(),"v3-dispatch-"));roots.push(root);const storePath=resolve(root,"state.sqlite"),s=new DurableStore(storePath);s.createMission({id:"mission-1",correlationId:"corr-1",acceptanceId:"ma-1"});s.createManager({id:"manager-1",missionId:"mission-1",parentId:"mission-1",depth:1});s.createLane({id:"lane-1",missionId:"mission-1",managerId:"manager-1",parentId:"manager-1",depth:2,retryBudget,acceptanceId:"a-1"});s.close();return{root,storePath,runtimeDir:resolve(root,"runtime"),worker}}
+const row=(p:string)=>{const s=new DurableStore(p),r=s.getLane("lane-1")!;s.close();return r};
+describe("canonical fenced dispatch",()=>{
+ test("claims once and persists schema-validated commit evidence",async()=>{const o=await fixture();await Promise.all([dispatchOnce(o),dispatchOnce(o)]);const r=row(o.storePath);expect(r.fencingToken).toBe(1);expect(r.terminalVerdict).toBe("clean");expect(await readFile(r.terminalReportPath!,"utf8")).toContain(`commit: ${r.terminalSha}`)});
+ test("ack timeout terminates original before retry can launch",async()=>{const o=await fixture(1,[process.execPath,"-e",`process.on('SIGTERM',()=>setTimeout(()=>process.exit(0),80));setInterval(()=>{},100)`]);await dispatchOnce({...o,acknowledgementMs:30});expect(row(o.storePath).state).toBe("ready");const counter=resolve(o.root,"launches");process.env.DISPATCH_COUNTER_PATH=counter;await dispatchOnce({...o,worker:[process.execPath,resolve(import.meta.dir,"../tests/fixtures/noop-worker.ts")]});expect(row(o.storePath).terminalVerdict).toBe("clean");expect((await readFile(counter,"utf8")).trim()).toBe("launch")});
+ test("worker is gated until PID is durable",async()=>{const o=await fixture();const counter=resolve(o.root,"launches");process.env.DISPATCH_COUNTER_PATH=counter;await expect(dispatchOnce({...o,afterSpawnBeforePersist:async()=>{expect(row(o.storePath).state).toBe("claimed");expect(await Bun.file(counter).exists()).toBe(false);throw new Error("crash window")}})).rejects.toThrow("crash window");expect(row(o.storePath).workerPid).toBeNull()});
+ test("reconciles a claimed row carrying authentic terminal evidence",async()=>{const o=await fixture();const s=new DurableStore(o.storePath),c=s.claimLane("lane-1","owner",30000),r=s.getLane("lane-1")!;s.close();const dir=resolve(o.runtimeDir,"lane-1",`attempt-${c.fencingToken}`);await Bun.$`mkdir -p ${dir}`;const sha=Bun.spawnSync(["git","rev-parse","HEAD"]).stdout.toString().trim(),report=resolve(dir,"report.md");await writeFile(report,`lane: lane-1\nattempt: 1\ncommit: ${sha}\nresult: clean\nblocker: none\n`);await writeFile(resolve(dir,"terminal.json"),JSON.stringify({laneId:"lane-1",attempt:1,ownerToken:"owner",at:new Date().toISOString(),reportPath:report,sha,verdict:"clean"}));expect(await reconcileRunning(o)).toBe(1);expect(row(o.storePath).terminalVerdict).toBe("clean")});
+ test("expired owner is fenced by an identified stale-lease takeover",async()=>{const o=await fixture(1),first=new DurableStore(o.storePath,()=>1000);const a=first.claimLane("lane-1","dispatcher-a",10);first.close();const second=new DurableStore(o.storePath,()=>1011),b=second.claimLane("lane-1","dispatcher-b",10);expect(b.fencingToken).toBe(a.fencingToken+1);expect(()=>second.acknowledgeLane("lane-1","dispatcher-a",a.fencingToken)).toThrow("stale or expired");second.close()});
+ test("rejects synthetic SHA, foreign report, and mismatched attempt",async()=>{for(const kind of ["synthetic","foreign","attempt"]){const o=await fixture(0,[process.execPath,resolve(import.meta.dir,"../tests/fixtures/forged-worker.ts"),kind]);await dispatchOnce(o);expect(row(o.storePath).terminalVerdict).toBe("NO-GO");expect(await readFile(row(o.storePath).terminalReportPath!,"utf8")).toContain("terminal evidence invalid")}});
 });

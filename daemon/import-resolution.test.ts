@@ -1,16 +1,24 @@
 import { expect, test } from 'bun:test';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, normalize } from 'node:path';
 
-function typescriptFiles(directory: string): string[] {
-  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
-    const path = join(directory, entry.name);
-    return entry.isDirectory()
-      ? typescriptFiles(path)
-      : entry.isFile() && path.endsWith('.ts')
-        ? [path]
-        : [];
-  });
+function trackedTypescriptFiles(): string[] {
+  const result = Bun.spawnSync(
+    ['git', '-C', import.meta.dir, 'ls-files', '--full-name', '--', '*.ts'],
+    { stdout: 'pipe', stderr: 'pipe' },
+  );
+
+  if (result.exitCode !== 0) {
+    throw new Error(`git ls-files failed: ${result.stderr.toString().trim()}`);
+  }
+
+  const repositoryRoot = join(import.meta.dir, '..');
+  return result.stdout
+    .toString()
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((file) => join(repositoryRoot, file));
 }
 
 function resolveLocalImport(importer: string, specifier: string): string | null {
@@ -22,7 +30,7 @@ test('every local import in the copied daemon slice resolves', () => {
   const unresolved: string[] = [];
   const importPattern = /(?:from\s*|import\s*\()\s*['"]([^'"]+)['"]/g;
 
-  for (const file of typescriptFiles(import.meta.dir)) {
+  for (const file of trackedTypescriptFiles()) {
     for (const match of readFileSync(file, 'utf8').matchAll(importPattern)) {
       const specifier = match[1];
       if (specifier.startsWith('.') && !resolveLocalImport(file, specifier)) {

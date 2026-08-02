@@ -16,6 +16,39 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
+test("REGRESSION W-48: journal survives restart and reboot causes dedupe on replay", async () => {
+  const path = await databasePath();
+  const store = new StateStore(path, { now: () => 2_000 });
+  const first = store.appendTickJournal({ intervalId: "2026-08-02T06:00Z/PT1M", causeId: "timer-not-fired", kind: "missed-tick", observedAt: 1_000 });
+  expect(store.appendTickJournal({ intervalId: first.intervalId, causeId: first.causeId, kind: first.kind, observedAt: 9_999 })).toEqual(first);
+  store.appendTickJournal({ intervalId: first.intervalId, causeId: "host-reboot", kind: "cause", observedAt: 1_001 });
+  expect(() => store.db.query("UPDATE tick_journal SET cause_id = 'rewritten'").run()).toThrow("append-only");
+  expect(() => store.db.query("DELETE FROM tick_journal").run()).toThrow("append-only");
+  store.close();
+
+  const restarted = new StateStore(path, { now: () => 3_000 });
+  expect(restarted.tickJournal()).toEqual([
+    first,
+    expect.objectContaining({ intervalId: first.intervalId, causeId: "host-reboot", kind: "cause" }),
+  ]);
+  restarted.close();
+});
+
+test("REGRESSION W-48: morning accounting is one-to-one and unknown intervals fail closed", async () => {
+  const store = new StateStore(await databasePath());
+  store.appendTickJournal({ intervalId: "i-1", causeId: "suspend", kind: "missed-tick", observedAt: 1_000 });
+  store.appendTickJournal({ intervalId: "i-2", causeId: "timer", kind: "missed-tick", observedAt: 1_001 });
+  expect(store.accountMissedTicks(["i-1", "i-2"])).toMatchObject({ verdict: "clean", measurement: "MEASURED", unknownIntervalIds: [] });
+  expect(store.accountMissedTicks(["i-1", "i-3"])).toMatchObject({
+    verdict: "NO-GO", measurement: "UNMEASURED", unknownIntervalIds: ["i-2"],
+    rows: [{ intervalId: "i-1", record: expect.any(Object) }, { intervalId: "i-3", record: null }],
+  });
+  store.appendTickJournal({ intervalId: "i-1", causeId: "second-cause", kind: "missed-tick", observedAt: 1_002 });
+  expect(store.accountMissedTicks(["i-1", "i-2"])).toMatchObject({ verdict: "NO-GO", measurement: "UNMEASURED" });
+  expect(() => store.accountMissedTicks(["i-1", "i-1"])).toThrow("unique");
+  store.close();
+});
+
 test("a live lease cannot be double-acquired", async () => {
   let now = 1_000;
   const store = new StateStore(await databasePath(), { now: () => now });

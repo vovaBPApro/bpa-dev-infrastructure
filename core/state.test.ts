@@ -37,16 +37,43 @@ test("REGRESSION W-48: journal survives restart and reboot causes dedupe on repl
 test("REGRESSION W-48: morning accounting is one-to-one and unknown intervals fail closed", async () => {
   const store = new StateStore(await databasePath());
   store.appendTickJournal({ intervalId: "i-1", causeId: "suspend", kind: "missed-tick", observedAt: 1_000 });
+  store.appendTickJournal({ intervalId: "i-1", causeId: "suspend", kind: "cause", observedAt: 1_000 });
   store.appendTickJournal({ intervalId: "i-2", causeId: "timer", kind: "missed-tick", observedAt: 1_001 });
+  store.appendTickJournal({ intervalId: "i-2", causeId: "timer", kind: "cause", observedAt: 1_001 });
   expect(store.accountMissedTicks(["i-1", "i-2"])).toMatchObject({ verdict: "clean", measurement: "MEASURED", unknownIntervalIds: [] });
   expect(store.accountMissedTicks(["i-1", "i-3"])).toMatchObject({
     verdict: "NO-GO", measurement: "UNMEASURED", unknownIntervalIds: ["i-2"],
-    rows: [{ intervalId: "i-1", record: expect.any(Object) }, { intervalId: "i-3", record: null }],
+    rows: [expect.objectContaining({ intervalId: "i-1", status: "MEASURED" }), expect.objectContaining({ intervalId: "i-3", status: "UNKNOWN" })],
   });
   store.appendTickJournal({ intervalId: "i-1", causeId: "second-cause", kind: "missed-tick", observedAt: 1_002 });
   expect(store.accountMissedTicks(["i-1", "i-2"])).toMatchObject({ verdict: "NO-GO", measurement: "UNMEASURED" });
   expect(() => store.accountMissedTicks(["i-1", "i-1"])).toThrow("unique");
   store.close();
+});
+
+test("REGRESSION GAP-5 r3: cause is mandatory and ambiguity/identity drift are diagnostic", async () => {
+  const store = new StateStore(await databasePath());
+  store.appendTickJournal({ intervalId: "missing", causeId: "c", kind: "missed-tick", observedAt: 1, sourceId: "source-a" });
+  expect(store.accountMissedTicks(["missing"]).rows[0].status).toBe("UNKNOWN");
+  store.appendTickJournal({ intervalId: "missing", causeId: "c", kind: "cause", observedAt: 1, sourceId: "source-b" });
+  expect(store.accountMissedTicks(["missing"]).rows[0].status).toBe("IDENTITY_DRIFT");
+  store.appendTickJournal({ intervalId: "missing", causeId: "c", kind: "cause", observedAt: 1, sourceId: "source-a" });
+  expect(store.accountMissedTicks(["missing"]).rows[0].status).toBe("AMBIGUOUS");
+  store.close();
+});
+
+test("REGRESSION GAP-5 r3: prior schema upgrades and corrupt database fails closed", async () => {
+  const path = await databasePath();
+  const legacy = new (await import("bun:sqlite")).Database(path);
+  legacy.exec("CREATE TABLE tick_journal (sequence INTEGER PRIMARY KEY, interval_id TEXT NOT NULL, cause_id TEXT NOT NULL, kind TEXT NOT NULL, observed_at INTEGER NOT NULL, created_at INTEGER NOT NULL, UNIQUE(interval_id,cause_id,kind));");
+  legacy.close();
+  const upgraded = new StateStore(path);
+  expect((upgraded.db.query("PRAGMA table_info(tick_journal)").all() as Array<{name:string}>).some((row) => row.name === "source_id")).toBe(true);
+  upgraded.db.query("INSERT INTO tick_journal(interval_id,cause_id,kind,observed_at,created_at) VALUES('legacy','legacy','cause',1,1)").run();
+  expect(upgraded.db.query("SELECT source_id FROM tick_journal WHERE interval_id='legacy'").get()).toEqual({ source_id: "legacy-untrusted" });
+  upgraded.close();
+  await Bun.write(path, "not a sqlite database");
+  expect(() => new StateStore(path)).toThrow();
 });
 
 test("a live lease cannot be double-acquired", async () => {

@@ -28,12 +28,12 @@ export type Lease = {
 };
 
 export type TickJournalKind = "cause" | "missed-tick";
-export type TickJournalInput = { intervalId: string; causeId: string; kind: TickJournalKind; observedAt: number };
+export type TickJournalInput = { intervalId: string; causeId: string; kind: TickJournalKind; observedAt: number; sourceId?: string };
 export type TickJournalRecord = TickJournalInput & { sequence: number; createdAt: number };
 export type IntervalAccounting = {
   verdict: "clean" | "NO-GO";
   measurement: "MEASURED" | "UNMEASURED";
-  rows: Array<{ intervalId: string; record: TickJournalRecord | null }>;
+  rows: Array<{ intervalId: string; status: "MEASURED" | "UNKNOWN" | "AMBIGUOUS" | "IDENTITY_DRIFT"; missedTick: TickJournalRecord | null; cause: TickJournalRecord | null }>;
   unknownIntervalIds: string[];
 };
 
@@ -213,20 +213,22 @@ export class StateStore {
     if (input.kind !== "cause" && input.kind !== "missed-tick") throw new StateError("invalid tick journal kind");
     if (!Number.isSafeInteger(input.observedAt) || input.observedAt < 0) throw new StateError("observed at must be a non-negative integer");
     return this.transaction(() => {
-      this.db.query(`INSERT INTO tick_journal (interval_id, cause_id, kind, observed_at, created_at)
-        VALUES (?, ?, ?, ?, ?) ON CONFLICT(interval_id, cause_id, kind) DO NOTHING`).run(
-          input.intervalId, input.causeId, input.kind, input.observedAt, this.now(),
+      const sourceId = input.sourceId ?? "legacy-untrusted";
+      this.nonEmpty(sourceId, "source id");
+      this.db.query(`INSERT INTO tick_journal (interval_id, cause_id, kind, observed_at, created_at, source_id)
+        VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(interval_id, cause_id, kind, source_id) DO NOTHING`).run(
+          input.intervalId, input.causeId, input.kind, input.observedAt, this.now(), sourceId,
         );
-      return this.tickJournal().find((row) => row.intervalId === input.intervalId && row.causeId === input.causeId && row.kind === input.kind)!;
+      return this.tickJournal().find((row) => row.intervalId === input.intervalId && row.causeId === input.causeId && row.kind === input.kind && row.sourceId === sourceId)!;
     });
   }
 
   tickJournal(): TickJournalRecord[] {
-    return (this.db.query("SELECT sequence, interval_id, cause_id, kind, observed_at, created_at FROM tick_journal ORDER BY sequence").all() as Array<{
-      sequence: number; interval_id: string; cause_id: string; kind: TickJournalKind; observed_at: number; created_at: number;
+    return (this.db.query("SELECT sequence, interval_id, cause_id, kind, observed_at, created_at, source_id FROM tick_journal ORDER BY sequence").all() as Array<{
+      sequence: number; interval_id: string; cause_id: string; kind: TickJournalKind; observed_at: number; created_at: number; source_id: string;
     }>).map((row) => ({
       sequence: row.sequence, intervalId: row.interval_id, causeId: row.cause_id,
-      kind: row.kind, observedAt: row.observed_at, createdAt: row.created_at,
+      kind: row.kind, observedAt: row.observed_at, createdAt: row.created_at, sourceId: row.source_id,
     }));
   }
 
@@ -234,14 +236,21 @@ export class StateStore {
     if (new Set(expectedIntervalIds).size !== expectedIntervalIds.length || expectedIntervalIds.some((id) => !id)) {
       throw new StateError("expected interval ids must be non-empty and unique");
     }
-    const missed = this.tickJournal().filter((row) => row.kind === "missed-tick");
+    const journal = this.tickJournal();
+    const missed = journal.filter((row) => row.kind === "missed-tick");
     const expected = new Set(expectedIntervalIds);
     const unknownIntervalIds = [...new Set(missed.filter((row) => !expected.has(row.intervalId)).map((row) => row.intervalId))].sort();
     const rows = expectedIntervalIds.map((intervalId) => {
-      const matches = missed.filter((row) => row.intervalId === intervalId);
-      return { intervalId, record: matches.length === 1 ? matches[0] : null };
+      const misses = missed.filter((row) => row.intervalId === intervalId);
+      const causes = journal.filter((row) => row.kind === "cause" && row.intervalId === intervalId);
+      let status: "MEASURED" | "UNKNOWN" | "AMBIGUOUS" | "IDENTITY_DRIFT" = "MEASURED";
+      if (misses.length !== 1 || causes.length === 0) status = "UNKNOWN";
+      else if (causes.length !== 1) status = "AMBIGUOUS";
+      else if (misses[0].causeId !== causes[0].causeId || misses[0].sourceId !== causes[0].sourceId) status = "IDENTITY_DRIFT";
+      else if (causes[0].causeId.startsWith("UNKNOWN:")) status = "UNKNOWN";
+      return { intervalId, status, missedTick: misses.length === 1 ? misses[0] : null, cause: causes.length === 1 ? causes[0] : null };
     });
-    const measured = unknownIntervalIds.length === 0 && rows.every((row) => row.record !== null);
+    const measured = unknownIntervalIds.length === 0 && rows.every((row) => row.status === "MEASURED");
     return { verdict: measured ? "clean" : "NO-GO", measurement: measured ? "MEASURED" : "UNMEASURED", rows, unknownIntervalIds };
   }
 
@@ -252,10 +261,15 @@ export class StateStore {
       CREATE TABLE IF NOT EXISTS leases (id INTEGER PRIMARY KEY, lease_key TEXT NOT NULL, owner TEXT NOT NULL, fencing_token INTEGER NOT NULL, expires_at INTEGER NOT NULL, released_at INTEGER, UNIQUE(lease_key, fencing_token));
       CREATE INDEX IF NOT EXISTS leases_current_idx ON leases(lease_key, released_at, expires_at);
       CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, data_json TEXT NOT NULL, created_at INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS tick_journal (sequence INTEGER PRIMARY KEY, interval_id TEXT NOT NULL, cause_id TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('cause','missed-tick')), observed_at INTEGER NOT NULL, created_at INTEGER NOT NULL, UNIQUE(interval_id, cause_id, kind));
+      CREATE TABLE IF NOT EXISTS tick_journal (sequence INTEGER PRIMARY KEY, interval_id TEXT NOT NULL, cause_id TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('cause','missed-tick')), observed_at INTEGER NOT NULL, created_at INTEGER NOT NULL, source_id TEXT NOT NULL DEFAULT 'legacy-untrusted', UNIQUE(interval_id, cause_id, kind, source_id));
+      CREATE TABLE IF NOT EXISTS tick_producer_state (producer_id TEXT PRIMARY KEY, interval_number INTEGER NOT NULL, boot_id TEXT NOT NULL, updated_at INTEGER NOT NULL);
       CREATE TRIGGER IF NOT EXISTS tick_journal_no_update BEFORE UPDATE ON tick_journal BEGIN SELECT RAISE(ABORT, 'tick journal is append-only'); END;
       CREATE TRIGGER IF NOT EXISTS tick_journal_no_delete BEFORE DELETE ON tick_journal BEGIN SELECT RAISE(ABORT, 'tick journal is append-only'); END;
     `);
+    const columns = this.db.query("PRAGMA table_info(tick_journal)").all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === "source_id")) {
+      this.db.exec("ALTER TABLE tick_journal ADD COLUMN source_id TEXT NOT NULL DEFAULT 'legacy-untrusted'");
+    }
   }
 
   private transaction<T>(work: () => T): T {

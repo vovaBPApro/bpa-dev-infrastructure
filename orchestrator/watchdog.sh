@@ -41,6 +41,7 @@ LAUNCH_SCRIPT="${ORCH_LAUNCH_SCRIPT:-$SCRIPT_DIR/launch.sh}"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MISSION_CLI="${ORCH_MISSION_CLI:-$REPO_DIR/core/mission-cli.ts}"
 STATE_DB="${ORCH_STATE_DB:-$REPO_DIR/runtime/state.db}"
+TICK_JOURNAL_CLI="${ORCH_TICK_JOURNAL_CLI:-$REPO_DIR/core/tick-journal-cli.ts}"
 LEASE_FILE="${ORCH_LEASE_FILE:-$RUNTIME_DIR/orchestrator.lease}"
 # The watchdog is the ONLY thing that renews the orchestrator lease, so the TTL
 # it renews with has to outlive its own tick interval — see the lease fence
@@ -158,6 +159,9 @@ validate_bounded_knob HEARTBEAT_MAX_AGE 5 604800 1200
 validate_bounded_knob LIVENESS_MAX_AGE 15 86400 120
 validate_bounded_knob LEASE_TTL_MS 1000 86400000 180000
 validate_bounded_knob WATCHDOG_INTERVAL_S 10 86400 60
+INFRA_STATE_DB="$STATE_DB" "${BUN_BIN:-bun}" "$TICK_JOURNAL_CLI" reconcile \
+  --producer bpa-orchestrator-watchdog --cadence-ms "$((WATCHDOG_INTERVAL_S * 1000))" \
+  --invocation-id "${INVOCATION_ID:-manual-$$}" >/dev/null
 validate_bounded_knob DOCKER_STALE_TAG_KEEP 1 1000 3
 validate_bounded_knob RESTART_FAILURE_ALERT_AFTER 1 100 3
 validate_bounded_knob RESTART_BACKOFF_CAP_S 10 86400 900

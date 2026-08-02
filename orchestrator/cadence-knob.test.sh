@@ -29,8 +29,10 @@ INSTALL_SH="$REPO_DIR/bootstrap/install.sh"
 # Wrong-session regression: render the canonical units, load their real
 # EnvironmentFile, and execute both production resolvers. Static template grep
 # alone can pass while one script resolves a different runtime boundary.
+# shellcheck disable=SC2016
 grep -Fq 'Environment=ORCH_CONFIG_FILE=$ENV_FILE' "$SERVICE_TEMPLATE" ||
   fail 'installed watchdog does not source the canonical launcher config'
+# shellcheck disable=SC2016
 grep -Fq 'Environment=ORCH_CONFIG_FILE=$ENV_FILE' "$LAUNCHER_TEMPLATE" ||
   fail 'installed launcher does not source the canonical config'
 grep -Eq '^ORCH_SESSION=[^[:space:]]+$' "$TEMPLATE" ||

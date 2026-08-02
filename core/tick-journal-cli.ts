@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { StateStore } from "./state";
-import { currentWatchdogProvenance, installedWatchdogProvenance } from "./watchdog-provenance";
+import { currentWatchdogProvenance, currentInstalledWatchdogProvenance } from "./watchdog-provenance";
 
 const [command, ...args] = process.argv.slice(2);
 const option = (name: string): string | undefined => {
@@ -63,7 +63,7 @@ try {
   } else if (command === "account") {
     const producer = store.db.query("SELECT invocation_id FROM tick_producer_state WHERE producer_id = 'bpa-orchestrator-watchdog'").get() as { invocation_id: string } | null;
     if (!producer) throw new Error("UNMEASURED: authenticated watchdog producer epoch absent");
-    const identity = installedWatchdogProvenance(producer.invocation_id);
+    const identity = currentInstalledWatchdogProvenance(producer.invocation_id);
     const intervals = option("--all") !== undefined
       ? [...new Set(store.tickJournal().map((row) => row.intervalId))]
       : required("--intervals").split(",").filter(Boolean);

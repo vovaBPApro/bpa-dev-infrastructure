@@ -40,3 +40,16 @@ test("REGRESSION GAP-5 r5: symlinked and drifted installed units remain UNMEASUR
   expect(() => verifyWatchdogSnapshot(snapshot, repoRoot, { ...io, realpath: () => "/tmp/copied.service" })).toThrow("UNMEASURED");
   expect(() => verifyWatchdogSnapshot(snapshot, repoRoot, { ...io, read: () => `${base}\nEnvironment=DRIFT=1\n` })).toThrow("UNMEASURED");
 });
+
+test("REGRESSION GAP-5 r6: historical accounting does not require a fabricated process cgroup", () => {
+  expect(verifyWatchdogSnapshot({ ...snapshot, processCgroup: undefined }, repoRoot, { ...io, requireProcessCgroup: false, historicalOneshot: true })).toMatchObject({
+    invocationId: snapshot.invocationId,
+  });
+});
+
+test("REGRESSION GAP-5 r6: historical accounting measures and rejects inactive oneshot state", () => {
+  const historical = { ...snapshot, processCgroup: undefined };
+  for (const mutation of [{ activeState: "inactive" }, { activeState: "failed" }]) {
+    expect(() => verifyWatchdogSnapshot({ ...historical, ...mutation }, repoRoot, { ...io, requireProcessCgroup: false, historicalOneshot: true })).toThrow("UNMEASURED");
+  }
+});

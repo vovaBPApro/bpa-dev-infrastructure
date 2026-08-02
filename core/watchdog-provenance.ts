@@ -19,6 +19,8 @@ export type SystemdSnapshot = {
   controlGroup: string;
   fragmentPath: string;
   activeState: string;
+  result?: string;
+  execMainStatus?: string;
   processCgroup?: string;
 };
 
@@ -26,16 +28,23 @@ type VerificationIo = {
   canonicalFragment?: string;
   read?: (path: string) => string;
   realpath?: (path: string) => string;
-  allowInactive?: boolean;
+  requireProcessCgroup?: boolean;
+  historicalOneshot?: boolean;
+  expectedUnit?: string;
 };
 
 export function verifyWatchdogSnapshot(snapshot: SystemdSnapshot, repoRoot: string, io: VerificationIo = {}): WatchdogProvenance {
-  if (snapshot.unitName !== WATCHDOG_UNIT) throw new Error("UNMEASURED: process is not the tracked watchdog unit");
+  const expectedUnit = io.expectedUnit ?? WATCHDOG_UNIT;
+  if (snapshot.unitName !== expectedUnit) throw new Error("UNMEASURED: process is not the tracked watchdog unit");
   if (!/^[0-9a-f]{32}$/.test(snapshot.invocationId)) throw new Error("UNMEASURED: systemd invocation identity unavailable");
-  if (!io.allowInactive && snapshot.activeState !== "activating" && snapshot.activeState !== "active") throw new Error("UNMEASURED: watchdog unit is not active");
-  if (!io.allowInactive && (!snapshot.controlGroup || snapshot.processCgroup !== snapshot.controlGroup)) throw new Error("UNMEASURED: process cgroup is not the active unit cgroup");
+  if (io.historicalOneshot) {
+    if (snapshot.activeState !== "activating" && snapshot.activeState !== "active") {
+      throw new Error("UNMEASURED: watchdog producer epoch is not currently active");
+    }
+  } else if (snapshot.activeState !== "activating" && snapshot.activeState !== "active") throw new Error("UNMEASURED: watchdog unit is not active");
+  if ((io.requireProcessCgroup ?? true) && (!snapshot.controlGroup || snapshot.processCgroup !== snapshot.controlGroup)) throw new Error("UNMEASURED: process cgroup is not the active unit cgroup");
 
-  const canonicalFragment = io.canonicalFragment ?? `/etc/systemd/system/${WATCHDOG_UNIT}`;
+  const canonicalFragment = io.canonicalFragment ?? `/etc/systemd/system/${expectedUnit}`;
   if (snapshot.fragmentPath !== canonicalFragment || (io.realpath ?? realpathSync)(snapshot.fragmentPath) !== canonicalFragment) {
     throw new Error("UNMEASURED: watchdog fragment is copied, linked, or outside the installed boundary");
   }
@@ -46,12 +55,13 @@ export function verifyWatchdogSnapshot(snapshot: SystemdSnapshot, repoRoot: stri
   const installedRoot = exec[1];
   const template = readFileSync(join(repoRoot, "bootstrap/units/bpa-orchestrator-watchdog.service.in"), "utf8")
     .replaceAll("$INSTALL_ROOT", installedRoot)
-    .replaceAll("$ENV_FILE", environment[1]);
+    .replaceAll("$ENV_FILE", environment[1])
+    .replaceAll(WATCHDOG_UNIT, expectedUnit);
   if (installed !== template) throw new Error("UNMEASURED: installed watchdog unit digest differs from the tracked render");
 
   return {
     producerId: "bpa-orchestrator-watchdog",
-    unitName: WATCHDOG_UNIT,
+    unitName: expectedUnit as typeof WATCHDOG_UNIT,
     unitFingerprint: createHash("sha256").update(installed).digest("hex"),
     invocationId: snapshot.invocationId,
     controlGroup: snapshot.controlGroup,
@@ -61,6 +71,7 @@ export function verifyWatchdogSnapshot(snapshot: SystemdSnapshot, repoRoot: stri
 function properties(unitName: string): Record<string, string> {
   const result = Bun.spawnSync([SYSTEMCTL, "show", unitName,
     "--property=InvocationID", "--property=ControlGroup", "--property=FragmentPath", "--property=ActiveState",
+    "--property=Result", "--property=ExecMainStatus",
     "--no-pager"]);
   if (result.exitCode !== 0) throw new Error("UNMEASURED: systemd did not authenticate the watchdog unit");
   return Object.fromEntries(result.stdout.toString().trim().split("\n").map((line) => {
@@ -71,30 +82,38 @@ function properties(unitName: string): Record<string, string> {
 
 export function currentWatchdogProvenance(): WatchdogProvenance {
   const repoRoot = resolve(dirname(import.meta.dir));
+  const unitName = process.env.ORCH_WATCHDOG_UNIT ?? WATCHDOG_UNIT;
+  const fragmentPath = process.env.ORCH_WATCHDOG_FRAGMENT ?? `/etc/systemd/system/${unitName}`;
   const processCgroup = readFileSync("/proc/self/cgroup", "utf8").split("\n")
-    .map((line) => line.slice(line.lastIndexOf(":") + 1)).find((path) => basename(path) === WATCHDOG_UNIT);
+    .map((line) => line.slice(line.lastIndexOf(":") + 1)).find((path) => basename(path) === unitName);
   if (!processCgroup) throw new Error("UNMEASURED: direct CLI is outside the watchdog systemd cgroup");
-  const value = properties(WATCHDOG_UNIT);
+  const value = properties(unitName);
   return verifyWatchdogSnapshot({
-    unitName: WATCHDOG_UNIT,
+    unitName,
     invocationId: value.InvocationID ?? "",
     controlGroup: value.ControlGroup ?? "",
     fragmentPath: value.FragmentPath ?? "",
     activeState: value.ActiveState ?? "",
+    result: value.Result ?? "",
+    execMainStatus: value.ExecMainStatus ?? "",
     processCgroup,
-  }, repoRoot);
+  }, repoRoot, { canonicalFragment: fragmentPath, expectedUnit: unitName });
 }
 
-export function installedWatchdogProvenance(invocationId: string): WatchdogProvenance {
+export function currentInstalledWatchdogProvenance(storedInvocationId: string): WatchdogProvenance {
   const repoRoot = resolve(dirname(import.meta.dir));
-  const value = properties(WATCHDOG_UNIT);
-  const controlGroup = value.ControlGroup ?? "";
+  const unitName = process.env.ORCH_WATCHDOG_UNIT ?? WATCHDOG_UNIT;
+  const fragmentPath = process.env.ORCH_WATCHDOG_FRAGMENT ?? `/etc/systemd/system/${unitName}`;
+  const value = properties(unitName);
+  const currentInvocationId = value.InvocationID ?? "";
+  if (currentInvocationId !== storedInvocationId) throw new Error("UNMEASURED: stored watchdog producer epoch is stale");
   return verifyWatchdogSnapshot({
-    unitName: WATCHDOG_UNIT,
-    invocationId,
-    controlGroup,
+    unitName,
+    invocationId: currentInvocationId,
+    controlGroup: value.ControlGroup ?? "",
     fragmentPath: value.FragmentPath ?? "",
     activeState: value.ActiveState ?? "",
-    processCgroup: controlGroup,
-  }, repoRoot, { allowInactive: true });
+    result: value.Result ?? "",
+    execMainStatus: value.ExecMainStatus ?? "",
+  }, repoRoot, { canonicalFragment: fragmentPath, expectedUnit: unitName, requireProcessCgroup: false, historicalOneshot: true });
 }

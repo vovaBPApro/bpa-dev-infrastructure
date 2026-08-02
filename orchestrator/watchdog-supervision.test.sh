@@ -264,12 +264,12 @@ new_case restart-failure-announced
 export ORCH_TEST_SESSION_ALIVE=0
 export ORCH_TEST_LAUNCH_STATUS=3
 export ORCH_RESTART_FAILURE_ALERT_AFTER=3
-! ORCH_WATCHDOG_INTERVAL=10 ORCH_WATCHDOG_NOW=100 tick
+if ORCH_WATCHDOG_INTERVAL=10 ORCH_WATCHDOG_NOW=100 tick; then exit 1; fi
 outbox_has "NUDGE watchdog-restart-failed session=$ORCH_SESSION"
 assert_actions 1 0
-! ORCH_WATCHDOG_INTERVAL=10 ORCH_WATCHDOG_NOW=110 tick
+if ORCH_WATCHDOG_INTERVAL=10 ORCH_WATCHDOG_NOW=110 tick; then exit 1; fi
 assert_actions 2 0
-! ORCH_WATCHDOG_INTERVAL=10 ORCH_WATCHDOG_NOW=130 tick
+if ORCH_WATCHDOG_INTERVAL=10 ORCH_WATCHDOG_NOW=130 tick; then exit 1; fi
 assert_actions 3 0
 outbox_has "ALERT orchestrator-recovery-failed session=$ORCH_SESSION consecutive=3"
 log_has 'WATCHDOG NO-GO reason=restart-failed'
@@ -342,8 +342,10 @@ cp "$SCRIPT_DIR/lib.sh" "$SCRIPT_DIR/knobs.sh" "$SCRIPT_DIR/proc-identity.sh" "$
 sed 's/\^\[0-9\]{1,10}\$/^[0-9]{1,11}$/; s/<= 9999999999/<= 10000000000/' \
   "$SCRIPT_DIR/watchdog.sh" > "$mutant_watchdog"
 chmod +x "$mutant_watchdog"
+# shellcheck disable=SC2016
 grep -Fq '[[ "$value" =~ ^[0-9]{1,11}$ ]]' "$mutant_watchdog" ||
   fail 'last_restart mutation was not applied to production parser'
+# shellcheck disable=SC2016
 grep -Fq '(( 10#$value <= 10000000000 ))' "$mutant_watchdog" ||
   fail 'last_restart cap mutation was not applied to production parser'
 new_case restart-state-adjacent-mutation-red
@@ -358,7 +360,7 @@ new_case restart-state-failure-boundary
 export ORCH_TEST_SESSION_ALIVE=0
 export ORCH_TEST_LAUNCH_STATUS=3
 printf 'version=1\nlast_restart=1\nconsecutive_failures=31\nalerted=1\n' > "$ORCH_RESTART_STATE_FILE"
-! ORCH_WATCHDOG_INTERVAL=10 ORCH_RESTART_BACKOFF_CAP_S=10 ORCH_WATCHDOG_NOW=500 tick
+if ORCH_WATCHDOG_INTERVAL=10 ORCH_RESTART_BACKOFF_CAP_S=10 ORCH_WATCHDOG_NOW=500 tick; then exit 1; fi
 assert_actions 1 0
 grep -Fxq 'consecutive_failures=31' "$ORCH_RESTART_STATE_FILE" ||
   fail 'accepted failure boundary was not safely saturated during recovery'

@@ -32,7 +32,6 @@ FIRST="$(git -C "$FIXTURE_REPO" rev-parse HEAD)"
 printf 'two\n' > "$FIXTURE_REPO/two"
 git -C "$FIXTURE_REPO" add two
 git -C "$FIXTURE_REPO" commit -qm 'другий коміт'
-HEAD="$(git -C "$FIXTURE_REPO" rev-parse HEAD)"
 printf '%s\n' "$FIRST" > "$WATERMARK"
 
 cat > "$SCRATCH/bootstrap.sh" <<'EOF'
@@ -63,22 +62,15 @@ run_morning() {
     BUN_BIN="$BUN_PATH" "$SCRIPT_DIR/morning.sh" "$@"
 }
 
-assert run_morning
-assert contains 'Що нового' "$OUTBOX"
-assert contains 'Активні місії / лейни / lease-и' "$OUTBOX"
-assert contains 'Готовність' "$OUTBOX"
-assert contains 'Що потестити' "$OUTBOX"
-assert contains 'другий коміт' "$OUTBOX"
-assert contains 'SKIP — stand smoke (docker daemon unavailable)' "$OUTBOX"
-assert contains 'PASS — system systemd (system manager available)' "$OUTBOX"
-assert contains 'PASS — disk pressure (pct=' "$OUTBOX"
-assert contains 'FAIL — watchdog missed-tick journal (UNKNOWN/UNMEASURED or corrupt:' "$OUTBOX"
-[[ "$(<"$WATERMARK")" == "$HEAD" ]] || fail 'watermark did not advance'
+assert_not run_morning
+[[ ! -e "$OUTBOX" ]] || fail 'failed readiness delivered an outbox'
+[[ "$(<"$WATERMARK")" == "$FIRST" ]] || fail 'failed readiness advanced the watermark'
 
 rm -f "$OUTBOX"
-DRY="$(run_morning --dry-run)"
+DRY="$(run_morning --dry-run 2>/dev/null || true)"
 [[ ! -e "$OUTBOX" ]] || fail 'dry-run wrote outbox'
 printf '%s\n' "$DRY" | grep -Fq 'Ранковий звіт BPA' || fail 'dry-run did not print digest'
+printf '%s\n' "$DRY" | grep -Fq 'FAIL — watchdog missed-tick journal (UNKNOWN/UNMEASURED or corrupt:' || fail 'dry-run hid unmeasured journal'
 
 printf 'old complete message\n' > "$OUTBOX"
 assert_not env MORNING_INJECT_FAILURE=before-mv PATH="$BIN:$PATH" ORCH_RUNTIME_DIR="$RUNTIME" MORNING_OUTBOX_FILE="$OUTBOX" MORNING_WATERMARK_FILE="$WATERMARK" \

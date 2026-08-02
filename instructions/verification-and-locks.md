@@ -11,6 +11,25 @@ floor-line: Green is fail-closed — never relabel a failure as a warning; missi
 
 # Verification and Regression Locks
 
+## Infrastructure verification is the highest bar
+
+Infrastructure changes use the repository's highest available verification
+level. The landing path must inventory every applicable suite from tracked
+repository files; a coder-selected command list and files visible only in an
+ignored worktree are not an authoritative inventory. Every change is reverified
+at the landed integration boundary.
+
+A missing, skipped, flaky, timed-out, partial, or unverifiable result is
+`NO-GO`, never clean. Runtime is not authority to omit coverage: make slow
+suites hermetic, isolated, parallel, or otherwise faster without weakening the
+required behavior. Runtime-dependent suites use disposable stands and retain
+teardown and rollback evidence.
+
+Changes to the evidence gate require independent Tier-A review. Preserve
+fail-before evidence for every regression class the gate previously omitted,
+including launcher regressions, and prove the final mechanism from a clean
+clone with exact pre-merge and post-merge verification evidence.
+
 - Ship every feature with automated tests for its required behavior, important
   edges, and error paths. Do not ship new production behavior without tests.
 - Ship every bug fix with a named regression lock. Prove the lock fails against

@@ -16,8 +16,10 @@
 #     stores a tokens object (access_token/id_token) and NO populated
 #     OPENAI_API_KEY; the API-key login path stores OPENAI_API_KEY instead.
 #   * claude: ~/.claude/.credentials.json written by the CLI's /login —
-#     subscription OAuth stores a claudeAiOauth object with a non-empty
-#     accessToken; API-key auth writes no such object.
+#     subscription OAuth stores a claudeAiOauth object. A current access token
+#     is immediately usable; an expired access token remains usable when the
+#     record carries a non-empty, unexpired refresh credential that the CLI can
+#     exchange automatically on startup. API-key auth writes no such object.
 # Both files are read STRUCTURALLY, with Bun as the trusted parser. Grep on
 # JSON cannot tell a populated key from the literal string appearing elsewhere
 # in the document, so if Bun is unavailable the gate refuses rather than
@@ -153,18 +155,30 @@ try {
 }
 if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) process.exit(3);
 const oauth = parsed.claudeAiOauth;
-const hasOauth =
+const hasAccess =
   oauth !== null &&
   typeof oauth === "object" &&
   !Array.isArray(oauth) &&
   typeof oauth.accessToken === "string" &&
   oauth.accessToken.length > 0;
-if (!hasOauth) process.exit(3);
+if (!hasAccess) process.exit(3);
 if (
   typeof oauth.expiresAt !== "number" ||
   !Number.isFinite(oauth.expiresAt)
 ) process.exit(3);
-process.exit(oauth.expiresAt > Date.now() ? 0 : 4);
+if (oauth.expiresAt > Date.now()) process.exit(0);
+
+// An expired access token is not an expired login. Claude CLI refreshes it on
+// startup when the persisted OAuth record still has a live refresh credential.
+// Only trust the refresh path when every field needed to establish it is
+// present and structurally valid; otherwise fail closed as unknown/logged out.
+if (
+  typeof oauth.refreshToken !== "string" ||
+  oauth.refreshToken.length === 0 ||
+  typeof oauth.refreshTokenExpiresAt !== "number" ||
+  !Number.isFinite(oauth.refreshTokenExpiresAt)
+) process.exit(3);
+process.exit(oauth.refreshTokenExpiresAt > Date.now() ? 0 : 4);
 ' "$CLAUDE_CRED_FILE" || verdict=$?
   case "$verdict" in
     0) ;;

@@ -1,0 +1,469 @@
+#!/usr/bin/env bash
+# Regression lock: the watchdog's supervision behaviour must match what the
+# operator is TOLD it does.
+#
+# Four losses restored here, each verified against the reference implementation
+# in migration-prep/reference-daemon/tools/claude-telegram-daemon/:
+#
+#   A. /done rest. daemon/server.ts writes an `orchestrator-done` sentinel and
+#      answers the operator "✅ Готово. Watchdog спить (квоту не палить)". No
+#      code anywhere read that file, so the reassurance was false and the
+#      watchdog kept nudging and restarting. The reference checked it first and
+#      exited (reference watchdog :35, :108-111).
+#   B. Restart cooldown. Every tick called `launch.sh start` unconditionally, at
+#      the installed 60s cadence (install-watchdog.sh). The reference had a
+#      900s/1800s cooldown on a 600s timer (:44-55, :203-217) — we had dropped
+#      the anti-thrash AND made the tick 10x faster, i.e. a restart storm that
+#      burns provider quota.
+#   C. Restart visibility. The reference sent restarting / restarted / failed to
+#      Telegram (:206-211). Ours only wrote a log line nobody reads, so the
+#      operator's orchestrator could be killed and relaunched all night in
+#      silence.
+#   E. Daemon health. The reference probed the daemon /health (:130-134). Ours
+#      had no probe at all, so a dead daemon — which owns the Telegram token AND
+#      drains this very outbox — was invisible.
+#
+# The kill/restart path is fully shimmed: tmux is a recorder and launch.sh is
+# replaced by a scripted stub, so no real session is ever touched.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+DAEMON_SERVER_SRC="${ORCH_DAEMON_SERVER_SRC:-$REPO_DIR/daemon/server.ts}"
+
+# This recovery lane is reviewed before the independently owned Telegram lane
+# is integrated, so its executable daemon boundary does not exist at this SHA.
+# Keep that seam explicit and grep-able; all other supervision locks still run
+# once the provider is present (or supplied through ORCH_DAEMON_SERVER_SRC).
+if [[ ! -f "$DAEMON_SERVER_SRC" ]]; then
+  printf 'SKIP: watchdog supervision transport boundary requires daemon/server.ts from v3-telegram; integrator must remove this guard after Telegram lands\n'
+  exit 0
+fi
+
+SCRATCH="$(mktemp -d)"
+SHIM="$SCRATCH/bin"
+cleanup() { rm -rf "$SCRATCH"; return 0; }
+trap cleanup EXIT
+mkdir -p "$SHIM"
+
+BUN_BIN="${BUN_BIN:-$(command -v bun)}"
+export BUN_BIN
+
+fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+
+# ── Shims ───────────────────────────────────────────────────────────────────
+# ORCH_TEST_SESSION_ALIVE drives session health, so "dead session" is reachable
+# without killing anything. kill-session is recorded, never performed.
+cat > "$SHIM/tmux" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  has-session) [[ "${ORCH_TEST_SESSION_ALIVE:-1}" == 1 ]] ;;
+  list-panes) ps -o ppid= -p "$PPID" | tr -d ' ' ;;
+  kill-session) printf 'kill-session %s\n' "${3:-}" >> "${ORCH_TEST_TMUX_LOG:?}" ;;
+  *) exit 0 ;;
+esac
+EOF
+cat > "$SHIM/df" <<'EOF'
+#!/usr/bin/env bash
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+printf 'fixture 100 10 90 10%% /\n'
+EOF
+# Scripted launcher: records every action and returns ORCH_TEST_LAUNCH_STATUS,
+# so both the success and the failure branch of a restart are exercised.
+cat > "$SCRATCH/launch-shim.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >> "${ORCH_TEST_ACTIONS:?}"
+[[ -z "${ORCH_TEST_LAUNCH_SLEEP:-}" ]] || sleep "$ORCH_TEST_LAUNCH_SLEEP"
+exit "${ORCH_TEST_LAUNCH_STATUS:-0}"
+EOF
+# curl shim: never leaves the box. ORCH_TEST_DAEMON_UP decides the verdict.
+cat > "$SHIM/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${ORCH_TEST_CURL_LOG:?}"
+[[ "${ORCH_TEST_DAEMON_UP:-1}" == 1 ]]
+EOF
+cat > "$SCRATCH/daemon-health-shim.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "${TELEGRAM_DAEMON_HEALTH_URL:?}" >> "${ORCH_TEST_CURL_LOG:?}"
+[[ "${ORCH_TEST_DAEMON_UP:-1}" == 1 ]]
+EOF
+chmod +x "$SHIM/tmux" "$SHIM/df" "$SHIM/curl" "$SCRATCH/launch-shim.sh" "$SCRATCH/daemon-health-shim.sh"
+export PATH="$SHIM:$PATH"
+
+# ── Live-state isolation ────────────────────────────────────────────────────
+# A coder lane inherits the orchestrator's whole ORCH_* surface. Each of these
+# is env-derived inside watchdog.sh and each override wins over
+# ORCH_RUNTIME_DIR, so an unset here resolves to the operator's REAL file: the
+# live lease, the live heartbeat, the live nudge outbox the daemon forwards to
+# Telegram, the live state DB, and — new in this suite — the DAEMON's `/done`
+# sentinel, which is not under ORCH_RUNTIME_DIR at all.
+export ORCH_CONFIG_FILE="$SCRATCH/no-runtime.env"
+export ORCH_INSTALL_ROOT="$SCRATCH"
+export ORCH_INSTANCE_LOCK_FILE="$SCRATCH/instance.lock"
+export ORCH_SINGLETON_LOCK_FILE="$SCRATCH/orchestrator.singleton.lock"
+export ORCH_LOCK_FILE="$SCRATCH/launch.lock"
+export ORCH_LAUNCH_SCRIPT="$SCRATCH/launch-shim.sh"
+export ORCH_DAEMON_MCP_HEALTH_CHECK="$SCRATCH/daemon-health-shim.sh"
+export ORCH_TEST_ACTIONS="$SCRATCH/actions"
+export ORCH_TEST_TMUX_LOG="$SCRATCH/tmux.log"
+export ORCH_TEST_CURL_LOG="$SCRATCH/curl.log"
+export ORCH_SESSION="watchdog-supervision-test"
+export ORCH_WORK_DIR="$SCRATCH"
+export DISK_ALERT_PCT=99
+export ORCH_HEARTBEAT_MAX_AGE=100000
+unset ORCH_MISSION_CLI ORCH_FENCING_TOKEN ORCH_LEASE_OWNER ORCH_PROVIDER
+unset ORCH_WATCHDOG_NOW ORCH_WATCHDOG_NOW_MS
+
+assert_isolated() {
+  local name value
+  for name in ORCH_RUNTIME_DIR ORCH_STATE_DB ORCH_LEASE_FILE ORCH_HEARTBEAT_FILE \
+    ORCH_HEARTBEAT_MISSING_SINCE_FILE ORCH_LIVENESS_FILE ORCH_WATCHDOG_LOG \
+    ORCH_DONE_SENTINEL ORCH_RESTART_STATE_FILE NUDGE_OUTBOX_FILE NUDGE_RATE_FILE \
+    ORCH_INSTANCE_LOCK_FILE ORCH_LAUNCH_SCRIPT ORCH_INSTALL_ROOT; do
+    value="${!name-}"
+    [[ -n "$value" ]] || fail "isolation: $name is unset; it would resolve to a live path"
+    [[ "$value" == "$SCRATCH"/* || "$value" == "$SCRATCH" ]] ||
+      fail "isolation: $name=$value escapes the scratch tree"
+  done
+  [[ "${ORCH_DAEMON_HEALTH_URL-unset}" != unset ]] ||
+    fail 'isolation: ORCH_DAEMON_HEALTH_URL is unset; the probe would hit the live daemon'
+}
+
+CASE=""
+new_case() {
+  CASE="$1"
+  local root="$SCRATCH/$CASE"
+  mkdir -p "$root/runtime"
+  export ORCH_RUNTIME_DIR="$root/runtime"
+  export ORCH_STATE_DB="$root/absent-state.db"
+  export ORCH_LEASE_FILE="$root/runtime/orchestrator.lease"
+  export ORCH_HEARTBEAT_FILE="$root/runtime/orchestrator.heartbeat"
+  export ORCH_HEARTBEAT_MISSING_SINCE_FILE="$root/runtime/heartbeat-missing-since"
+  export ORCH_LIVENESS_FILE="$root/runtime/orchestrator.liveness"
+  export ORCH_WATCHDOG_LOG="$root/runtime/watchdog.log"
+  export ORCH_DONE_SENTINEL="$root/done-sentinel"
+  export ORCH_RESTART_STATE_FILE="$root/runtime/watchdog-restart-state"
+  export NUDGE_OUTBOX_FILE="$root/runtime/nudges.outbox"
+  export NUDGE_RATE_FILE="$root/runtime/nudge-rate.tsv"
+  export ORCH_DAEMON_HEALTH_URL=""
+  export ORCH_TEST_SESSION_ALIVE=1
+  export ORCH_TEST_LAUNCH_STATUS=0
+  export ORCH_TEST_DAEMON_UP=1
+  : > "$ORCH_TEST_ACTIONS"
+  : > "$ORCH_TEST_TMUX_LOG"
+  : > "$ORCH_TEST_CURL_LOG"
+  printf '%s\n' "$(date +%s)" > "$ORCH_HEARTBEAT_FILE"
+  assert_isolated
+}
+
+tick() { "$SCRIPT_DIR/watchdog.sh"; }
+log_has() { grep -Fq -- "$1" "$ORCH_WATCHDOG_LOG" || fail "[$CASE] missing log line: $1"; }
+outbox_has() {
+  [[ -f "$NUDGE_OUTBOX_FILE" ]] || fail "[$CASE] no nudge outbox; operator was told nothing"
+  grep -Fq -- "$1" "$NUDGE_OUTBOX_FILE" || fail "[$CASE] operator was not told: $1"
+}
+outbox_lacks() {
+  [[ ! -f "$NUDGE_OUTBOX_FILE" ]] || ! grep -Fq -- "$1" "$NUDGE_OUTBOX_FILE" ||
+    fail "[$CASE] unexpected operator message: $1"
+}
+action_count() { grep -cx "$1" "$ORCH_TEST_ACTIONS" 2>/dev/null || true; }
+assert_actions() {
+  local want_start="$1" want_stop="$2"
+  [[ "$(action_count start)" == "$want_start" ]] ||
+    fail "[$CASE] start count $(action_count start), expected $want_start"
+  [[ "$(action_count stop)" == "$want_stop" ]] ||
+    fail "[$CASE] stop count $(action_count stop), expected $want_stop"
+}
+
+# ── A. `/done` rest sentinel ────────────────────────────────────────────────
+# The daemon already told the operator the watchdog is asleep. Make that true.
+new_case done-sentinel-rests
+: > "$ORCH_DONE_SENTINEL"
+export ORCH_TEST_SESSION_ALIVE=0        # a dead session would normally relaunch
+tick
+log_has "rest reason=done-sentinel"
+assert_actions 0 0
+[[ ! -s "$ORCH_TEST_TMUX_LOG" ]] || fail '[done-sentinel-rests] a resting tick still killed a session'
+outbox_lacks NUDGE
+
+# The sentinel is the ONLY thing resting the tick: remove it and the same
+# fixture recovers, so a passing rest case can never be a silently inert tick.
+new_case done-sentinel-cleared-resumes
+export ORCH_TEST_SESSION_ALIVE=0
+tick
+log_has 'dead session='
+assert_actions 1 0
+
+# The path is not ours to choose: it must be the file daemon/server.ts writes on
+# /done. Derived from the daemon source so either side moving fails here.
+new_case done-sentinel-path-matches-daemon
+daemon_src="$DAEMON_SERVER_SRC"
+grep -Fq "join(RUNTIME_DIR, 'orchestrator-done')" "$daemon_src" ||
+  fail 'daemon no longer writes the orchestrator-done sentinel under RUNTIME_DIR'
+grep -Fq "const RUNTIME_DIR = join(STATE_DIR, 'daemon', 'runtime')" "$daemon_src" ||
+  fail 'daemon RUNTIME_DIR layout changed; the watchdog sentinel path must follow'
+expected_sentinel="$SCRATCH/fake-telegram-state/daemon/runtime/orchestrator-done"
+mkdir -p "$(dirname "$expected_sentinel")"
+: > "$expected_sentinel"
+resolved_log="$SCRATCH/resolved-sentinel.log"
+# ORCH_DONE_SENTINEL is dropped on purpose: this case is about the DEFAULT the
+# watchdog derives, which is the value that runs in production.
+env -u ORCH_DONE_SENTINEL PATH="$SHIM:$PATH" ORCH_CONFIG_FILE="$SCRATCH/no-runtime.env" \
+  TELEGRAM_STATE_DIR="$SCRATCH/fake-telegram-state" \
+  ORCH_RUNTIME_DIR="$SCRATCH/$CASE/runtime" ORCH_WATCHDOG_LOG="$resolved_log" \
+  ORCH_STATE_DB="$SCRATCH/$CASE/absent-state.db" ORCH_LAUNCH_SCRIPT="$SCRATCH/launch-shim.sh" \
+  ORCH_DAEMON_HEALTH_URL="" ORCH_TEST_ACTIONS="$SCRATCH/actions" \
+  ORCH_TEST_TMUX_LOG="$SCRATCH/tmux.log" ORCH_TEST_CURL_LOG="$SCRATCH/curl.log" \
+  "$SCRIPT_DIR/watchdog.sh"
+grep -Fq "rest reason=done-sentinel path=$expected_sentinel" "$resolved_log" ||
+  fail 'the watchdog does not resolve the sentinel to the path the daemon writes'
+
+# ── B. Restart cooldown ─────────────────────────────────────────────────────
+# A proven successful restart gets cooldown protection.
+new_case restart-cooldown-suppresses
+export ORCH_TEST_SESSION_ALIVE=0
+export ORCH_RESTART_COOLDOWN=1800 ORCH_RESTART_COOLDOWN_NIGHT=1800
+tick
+assert_actions 1 0
+tick
+assert_actions 1 0
+log_has 'WATCHDOG restart-suppressed reason=dead'
+outbox_has 'NUDGE watchdog-restart-suppressed'
+
+# Once the cooldown has elapsed, recovery resumes: the throttle must not become
+# a permanent refusal to recover.
+new_case restart-cooldown-expires
+export ORCH_TEST_SESSION_ALIVE=0
+export ORCH_RESTART_COOLDOWN=1800 ORCH_RESTART_COOLDOWN_NIGHT=1800
+ORCH_WATCHDOG_NOW=1000000 tick
+assert_actions 1 0
+ORCH_WATCHDOG_NOW=1001000 tick        # +1000s, still inside a 1800s cooldown
+assert_actions 1 0
+ORCH_WATCHDOG_NOW=1002000 tick        # +2000s, past it
+assert_actions 2 0
+
+# Night (22:00-07:00 local) recovers sooner: the operator is asleep and cannot
+# intervene, so the same stall must not sit un-recovered for the day window.
+new_case restart-cooldown-night
+export ORCH_TEST_SESSION_ALIVE=0
+unset ORCH_RESTART_COOLDOWN ORCH_RESTART_COOLDOWN_NIGHT
+ORCH_WATCHDOG_HOUR=23 ORCH_WATCHDOG_NOW=2000000 tick
+assert_actions 1 0
+log_has 'night=1'
+ORCH_WATCHDOG_HOUR=23 ORCH_WATCHDOG_NOW=2001000 tick   # +1000s > 900s night
+assert_actions 2 0
+new_case restart-cooldown-day
+export ORCH_TEST_SESSION_ALIVE=0
+ORCH_WATCHDOG_HOUR=12 ORCH_WATCHDOG_NOW=2000000 tick
+assert_actions 1 0
+log_has 'night=0'
+ORCH_WATCHDOG_HOUR=12 ORCH_WATCHDOG_NOW=2001000 tick   # +1000s < 1800s day
+assert_actions 1 0
+log_has 'WATCHDOG restart-suppressed'
+
+# ── C. Restart visibility ───────────────────────────────────────────────────
+new_case restart-announced
+export ORCH_TEST_SESSION_ALIVE=0
+tick
+assert_actions 1 0
+outbox_has "NUDGE watchdog-restarting session=$ORCH_SESSION reason=dead"
+outbox_has "NUDGE watchdog-restarted session=$ORCH_SESSION reason=dead"
+
+# A restart that FAILS is the case the operator most needs to hear about: the
+# orchestrator is down and staying down.
+new_case restart-failure-announced
+export ORCH_TEST_SESSION_ALIVE=0
+export ORCH_TEST_LAUNCH_STATUS=3
+export ORCH_RESTART_FAILURE_ALERT_AFTER=3
+! ORCH_WATCHDOG_INTERVAL=10 ORCH_WATCHDOG_NOW=100 tick
+outbox_has "NUDGE watchdog-restart-failed session=$ORCH_SESSION"
+assert_actions 1 0
+! ORCH_WATCHDOG_INTERVAL=10 ORCH_WATCHDOG_NOW=110 tick
+assert_actions 2 0
+! ORCH_WATCHDOG_INTERVAL=10 ORCH_WATCHDOG_NOW=130 tick
+assert_actions 3 0
+outbox_has "ALERT orchestrator-recovery-failed session=$ORCH_SESSION consecutive=3"
+log_has 'WATCHDOG NO-GO reason=restart-failed'
+# Capped backoff and one-shot escalation: intermediate ticks do not relaunch or
+# append another loud alert.
+ORCH_WATCHDOG_INTERVAL=10 ORCH_WATCHDOG_NOW=131 tick
+assert_actions 3 0
+[[ "$(grep -c 'ALERT orchestrator-recovery-failed' "$NUDGE_OUTBOX_FILE")" == 1 ]] ||
+  fail 'persistent failure appended more than one loud alert'
+# A later success resets failures, backoff and escalation.
+export ORCH_TEST_LAUNCH_STATUS=0
+ORCH_WATCHDOG_INTERVAL=10 ORCH_WATCHDOG_NOW=170 tick
+assert_actions 4 0
+grep -Fxq 'consecutive_failures=0' "$ORCH_RESTART_STATE_FILE" ||
+  fail 'successful recovery did not reset failures'
+grep -Fxq 'alerted=0' "$ORCH_RESTART_STATE_FILE" ||
+  fail 'successful recovery did not reset escalation'
+
+# Every field belongs to one versioned record. A valid recent timestamp paired
+# with any torn/missing/duplicate/malformed companion must recover immediately,
+# never inherit the success cooldown.
+malformed_states=(
+  'version=1\nlast_restart=499\nalerted=0\n'
+  'version=1\nlast_restart=499\nconsecutive_failures=0\n'
+  'version=1\nlast_restart=499\nconsecutive_failures=x\nalerted=0\n'
+  'version=1\nlast_restart=499\nconsecutive_failures='
+  'version=1\nlast_restart=499\nconsecutive_failures=0\nconsecutive_failures=0\nalerted=0\n'
+  'version=1\nlast_restart=499\nconsecutive_failures=0\nalerted=0\nalerted=0\n'
+  'version=1\nlast_restart=499\nconsecutive_failures=0\nalerted=x\n'
+  'version=1\nlast_restart=499\nconsecutive_failures=0\nalerted='
+  'version=1\nlast_restart=499\nconsecutive_failures=0\nalerted=0'
+  'version=2\nlast_restart=499\nconsecutive_failures=0\nalerted=0\n'
+  'version=1\nversion=1\nlast_restart=499\nconsecutive_failures=0\nalerted=0\n'
+  'version=1\nlast_restart=499\nconsecutive_failures=0\nalerted=0\nextra=1\n'
+  'version=1\nlast_restart=499\nconsecutive_failures=0\nalerted=1\n'
+  'version=1\nlast_restart=-1\nconsecutive_failures=0\nalerted=0\n'
+  'version=1\nlast_restart=10000000000\nconsecutive_failures=0\nalerted=0\n'
+  'version=1\nlast_restart=18446744073709552115\nconsecutive_failures=0\nalerted=0\n'
+  'version=1\nlast_restart=500\nconsecutive_failures=-1\nalerted=0\n'
+  'version=1\nlast_restart=500\nconsecutive_failures=32\nalerted=0\n'
+  'version=1\nlast_restart=500\nconsecutive_failures=18446744073709551616\nalerted=0\n'
+  'version=1\nlast_restart=500\nconsecutive_failures=1\nalerted=2\n'
+  'version=1\nlast_restart=500\nconsecutive_failures=1\nalerted=18446744073709551616\n'
+)
+for malformed_index in "${!malformed_states[@]}"; do
+  new_case "restart-state-malformed-$malformed_index"
+  export ORCH_TEST_SESSION_ALIVE=0
+  printf '%b' "${malformed_states[$malformed_index]}" > "$ORCH_RESTART_STATE_FILE"
+  ORCH_WATCHDOG_NOW=500 tick
+  assert_actions 1 0
+  grep -Fxq 'version=1' "$ORCH_RESTART_STATE_FILE" ||
+    fail "[$CASE] recovery did not replace the distrusted record"
+  grep -Fxq 'last_restart=500' "$ORCH_RESTART_STATE_FILE" ||
+    fail "[$CASE] valid-looking timestamp suppressed immediate recovery"
+done
+
+# Accepted numeric boundaries remain trusted; the values immediately beyond
+# them distrust the whole record before any arithmetic can wrap or loop.
+new_case restart-state-last-boundary
+export ORCH_TEST_SESSION_ALIVE=0
+printf 'version=1\nlast_restart=9999999999\nconsecutive_failures=0\nalerted=0\n' > "$ORCH_RESTART_STATE_FILE"
+ORCH_WATCHDOG_NOW=9999999999 tick
+assert_actions 0 0
+log_has 'WATCHDOG restart-suppressed'
+
+# Production mutation-red: widening the parser by one digit makes the adjacent
+# value inherit cooldown and therefore violates the immediate-recovery oracle.
+mutant_watchdog="$SCRATCH/watchdog-last-restart-mutant.sh"
+cp "$SCRIPT_DIR/lib.sh" "$SCRIPT_DIR/knobs.sh" "$SCRIPT_DIR/proc-identity.sh" "$SCRATCH/"
+sed 's/\^\[0-9\]{1,10}\$/^[0-9]{1,11}$/; s/<= 9999999999/<= 10000000000/' \
+  "$SCRIPT_DIR/watchdog.sh" > "$mutant_watchdog"
+chmod +x "$mutant_watchdog"
+grep -Fq '[[ "$value" =~ ^[0-9]{1,11}$ ]]' "$mutant_watchdog" ||
+  fail 'last_restart mutation was not applied to production parser'
+grep -Fq '(( 10#$value <= 10000000000 ))' "$mutant_watchdog" ||
+  fail 'last_restart cap mutation was not applied to production parser'
+new_case restart-state-adjacent-mutation-red
+export ORCH_TEST_SESSION_ALIVE=0
+printf 'version=1\nlast_restart=10000000000\nconsecutive_failures=0\nalerted=0\n' > "$ORCH_RESTART_STATE_FILE"
+ORCH_WATCHDOG_NOW=10000000000 "$mutant_watchdog"
+assert_actions 0 0
+log_has 'WATCHDOG restart-suppressed'
+printf '%s\n' 'MUTATION-RED last_restart adjacent-long suppresses required recovery'
+
+new_case restart-state-failure-boundary
+export ORCH_TEST_SESSION_ALIVE=0
+export ORCH_TEST_LAUNCH_STATUS=3
+printf 'version=1\nlast_restart=1\nconsecutive_failures=31\nalerted=1\n' > "$ORCH_RESTART_STATE_FILE"
+! ORCH_WATCHDOG_INTERVAL=10 ORCH_RESTART_BACKOFF_CAP_S=10 ORCH_WATCHDOG_NOW=500 tick
+assert_actions 1 0
+grep -Fxq 'consecutive_failures=31' "$ORCH_RESTART_STATE_FILE" ||
+  fail 'accepted failure boundary was not safely saturated during recovery'
+unset ORCH_TEST_LAUNCH_STATUS
+
+new_case restart-state-alerted-boundary
+export ORCH_TEST_SESSION_ALIVE=0
+printf 'version=1\nlast_restart=1\nconsecutive_failures=1\nalerted=1\n' > "$ORCH_RESTART_STATE_FILE"
+ORCH_WATCHDOG_INTERVAL=10 ORCH_RESTART_BACKOFF_CAP_S=10 ORCH_WATCHDOG_NOW=5 tick
+assert_actions 0 0
+log_has 'WATCHDOG restart-suppressed'
+
+# Backward clock movement/future timestamps reset instead of suppressing until
+# wall time catches up.
+new_case restart-state-future
+export ORCH_TEST_SESSION_ALIVE=0
+printf 'version=1\nlast_restart=999999\nconsecutive_failures=4\nalerted=1\n' > "$ORCH_RESTART_STATE_FILE"
+ORCH_WATCHDOG_NOW=600 tick
+assert_actions 1 0
+log_has 'WATCHDOG restart-state-invalid'
+grep -Fxq 'consecutive_failures=0' "$ORCH_RESTART_STATE_FILE"
+
+# Concurrent timer ticks serialize on the restart-state lock. Exactly one may
+# launch; the other exits without corrupting or overwriting state.
+new_case restart-state-concurrent
+export ORCH_TEST_SESSION_ALIVE=0
+export ORCH_TEST_LAUNCH_SLEEP=1
+ORCH_WATCHDOG_NOW=700 tick &
+first_tick=$!
+ORCH_WATCHDOG_NOW=700 tick &
+second_tick=$!
+wait "$first_tick" "$second_tick"
+unset ORCH_TEST_LAUNCH_SLEEP
+assert_actions 1 0
+grep -Eq '^last_restart=700$' "$ORCH_RESTART_STATE_FILE" ||
+  fail 'concurrent ticks left torn restart state'
+
+# A stale heartbeat is a kill-then-relaunch, and must be announced the same
+# way. The kill now requires positive death evidence: a liveness pulse that WAS
+# being renewed and has gone stale, AND a recorded provider identity that is
+# verifiably gone — a stale stamp alone only proves the pulse HELPER stopped.
+# heartbeat-liveness.test.sh owns that verdict table; this corpse fixture kills
+# its provider first and checks the corpse before expecting the announcement.
+new_case zombie-restart-announced
+printf '%s\n' 100 > "$ORCH_HEARTBEAT_FILE"
+printf '%s\n' 100 > "$ORCH_LIVENESS_FILE"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/proc-identity.sh"
+sleep 300 & corpse_pid=$!
+corpse_starttime="$(proc_starttime "$corpse_pid")"
+[[ -n "$corpse_starttime" ]] || fail 'could not read a fixture starttime from /proc'
+kill "$corpse_pid" 2>/dev/null || true
+wait "$corpse_pid" 2>/dev/null || true
+! kill -0 "$corpse_pid" 2>/dev/null || fail 'fixture corpse refused to die'
+printf 'pid=%s\nstarttime=%s\n' "$corpse_pid" "$corpse_starttime" > "$ORCH_LIVENESS_FILE.identity"
+ORCH_WATCHDOG_NOW=100000 ORCH_HEARTBEAT_MAX_AGE=10 tick
+assert_actions 1 1
+log_has 'zombie session='
+outbox_has 'NUDGE watchdog-restarting'
+outbox_has 'reason=zombie'
+
+# A healthy tick stays quiet: no restart chatter on the operator's channel.
+new_case healthy-tick-is-quiet
+tick
+assert_actions 0 0
+outbox_lacks 'NUDGE watchdog-restart'
+
+# ── E. Daemon health probe ──────────────────────────────────────────────────
+# The daemon owns the Telegram token AND drains this outbox, so its death is the
+# one failure that makes every other signal undeliverable.
+new_case daemon-health-probed
+export ORCH_DAEMON_HEALTH_URL="http://127.0.0.1:65535/health"
+export ORCH_TEST_DAEMON_UP=1
+tick
+grep -Fq "$ORCH_DAEMON_HEALTH_URL" "$ORCH_TEST_CURL_LOG" ||
+  fail '[daemon-health-probed] the daemon health endpoint was never probed'
+outbox_lacks 'NUDGE daemon-mcp-unhealthy'
+
+new_case daemon-unreachable-reported
+export ORCH_DAEMON_HEALTH_URL="http://127.0.0.1:65535/health"
+export ORCH_TEST_DAEMON_UP=0
+export FLEET_NUDGE_REPEAT_MS=1
+tick
+log_has 'WATCHDOG daemon-mcp-unhealthy'
+outbox_has 'NUDGE daemon-mcp-unhealthy'
+# An unreachable daemon says nothing about the orchestrator; it must not
+# trigger a restart of a healthy session.
+assert_actions 0 0
+[[ ! -s "$ORCH_TEST_TMUX_LOG" ]] ||
+  fail '[daemon-unreachable-reported] a daemon outage killed the orchestrator session'
+unset FLEET_NUDGE_REPEAT_MS
+
+# The executable boundary boots daemon/server.ts with test-owned state and a
+# loopback Telegram API. No tmux session exists; no direct callback can pass it.
+bun "$SCRIPT_DIR/watchdog-transport-boundary.test.ts"
+
+printf 'watchdog supervision tests: PASS\n'

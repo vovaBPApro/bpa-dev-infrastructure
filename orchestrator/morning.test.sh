@@ -72,6 +72,7 @@ assert contains 'другий коміт' "$OUTBOX"
 assert contains 'SKIP — stand smoke (docker daemon unavailable)' "$OUTBOX"
 assert contains 'PASS — system systemd (system manager available)' "$OUTBOX"
 assert contains 'PASS — disk pressure (pct=' "$OUTBOX"
+assert contains 'FAIL — watchdog missed-tick journal (UNKNOWN/UNMEASURED or corrupt:' "$OUTBOX"
 [[ "$(<"$WATERMARK")" == "$HEAD" ]] || fail 'watermark did not advance'
 
 rm -f "$OUTBOX"

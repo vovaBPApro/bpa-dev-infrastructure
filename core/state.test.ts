@@ -57,7 +57,7 @@ test("REGRESSION GAP-5 r3: cause is mandatory and ambiguity/identity drift are d
   expect(store.accountMissedTicks(["missing"]).rows[0].status).toBe("UNKNOWN");
   store.appendTickJournal({ intervalId: "missing", causeId: "c", kind: "cause", observedAt: 1, sourceId: "source-b" });
   expect(store.accountMissedTicks(["missing"]).rows[0].status).toBe("IDENTITY_DRIFT");
-  store.appendTickJournal({ intervalId: "missing", causeId: "c", kind: "cause", observedAt: 1, sourceId: "source-a" });
+  store.appendTickJournal({ intervalId: "missing", causeId: "c-2", kind: "cause", observedAt: 1, sourceId: "source-a" });
   expect(store.accountMissedTicks(["missing"]).rows[0].status).toBe("AMBIGUOUS");
   store.close();
 });
@@ -74,6 +74,32 @@ test("REGRESSION GAP-5 r3: prior schema upgrades and corrupt database fails clos
   upgraded.close();
   await Bun.write(path, "not a sqlite database");
   expect(() => new StateStore(path)).toThrow();
+});
+
+test("REGRESSION GAP-5 r4: empty journal and absent producer are UNMEASURED", async () => {
+  const store = new StateStore(await databasePath());
+  expect(store.accountMissedTicks([])).toMatchObject({ verdict: "NO-GO", measurement: "UNMEASURED" });
+  expect(store.accountMissedTicks([], { producerId: "watchdog", unitName: "watchdog.service", unitFingerprint: "tracked", invocationId: "missing" })).toMatchObject({ verdict: "NO-GO", measurement: "UNMEASURED" });
+  store.close();
+});
+
+test("REGRESSION GAP-5 r4: migration is transactional and both writer generations remain compatible", async () => {
+  const path = await databasePath();
+  const { Database } = await import("bun:sqlite");
+  const legacy = new Database(path);
+  legacy.exec("CREATE TABLE tick_journal (sequence INTEGER PRIMARY KEY, interval_id TEXT NOT NULL, cause_id TEXT NOT NULL, kind TEXT NOT NULL, observed_at INTEGER NOT NULL, created_at INTEGER NOT NULL, UNIQUE(interval_id,cause_id,kind)); INSERT INTO tick_journal VALUES(1,'old','old','cause',1,1)");
+  legacy.close();
+  const upgraded = new StateStore(path, { now: () => 2 });
+  upgraded.appendTickJournal({ intervalId: "new", causeId: "new", kind: "cause", observedAt: 2, sourceId: "v2" });
+  upgraded.db.query("INSERT INTO tick_journal(interval_id,cause_id,kind,observed_at,created_at) VALUES(?,?,?,?,?) ON CONFLICT(interval_id,cause_id,kind) DO NOTHING").run("rollback", "rollback", "cause", 3, 3);
+  expect(upgraded.tickJournal().map((row) => row.intervalId)).toEqual(["old", "new", "rollback"]);
+  upgraded.close();
+
+  const partial = await databasePath();
+  const broken = new Database(partial);
+  broken.exec("CREATE TABLE tick_journal (sequence INTEGER PRIMARY KEY); PRAGMA user_version=2");
+  broken.close();
+  expect(() => new StateStore(partial)).toThrow("partial or corrupt");
 });
 
 test("a live lease cannot be double-acquired", async () => {

@@ -29,6 +29,9 @@ STATE_DB="${INFRA_STATE_DB:-$RUNTIME_DIR/state.db}"
 BOOTSTRAP_SCRIPT="${MORNING_BOOTSTRAP_SCRIPT:-$REPO_ROOT/bootstrap/install.sh}"
 MISSION_CLI="${MORNING_MISSION_CLI:-$REPO_ROOT/core/mission-cli.ts}"
 TICK_JOURNAL_CLI="${MORNING_TICK_JOURNAL_CLI:-$REPO_ROOT/core/tick-journal-cli.ts}"
+WATCHDOG_UNIT="${ORCH_WATCHDOG_UNIT:-bpa-orchestrator-watchdog.service}"
+WATCHDOG_UNIT_FILE="${ORCH_WATCHDOG_UNIT_FILE:-/etc/systemd/system/$WATCHDOG_UNIT}"
+WATCHDOG_INVOCATION_FILE="${ORCH_WATCHDOG_INVOCATION_FILE:-$RUNTIME_DIR/watchdog.invocation-id}"
 STAND_SCRIPT="${MORNING_STAND_SCRIPT:-$REPO_ROOT/stand/matrix.sh}"
 INSTALL_ROOT="${ORCH_INSTALL_ROOT:-${INSTALL_ROOT:-$REPO_ROOT}}"
 DISK_ALERT_PCT="${DISK_ALERT_PCT:-80}"
@@ -168,7 +171,8 @@ run_full_suite_check() {
 
 run_tick_journal_check() {
   if INFRA_STATE_DB="$STATE_DB" "$BUN_BIN" "$TICK_JOURNAL_CLI" integrity >/dev/null 2>&1 &&
-     INFRA_STATE_DB="$STATE_DB" "$BUN_BIN" "$TICK_JOURNAL_CLI" account --all yes >"$DETAIL_FILE" 2>&1; then
+     [[ -s "$WATCHDOG_INVOCATION_FILE" ]] &&
+     INFRA_STATE_DB="$STATE_DB" "$BUN_BIN" "$TICK_JOURNAL_CLI" account --all yes --producer bpa-orchestrator-watchdog --unit "$WATCHDOG_UNIT" --unit-file "$WATCHDOG_UNIT_FILE" --invocation-id "$(<"$WATCHDOG_INVOCATION_FILE")" >"$DETAIL_FILE" 2>&1; then
     row PASS 'watchdog missed-tick journal' 'all retained intervals have exactly one authenticated cause'
   else
     row FAIL 'watchdog missed-tick journal' "UNKNOWN/UNMEASURED or corrupt: $(tr '\n|' '  ' <"$DETAIL_FILE" | cut -c1-240)"

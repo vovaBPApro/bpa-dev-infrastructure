@@ -85,7 +85,7 @@ tmp_service="$(mktemp "$UNIT_DIR/.${UNIT_NAME}.service.XXXXXX")"
 tmp_timer="$(mktemp "$UNIT_DIR/.${UNIT_NAME}.timer.XXXXXX")"
 trap 'rm -f "$tmp_service" "$tmp_timer"' EXIT
 {
-  printf '%s\n[Unit]\nDescription=Orchestrator runtime watchdog\n\n[Service]\nType=oneshot\nExecStart=%s/watchdog.sh\n' "$MARKER" "$SCRIPT_DIR"
+  printf '%s\n[Unit]\nDescription=Orchestrator runtime watchdog\n\n[Service]\nType=oneshot\nEnvironment=ORCH_WATCHDOG_UNIT=%s.service\nExecStart=%s/watchdog.sh\n' "$MARKER" "$UNIT_NAME" "$SCRIPT_DIR"
 } > "$tmp_service"
 {
   printf '%s\n[Unit]\nDescription=Timer for orchestrator runtime watchdog\n\n[Timer]\nOnBootSec=30\nOnUnitActiveSec=%s\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n' "$MARKER" "$INTERVAL"

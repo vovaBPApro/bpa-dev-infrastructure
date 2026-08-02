@@ -22,3 +22,11 @@ the donor file executable production code.
 
 There are no silent omissions and no `rejected-with-reason` rows: each admitted
 fixture captures behavior retained either tonight or in the declared runway.
+# Toolchain provenance
+
+`package.json` is synthesized for this admitted slice because donor pin
+`5f41a5cad59b764fa4c692ec7f33e3a4c978e559` contains no `package.json`.
+It declares Bun, the only runtime imported by the admitted TypeScript tests,
+and the authoritative foundation test command. The donor pin also contains
+neither `bun.lock` nor `tsconfig.json`; they are therefore classified as
+ABSENT-AT-PIN rather than silently omitted.

@@ -16,8 +16,8 @@ omits several modules imported by NEW `server.ts`, so whole-daemon typecheck is
 an integration `NO-GO` until the planned D2 split or foundation supplies a
 complete boundary.
 
-commit: pending
-verify: `bunx tsc --ignoreConfig --noEmit --strict --target ES2022 --module Preserve --moduleResolution Bundler --types bun-types,node adapters/telegram.ts adapters/telegram.test.ts outbox.ts outbox.test.ts && bun test adapters/telegram.test.ts outbox.test.ts` (4 pass)
+commit: 93737b2b79830ece8cd7e63e648cd52179b27b12
+verify: new seam strict typecheck + tests: PASS (4/4); copied eligible tests: NO-GO (69 pass, 13 fail: gate pattern absent causes 10 inbox failures; pinned notify tests time out 3/3)
 result: NO-GO
-secret-scan: pending
-remaining: commit, rerun verification at exact SHA; integration must resolve intentionally incomplete NEW server allowlist
+secret-scan: NO-GO (canonical scanner absent from empty v3 base; pinned canonical signature diff scan found no hits, but absence must fail closed)
+remaining: foundation must land canonical gate; integration must resolve intentionally incomplete NEW server allowlist and pinned notify timeouts, then rerun at landed SHA

@@ -47,7 +47,7 @@ When choosing review shape, ROLE/PERSONA diversity outranks vendor diversity
 ## Role-first model selection (any provider, per seat)
 
 HR-212 originally pinned the default review consilium to GPT models. That
-provider pin is lifted (instance ruling: `instance/decisions/HR-1459.md`):
+provider pin is lifted (instance ruling: `instance/decisions/HR-1565.md`):
 
 - Role/persona diversity (above) remains the primary axis. Provider and model
   choice for each consilium SEAT is a capability-fit decision, not a fixed

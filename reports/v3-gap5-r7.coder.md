@@ -1,6 +1,6 @@
 # GAP-5 r7 coder terminal evidence
 
-candidate: `ad78f5343b66af5bde751a6e3e351cdbc3f4978c`
+candidate: `816b7eda0f0fff5a0b9f9fb914cd53711481d159`
 
 ## Consumption check
 
@@ -26,14 +26,16 @@ candidate: `ad78f5343b66af5bde751a6e3e351cdbc3f4978c`
   delivery acknowledges it. The suite reports zero residual resources.
 - Clean-clone reconstruction: 18 pass, 0 fail. Real systemd matrix: PASS with
   restart/new InvocationID, stale replay refusal, rollback, cleanup and zero
-  residuals. Morning and supervision suites: PASS.
+  residuals. Its readiness condition now measures clean producer accounting
+  instead of racing on SQLite file creation; three consecutive runs pass.
+  Morning and supervision suites: PASS.
 - Lockfile-declared daemon dependencies installed with `--frozen-lockfile`; no
   lockfile change. Typecheck exited 0.
 - Terminal isolated daemon highest suite: 272 pass, 0 fail across 26 files;
   2078 expectations. It includes the real Whisper path and transport processes.
 - No live watchdog, Telegram, deployment, landing, or push was used.
 
-commit: ad78f5343b66af5bde751a6e3e351cdbc3f4978c [CODER] restore hermetic loopback transport fixtures
+commit: 816b7eda0f0fff5a0b9f9fb914cd53711481d159 [CODER] await measured systemd producer readiness
 verify: bash core/tick-journal-reconstruction.test.sh && bash core/watchdog-systemd.test.sh && bash orchestrator/morning.test.sh && bash orchestrator/watchdog-supervision.test.sh && (cd daemon && bun install --frozen-lockfile && bun run typecheck && ../test/run-loopback-fixture.sh bun test)
 result: NO-GO — implementation evidence is green; independent Tier-A review and landing evidence are not yet present
 secret-scan: clean

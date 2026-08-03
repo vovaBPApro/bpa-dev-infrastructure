@@ -51,13 +51,14 @@ test('REGRESSION W-14: normal status is human-readable and keeps unknowns honest
     ],
     lastLanded: 'abc1234 [CODER] previous change',
     claudeConnected: true,
+    vendorQuota: 'Квота: Codex 5h 21%, 7d 64%, вік 17хв; Claude невідомо',
   });
   expect(lines).toEqual([
     'Зараз: W-14 useful status — running',
     'Лейни: 2: status-human-useful (running), review-status (failed)',
     'Останнє landed: abc1234 [CODER] previous change',
     'Блокери: review-status: стан failed',
-    'Claude MCP: підключено',
+    'Квота: Codex 5h 21%, 7d 64%, вік 17хв; Claude невідомо; MCP підключено',
   ]);
   expect(lines.join('\n')).not.toContain('{"daemon"');
 
@@ -68,11 +69,12 @@ test('REGRESSION W-14: normal status is human-readable and keeps unknowns honest
     lastLanded: null,
     lastLandedError: 'git timeout',
     claudeConnected: false,
+    vendorQuota: 'Квота: Codex невідомо; Claude невідомо',
   }).join('\n');
   expect(unknown).toContain('Зараз: невідомо (state DB unreadable)');
   expect(unknown).toContain('Лейни: невідомо (state DB unreadable)');
   expect(unknown).toContain('Останнє landed: невідомо (git timeout)');
-  expect(unknown).toContain('Claude MCP: не підключено');
+  expect(unknown).toContain('Квота: Codex невідомо; Claude невідомо; MCP не підключено');
 });
 
 test('REGRESSION: daemon health uses process-local honest field names and epochs', () => {

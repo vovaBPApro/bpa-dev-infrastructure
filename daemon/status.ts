@@ -70,6 +70,7 @@ export type HumanStatusInput = {
   lastLanded: string | null;
   lastLandedError?: string;
   claudeConnected: boolean;
+  vendorQuota: string;
 };
 
 // The normal Telegram view is intentionally a projection, not a dump of the
@@ -100,7 +101,7 @@ export function buildHumanStatus(input: HumanStatusInput): string[] {
     `Лейни: ${laneLine}`,
     `Останнє landed: ${input.lastLanded ?? `невідомо (${input.lastLandedError ?? 'git недоступний'})`}`,
     `Блокери: ${blockedLine}`,
-    `Claude MCP: ${input.claudeConnected ? 'підключено' : 'не підключено'}`,
+    `${input.vendorQuota}; MCP ${input.claudeConnected ? 'підключено' : 'не підключено'}`,
   ];
 }
 

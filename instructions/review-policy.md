@@ -41,6 +41,10 @@ run, evidence inspected, findings, and one verdict: `ACCEPT`, `REJECT`, or
 `NO-GO`. Any reject, missing evidence, timeout, scope breach, or unverified
 rollback blocks landing until dispositioned.
 
+Classify every finding as `closed`, `moved`, or `open`; for each disposition,
+cite its evidence and mark whether the evidence was read or executed. A finding
+is `closed` only when its new evidence would have caught the original failure.
+
 For gate-routed changes, the record must include plain column-1 `reviewed-sha:`
 and non-empty `independence:` fields. The landing gate verifies that the SHA
 equals the report's commit before it accepts the record. Break-glass

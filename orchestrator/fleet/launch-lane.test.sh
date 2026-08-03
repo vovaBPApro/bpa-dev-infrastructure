@@ -6,7 +6,15 @@ SOURCE_REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SCRATCH="$(mktemp -d)"
 chmod 700 "$SCRATCH"
 REPO_DIR="$SCRATCH/repo"
-REF_PREFIX="meteorite-candidates/fleet-launch-${SCRATCH##*/}"
+RUN_TOKEN="${SCRATCH##*/}"
+REF_PREFIX="meteorite-candidates/fleet-launch-$RUN_TOKEN"
+case "$REF_PREFIX" in
+  *"$RUN_TOKEN"*) ;;
+  *)
+    printf 'fixture ref prefix is not unique to this run: %s\n' "$REF_PREFIX" >&2
+    exit 1
+    ;;
+esac
 cleanup() {
   for lane in proof race retry valid invalid crashed; do
     git -C "$REPO_DIR" worktree remove --force "$SCRATCH/lanes/$lane" >/dev/null 2>&1 || true

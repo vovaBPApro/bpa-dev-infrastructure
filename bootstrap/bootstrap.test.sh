@@ -82,7 +82,7 @@ echo 'PASS static shape (INSTALL_ROOT default present, out-of-scope surface abse
 # ── --dry-run / --help / argument validation ─────────────────────────────
 dry_run="$($INSTALLER --dry-run)"
 for expected in 'PLAN apt' 'PLAN bun' 'PLAN repository' 'PLAN environment' 'PLAN state-db' \
-  'PLAN hygiene' 'PLAN test-gate' 'PLAN units'; do
+  'PLAN hygiene' 'PLAN test-gate' 'PLAN units' 'PLAN witness'; do
   grep -Fq "$expected" <<<"$dry_run"
 done
 # Trimmed-scope proof: the donor's later-stage plan rows must NOT appear.
@@ -92,7 +92,7 @@ for dropped in 'PLAN workspace' 'PLAN activate'; do
     exit 1
   fi
 done
-echo 'PASS --dry-run plan (stage-2 rows present, activation absent)'
+echo 'PASS --dry-run plan (stage-2 rows and the sole meteorite witness activation present; general activation absent)'
 
 "$INSTALLER" --help >/dev/null
 "$INSTALLER" -h >/dev/null

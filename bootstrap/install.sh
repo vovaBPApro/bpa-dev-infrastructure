@@ -5,11 +5,11 @@
 # Ported from v2-deprecated (bootstrap/install.sh, 598 lines, ten stages) for
 # workboard row S3-2 / V3-1.1. Stage 2 adds hygiene-cron installation, the
 # repository's complete Bun test gate, manifest-driven unit rendering, and
-# the verify rows those stages need. Unit activation and the watchdog
-# arm/disarm pair remain explicitly out of scope. activate_units runs
-# `systemctl enable --now bpa-orchestrator.service`, which would restart the
-# live orchestrator on this host; HR-1720 defers all host deployment, and that
-# hazard is exactly what this render-only stage avoids. Later rows add it.
+# the verify rows those stages need. General unit activation and the watchdog
+# arm/disarm pair remain explicitly out of scope. The one activation performed
+# here is the independent meteorite timer: without it, nothing witnesses a
+# missing drift guard. HR-1720 defers applying this installer to the live host;
+# container fixtures prove the activation path without mutating host systemd.
 #
 # workspace_status (donor) is dropped outright: v3 has no workspace/ tree.
 # telegram-transport-preflight.sh is not sourced: its token and activation
@@ -44,8 +44,8 @@ usage() {
 Usage: bootstrap/install.sh [--dry-run | --verify-source]
 
 Stage 2: prerequisites, Bun, repository sync, environment, state database,
-hygiene cron, repository test gate, and systemd unit rendering. This stage
-does not enable, start, restart, or reload units.
+hygiene cron, repository test gate, systemd unit rendering, and arming the
+independent bpa-meteorite.timer witness. No other unit is activated.
 
 Environment overrides: INSTALL_ROOT, REPO_URL, REPO_BRANCH (default: main),
 BUN_VERSION, ENV_FILE, BUN_BIN, BASH_BIN, RUNTIME_DIR, INFRA_STATE_DB,
@@ -83,7 +83,8 @@ print_plan() {
   plan "state-db" "initialize $STATE_DB with core/mission-cli.ts status"
   plan "hygiene" "install the tracked hygiene cron using $CRONTAB_CMD"
   plan "test-gate" "run the repository's complete Bun test suite"
-  plan "units" "render every manifest-listed unit into $SYSTEMD_SYSTEM_DIR (render only)"
+  plan "units" "render every manifest-listed unit into $SYSTEMD_SYSTEM_DIR"
+  plan "witness" "daemon-reload and enable --now bpa-meteorite.timer"
 }
 
 result=0
@@ -432,6 +433,11 @@ render_units() {
   trap - RETURN
 }
 
+arm_meteorite_witness() {
+  systemctl daemon-reload
+  systemctl enable --now bpa-meteorite.timer
+}
+
 if [[ "${BOOTSTRAP_LIB_ONLY:-false}" != true ]]; then
   ensure_prerequisites
   install_bun
@@ -441,6 +447,7 @@ if [[ "${BOOTSTRAP_LIB_ONLY:-false}" != true ]]; then
   install_hygiene_cron
   run_install_test_gate
   render_units
-  echo "Bootstrap stage 2 completed: prerequisites, Bun, repository, environment, state database, hygiene cron, test gate, and unit rendering."
-  echo "Remaining before a full install: unit activation and the watchdog arm/disarm pair (later rows)."
+  arm_meteorite_witness
+  echo "Bootstrap stage 2 completed: prerequisites, Bun, repository, environment, state database, hygiene cron, test gate, unit rendering, and meteorite witness activation."
+  echo "Remaining before a full install: general unit activation and the watchdog arm/disarm pair (later rows)."
 fi

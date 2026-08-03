@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CHECK="$ROOT/bootstrap/check-deployed-drift.sh"
 INDEPENDENT_CALLER="$ROOT/bootstrap/units/bpa-meteorite.service.in"
+INSTALLER="$ROOT/bootstrap/install.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin"
@@ -32,6 +33,19 @@ run_check | grep -q 'DEPLOY-DRIFT CLEAN'
 # rebuild.  A direct fixture invocation alone is not evidence of that edge.
 grep -Fq 'ExecStartPre=${INSTALL_ROOT}/bootstrap/check-deployed-drift.sh' "$INDEPENDENT_CALLER"
 grep -Fq 'ExecStart=${BASH_BIN} ${INSTALL_ROOT}/meteorite/run.sh' "$INDEPENDENT_CALLER"
+
+# The witness chain terminates at bootstrap: the tracked installer asks systemd
+# to persistently schedule the independent caller. These executable source locks
+# stay red if either activation itself or its main-path invocation is removed.
+grep -Fq 'systemctl enable --now bpa-meteorite.timer' "$INSTALLER"
+grep -Fq '  arm_meteorite_witness' "$INSTALLER"
+systemctl_calls="$TMP/systemctl.calls"
+systemctl() { printf '%s\n' "$*" >> "$systemctl_calls"; }
+BOOTSTRAP_LIB_ONLY=true source "$INSTALLER"
+arm_meteorite_witness
+grep -Fxq 'daemon-reload' "$systemctl_calls"
+grep -Fxq 'enable --now bpa-meteorite.timer' "$systemctl_calls"
+printf 'container-fixture witness-arming: bootstrap/install.sh -> %s\n' "$(tr '\n' ';' <"$systemctl_calls")"
 
 # Removing a deployed unit is surfaced by the file-drift boundary.
 if UNIT_CHECK_EXIT=1 run_check >"$TMP/out" 2>"$TMP/err"; then

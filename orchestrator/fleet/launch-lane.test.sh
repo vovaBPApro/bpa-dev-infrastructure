@@ -92,7 +92,21 @@ run_launcher() {
     --repo "$SCRATCH/repo" --lanes-dir "$SCRATCH/home/lanes" --base HEAD \
     --branch ag-fleet-launch-proof --service-config "$SCRATCH/service.conf"
 }
-run_launcher >"$SCRATCH/output" 2>"$SCRATCH/output.err"
+if run_launcher >"$SCRATCH/output" 2>"$SCRATCH/output.err"; then
+  :
+else
+  launcher_status=$?
+  printf 'nominal launcher failed (exit=%s)\n' "$launcher_status" >&2
+  if [[ -s "$SCRATCH/output" ]]; then
+    printf '%s\n' '--- launcher stdout ---' >&2
+    cat "$SCRATCH/output" >&2
+  fi
+  if [[ -s "$SCRATCH/output.err" ]]; then
+    printf '%s\n' '--- launcher stderr ---' >&2
+    cat "$SCRATCH/output.err" >&2
+  fi
+  exit "$launcher_status"
+fi
 if grep -Fq 'OVERRIDE accepted' "$SCRATCH/output" "$SCRATCH/output.err"; then
   printf 'nominal launcher bypassed dispatch validation\n' >&2; exit 1
 fi

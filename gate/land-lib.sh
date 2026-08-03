@@ -405,6 +405,10 @@ land_remote_reap() {
 # before reap instead of being inferred from an earlier successful merge: a
 # hook, interrupted retry, or future landing-flow change must not turn branch
 # cleanup into loss of unmerged work.
+#
+# Coupling: hygiene/reap.sh's periodic branch sweep also calls this function
+# for its own merge-safety judgment (in addition to its own, stricter,
+# always-refuse-a-live-worktree rule). A change here changes both call sites.
 land_assert_reap_safe() {
   local repo="$1" branch="$2" landed_tip="$3" prefix="$4" worktree_ref worktree_path
   local cherry_output dirty_output unique_merges worktrees

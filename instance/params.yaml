@@ -42,6 +42,10 @@ vm:
   # (msg 11555) was Vova's sizing FLOOR, not this box; the delivered machine exceeds it.
 
 fleet:
+  service_user: bpa                 # V3-1.9 single-service-user model
+  service_home: /home/bpa-shell
+  repository_root: /home/bpa-shell/bpa-dev-infrastructure
+  lanes_root: /home/bpa-shell/.cache/infra-lanes
   # ACTIVE as of 2026-07-31 — instance/decisions/HR-281.md (Vova, verbatim; the
   # row covers his Telegram 275 + 281 together, so cite 281 — HR-275.md does not
   # exist and an earlier version of this comment pointed at it).

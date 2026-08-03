@@ -42,7 +42,6 @@ make_fixture() {
   git clone "$bare" "$repo" >/dev/null
   git -C "$repo" config user.email land@example.test
   git -C "$repo" config user.name Land
-  env -u BUN_BIN bun "$root/gate/review-rounds.ts" init --state "$repo/.git/bpa-review-rounds.json" --cap 3 --no-progress-limit 3 >/dev/null
   printf 'base\n' > "$repo/base.txt"
   printf 'import { test, expect } from "bun:test"; test("fixture", () => expect(true).toBe(true));\n' > "$repo/base.test.ts"
   git -C "$repo" add base.txt base.test.ts
@@ -68,6 +67,21 @@ report() {
   sha="$2"
   printf 'commit: %s fixture\nverify: true\nresult: clean\nsecret-scan: clean\nremaining: none\n' "$sha" > "$path"
 }
+
+# Reviewer's exact evasion: a recut branch cannot mint a new counter by
+# changing V3-3.4 to V3-3.4-recut. Authority comes from tracked target data.
+make_fixture review-item-identity
+mkdir -p "$repo/instance"
+printf '# item-id\tstable-branch-root\nV3-3.4\tag-s5-6\n' > "$repo/instance/review-items.tsv"
+git -C "$repo" add instance/review-items.tsv
+git -C "$repo" commit -m registry >/dev/null
+git -C "$repo" push origin main >/dev/null
+identity_sha=$(make_lane "$repo" ag-s5-6-r2)
+report "$fixture_root/review-item-identity.md" "$identity_sha"
+identity_output="$fixture_root/review-item-identity.out"
+if "$land" --branch ag-s5-6-r2 --item-id V3-3.4-recut --report "$fixture_root/review-item-identity.md" --repo "$repo" --no-push >"$identity_output" 2>&1; then exit 1; fi
+assert_output_has "$identity_output" 'LAND review-item unknown-or-mismatched item=V3-3.4-recut branch=ag-s5-6-r2'
+assert test ! -e "$repo/.git/bpa-review-rounds.json"
 
 # Regression lock: the copied gate must support the orphan v3 family range,
 # while callers that do not select a family still resolve against main.

@@ -46,7 +46,6 @@ make_fixture() {
   git clone "$bare" "$repo" >/dev/null
   git -C "$repo" config user.email land@example.test
   git -C "$repo" config user.name Land
-  env -u BUN_BIN bun "$root/gate/review-rounds.ts" init --state "$repo/.git/bpa-review-rounds.json" --cap 3 --no-progress-limit 3 >/dev/null
   printf 'base\n' > "$repo/base.txt"
   printf 'import { test, expect } from "bun:test"; test("fixture", () => expect(true).toBe(true));\n' > "$repo/base.test.ts"
   git -C "$repo" add base.txt base.test.ts

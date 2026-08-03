@@ -61,15 +61,24 @@ session-independence requirement, or an explicit approval boundary.
 
 ## Round cap and test escalation
 
-The landing gate identifies an item by its durable mission/acceptance id, not by
-its disposable branch. It records every reviewed landing attempt in the Git
-common directory, so re-cutting or renaming a branch and restarting the
-orchestrator do not reset either measure.
+The landing gate checks the caller's item against the tracked instance review-item
+registry on the target branch. That registry maps a durable mission/acceptance id
+to a stable branch root; disposable `-rN` recuts therefore share one counter and
+unknown ids fail instead of minting state. It records every reviewed landing
+attempt in the Git common directory, so restarting the orchestrator does not reset
+either measure. A fresh clone initializes absent state automatically under the
+landing lock; existing malformed or unsafe state still fails closed.
 
 An item receives at most three review rounds. A fourth is refused and parked as
-`cap` unless the operator makes an explicit, reason-bearing, durably audited
-override. At the cap, unresolved concerns become executable fail-before and
-pass-after locks; if that cannot be done, the item remains parked for recut.
+`cap`. There is no lane-callable reset or override. At the cap, unresolved
+concerns become executable fail-before and pass-after locks; if that cannot be
+done, the item remains parked for recut.
+
+Root-equivalent lanes can still edit Git-common-dir state or the gate itself;
+mode bits and an audit log cannot prevent that. Tamper resistance therefore
+depends on V3-1.9's non-root lane boundary plus independent landing review. This
+mechanism prevents supported-interface evasion; it does not claim protection
+from a malicious root process.
 
 Separately, consecutive reviewed attempts without a landed SHA are counted as
 no progress. Reaching the configured limit parks the item as `no-progress`.

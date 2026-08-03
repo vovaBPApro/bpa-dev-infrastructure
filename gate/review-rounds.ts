@@ -3,7 +3,7 @@ import { chmodSync, lstatSync, mkdirSync, openSync, closeSync, readFileSync, ren
 import { dirname, resolve } from "node:path";
 
 type Item = { rounds: number; noProgress: number; landedSha: string | null; park: null | "cap" | "no-progress" };
-type State = { version: 1; cap: number; noProgressLimit: number; items: Record<string, Item>; overrides: Array<{ item: string; reason: string; at: string }> };
+type State = { version: 1; cap: number; noProgressLimit: number; items: Record<string, Item> };
 
 function die(message: string): never { console.error(`REVIEW_ROUNDS status=fail detail=${message}`); process.exit(2); }
 function arg(name: string): string {
@@ -33,7 +33,7 @@ function load(path: string): State {
   if (!state || state.version !== 1 || !Number.isSafeInteger(state.cap) || state.cap < 1 ||
       !Number.isSafeInteger(state.noProgressLimit) || state.noProgressLimit < 1 ||
       !state.items || typeof state.items !== "object" || Array.isArray(state.items) ||
-      !Object.values(state.items).every(validateItem) || !Array.isArray(state.overrides)) die(`state-malformed file=${path}`);
+      !Object.values(state.items).every(validateItem)) die(`state-malformed file=${path}`);
   return state;
 }
 function save(path: string, state: State): void {
@@ -50,7 +50,7 @@ if (command === "init") {
   const noProgressLimit = natural(arg("--no-progress-limit"), "no-progress-limit");
   mkdirSync(dirname(path), { recursive: true });
   try { closeSync(openSync(path, "wx", 0o600)); } catch { die(`state-already-exists file=${path}`); }
-  save(path, { version: 1, cap, noProgressLimit, items: {}, overrides: [] });
+  save(path, { version: 1, cap, noProgressLimit, items: {} });
   console.log(`REVIEW_ROUNDS status=initialized cap=${cap} no_progress_limit=${noProgressLimit}`);
   process.exit(0);
 }
@@ -75,10 +75,4 @@ if (command === "attempt") {
   item.landedSha = sha; item.noProgress = 0;
   state.items[itemId] = item; save(path, state);
   console.log(`REVIEW_ROUNDS status=landed item=${itemId} sha=${sha}`);
-} else if (command === "override") {
-  const reason = arg("--reason").trim();
-  if (!reason || /[\r\n\t]/.test(reason)) die("invalid-override-reason");
-  item.park = null; item.rounds = 0; item.noProgress = 0;
-  state.items[itemId] = item; state.overrides.push({ item: itemId, reason, at: new Date().toISOString() }); save(path, state);
-  console.log(`REVIEW_ROUNDS status=overridden item=${itemId}`);
 } else die("unknown-command");

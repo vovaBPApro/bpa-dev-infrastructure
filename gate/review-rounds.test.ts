@@ -29,14 +29,6 @@ describe("durable review round enforcement", () => {
     expect(text(fourth)).toContain("item=V3-3.4 cap=3 parked=cap");
   });
 
-  test("a re-cut branch cannot evade item identity", () => {
-    const state = fixture(1, 3);
-    expect(run(state, "attempt", "acceptance-9").exitCode).toBe(0);
-    expect(run(state, "landed", "acceptance-9", ["--sha", "a".repeat(40)]).exitCode).toBe(0);
-    const recut = run(state, "attempt", "acceptance-9");
-    expect(text(recut)).toContain("item=acceptance-9 cap=1 parked=cap");
-  });
-
   test("parks no progress distinctly and landed SHAs reset only no-progress", () => {
     const stuck = fixture(5, 2);
     expect(run(stuck, "attempt").exitCode).toBe(0);
@@ -61,12 +53,11 @@ describe("durable review round enforcement", () => {
     expect(text(run(state, "attempt"))).toContain("state-unreadable");
   });
 
-  test("state survives a new process and override is explicit and audited", () => {
+  test("state survives a new process and exposes no self-reset command", () => {
     const state = fixture(1, 3);
     expect(run(state, "attempt", "durable").exitCode).toBe(0);
     expect(run(state, "attempt", "durable").exitCode).toBe(2);
-    expect(run(state, "override", "durable", ["--reason", "operator approved recut"]).exitCode).toBe(0);
-    expect(run(state, "attempt", "durable").exitCode).toBe(0);
-    expect(JSON.parse(readFileSync(state, "utf8")).overrides).toHaveLength(1);
+    expect(text(run(state, "override", "durable", ["--reason", "agent self reset"]))).toContain("unknown-command");
+    expect(run(state, "attempt", "durable").exitCode).toBe(2);
   });
 });

@@ -188,6 +188,33 @@ fi
 pre_merge_sha=$(git -C "$repo" rev-parse "$default_branch")
 land_pass freshness
 
+# Bind caller input to tracked authority on the target branch. Instance repos
+# register a stable branch root for each work item; disposable -rN recuts map
+# back to that root. Minimal fixture/product repos without the registry retain
+# the strict legacy invariant that the item id must equal the branch name.
+registry=$(git -C "$repo" show "$default_branch:instance/review-items.tsv" 2>/dev/null || true)
+if [ -n "$registry" ]; then
+  canonical_branch=$(printf '%s\n' "$branch" | sed -E 's/-r[0-9]+$//')
+  registered_branch=$(printf '%s\n' "$registry" | awk -F '\t' -v id="$item_id" '$1 == id { print $2 }')
+  registry_matches=$(printf '%s\n' "$registry" | awk -F '\t' -v id="$item_id" '$1 == id { count++ } END { print count+0 }')
+  if [ "$registry_matches" -ne 1 ] || [ "$registered_branch" != "$canonical_branch" ]; then
+    echo "LAND review-item unknown-or-mismatched item=$item_id branch=$branch" >&2
+    land_fail review-item 2
+  fi
+elif [ "$item_id" != "$branch" ]; then
+  echo "LAND review-item unregistered item=$item_id branch=$branch" >&2
+  land_fail review-item 2
+fi
+land_pass review-item
+
+# A clone has no Git-common-dir state. Bootstrap it under the serialized landing
+# lock; malformed/non-regular existing state is deliberately never replaced.
+if [ ! -e "$review_round_state" ]; then
+  if ! "$BUN_BIN" "$script_dir/review-rounds.ts" init --state "$review_round_state" --cap 3 --no-progress-limit 3; then
+    land_fail review-rounds 2
+  fi
+fi
+
 export LAND_DEFAULT_BRANCH="$default_branch"
 guard_args=("$script_dir/completion-guard.ts" --report "$report" --repo "$repo" --branch "$branch")
 if [ "$run_verify" = true ]; then guard_args+=(--defer-verify); fi

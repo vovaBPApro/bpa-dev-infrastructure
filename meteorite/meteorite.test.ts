@@ -113,8 +113,11 @@ describe("meteorite runner", () => {
     expect(report).toContain("source mechanism: `tracked-remote`");
     expect(report).toContain("sha-verification: PASS");
     expect(report).toContain("container image: `ubuntu:24.04`");
+    expect(report).toContain("container isolation: `Docker bridge network; no host mounts or published ports`");
+    expect(report).toContain("pinned test environment: `FULL_SUITE_ON_CALENDAR=*-*-* 03:30:00; ORCH_WATCHDOG_INTERVAL=60`");
     expect(report).toContain("result: clean");
     expect(report).toContain("bootstrap-dry-run: PASS");
+    expect(report).toContain("bootstrap-test-prerequisites: PASS");
     expect(report).toContain("bootstrap-verify-source: PASS");
     expect(report).toContain("test-prerequisites: PASS");
     expect(report).toContain("full-test-suite: PASS");
@@ -123,6 +126,17 @@ describe("meteorite runner", () => {
     expect(report).toContain("watchdog arm —");
     expect(report).toContain("Telegram transport —");
     expect(await readFile(f.trace, "utf8")).toContain("stop -t 5 container-id");
+    expect(await readFile(f.trace, "utf8")).toContain("run -d --rm --network bridge ubuntu:24.04 sleep infinity");
+  });
+
+  test("pins the donor before bootstrap executes its embedded full suite", async () => {
+    const source = await readFile(runner, "utf8");
+    const donor = source.indexOf('"bootstrap-test-prerequisites|');
+    const install = source.indexOf('"bootstrap-install|');
+    expect(donor).toBeGreaterThan(-1);
+    expect(install).toBeGreaterThan(donor);
+    expect(source.slice(donor, install)).toContain("refs/heads/v2-deprecated");
+    expect(source.slice(donor, install)).toContain("/usr/local/bin/bun");
   });
 
   test("a local source cannot yield a clean report", async () => {

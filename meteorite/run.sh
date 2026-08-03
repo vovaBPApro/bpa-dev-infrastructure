@@ -70,6 +70,8 @@ write_report() {
     printf -- '- requested SHA: `%s`\n' "${ref:-UNMEASURED}"
     printf -- '- tested SHA: `%s`\n' "$tested_sha"
     printf -- '- container image: `%s`\n' "$image"
+    printf -- '- container isolation: `Docker bridge network; no host mounts or published ports`\n'
+    printf -- '- pinned test environment: `FULL_SUITE_ON_CALENDAR=*-*-* 03:30:00; ORCH_WATCHDOG_INTERVAL=60`\n'
     printf -- '- result: %s\n' "$result"
     printf -- '- blocker: %s\n\n' "$blocker"
     printf '## Stages\n\n'
@@ -185,7 +187,7 @@ run_exec_stage() {
   fail "$stage" "$stage command failed"
 }
 
-if ! cid="$(docker run -d --rm "$image" sleep infinity)"; then
+if ! cid="$(docker run -d --rm --network bridge "$image" sleep infinity)"; then
   fail "container-start" "docker could not start $image" || true
   exit 1
 fi
@@ -198,10 +200,14 @@ record "container-start" "PASS"
 commands=(
   "prerequisites|apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential ca-certificates cmake curl espeak-ng ffmpeg git gettext-base strace tmux unzip util-linux"
   "clone|git clone --no-checkout '$repo_url' /work/source && git -C /work/source fetch --depth 1 origin '$ref' && git -C /work/source checkout --detach FETCH_HEAD && git -C /work/source branch meteorite-target HEAD"
+  # bootstrap/install.sh runs the complete suite itself. Materialize its donor
+  # dependency before that first suite, in the source repository that it clones,
+  # rather than accidentally relying on a donor ref already present on the host.
+  "bootstrap-test-prerequisites|test -n '$donor_sha' && test -n '$donor_ref' && ln -sfn /root/.bun/bin/bun /usr/local/bin/bun && git -C /work/source fetch origin '$donor_ref':refs/heads/v2-deprecated && test \"\$(git -C /work/source rev-parse refs/heads/v2-deprecated)\" = '$donor_sha'"
   "bootstrap-dry-run|cd /work/source && bash bootstrap/install.sh --dry-run"
-  "bootstrap-install|cd /work/source && INSTALL_ROOT=/work/install REPO_URL=/work/source REPO_BRANCH=meteorite-target ENV_FILE=/work/config/orchestrator.env BUN_BIN=/root/.bun/bin/bun RUNTIME_DIR=/work/runtime INFRA_STATE_DB=/work/runtime/state.db bash bootstrap/install.sh"
+  "bootstrap-install|cd /work/source && INSTALL_ROOT=/work/install REPO_URL=/work/source REPO_BRANCH=meteorite-target TEST_GATE_ORIGIN_URL='$repo_url' ENV_FILE=/work/config/orchestrator.env BUN_BIN=/root/.bun/bin/bun RUNTIME_DIR=/work/runtime INFRA_STATE_DB=/work/runtime/state.db FULL_SUITE_ON_CALENDAR='*-*-* 03:30:00' ORCH_WATCHDOG_INTERVAL=60 bash bootstrap/install.sh"
   "bootstrap-verify-source|cd /work/source && INSTALL_ROOT=/work/install ENV_FILE=/work/config/orchestrator.env BUN_BIN=/root/.bun/bin/bun RUNTIME_DIR=/work/runtime INFRA_STATE_DB=/work/runtime/state.db bash bootstrap/install.sh --verify-source"
-  "test-prerequisites|test -n '$donor_sha' && test -n '$donor_ref' && ln -sfn /root/.bun/bin/bun /usr/local/bin/bun && git -C /work/install remote set-url origin '$repo_url' && git -C /work/install fetch origin '$donor_ref':refs/remotes/origin/v2-deprecated && test \"\$(git -C /work/install rev-parse refs/remotes/origin/v2-deprecated)\" = '$donor_sha'"
+  "test-prerequisites|test -n '$donor_sha' && test -n '$donor_ref' && test -x /usr/local/bin/bun && test \"\$(git -C /work/install rev-parse refs/remotes/origin/v2-deprecated)\" = '$donor_sha'"
   "full-test-suite|cd /work/install && PATH=/root/.bun/bin:\$PATH /root/.bun/bin/bun test"
   "unit-drift|install -d /work/rendered-units && for template in /work/install/bootstrap/units/*.in /work/install/instance/units/*.in; do test -f \"\$template\" || continue; INSTALL_ROOT=/root/bpa-dev-infrastructure ENV_FILE=/root/.config/bpa/orchestrator.env BUN_BIN=/usr/local/bin/bun BASH_BIN=/usr/bin/bash FULL_SUITE_ON_CALENDAR='*-*-* 03:30:00' ORCH_WATCHDOG_INTERVAL=60 envsubst < \"\$template\" > \"/work/rendered-units/\$(basename \"\${template%.in}\")\"; done && cd /work/install && SYSTEMD_SYSTEM_DIR=/work/rendered-units bash bootstrap/check-unit-drift.sh"
 )

@@ -4,7 +4,7 @@
 import { existsSync } from 'node:fs';
 import { test } from 'bun:test';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { networkInterfaces, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 const root = resolve(process.env.ORCH_DAEMON_ROOT ?? resolve(import.meta.dir, '..'));
 const daemonServer = join(root, 'daemon/server.ts');
@@ -24,9 +24,6 @@ let daemon: ReturnType<typeof Bun.spawn> | undefined;
 const recordFile = join(scratch, 'telegram-requests.jsonl');
 const modeFile = join(scratch, 'telegram-mode');
 let fixture: ReturnType<typeof Bun.spawn> | undefined;
-const reservation = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => new Response() });
-const daemonPort = reservation.port;
-reservation.stop(true);
 await writeFile(modeFile, 'success');
 fixture = Bun.spawn(['bun', join(import.meta.dir, 'watchdog-telegram-http.fixture.ts'), recordFile, modeFile], { stdout: 'pipe', stderr: 'inherit' });
 const reader = fixture.stdout.getReader();
@@ -34,10 +31,11 @@ const first = await reader.read();
 const telegramPort = Number(new TextDecoder().decode(first.value).trim());
 reader.releaseLock();
 if (!Number.isSafeInteger(telegramPort)) throw new Error('Telegram fixture did not report its port');
-// Some hardened hosts drop loopback packets. Select a private local interface
-// mechanically so the fixture remains host-agnostic and never leaves the host.
-const addressProbe = Bun.spawnSync(['ip', '-4', '-o', 'addr', 'show', 'scope', 'global'], { stdout: 'pipe' }).stdout.toString();
-const telegramHost = process.env.ORCH_TEST_HTTP_HOST ?? addressProbe.match(/\binet ((?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)[^/]+)/)?.[1] ?? '127.0.0.1';
+// Resolve an address from the runtime API rather than depending on the host's
+// optional `ip` utility. Both processes remain in the same network namespace.
+const telegramHost = Object.values(networkInterfaces()).flat().find((address) =>
+  address?.family === 'IPv4' && !address.internal
+)?.address ?? '127.0.0.1';
 const requestRows = async () => (await readFile(recordFile, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).flatMap((line) => {
   try { return [JSON.parse(line) as { path: string; body: { chat_id?: string | number; text?: string } }]; }
   catch { return []; } // the fixture may be between append syscalls
@@ -73,7 +71,10 @@ try {
       NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost',
       TELEGRAM_API_ROOT: `http://${telegramHost}:${telegramPort}`,
       TELEGRAM_BOT_TOKEN: '123456:transport-boundary-fixture',
-      TELEGRAM_STATE_DIR: state, TELEGRAM_DAEMON_PORT: String(daemonPort),
+      // Port 0 asks the kernel to allocate and bind atomically. Reserving an
+      // ephemeral port, releasing it, then starting the daemon left a TOCTOU
+      // window that became visible when the complete suite ran concurrently.
+      TELEGRAM_STATE_DIR: state, TELEGRAM_DAEMON_PORT: '0',
       TELEGRAM_ACCESS_MODE: 'static', TELEGRAM_BOUND_CHAT_ID: chatId,
       TELEGRAM_CHAT_ID: chatId, NUDGE_OUTBOX_FILE: outbox,
       MORNING_OUTBOX_FILE: join(scratch, 'morning.outbox'),
@@ -112,4 +113,4 @@ try {
   if (fixture?.exitCode === null) fixture.kill('SIGTERM');
   await rm(scratch, { recursive: true, force: true });
 }
-});
+}, 15_000);

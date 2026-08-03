@@ -581,13 +581,23 @@ cat > "$stage2_fixture/bin/bun" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$stage2_fixture/bun.calls"
 printf '%s\n' "\${TMPDIR-unset}" >> "$stage2_fixture/bun.tmpdir"
+printf '%s\n' "\${REPO_BRANCH-unset}:\${REPO_URL-unset}:\${INSTALL_ROOT-unset}:\${TEST_GATE_ORIGIN_URL-unset}" >> "$stage2_fixture/bun.env"
 exit "\${BUN_STUB_EXIT:-0}"
 EOF
 chmod 700 "$stage2_fixture/bin/bun"
+git -C "$stage2_fixture/root" init -q
+git -C "$stage2_fixture/root" remote add origin /local-bootstrap-source
 BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$stage2_fixture/root" BUN_BIN="$stage2_fixture/bin/bun" \
   INSTALLER_PATH="$INSTALLER" "$BASH_BIN" -c 'source "$INSTALLER_PATH"; run_install_test_gate'
 grep -Fxq test "$stage2_fixture/bun.calls"
 grep -Fxq unset "$stage2_fixture/bun.tmpdir"
+grep -Fxq 'unset:unset:unset:unset' "$stage2_fixture/bun.env"
+BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$stage2_fixture/root" BUN_BIN="$stage2_fixture/bin/bun" \
+  REPO_BRANCH=fixture-branch REPO_URL=/local-bootstrap-source \
+  TEST_GATE_ORIGIN_URL=https://github.com/example/infra.git \
+  INSTALLER_PATH="$INSTALLER" "$BASH_BIN" -c 'source "$INSTALLER_PATH"; run_install_test_gate'
+[[ "$(git -C "$stage2_fixture/root" remote get-url origin)" == https://github.com/example/infra.git ]]
+tail -1 "$stage2_fixture/bun.env" | grep -Fxq 'unset:unset:unset:unset'
 if BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$stage2_fixture/root" BUN_BIN="$stage2_fixture/bin/bun" \
   BUN_STUB_EXIT=7 INSTALLER_PATH="$INSTALLER" "$BASH_BIN" -c \
   'source "$INSTALLER_PATH"; run_install_test_gate' >/dev/null 2>&1; then

@@ -15,6 +15,46 @@ land_changed_base() {
   git -C "$repo" rev-list --max-parents=0 --reverse "$branch" | head -n 1
 }
 
+# Hard-reset $repo's checked-out branch to $target and PROVE it landed there
+# before returning success. `git reset --hard` can fail without `set -e`
+# noticing (this repo's scripts intentionally don't set -e), and a plain
+# `git reset --hard ORIG_HEAD >/dev/null` swallows that failure completely --
+# the caller prints "reset to ORIG_HEAD" and reports an aborted landing while
+# the ref sits wherever the merge left it. Observed cause: a coder-authored
+# `verify:` command (or a declared package.json script) that spawns a git
+# process which is killed or still running when the gate reads its exit
+# status leaves a stale $GIT_DIR/index.lock behind, and every subsequent
+# `git reset --hard` in that worktree fails the same way.
+#
+# land.sh holds an exclusive flock on this repo's own bpa-land.lock for its
+# entire runtime (see the `exec 9>"$lock_file"` / `flock -n 9` pair near the
+# top of gate/land.sh), so no *other* land.sh invocation can be concurrently
+# mutating this checkout. A leftover index.lock at rollback time can
+# therefore only be debris from something already dead. Clearing it is
+# confined to this recovery path -- it is never used to make forward
+# progress, only to let a hard reset that the gate itself needs finish.
+#
+# Returns 0 only when $repo's HEAD is verified to equal the resolved commit
+# for $target afterward. A caller that gets a non-zero return MUST NOT report
+# a plain "aborted" verdict: the target ref may still be wherever the failed
+# operation left it, and the report contract requires "aborted" to mean the
+# ref did not move.
+land_force_reset() {
+  local repo="$1" target="$2" git_dir lock_file target_sha actual_sha
+  git_dir=$(git -C "$repo" rev-parse --git-dir 2>/dev/null) || return 1
+  case "$git_dir" in
+    /*) lock_file="$git_dir/index.lock" ;;
+    *) lock_file="$repo/$git_dir/index.lock" ;;
+  esac
+  target_sha=$(git -C "$repo" rev-parse --verify -q "${target}^{commit}" 2>/dev/null) || return 1
+  if ! git -C "$repo" reset --hard "$target_sha" >/dev/null 2>&1; then
+    rm -f "$lock_file" 2>/dev/null || true
+    git -C "$repo" reset --hard "$target_sha" >/dev/null 2>&1 || true
+  fi
+  actual_sha=$(git -C "$repo" rev-parse -q --verify HEAD 2>/dev/null) || return 1
+  [ "$actual_sha" = "$target_sha" ]
+}
+
 land_resolve_bun() {
   local name candidate resolved trusted_path='/usr/local/bin:/usr/bin:/bin'
   if [ -n "${BUN_BIN:-}" ]; then

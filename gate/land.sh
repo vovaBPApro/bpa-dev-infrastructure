@@ -59,6 +59,16 @@ land_fail() {
   echo "LAND verdict=aborted sha=$merge_sha" >&2
   exit "${2:-1}"
 }
+# Used only when a post-merge abort's own rollback attempt (land_force_reset)
+# could not verify that $default_branch was restored. "aborted" is reserved
+# for the case where the ref provably did not move; this path exists so the
+# gate never prints that word when it cannot back it up.
+land_fail_rollback() {
+  echo "LAND step=$1 status=fail" >&2
+  echo "LAND rollback-failed target=$default_branch expected=$2 actual=$3" >&2
+  echo "LAND verdict=rollback-failed sha=$merge_sha" >&2
+  exit "${4:-3}"
+}
 land_reap_fail() {
   echo "LAND step=reap status=${1:-fail}" >&2
   if [ "$pushed" = true ]; then
@@ -97,7 +107,11 @@ land_rollback_on_exit() {
       git -C "$repo" merge --abort >/dev/null 2>&1 || true
     fi
     git -C "$repo" checkout -q "$default_branch" >/dev/null 2>&1 || true
-    git -C "$repo" reset --hard "$pre_merge_sha" >/dev/null 2>&1 || true
+    if ! land_force_reset "$repo" "$pre_merge_sha"; then
+      echo "LAND rollback-failed target=$default_branch expected=$pre_merge_sha actual=$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)" >&2
+      echo "LAND verdict=rollback-failed sha=$merge_sha" >&2
+      status=3
+    fi
   fi
   exit "$status"
 }
@@ -213,7 +227,9 @@ merge_sha=$(git -C "$repo" rev-parse HEAD)
 land_pass merge
 
 if ! land_run_declared_checks "$repo" LAND "$baseline_test_count"; then
-  git -C "$repo" reset --hard ORIG_HEAD >/dev/null
+  if ! land_force_reset "$repo" "$pre_merge_sha"; then
+    land_fail_rollback declared-checks "$pre_merge_sha" "$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)"
+  fi
   merged=false
   merge_sha="none"
   land_fail declared-checks
@@ -227,14 +243,22 @@ if [ "$run_verify" = true ]; then
   if [ -z "$verify_command" ] || ! (cd "$repo" && sh -c "$verify_command") >"$verify_output" 2>&1; then
     cat "$verify_output"
     rm -f "$verify_output"
-    git -C "$repo" reset --hard ORIG_HEAD >/dev/null
+    if ! land_force_reset "$repo" "$pre_merge_sha"; then
+      land_fail_rollback post-merge-verify "$pre_merge_sha" "$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)"
+    fi
+    merged=false
+    merge_sha="none"
     echo "LAND post-merge-verify failure: merge reset to ORIG_HEAD" >&2
     land_fail post-merge-verify
   fi
   cat "$verify_output"
   if ! land_verify_count "$report" "$verify_output"; then
     rm -f "$verify_output"
-    git -C "$repo" reset --hard ORIG_HEAD >/dev/null
+    if ! land_force_reset "$repo" "$pre_merge_sha"; then
+      land_fail_rollback post-merge-verify "$pre_merge_sha" "$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)"
+    fi
+    merged=false
+    merge_sha="none"
     echo "LAND post-merge-verify count mismatch: merge reset to ORIG_HEAD" >&2
     land_fail post-merge-verify
   fi
@@ -251,7 +275,9 @@ if [ "$no_push" = false ]; then
     else
       rollback_sha="$pre_merge_sha"
     fi
-    git -C "$repo" reset --hard "$rollback_sha" >/dev/null || land_fail rollback
+    if ! land_force_reset "$repo" "$rollback_sha"; then
+      land_fail_rollback push "$rollback_sha" "$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)"
+    fi
     merged=false
     merge_sha="none"
     echo "LAND push failure: main reset to origin/main" >&2

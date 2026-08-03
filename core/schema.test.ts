@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, rmSync } from "node:fs";
+import { Database } from "bun:sqlite";
 import { DurableStore, FencedTransitionError, type CreateLaneInput } from "./schema";
 
 const paths = new Set<string>();
@@ -69,6 +70,23 @@ describe("v3 durable hierarchy contract", () => {
     restarted.markOutboxAttempt("msg-1", "failed", "network");
     restarted.markOutboxAttempt("msg-1", "delivered");
     expect(restarted.reconstruct().outbox[0]).toMatchObject({ deliveryState: "delivered", attempts: 2, lastError: null });
+    restarted.close();
+  });
+
+  test("reconstruct excludes a terminal lane retaining stale lease columns", () => {
+    const { store, path } = open();
+    store.createMission({ id: "mission-1", correlationId: "corr-1", acceptanceId: "mission-accept" });
+    store.createManager({ id: "manager-1", missionId: "mission-1", parentId: "mission-1", depth: 1 });
+    store.createLane(lane());
+    store.claimLane("lane-1", "dispatcher-a", 500);
+    store.close();
+
+    const db = new Database(path);
+    db.query("UPDATE lanes SET state = 'clean', terminal_verdict = 'clean' WHERE id = 'lane-1'").run();
+    db.close();
+
+    const restarted = new DurableStore(path, { now: () => 1_100 });
+    expect(restarted.reconstruct().leases).toEqual([]);
     restarted.close();
   });
 

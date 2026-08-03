@@ -622,6 +622,12 @@ const requiredTime = (object, key, subject) => {
   if (!Number.isSafeInteger(object?.[key]) || object[key] < 0) throw new Error(`${subject} missing timestamp: ${key}`);
   return object[key];
 };
+const requiredTerminalVerdict = (lane) => {
+  if (lane?.terminalVerdict !== null && lane?.terminalVerdict !== "clean" && lane?.terminalVerdict !== "NO-GO") {
+    throw new Error(`lane ${lane?.id ?? "unknown"} invalid terminal verdict`);
+  }
+  return lane.terminalVerdict;
+};
 const status = JSON.parse(await Bun.stdin.text());
 const missions = requiredArray(status, "missions");
 const allLanes = requiredArray(status, "lanes");
@@ -629,13 +635,15 @@ const leases = requiredArray(status, "leases");
 for (const mission of missions) {
   const missionId = requiredString(mission, "id", "mission");
   const correlation = requiredString(mission, "correlationId", `mission ${missionId}`);
-  const lanes = allLanes.filter((lane) => requiredString(lane, "missionId", "lane") === missionId);
-  for (const lane of lanes) {
+  const missionLanes = allLanes.filter((lane) => requiredString(lane, "missionId", "lane") === missionId);
+  for (const lane of missionLanes) {
     requiredString(lane, "id", "lane");
     requiredTime(lane, "updatedAt", `lane ${lane.id}`);
+    requiredTerminalVerdict(lane);
   }
+  const lanes = missionLanes.filter((lane) => lane.terminalVerdict === null);
   const active = leases.filter((lease) => lanes.some((lane) => lane.id === requiredString(lease, "key", "lease"))).length;
-  const updatedAt = Math.max(requiredTime(mission, "updatedAt", `mission ${missionId}`), ...lanes.map((lane) => lane.updatedAt));
+  const updatedAt = Math.max(requiredTime(mission, "updatedAt", `mission ${missionId}`), ...missionLanes.map((lane) => lane.updatedAt));
   console.log([correlation, lanes.length, active, updatedAt].join("\t"));
 }
 ' 2>>"$LOG_FILE")"; then

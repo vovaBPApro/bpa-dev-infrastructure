@@ -78,6 +78,14 @@ run_watchdog() {
     "$SCRIPT_DIR/watchdog.sh"
 }
 
+run_status() {
+  local db="$1"
+  env PATH="$SHIM:$PATH" ORCH_CONFIG_FILE="$SCRATCH/no-config" ORCH_STATE_DB="$db" \
+    ORCH_RUNTIME_DIR="$SCRATCH/status-runtime" ORCH_DONE_SENTINEL="$SCRATCH/no-done-sentinel" \
+    ORCH_INSTALL_ROOT="$SCRATCH" ORCH_PROC_ROOT="$SCRATCH/no-proc" \
+    "$SCRIPT_DIR/status.sh"
+}
+
 # A populated mission with an old completion signal is stalled. Its live lane
 # lease is headcount only and must not suppress the real emitted decision.
 STALLED_DB="$SCRATCH/stalled.db"
@@ -112,6 +120,24 @@ progress_updated="$(INFRA_STATE_DB="$PROGRESS_DB" bun -e \
 run_watchdog "$PROGRESS_DB" "$SCRATCH/progress-runtime" "$PROGRESS_OUTBOX" "$(( progress_updated + 100 ))"
 not_exists "$PROGRESS_OUTBOX"
 
+# Terminal lanes remain in the durable audit snapshot, but stale ownership
+# columns cannot make them active or open work at either operator consumer.
+TERMINAL_DB="$SCRATCH/terminal.db"
+TERMINAL_OUTBOX="$SCRATCH/terminal.outbox"
+terminal_mission="$(create_mission "$TERMINAL_DB" terminal-finished lane-terminal)"
+seed_running "$TERMINAL_DB" "$terminal_mission" lane-terminal lease
+terminal_updated="$(INFRA_STATE_DB="$TERMINAL_DB" bun -e \
+  'import { Database } from "bun:sqlite";
+   const db = new Database(process.env.INFRA_STATE_DB);
+   db.query("UPDATE lanes SET state = ?, terminal_verdict = ? WHERE id = ?")
+     .run("clean", "clean", "lane-terminal");
+   console.log(db.query("SELECT updated_at FROM lanes WHERE id = ?").get("lane-terminal").updated_at);')"
+run_watchdog "$TERMINAL_DB" "$SCRATCH/terminal-runtime" "$TERMINAL_OUTBOX" "$(( terminal_updated + 10000 ))"
+not_exists "$TERMINAL_OUTBOX"
+status_output="$(run_status "$TERMINAL_DB")"
+grep -Fq 'mission    terminal-finished open_lanes=0 active=0' <<<"$status_output" || \
+  fail 'status did not exclude terminal lane from open and active counts'
+
 # The malformed snapshot starts as genuine mission-cli output, then removes
 # one required field at the transport boundary. The watchdog must make the
 # unmeasured subject visible instead of letting undefined become NaN/quiet.
@@ -124,16 +150,25 @@ const result = Bun.spawnSync([process.env.BUN_REAL!, process.env.MISSION_CLI_REA
 if (result.exitCode !== 0) process.exit(result.exitCode ?? 1);
 if (args.length === 1 && args[0] === "status") {
   const status = JSON.parse(result.stdout.toString());
-  delete status.lanes[0].updatedAt;
+  switch (process.env.DROP_FIELD) {
+    case "lane-updatedAt": delete status.lanes[0].updatedAt; break;
+    case "leases": delete status.leases; break;
+    case "mission-correlationId": delete status.missions[0].correlationId; break;
+    case "mission-updatedAt": delete status.missions[0].updatedAt; break;
+    default: throw new Error(`unknown DROP_FIELD: ${process.env.DROP_FIELD}`);
+  }
   console.log(JSON.stringify(status));
 } else {
   process.stdout.write(result.stdout);
 }
 EOF
-MALFORMED_RUNTIME="$SCRATCH/malformed-runtime"
 export BUN_REAL="$(command -v bun)" MISSION_CLI_REAL="$MISSION_CLI"
-run_watchdog "$STALLED_DB" "$MALFORMED_RUNTIME" "$SCRATCH/malformed.outbox" "$(( stalled_updated + 10000 ))" "$MALFORMED_CLI"
-contains 'WATCHDOG NO-GO reason=mission-pressure-status-contract-invalid' "$MALFORMED_RUNTIME/watchdog.log"
-not_exists "$SCRATCH/malformed.outbox"
+for drop_field in lane-updatedAt leases mission-correlationId mission-updatedAt; do
+  MALFORMED_RUNTIME="$SCRATCH/malformed-$drop_field-runtime"
+  DROP_FIELD="$drop_field" run_watchdog "$STALLED_DB" "$MALFORMED_RUNTIME" \
+    "$SCRATCH/malformed-$drop_field.outbox" "$(( stalled_updated + 10000 ))" "$MALFORMED_CLI"
+  contains 'WATCHDOG NO-GO reason=mission-pressure-status-contract-invalid' "$MALFORMED_RUNTIME/watchdog.log"
+  not_exists "$SCRATCH/malformed-$drop_field.outbox"
+done
 
 printf 'watchdog mission progress tests: PASS\n'

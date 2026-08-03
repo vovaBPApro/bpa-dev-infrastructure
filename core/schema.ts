@@ -153,7 +153,7 @@ export class DurableStore {
       missions,
       managers,
       lanes,
-      leases: lanes.filter(lane => lane.leaseOwner !== null && lane.leaseDeadlineAt !== null && lane.leaseDeadlineAt > this.now()).map(lane => ({
+      leases: lanes.filter(lane => lane.terminalVerdict === null && lane.leaseOwner !== null && lane.leaseDeadlineAt !== null && lane.leaseDeadlineAt > this.now()).map(lane => ({
         key:lane.id, owner:lane.leaseOwner!, fencingToken:lane.fencingToken, expiresAt:lane.leaseDeadlineAt!,
       })),
       outbox: this.outbox(),

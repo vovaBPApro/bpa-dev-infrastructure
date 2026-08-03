@@ -41,14 +41,32 @@ land_changed_base() {
 # for a lock that is genuinely live. Inability to inspect a candidate is
 # inability to prove it is not the holder, so an unreadable fd/ directory
 # fails the whole check closed instead of being globbed away.
+#
+# The readability requirement only applies to pids that could plausibly HOLD
+# this lock in the first place: opening a file inside this repo's .git
+# directory requires either matching the repo owner's uid (this scanner's own
+# EUID) or root's blanket write access (e.g. via sudo or Docker, per the
+# comment above). A pid owned by any other uid cannot be the holder no matter
+# what its fd/ directory contains, so an unreadable fd/ for a foreign,
+# non-root, non-self uid is skipped rather than treated as an inspection
+# failure -- on a real host, most pids belong to other users, and requiring
+# visibility into all of them turned the recovery branch into dead code for
+# every non-root invocation. The owning uid itself is read from the pid
+# directory's own stat, which -- unlike fd/ -- stays world-readable.
 land_lock_is_stale() {
-  local lock_file="$1" real pid_dir fd_dir fd_link fd_target
+  local lock_file="$1" real self_uid pid_dir pid_uid fd_dir fd_link fd_target
   [ -e "$lock_file" ] || return 0
   [ -d /proc ] || return 1
   real=$(readlink -f -- "$lock_file" 2>/dev/null) || return 1
   [ -n "$real" ] || return 1
+  self_uid=$(id -u) || return 1
   for pid_dir in /proc/[0-9]*; do
     [ -d "$pid_dir" ] || continue
+    pid_uid=$(stat -c '%u' "$pid_dir" 2>/dev/null) || continue
+    case "$pid_uid" in
+      0|"$self_uid") ;;
+      *) continue ;;
+    esac
     fd_dir="$pid_dir/fd"
     [ -r "$fd_dir" ] || return 1
     for fd_link in "$fd_dir"/*; do

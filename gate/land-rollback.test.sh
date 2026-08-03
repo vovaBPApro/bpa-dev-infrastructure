@@ -299,4 +299,68 @@ else
   rm -rf "$uid_fixture"
 fi
 
+# --- 7. Defect (review round 4): the fix for round 3 must not turn every ---
+#        non-root scan into a permanent refusal.
+# Requiring `[ -r "$fd_dir" ]` for EVERY pid (round 3's fix) closed the live-
+# lock hole, but it fails closed on any unreadable pid, not only ones that
+# could plausibly hold the lock -- and on a real host, most pids belong to
+# other users. Scanning as a non-root uid against a lock file NO process
+# holds still returned "not stale" every time, because the loop gave up on
+# the first foreign-uid pid it could not inspect. land_force_reset's
+# recovery branch was dead code for every non-root invocation.
+#
+# The fix scopes the readability requirement to pids that could plausibly
+# hold the lock -- owned by root or by the scanner's own EUID, the only two
+# identities that could have opened a file inside this repo's .git directory
+# -- and skips (continues past) any other, unrelated uid instead of failing
+# the whole check closed for it.
+#
+# A real host's ambient process mix is not a controlled variable (this
+# sandbox alone has 200+ pids, mostly root-owned, and root pids are legitimate
+# must-check candidates under the fix above, not skippable) so this fixture
+# runs inside `unshare --pid --mount-proc --fork`: a fresh, otherwise-empty
+# pid namespace where the process doing the scan is pid 1 itself, holding
+# nothing relevant, plus one deliberately-added bystander owned by a THIRD,
+# unrelated uid (daemon, uid 1) that the scan must skip rather than choke on.
+# This is the same real land_lock_is_stale as fixture 6, exercised under the
+# opposite condition: nothing plausible holds the lock, so it must clear.
+if ! command -v unshare >/dev/null 2>&1 || ! command -v setpriv >/dev/null 2>&1 || ! id nobody >/dev/null 2>&1; then
+  echo 'uid-dead-code: SKIPPED (unshare, setpriv, or the nobody user is unavailable in this environment)'
+else
+  deadcode_fixture="$fixture_root/deadcode-fixture"
+  mkdir -p "$deadcode_fixture"
+  chmod 777 "$deadcode_fixture"
+  chmod o+x "$fixture_root"
+  deadcode_lock="$deadcode_fixture/index.lock"
+  touch "$deadcode_lock"
+  chmod 666 "$deadcode_lock"
+
+  deadcode_lib_copy="$deadcode_fixture/land-lib.sh"
+  cp "$root/gate/land-lib.sh" "$deadcode_lib_copy"
+  chmod 644 "$deadcode_lib_copy"
+
+  deadcode_driver="$deadcode_fixture/driver.sh"
+  {
+    printf 'source "%s"\n' "$deadcode_lib_copy"
+    printf 'if land_lock_is_stale "%s"; then\n' "$deadcode_lock"
+    printf '  echo "RESULT: STALE"\n'
+    printf 'else\n'
+    printf '  echo "RESULT: NOT_STALE"\n'
+    printf 'fi\n'
+  } > "$deadcode_driver"
+  chmod 644 "$deadcode_driver"
+
+  deadcode_out="$deadcode_fixture/out.txt"
+  unshare --pid --mount-proc --fork -- bash -c '
+    setpriv --reuid=1 --regid=1 --clear-groups sleep 15 </dev/null >/dev/null 2>&1 &
+    sleep 0.2
+    exec setpriv --reuid=nobody --regid=nogroup --clear-groups bash "'"$deadcode_driver"'"
+  ' > "$deadcode_out" 2>&1
+
+  assert_output_has "$deadcode_out" 'RESULT: STALE'
+  assert_output_lacks "$deadcode_out" 'RESULT: NOT_STALE'
+
+  rm -rf "$deadcode_fixture"
+fi
+
 echo 'land rollback tests: pass'

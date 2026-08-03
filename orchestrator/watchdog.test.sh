@@ -40,11 +40,26 @@ not_exists() { [[ ! -e "$1" ]] || fail "unexpected file: $1"; }
 mission_id() { sed -nE 's/^MISSION id=([^ ]+) state=.*/\1/p'; }
 
 create_mission() {
-  local db="$1" correlation="$2" lane="$3" mission
-  mission="$(INFRA_STATE_DB="$db" bun "$MISSION_CLI" mission create "$correlation" | mission_id)"
+  local db="$1" correlation="$2" lane="$3" mission manager
+  manager="manager-$lane"
+  mission="$(INFRA_STATE_DB="$db" bun "$MISSION_CLI" mission create "$correlation" watchdog-acceptance | mission_id)"
   [[ -n "$mission" ]] || fail 'fixture mission ID missing'
-  INFRA_STATE_DB="$db" bun "$MISSION_CLI" lane create "$mission" "$lane" >/dev/null
+  INFRA_STATE_DB="$db" bun "$MISSION_CLI" manager create "$mission" "$manager" >/dev/null
+  INFRA_STATE_DB="$db" bun "$MISSION_CLI" lane create "$mission" "$manager" "$lane" watchdog-acceptance 1 >/dev/null
   printf '%s\n' "$mission"
+}
+
+seed_running() {
+  local db="$1" mission="$2" lane="$3" with_lease="$4"
+  INFRA_STATE_DB="$db" bun -e \
+    'import { Database } from "bun:sqlite";
+     const db = new Database(process.env.INFRA_STATE_DB);
+     db.query("UPDATE missions SET state = ? WHERE id = ?").run("running", process.argv[1]);
+     db.query("UPDATE lanes SET state = ? WHERE id = ?").run("running", process.argv[2]);
+     if (process.argv[3] === "lease") {
+       db.query("UPDATE lanes SET lease_owner = ?, fencing_token = ?, lease_deadline_at = ?, updated_at = ? WHERE id = ?")
+         .run("fixture-owner", 1, Date.now() + 600000, Date.now(), process.argv[2]);
+     }' "$mission" "$lane" "$with_lease"
 }
 
 run_watchdog() {
@@ -67,10 +82,12 @@ run_watchdog() {
 STALLED_DB="$SCRATCH/stalled.db"
 STALLED_OUTBOX="$SCRATCH/stalled.outbox"
 stalled_mission="$(create_mission "$STALLED_DB" stalled-populated lane-stalled)"
-INFRA_STATE_DB="$STALLED_DB" bun "$MISSION_CLI" mission transition "$stalled_mission" running >/dev/null
-INFRA_STATE_DB="$STALLED_DB" bun "$MISSION_CLI" lease acquire worker lane-stalled 600000 >/dev/null
-stalled_updated="$(INFRA_STATE_DB="$STALLED_DB" bun "$MISSION_CLI" status | bun -e \
-  'const s=JSON.parse(await Bun.stdin.text()); console.log(Math.max(s.missions[0].updatedAt, ...s.lanes.map((lane) => lane.updatedAt)));')"
+seed_running "$STALLED_DB" "$stalled_mission" lane-stalled lease
+stalled_updated="$(INFRA_STATE_DB="$STALLED_DB" bun -e \
+  'import { Database } from "bun:sqlite";
+   const db = new Database(process.env.INFRA_STATE_DB);
+   console.log(Math.max(db.query("SELECT updated_at FROM missions").get().updated_at,
+     db.query("SELECT updated_at FROM lanes").get().updated_at));')"
 run_watchdog "$STALLED_DB" "$SCRATCH/stalled-runtime" "$STALLED_OUTBOX" "$(( stalled_updated + 10000 ))"
 contains 'NUDGE mission=stalled-populated open_lanes=1 active=1 idle_ms=10000' "$STALLED_OUTBOX"
 
@@ -79,16 +96,18 @@ contains 'NUDGE mission=stalled-populated open_lanes=1 active=1 idle_ms=10000' "
 PROGRESS_DB="$SCRATCH/progress.db"
 PROGRESS_OUTBOX="$SCRATCH/progress.outbox"
 progress_mission="$(create_mission "$PROGRESS_DB" winding-down lane-progress)"
-INFRA_STATE_DB="$PROGRESS_DB" bun "$MISSION_CLI" mission transition "$progress_mission" running >/dev/null
-INFRA_STATE_DB="$PROGRESS_DB" bun "$MISSION_CLI" lane transition lane-progress running >/dev/null
+seed_running "$PROGRESS_DB" "$progress_mission" lane-progress no-lease
 INFRA_STATE_DB="$PROGRESS_DB" bun -e \
   'import { Database } from "bun:sqlite";
    const db = new Database(process.env.INFRA_STATE_DB);
    const lane = db.query("SELECT updated_at FROM lanes WHERE id = ?").get("lane-progress");
    db.query("UPDATE missions SET updated_at = ? WHERE id = ?").run(lane.updated_at - 10000, process.argv[1]);' \
   "$progress_mission"
-progress_updated="$(INFRA_STATE_DB="$PROGRESS_DB" bun "$MISSION_CLI" status | bun -e \
-  'const s=JSON.parse(await Bun.stdin.text()); console.log(Math.max(s.missions[0].updatedAt, ...s.lanes.map((lane) => lane.updatedAt)));')"
+progress_updated="$(INFRA_STATE_DB="$PROGRESS_DB" bun -e \
+  'import { Database } from "bun:sqlite";
+   const db = new Database(process.env.INFRA_STATE_DB);
+   console.log(Math.max(db.query("SELECT updated_at FROM missions").get().updated_at,
+     db.query("SELECT updated_at FROM lanes").get().updated_at));')"
 run_watchdog "$PROGRESS_DB" "$SCRATCH/progress-runtime" "$PROGRESS_OUTBOX" "$(( progress_updated + 100 ))"
 not_exists "$PROGRESS_OUTBOX"
 

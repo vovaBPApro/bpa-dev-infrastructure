@@ -17,16 +17,13 @@ const runnableShellTests = [
   "gate/lane-exit.test.sh",
   "orchestrator/launch-handshake-bounded.test.sh",
   "orchestrator/singleton-failclosed.test.sh",
+  "gate/land-rollback.test.sh",
   "orchestrator/watchdog-supervision.test.sh",
 ] as const;
 
-// Measured on 2026-08-03. These remain visible failures, not passes or silent
-// omissions. Each must move to runnableShellTests when its named blocker closes.
 const excludedShellTests = {
-  "gate/land-rollback.test.sh":
-    "exit 1 after 14.14s: root makes the dirty-tree privilege-drop fixture observe RESULT_EXIT other than the asserted 1",
   "orchestrator/watchdog.test.sh":
-    "exit 1 after 0.08s: fixture uses the pre-V3-0.5 lane-complete CLI and omits the now-required branch argument",
+    "exit 1: mission-cli status exposes snake_case missions, omits lane updatedAt and leases, so watchdog cannot measure mission pressure",
 } as const;
 
 const allShellTests = [...runnableShellTests, ...Object.keys(excludedShellTests)];
@@ -62,10 +59,7 @@ for (const relativePath of runnableShellTests) {
 }
 
 test("excluded shell tests are named and reasoned", () => {
-  expect(Object.keys(excludedShellTests)).toEqual([
-    "gate/land-rollback.test.sh",
-    "orchestrator/watchdog.test.sh",
-  ]);
+  expect(Object.keys(excludedShellTests)).toEqual(["orchestrator/watchdog.test.sh"]);
   for (const reason of Object.values(excludedShellTests)) {
     expect(reason.trim().length).toBeGreaterThan(0);
   }

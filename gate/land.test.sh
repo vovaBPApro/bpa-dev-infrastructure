@@ -2,7 +2,7 @@
 set -euo pipefail
 
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-land="$root/gate/land.sh"
+land="${LAND_UNDER_TEST:-$root/gate/land.sh}"
 fixture_root=$(mktemp -d)
 trap 'rm -rf "$fixture_root"' EXIT
 

@@ -36,6 +36,7 @@ chmod +x "$SHIM/tmux" "$SHIM/df"
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 contains() { grep -Fq -- "$1" "$2" || fail "missing: $1"; }
+not_contains() { ! grep -Fq -- "$1" "$2" || fail "unexpected: $1"; }
 not_exists() { [[ ! -e "$1" ]] || fail "unexpected file: $1"; }
 mission_id() { sed -nE 's/^MISSION id=([^ ]+) state=.*/\1/p'; }
 
@@ -73,10 +74,38 @@ run_watchdog() {
     ORCH_RUNTIME_DIR="$runtime" ORCH_WATCHDOG_LOG="$runtime/watchdog.log" \
     ORCH_DONE_SENTINEL="$SCRATCH/no-done-sentinel" ORCH_DAEMON_HEALTH_URL="" \
     ORCH_MISSION_CLI="$cli" \
+    ORCH_INSTANCE_PARAMS_FILE="${ORCH_INSTANCE_PARAMS_FILE:-$SCRIPT_DIR/../instance/params.yaml}" \
     NUDGE_OUTBOX_FILE="$outbox" ORCH_INSTALL_ROOT="$SCRATCH" DISK_ALERT_PCT=99 \
     FLEET_IDLE_NUDGE_MS=1000 FLEET_NUDGE_REPEAT_MS=3600000 ORCH_WATCHDOG_NOW_MS="$now" \
     "$SCRIPT_DIR/watchdog.sh"
 }
+
+# Fleet pressure counts dispatch-owned live lane leases, not systemd units.
+# Zero lanes alerts once through the daemon-drained outbox; the repeat tick is
+# quiet, and a threshold count is quiet. Changing the config changes behavior,
+# which locks the executor property (the knob must actually be read).
+FLEET_DB="$SCRATCH/fleet.db"
+FLEET_OUTBOX="$SCRATCH/fleet.outbox"
+FLEET_PARAMS="$SCRATCH/params.yaml"
+printf 'fleet:\n  notify_human_below: 3\n' > "$FLEET_PARAMS"
+fleet_mission="$(create_mission "$FLEET_DB" fleet-pressure lane-fleet-1)"
+fleet_now=10000000
+ORCH_INSTANCE_PARAMS_FILE="$FLEET_PARAMS" run_watchdog "$FLEET_DB" "$SCRATCH/fleet-runtime" "$FLEET_OUTBOX" "$fleet_now"
+contains 'FLEET STALL: running lanes=0, notify threshold=3. Dispatch or inspect blocked lanes.' "$FLEET_OUTBOX"
+ORCH_INSTANCE_PARAMS_FILE="$FLEET_PARAMS" run_watchdog "$FLEET_DB" "$SCRATCH/fleet-runtime" "$FLEET_OUTBOX" "$(( fleet_now + 1000 ))"
+[[ "$(grep -Fc 'FLEET STALL:' "$FLEET_OUTBOX")" == 1 ]] || fail 'sustained fleet stall emitted more than once'
+seed_running "$FLEET_DB" "$fleet_mission" lane-fleet-1 lease
+fleet_mission_2="$(create_mission "$FLEET_DB" fleet-pressure-2 lane-fleet-2)"
+seed_running "$FLEET_DB" "$fleet_mission_2" lane-fleet-2 lease
+fleet_mission_3="$(create_mission "$FLEET_DB" fleet-pressure-3 lane-fleet-3)"
+seed_running "$FLEET_DB" "$fleet_mission_3" lane-fleet-3 lease
+FLEET_THRESHOLD_OUTBOX="$SCRATCH/fleet-at-threshold.outbox"
+ORCH_INSTANCE_PARAMS_FILE="$FLEET_PARAMS" run_watchdog "$FLEET_DB" "$SCRATCH/fleet-at-threshold-runtime" "$FLEET_THRESHOLD_OUTBOX" "$(( fleet_now + 2000 ))"
+not_exists "$FLEET_THRESHOLD_OUTBOX"
+printf 'fleet:\n  notify_human_below: 4\n' > "$FLEET_PARAMS"
+FLEET_KNOB_OUTBOX="$SCRATCH/fleet-knob.outbox"
+ORCH_INSTANCE_PARAMS_FILE="$FLEET_PARAMS" run_watchdog "$FLEET_DB" "$SCRATCH/fleet-knob-runtime" "$FLEET_KNOB_OUTBOX" "$(( fleet_now + 3000 ))"
+contains 'FLEET STALL: running lanes=3, notify threshold=4.' "$FLEET_KNOB_OUTBOX"
 
 run_status() {
   local db="$1"
@@ -118,7 +147,7 @@ progress_updated="$(INFRA_STATE_DB="$PROGRESS_DB" bun -e \
    console.log(Math.max(db.query("SELECT updated_at FROM missions").get().updated_at,
      db.query("SELECT updated_at FROM lanes").get().updated_at));')"
 run_watchdog "$PROGRESS_DB" "$SCRATCH/progress-runtime" "$PROGRESS_OUTBOX" "$(( progress_updated + 100 ))"
-not_exists "$PROGRESS_OUTBOX"
+not_contains 'NUDGE mission=winding-down' "$PROGRESS_OUTBOX"
 
 # Terminal lanes remain in the durable audit snapshot, but stale ownership
 # columns cannot make them active or open work at either operator consumer.
@@ -133,7 +162,7 @@ terminal_updated="$(INFRA_STATE_DB="$TERMINAL_DB" bun -e \
      .run("clean", "clean", "lane-terminal");
    console.log(db.query("SELECT updated_at FROM lanes WHERE id = ?").get("lane-terminal").updated_at);')"
 run_watchdog "$TERMINAL_DB" "$SCRATCH/terminal-runtime" "$TERMINAL_OUTBOX" "$(( terminal_updated + 10000 ))"
-not_exists "$TERMINAL_OUTBOX"
+not_contains 'NUDGE mission=terminal-finished' "$TERMINAL_OUTBOX"
 status_output="$(run_status "$TERMINAL_DB")"
 grep -Fq 'mission    terminal-finished open_lanes=0 active=0' <<<"$status_output" || \
   fail 'status did not exclude terminal lane from open and active counts'

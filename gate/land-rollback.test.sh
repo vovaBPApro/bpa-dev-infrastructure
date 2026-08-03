@@ -24,7 +24,12 @@ set -o pipefail
 
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 land="$root/gate/land.sh"
-fixture_root=$(mktemp -d)
+# The lane itself can inherit TMPDIR below /root, whose parent directories are
+# not traversable by the dropped-privilege actor used in fixture 6. Put the
+# fixture under the system temporary directory, just as hygiene/reap.test.ts's
+# privilege fixture does, so chmod on the named fixture can establish the
+# whole traversal precondition instead of being defeated by an ancestor.
+fixture_root=$(env -u TMPDIR -u TMP -u TEMP mktemp -d)
 cleanup() {
   # Some fixtures below chattr +i a file to make a rollback genuinely
   # unrecoverable; clear that before the trap tries to rm -rf the fixture.
@@ -287,12 +292,21 @@ else
   chown nobody:nogroup "$uid_driver"
 
   uid_out="$uid_fixture/out.txt"
-  setpriv --reuid=nobody --regid=nogroup --clear-groups env HOME="$uid_home" \
+  if ! setpriv --reuid=65534 --regid=65534 --clear-groups \
+    test -r "$uid_lib_copy" -a -r "$uid_driver" -a -x "$uid_repo"; then
+    echo 'uid-fd-visibility: fixture setup failed: dropped-privilege actor cannot traverse/read fixture inputs' >&2
+    exit 1
+  fi
+  setpriv --reuid=65534 --regid=65534 --clear-groups env HOME="$uid_home" \
     bash "$uid_driver" > "$uid_out" 2>&1
 
   kill "$uid_holder_pid" 2>/dev/null
 
-  assert_output_has "$uid_out" 'RESULT_EXIT=1'
+  if ! grep -Fq 'RESULT_EXIT=1' "$uid_out"; then
+    echo 'uid-fd-visibility: fixture failed before the subject assertion' >&2
+    cat "$uid_out" >&2
+    exit 1
+  fi
   assert test -e "$uid_lock"
   assert test "$(git -c safe.directory='*' -C "$uid_repo" rev-parse HEAD)" = "$uid_advanced_sha"
 

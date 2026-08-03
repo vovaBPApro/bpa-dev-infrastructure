@@ -4,7 +4,7 @@ set -u
 set -o pipefail
 
 usage() {
-  echo "usage: gate/land.sh --branch <ag-name> --report <file> --repo <path> [--worktree <path>] [--no-push] [--run-verify] [--skip-review <reason>]" >&2
+  echo "usage: gate/land.sh --branch <ag-name> --report <file> --repo <path> [--worktree <path>] [--no-push] [--run-verify] [--skip-review <reason>] [--target-branch <name>]" >&2
   exit 2
 }
 
@@ -12,6 +12,7 @@ branch=""
 report=""
 repo=""
 worktree=""
+target_branch=""
 no_push=false
 run_verify=false
 skip_review=false
@@ -25,13 +26,14 @@ pre_merge_sha=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --branch|--report|--repo|--worktree)
+    --branch|--report|--repo|--worktree|--target-branch)
       if [ "$#" -lt 2 ] || [ -z "$2" ]; then usage; fi
       case "$1" in
         --branch) branch="$2" ;;
         --report) report="$2" ;;
         --repo) repo="$2" ;;
         --worktree) worktree="$2" ;;
+        --target-branch) target_branch="$2" ;;
       esac
       shift 2
       ;;
@@ -113,6 +115,31 @@ elif git -C "$repo" show-ref --verify --quiet refs/heads/master; then
   default_branch=master
 else
   land_fail default-branch 2
+fi
+
+# --target-branch never opens a second code path: it only substitutes the
+# value bound to $default_branch before any guard below reads it. Every check
+# that follows (checked-out-branch equality, freshness, review/secret/payload
+# merge-base via LAND_DEFAULT_BRANCH, merge, push, rollback-on-exit) already
+# reads $default_branch and nothing else, so once this substitution happens
+# every one of those checks is automatically retargeted together -- there is
+# no separate "skip this guard for a custom target" branch to add or forget.
+# The validation below only narrows which substitution values are accepted;
+# it cannot be used to skip a guard, only to redirect all of them in lockstep.
+if [ -n "$target_branch" ]; then
+  if [ "$target_branch" = "$branch" ]; then
+    echo "LAND target-branch same-as-candidate target=$target_branch branch=$branch" >&2
+    land_fail target-branch 2
+  fi
+  if ! git -C "$repo" show-ref --verify --quiet "refs/heads/$target_branch"; then
+    echo "LAND target-branch missing-local target=$target_branch" >&2
+    land_fail target-branch 2
+  fi
+  if ! git -C "$repo" show-ref --verify --quiet "refs/remotes/origin/$target_branch"; then
+    echo "LAND target-branch missing-origin target=$target_branch" >&2
+    land_fail target-branch 2
+  fi
+  default_branch="$target_branch"
 fi
 
 current_branch=$(git -C "$repo" branch --show-current)

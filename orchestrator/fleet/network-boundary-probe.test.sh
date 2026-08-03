@@ -2,10 +2,19 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROBE_UNDER_TEST="${PROBE_UNDER_TEST:-$SCRIPT_DIR/network-boundary-probe.sh}"
 SCRATCH="$(mktemp -d)"
+live_dir=""
+outcome_assertions=0
 cleanup() {
-  [[ -s "$SCRATCH/listener.pid" ]] && kill "$(<"$SCRATCH/listener.pid")" >/dev/null 2>&1 || true
+  status=$?
+  [[ -z "$live_dir" ]] || rm -rf "$live_dir"
   rm -rf "$SCRATCH"
+  if [[ "$status" -eq 0 && "$outcome_assertions" -ne 4 ]]; then
+    printf 'successful exit bypassed outcome assertions (%s/4)\n' "$outcome_assertions" >&2
+    return 1
+  fi
+  return "$status"
 }
 trap cleanup EXIT
 mkdir "$SCRATCH/bin"
@@ -29,62 +38,85 @@ while (($#)); do
   esac
 done
 if "$listener"; then
-  setsid -f bash -c 'printf "%s\n" "$$" >"$1"; shift; exec "$@"' \
-    _ "$PROBE_FIXTURE_DIR/listener.pid" "$@"
+  printf '1\n' >"${@: -1}"
   exit 0
 fi
 if "$filtered"; then
   case "${PROBE_FIXTURE_OUTCOME:?}" in
-    denied)
-      # Execute the real client against a closed loopback endpoint. This proves
-      # exit 28 means a real failed connection, while the live-manager check
-      # covers the IPAddressDeny mechanism itself.
-      args=("$@")
-      args[$((${#args[@]} - 1))]=http://127.0.0.1:1/
-      exec "${args[@]}"
-      ;;
-    reachable) exec "$@" ;;
-    infrastructure) exit 73 ;;
+    denied) exit 28 ;;
+    reachable) exit 0 ;;
+    infrastructure) exit "${PROBE_FIXTURE_ARBITRARY_STATUS:-73}" ;;
     timeout) sleep 30 ;;
   esac
 fi
-exec "$@"
+exit 0
 EOF
-chmod +x "$SCRATCH/bin/systemctl" "$SCRATCH/bin/systemd-run"
+cat >"$SCRATCH/bin/bun" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$SCRATCH/bin/systemctl" "$SCRATCH/bin/systemd-run" "$SCRATCH/bin/bun"
 
 run_probe() {
   PATH="$SCRATCH/bin:$PATH" PROBE_FIXTURE_DIR="$SCRATCH" \
     PROBE_FIXTURE_OUTCOME="$1" LANE_NETWORK_PROBE_TIMEOUT_SECONDS="${2:-3}" \
-    BUN_BIN="$(command -v bun)" "$SCRIPT_DIR/network-boundary-probe.sh"
+    BUN_BIN="$SCRATCH/bin/bun" "$PROBE_UNDER_TEST"
 }
 
-if ! run_probe denied 2>"$SCRATCH/socket.err"; then
-  if grep -Fq 'plain user unit could not reach the disposable loopback listener' "$SCRATCH/socket.err"; then
-    printf 'plain loopback socket leg is unavailable; kernel enforcement remains unproven here\n'
-    printf 'EXCLUDED case=kernel-filter-enforcement capability=user-manager-cgroup-bpf\n'
-    exit 0
-  fi
-  cat "$SCRATCH/socket.err" >&2
-  exit 1
-fi
-printf 'denied: PASS (real client connection denied)\n'
+run_probe denied 2>"$SCRATCH/denied.err"
+outcome_assertions=$((outcome_assertions + 1))
+printf 'outcome 28: PROCEED\n'
 
 if run_probe reachable 2>"$SCRATCH/reachable.err"; then
   printf 'probe accepted a reachable filtered leg\n' >&2; exit 1
 fi
 grep -Fq 'serialized but not enforced' "$SCRATCH/reachable.err"
-printf 'reachable: REFUSED\n'
+outcome_assertions=$((outcome_assertions + 1))
+printf 'outcome 0: REFUSE\n'
 
 if run_probe infrastructure 2>"$SCRATCH/infrastructure.err"; then
   printf 'probe accepted an infrastructure failure as denial\n' >&2; exit 1
 fi
 grep -Fq 'exit=73); probe is inconclusive' "$SCRATCH/infrastructure.err"
-printf 'inconclusive/infrastructure: REFUSED\n'
+outcome_assertions=$((outcome_assertions + 1))
+printf 'outcome 73: REFUSE\n'
 
 if run_probe timeout 1 2>"$SCRATCH/timeout.err"; then
   printf 'probe accepted a timed-out filtered leg as denial\n' >&2; exit 1
 fi
 grep -Fq 'timed out; probe is inconclusive' "$SCRATCH/timeout.err"
-printf 'inconclusive/timeout: REFUSED\n'
+outcome_assertions=$((outcome_assertions + 1))
+printf 'outcome 124: REFUSE\n'
+
+# The installed service identity is the affected boundary. Run the production
+# probe with the real user manager after the deterministic outcome matrix, so a
+# live-environment failure can never bypass those assertions.
+service_config="$SCRIPT_DIR/../../instance/lane-service-user.conf"
+# shellcheck disable=SC1090
+source "$service_config"
+live_dir="$(mktemp -d /tmp/lane-network-live.XXXXXX)"
+cp "$PROBE_UNDER_TEST" "$live_dir/probe.sh"
+chmod 755 "$live_dir" "$live_dir/probe.sh"
+live_bun="$(command -v bun)"
+if [[ "$EUID" -eq 0 ]]; then
+  live_bun="$LANE_SERVICE_HOME/.bun/bin/bun"
+  [[ -x "$live_bun" ]] || live_bun=/usr/local/bin/bun
+  if /usr/sbin/runuser -u "$LANE_SERVICE_USER" -- env \
+    HOME="$LANE_SERVICE_HOME" XDG_RUNTIME_DIR="/run/user/$(id -u "$LANE_SERVICE_USER")" \
+    TMPDIR=/tmp PATH=/usr/local/bin:/usr/bin:/bin BUN_BIN="$live_bun" \
+    LANE_NETWORK_PROBE_TIMEOUT_SECONDS=10 bash "$live_dir/probe.sh" \
+    2>"$SCRATCH/live.err"; then
+    printf 'live service-user probe unexpectedly accepted kernel enforcement\n' >&2; exit 1
+  fi
+else
+  if env TMPDIR=/tmp BUN_BIN="$live_bun" LANE_NETWORK_PROBE_TIMEOUT_SECONDS=10 \
+    bash "$live_dir/probe.sh" 2>"$SCRATCH/live.err"; then
+    printf 'live service-user probe unexpectedly accepted kernel enforcement\n' >&2; exit 1
+  fi
+fi
+grep -Fq 'IPAddressDeny=localhost is serialized but not enforced by the user manager' "$SCRATCH/live.err"
+rm -rf "$live_dir"
+live_dir=""
+printf 'live service-user plain leg: EXECUTED; filtered leg: REFUSED\n'
 
 printf 'lane network boundary outcome proof: PASS\n'

@@ -4,4 +4,3 @@ gate/land-rollback.test.sh	unrecoverable-lock	immutable-file
 gate/land-rollback.test.sh	live-lock	proc-lock-observability
 gate/land-rollback.test.sh	uid-fd-visibility	proc-lock-observability
 gate/land-rollback.test.sh	uid-dead-code	pid-mount-namespace
-orchestrator/fleet/network-boundary-probe.test.sh	kernel-filter-enforcement	user-manager-cgroup-bpf

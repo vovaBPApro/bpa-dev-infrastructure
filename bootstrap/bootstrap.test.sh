@@ -596,10 +596,21 @@ if BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$stage2_fixture/root" BUN_BIN="$stage2_
 fi
 echo 'PASS run_install_test_gate: runs complete repository test command and propagates failure'
 
-printf '%s\t%s\n%s\t%s' first.service generic second.timer instance > "$stage2_fixture/expected.tsv"
+printf '%s\t%s\n' \
+  first.service generic \
+  second.timer instance \
+  bpa-orchestrator.service generic \
+  bpa-orchestrator-watchdog.service generic \
+  bpa-orchestrator-watchdog.timer generic > "$stage2_fixture/expected.tsv"
+printf '%s\t%s' bpa-telegram-daemon.service generic >> "$stage2_fixture/expected.tsv"
 printf '%s\n' '[Service]' 'ExecStart=${BUN_BIN} ${INSTALL_ROOT}/first.ts' > \
   "$stage2_fixture/root/bootstrap/units/first.service.in"
 printf '%s\n' '[Timer]' 'OnCalendar=hourly' > "$stage2_fixture/root/instance/units/second.timer.in"
+for unit in bpa-orchestrator.service bpa-orchestrator-watchdog.service \
+  bpa-orchestrator-watchdog.timer bpa-telegram-daemon.service; do
+  printf '%s\n' '[Unit]' "Description=$unit" > \
+    "$stage2_fixture/root/bootstrap/units/$unit.in"
+done
 BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$stage2_fixture/root" BUN_BIN="$stage2_fixture/bin/bun" \
   SYSTEMD_SYSTEM_DIR="$stage2_fixture/systemd" EXPECTED_UNITS_FILE="$stage2_fixture/expected.tsv" \
   INSTALLER_PATH="$INSTALLER" "$BASH_BIN" -c 'source "$INSTALLER_PATH"; render_units'
@@ -617,6 +628,42 @@ if BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$stage2_fixture/root" BUN_BIN="$stage2_
   echo 'ERROR: render_units accepted a manifest-listed missing template' >&2
   exit 1
 fi
+printf '%s\t%s\n' \
+  bpa-orchestrator.service generic \
+  bpa-orchestrator-watchdog.service generic \
+  bpa-orchestrator-watchdog.timer generic > "$stage2_fixture/truncated.tsv"
+if BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$stage2_fixture/root" BUN_BIN="$stage2_fixture/bin/bun" \
+  SYSTEMD_SYSTEM_DIR="$stage2_fixture/truncated-systemd" \
+  EXPECTED_UNITS_FILE="$stage2_fixture/truncated.tsv" \
+  INSTALLER_PATH="$INSTALLER" "$BASH_BIN" -c 'source "$INSTALLER_PATH"; render_units' >/dev/null 2>&1; then
+  echo 'ERROR: render_units accepted a manifest missing a required incident unit' >&2
+  exit 1
+fi
+[[ ! -e "$stage2_fixture/truncated-systemd" ]]
+echo 'PASS render_units manifest truncation lock: required incident row absence fails before destination creation'
+
+install -d -m 755 "$stage2_fixture/untouched-systemd"
+printf '%s\n' preserved > "$stage2_fixture/untouched-systemd/existing.service"
+printf '%s\t%s\n' \
+  bpa-orchestrator.service generic \
+  bpa-orchestrator-watchdog.service generic \
+  bpa-orchestrator-watchdog.timer generic \
+  bpa-telegram-daemon.service generic \
+  malformed.service missing-source > "$stage2_fixture/malformed-later.tsv"
+if BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$stage2_fixture/root" BUN_BIN="$stage2_fixture/bin/bun" \
+  SYSTEMD_SYSTEM_DIR="$stage2_fixture/untouched-systemd" \
+  EXPECTED_UNITS_FILE="$stage2_fixture/malformed-later.tsv" \
+  INSTALLER_PATH="$INSTALLER" "$BASH_BIN" -c 'source "$INSTALLER_PATH"; render_units' >/dev/null 2>&1; then
+  echo 'ERROR: render_units accepted a malformed later manifest row' >&2
+  exit 1
+fi
+if [[ "$(find "$stage2_fixture/untouched-systemd" -mindepth 1 -maxdepth 1 -printf '%f\n')" != existing.service ]]; then
+  echo 'ERROR: render_units changed the destination before rejecting a malformed later row' >&2
+  find "$stage2_fixture/untouched-systemd" -mindepth 1 -maxdepth 1 -printf 'AFTER_FAILURE_PRESENT=%f\n' >&2
+  exit 1
+fi
+grep -Fxq preserved "$stage2_fixture/untouched-systemd/existing.service"
+echo 'PASS render_units preflight lock: a malformed later row leaves the destination untouched'
 echo 'PASS render_units: renders both inventories, reads final unterminated row, and rejects manifest deletion'
 
 # ══════════════════════════════════════════════════════════════════════════

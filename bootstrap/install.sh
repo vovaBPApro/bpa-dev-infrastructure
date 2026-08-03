@@ -265,9 +265,10 @@ run_install_test_gate() {
 
 render_units() {
   local effective_euid="${BOOTSTRAP_TEST_EUID:-$EUID}"
-  local unit source extra template_dir template staged count=0
+  local unit source extra template_dir template staged backup_dir count=0 publication_rc=0
   local -a units=() templates=()
   local -A manifest_units=()
+  local -A destination_existed=()
   ((effective_euid == 0)) || { echo 'ERROR: system unit rendering requires root' >&2; return 1; }
   if [[ ! -f "$EXPECTED_UNITS_FILE" || ! -r "$EXPECTED_UNITS_FILE" ]]; then
     echo "ERROR: expected-units manifest is missing or unreadable: $EXPECTED_UNITS_FILE" >&2
@@ -327,9 +328,67 @@ render_units() {
   done
 
   install -d -m 755 "$SYSTEMD_SYSTEM_DIR"
+  backup_dir="$staged/prior"
+  install -d -m 700 "$backup_dir"
   for unit in "${units[@]}"; do
-    mv -f "$staged/$unit" "$SYSTEMD_SYSTEM_DIR/$unit"
+    if [[ -e "$SYSTEMD_SYSTEM_DIR/$unit" || -L "$SYSTEMD_SYSTEM_DIR/$unit" ]]; then
+      if [[ ! -f "$SYSTEMD_SYSTEM_DIR/$unit" || -L "$SYSTEMD_SYSTEM_DIR/$unit" ]]; then
+        echo "ERROR: unit destination is not a regular file: $SYSTEMD_SYSTEM_DIR/$unit" >&2
+        return 1
+      fi
+      cp -p -- "$SYSTEMD_SYSTEM_DIR/$unit" "$backup_dir/$unit"
+      destination_existed["$unit"]=1
+    else
+      destination_existed["$unit"]=0
+    fi
   done
+
+  rollback_unit_publication() {
+    local rollback_unit rollback_failed=0
+    for rollback_unit in "${units[@]}"; do
+      if [[ "${destination_existed[$rollback_unit]}" == 1 ]]; then
+        cp -p -- "$backup_dir/$rollback_unit" "$SYSTEMD_SYSTEM_DIR/$rollback_unit" || rollback_failed=1
+      else
+        rm -f -- "$SYSTEMD_SYSTEM_DIR/$rollback_unit" || rollback_failed=1
+      fi
+    done
+    if ((rollback_failed != 0)); then
+      echo 'verdict=rollback-failed: unit publication prior state could not be restored' >&2
+      return 1
+    fi
+    echo 'verdict=rolled-back: unit publication prior state restored' >&2
+  }
+
+  unit_publication_signal() {
+    local signal_name="$1" signal_rc="$2"
+    trap - HUP INT TERM
+    if ! rollback_unit_publication; then
+      rm -rf "$staged"
+      trap - RETURN
+      return 125
+    fi
+    rm -rf "$staged"
+    trap - RETURN
+    echo "ERROR: unit publication interrupted by $signal_name" >&2
+    return "$signal_rc"
+  }
+
+  trap 'unit_publication_signal HUP 129; return $?' HUP
+  trap 'unit_publication_signal INT 130; return $?' INT
+  trap 'unit_publication_signal TERM 143; return $?' TERM
+  for unit in "${units[@]}"; do
+    if ! mv -f "$staged/$unit" "$SYSTEMD_SYSTEM_DIR/$unit"; then
+      publication_rc=$?
+      trap - HUP INT TERM
+      # `!` normalizes `$?`; preserve a stable non-zero publication verdict.
+      ((publication_rc != 0)) || publication_rc=1
+      if ! rollback_unit_publication; then
+        return 125
+      fi
+      return "$publication_rc"
+    fi
+  done
+  trap - HUP INT TERM
   rm -rf "$staged"
   trap - RETURN
 }

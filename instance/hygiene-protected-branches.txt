@@ -23,6 +23,12 @@ v3
 # Park record: instance/parked/V3-1.1-stage2-2026-08-03.md
 ag-s3-2-r3
 
+# V3-0.23 round 3 — shell-tier concurrency. PARKED at the HR-1726 cap: the lock
+# validates a proxy (a variable) rather than the ref actually created, defeated in
+# three successive spellings. Park record:
+# instance/parked/V3-0.23-shell-tier-concurrency-2026-08-04.md
+ag-s7-7
+
 # V3-1.9b round 3 — the lane network boundary. PARKED at the HR-1726 cap: the
 # root-manager 0/28 baseline stopped reproducing, so the only known-good signal is
 # unstable. Park record:

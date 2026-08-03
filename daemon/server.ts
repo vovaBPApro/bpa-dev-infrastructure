@@ -76,6 +76,10 @@ import {
   parseAssistantChunkAfterTelegramMessage,
   sanitizeChatRegion,
 } from './reliability';
+import {
+  composeDecisionRequest,
+  resolveDecisionResponse,
+} from './decision-request';
 import { readActiveMission, resolveStateDbPath } from './mission-source';
 import { drainOutbox, resolveOrchestratorLauncher } from './control';
 import {
@@ -1029,7 +1033,8 @@ function createMcpServer(): Server {
           properties: {
             text: {
               type: 'string',
-              description: 'Context: what is the user deciding?',
+              description:
+                'The concise question/context. Option explanations are appended automatically.',
             },
             decision_id: {
               type: 'string',
@@ -1055,8 +1060,14 @@ function createMcpServer(): Server {
                 required: ['label', 'value'],
               },
             },
+            explanations: {
+              type: 'array',
+              description:
+                'One single-line explanation per option, in identical order: what it means and what happens if chosen.',
+              items: { type: 'string' },
+            },
           },
-          required: ['text', 'decision_id', 'options'],
+          required: ['text', 'decision_id', 'options', 'explanations'],
         },
       },
       {
@@ -1174,6 +1185,7 @@ function createMcpServer(): Server {
             label: string;
             value: string;
           }>;
+          const explanations = args.explanations as string[];
           if (
             !text ||
             !decision_id ||
@@ -1183,10 +1195,15 @@ function createMcpServer(): Server {
             throw new Error('text, decision_id, and options[] required');
           }
           if (options.length > 8) throw new Error('max 8 options per decision');
+          const composed = composeDecisionRequest({
+            text,
+            options,
+            explanations,
+          });
           const sid = shortId();
           const access = loadAccess();
           const keyboard = new InlineKeyboard();
-          options.forEach((opt, i) => {
+          composed.options.forEach((opt, i) => {
             if (i > 0 && i % 2 === 0) keyboard.row();
             keyboard.text(opt.label, `dec:${sid}:${i}`);
           });
@@ -1201,13 +1218,13 @@ function createMcpServer(): Server {
               // "no flag = ping" which may have been overridden by user's
               // chat mute or DnD; making it explicit ensures the bot's
               // intent is loud at the API level.
-              const sent = await bot.api.sendMessage(chat_id, text, {
+              const sent = await bot.api.sendMessage(chat_id, composed.body, {
                 reply_markup: keyboard,
                 disable_notification: false,
               });
               pendingDecisions.set(sid, {
                 chat_id,
-                options,
+                options: composed.options,
                 decision_id,
                 message_id: sent.message_id,
               });
@@ -3274,7 +3291,11 @@ bot.on('callback_query:data', async (ctx) => {
     // transport), buffer for next reconnect — matches deliverOrBuffer
     // semantics; otherwise the decision is lost irreversibly because we
     // delete pendingDecisions[sid] below.
-    const content = `decision:${pending.decision_id}=${option.value}`;
+    const { content } = resolveDecisionResponse(
+      pending.decision_id,
+      pending.options,
+      idx,
+    );
     const meta: Record<string, string> = {
       chat_id: pending.chat_id,
       user: ctx.from.username ?? String(ctx.from.id),

@@ -27,6 +27,11 @@ provenance for this contract.
   surface, and disposition auditable.
 - Feedback changes priority or acceptance scope only through the mission record;
   it must not silently expand an active lane.
+- Decision buttons are selection handles, not explanations. Compose every
+  decision body with one ordered, labelled explanation per button; require the
+  counts to match, keep each button label to at most three words, and reject the
+  request before transport if any explanation or label is empty or the complete
+  body exceeds five lines or 600 characters.
 
 ## Questions to him: clarifying only, and only if unanswered
 

@@ -47,8 +47,8 @@ the durable state database. Later rows add the daemon/core/gate/stand test
 gate, hygiene cron, systemd unit rendering and activation, and the watchdog
 arm/disarm pair -- none of that runs from this script yet.
 
-Environment overrides: INSTALL_ROOT, REPO_URL, BUN_VERSION, ENV_FILE, BUN_BIN,
-RUNTIME_DIR, INFRA_STATE_DB.
+Environment overrides: INSTALL_ROOT, REPO_URL, REPO_BRANCH (default: main),
+BUN_VERSION, ENV_FILE, BUN_BIN, RUNTIME_DIR, INFRA_STATE_DB.
 --verify-source checks only the boundaries a source/container test can prove
 and reports explicit SKIPs where a live host would be required; there is no
 --verify mode in this row.
@@ -75,9 +75,9 @@ fi
 plan() { printf 'PLAN %-12s %s\n' "$1" "$2"; }
 
 print_plan() {
-  plan "apt" "check git, curl, tmux, flock, and findmnt; install any missing packages"
+  plan "apt" "check git, curl, tmux, flock, findmnt, and unzip; install any missing packages"
   plan "bun" "install Bun ${BUN_VERSION} if $BUN_BIN is absent"
-  plan "repository" "clone or fast-forward update $INSTALL_ROOT from REPO_URL"
+  plan "repository" "clone \$INSTALL_ROOT from REPO_URL on REPO_BRANCH, or fast-forward it -- refusing if it is checked out on any other branch"
   plan "environment" "create $ENV_FILE from bootstrap/env.template if absent, reject symlinks, and enforce mode 0600"
   plan "state-db" "initialize $STATE_DB with core/mission-cli.ts status"
 }
@@ -141,6 +141,14 @@ ensure_prerequisites() {
     [tmux]=tmux
     [flock]=util-linux
     [findmnt]=util-linux
+    # Review round 2, defect 2: dropped on the UNVERIFIED reasoning that it
+    # was only needed by out-of-scope render_units/install_hygiene_cron.
+    # install_bun (in scope) calls the real bun.sh/install, which hard-fails
+    # with `error 'unzip is required to install bun'` and uses it to unpack
+    # the release archive -- on exactly the clean-machine case this row
+    # targets ($BUN_BIN absent). envsubst/xz/cron stay dropped; they are
+    # genuinely unused by any in-scope function.
+    [unzip]=unzip
   )
   for command_name in "${!packages[@]}"; do
     command -v "$command_name" >/dev/null 2>&1 || missing+=("${packages[$command_name]}")
@@ -178,16 +186,29 @@ repository_url() {
 }
 
 sync_repository() {
-  local repo_url
+  local repo_url expected_branch="${REPO_BRANCH:-main}" current_branch
   repo_url="$(repository_url)"
   if [[ -d "$INSTALL_ROOT/.git" ]]; then
+    # Review round 2, defect 1: fetch/pull fast-forward whatever branch
+    # happens to be checked out to ITS OWN upstream -- they never look at
+    # which branch that is. On a checkout sitting on the wrong line (this
+    # host, right now: v2-deprecated, on purpose, while origin/main is v3 --
+    # instance/v3-becomes-main-2026-08-03.md) that silently reports success
+    # while leaving the host exactly where it started. Refuse before any
+    # fetch or pull; do NOT silently check out the target -- switching the
+    # branch under a running daemon is a human decision, not this script's.
+    current_branch="$(git -C "$INSTALL_ROOT" rev-parse --abbrev-ref HEAD)"
+    if [[ "$current_branch" != "$expected_branch" ]]; then
+      echo "ERROR: INSTALL_ROOT is on branch '$current_branch', expected '$expected_branch' ($INSTALL_ROOT); refusing to fetch/pull a mismatched branch" >&2
+      exit 1
+    fi
     git -C "$INSTALL_ROOT" fetch --prune origin
     git -C "$INSTALL_ROOT" pull --ff-only
   elif [[ -e "$INSTALL_ROOT" ]]; then
     echo "ERROR: INSTALL_ROOT exists but is not a git checkout: $INSTALL_ROOT" >&2
     exit 1
   else
-    git clone "$repo_url" "$INSTALL_ROOT"
+    git clone --branch "$expected_branch" "$repo_url" "$INSTALL_ROOT"
   fi
 }
 

@@ -44,7 +44,7 @@ trap 'rm -rf "$FIXTURE_ROOT"' EXIT
 # `dirname`. First match wins, mirroring ordinary PATH precedence.
 CORE_PATH="$FIXTURE_ROOT/core-utils"
 mkdir -p "$CORE_PATH"
-EXCLUDED_TOOLS=(git curl tmux flock findmnt apt-get sudo)
+EXCLUDED_TOOLS=(git curl tmux flock findmnt unzip apt-get sudo)
 is_excluded_tool() {
   local candidate="$1" excluded
   for excluded in "${EXCLUDED_TOOLS[@]}"; do
@@ -114,16 +114,19 @@ echo 'PASS argument validation (--help, unknown flag, --verify, combined flags)'
 # ══════════════════════════════════════════════════════════════════════════
 prereq_fixture="$FIXTURE_ROOT/prereq"
 install -d -m 700 "$prereq_fixture/bin-complete" "$prereq_fixture/bin-missing-flock" \
-  "$prereq_fixture/bin-missing-flock-no-root"
-for tool in git curl tmux flock findmnt; do
+  "$prereq_fixture/bin-missing-flock-no-root" "$prereq_fixture/bin-missing-unzip"
+for tool in git curl tmux flock findmnt unzip; do
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$prereq_fixture/bin-complete/$tool"
 done
-for tool in git curl tmux findmnt; do
+for tool in git curl tmux findmnt unzip; do
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$prereq_fixture/bin-missing-flock/$tool"
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$prereq_fixture/bin-missing-flock-no-root/$tool"
 done
+for tool in git curl tmux flock findmnt; do
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$prereq_fixture/bin-missing-unzip/$tool"
+done
 chmod 700 "$prereq_fixture"/bin-complete/* "$prereq_fixture"/bin-missing-flock/* \
-  "$prereq_fixture"/bin-missing-flock-no-root/*
+  "$prereq_fixture"/bin-missing-flock-no-root/* "$prereq_fixture"/bin-missing-unzip/*
 
 # (a) happy path: nothing missing -- apt-get is not even on PATH, so this
 # would blow up with "command not found" if ensure_prerequisites tried to
@@ -149,6 +152,26 @@ PATH="$prereq_fixture/bin-missing-flock:$CORE_PATH" BOOTSTRAP_LIB_ONLY=true INST
 grep -Fxq 'update' "$apt_calls"
 grep -Fxq 'install -y util-linux' "$apt_calls"
 echo 'PASS ensure_prerequisites: missing flock, root available, stub apt-get invoked (never the real one)'
+
+# (b2) Review round 2, defect 2: unzip is a genuine in-scope prerequisite
+# (install_bun's real download path needs it, proven separately below), not
+# only donor surface for out-of-scope render_units/install_hygiene_cron.
+# Restored to the packages map; prove it is actually checked for and, when
+# absent, actually drives an apt-get install -- not just present in a
+# comment or a dry-run string.
+: > "$apt_calls"
+cat > "$prereq_fixture/bin-missing-unzip/apt-get" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$apt_calls"
+exit 0
+EOF
+chmod 700 "$prereq_fixture/bin-missing-unzip/apt-get"
+PATH="$prereq_fixture/bin-missing-unzip:$CORE_PATH" BOOTSTRAP_LIB_ONLY=true INSTALLER_PATH="$INSTALLER" \
+  BOOTSTRAP_TEST_EUID=0 \
+  "$BASH_BIN" -c 'source "$INSTALLER_PATH"; ensure_prerequisites'
+grep -Fxq 'update' "$apt_calls"
+grep -Fxq 'install -y unzip' "$apt_calls"
+echo 'PASS ensure_prerequisites: unzip is in the required set (missing -> apt-get install -y unzip)'
 
 # (c) missing + neither root nor sudo: the donor's fail-closed abort. This is
 # the failure path the row brief calls out by name -- prove it aborts with a
@@ -208,41 +231,185 @@ if BOOTSTRAP_LIB_ONLY=true BUN_BIN="$bun_fixture/bin/broken-bun" INSTALLER_PATH=
 fi
 echo 'PASS install_bun: a present-but-broken BUN_BIN aborts rather than being accepted'
 
+# (c) Review round 2, defect 2: unzip was dropped from ensure_prerequisites
+# on the reasoning that install_bun never needs it -- unverified, and false.
+# The real https://bun.sh/install (fetched and read during this review) does
+# `command -v unzip >/dev/null || error 'unzip is required to install bun'`
+# then `unzip -oqd "$bin_dir" "$exe.zip"`. Proving that against the network
+# is neither hermetic nor safe to run unattended, so this fixture's curl
+# stub serves a small payload that reproduces exactly that guard (not bun's
+# full installer) -- it proves install.sh's own contract (the script it
+# pipes into bash must be able to fail loudly on a missing dependency)
+# without vendoring third-party code or touching the network.
+download_fixture="$FIXTURE_ROOT/bun-download"
+install -d -m 700 "$download_fixture/bin"
+cat > "$download_fixture/bin/curl" <<'CURLEOF'
+#!/usr/bin/env bash
+cat <<'PAYLOAD'
+#!/usr/bin/env bash
+set -e
+error() { echo "error: $*" >&2; exit 1; }
+command -v unzip >/dev/null || error 'unzip is required to install bun'
+mkdir -p "$(dirname "$BUN_BIN")"
+printf '%s\n' '#!/usr/bin/env bash' 'echo "bun-fixture 1.3.14"' > "$BUN_BIN"
+chmod +x "$BUN_BIN"
+echo 'bun installed (fixture)'
+PAYLOAD
+CURLEOF
+chmod 700 "$download_fixture/bin/curl"
+absent_bun_bin="$download_fixture/bin/bun-not-installed-yet"
+# unzip is excluded from CORE_PATH (see EXCLUDED_TOOLS above), so this PATH
+# genuinely lacks it -- no stub needed to prove absence, unlike the
+# recording-stub tools.
+if download_output="$(PATH="$download_fixture/bin:$CORE_PATH" BOOTSTRAP_LIB_ONLY=true \
+  BUN_BIN="$absent_bun_bin" INSTALLER_PATH="$INSTALLER" \
+  "$BASH_BIN" -c 'source "$INSTALLER_PATH"; install_bun' 2>&1)"; then
+  echo 'ERROR: install_bun succeeded (via the download branch) without unzip on PATH' >&2
+  exit 1
+fi
+grep -Fq 'unzip is required to install bun' <<<"$download_output"
+echo 'PASS install_bun: the real download branch genuinely needs unzip (fixture reproduces bun.sh/install'"'"'s own guard); absent -> fails loudly'
+
+# Positive control: the same fixture with unzip present must reach the
+# installer payload's success line, proving the failure above is really
+# about unzip and not some other fixture defect.
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$download_fixture/bin/unzip"
+chmod 700 "$download_fixture/bin/unzip"
+download_ok_output="$(PATH="$download_fixture/bin:$CORE_PATH" BOOTSTRAP_LIB_ONLY=true \
+  BUN_BIN="$absent_bun_bin" INSTALLER_PATH="$INSTALLER" \
+  "$BASH_BIN" -c 'source "$INSTALLER_PATH"; install_bun')"
+grep -Fq 'bun installed (fixture)' <<<"$download_ok_output"
+echo 'PASS install_bun: positive control -- with unzip present, the same download branch succeeds'
+
 # ══════════════════════════════════════════════════════════════════════════
 # sync_repository
 # ══════════════════════════════════════════════════════════════════════════
 sync_fixture="$FIXTURE_ROOT/sync"
 install -d -m 700 "$sync_fixture/bin"
 git_calls="$sync_fixture/git.calls"
-: > "$git_calls"
+# The stub records every call AND answers `rev-parse --abbrev-ref HEAD` with
+# GIT_STUB_BRANCH (default main) -- needed once sync_repository checks which
+# branch INSTALL_ROOT is actually on before fetch/pull (review round 2,
+# defect 1). Every other invocation still just records and exits 0.
 cat > "$sync_fixture/bin/git" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$git_calls"
+if [[ "\$*" == "-C "*" rev-parse --abbrev-ref HEAD" ]]; then
+  printf '%s\n' "\${GIT_STUB_BRANCH:-main}"
+fi
 exit 0
 EOF
 chmod 700 "$sync_fixture/bin/git"
 
-# (a) existing git checkout -> fetch + pull, no clone.
+# (a) existing git checkout, already on the expected branch (main, the
+# default) -> the branch is checked FIRST, then fetch + pull, never clone.
 install -d -m 700 "$sync_fixture/existing-repo/.git"
 : > "$git_calls"
 PATH="$sync_fixture/bin:$CORE_PATH" BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$sync_fixture/existing-repo" \
   INSTALLER_PATH="$INSTALLER" \
   "$BASH_BIN" -c 'source "$INSTALLER_PATH"; sync_repository'
+grep -Fxq -- "-C $sync_fixture/existing-repo rev-parse --abbrev-ref HEAD" "$git_calls"
 grep -Fxq -- "-C $sync_fixture/existing-repo fetch --prune origin" "$git_calls"
 grep -Fxq -- "-C $sync_fixture/existing-repo pull --ff-only" "$git_calls"
 if grep -Fq clone "$git_calls"; then
   echo 'ERROR: sync_repository cloned over an existing checkout' >&2
   exit 1
 fi
-echo 'PASS sync_repository: existing checkout -> fetch + pull, never clone'
+# Order matters: the branch check must run BEFORE any fetch/pull, not merely
+# alongside it -- that is the whole point of the guard.
+rev_parse_line="$(grep -Fn 'rev-parse --abbrev-ref HEAD' "$git_calls" | cut -d: -f1)"
+fetch_line="$(grep -Fn 'fetch --prune origin' "$git_calls" | cut -d: -f1)"
+if (( rev_parse_line >= fetch_line )); then
+  echo 'ERROR: sync_repository fetched before (or without) checking the branch' >&2
+  exit 1
+fi
+echo 'PASS sync_repository: existing checkout on expected branch -> branch checked first, then fetch + pull, never clone'
 
-# (b) absent INSTALL_ROOT -> clone.
+# (a2) Review round 2, defect 1, HIGH SEVERITY. sync_repository fast-forwarded
+# whatever branch happened to be checked out to that branch's OWN upstream,
+# never checking it was the target branch at all -- proven by the reviewer
+# with a real repo on old-branch tracking origin/old-branch: it fast-forwarded
+# old-branch and exited 0, never touching main. This machine right now
+# reproduces the exact hazard: /root/bpa-dev-infrastructure is checked out on
+# v2-deprecated on purpose while origin/main is v3
+# (instance/v3-becomes-main-2026-08-03.md) -- running the pre-fix installer
+# here would have reported a clean bootstrap while silently leaving the host
+# on the abandoned line.
+: > "$git_calls"
+if wrong_branch_output="$(PATH="$sync_fixture/bin:$CORE_PATH" BOOTSTRAP_LIB_ONLY=true \
+  INSTALL_ROOT="$sync_fixture/existing-repo" GIT_STUB_BRANCH=old-branch \
+  INSTALLER_PATH="$INSTALLER" \
+  "$BASH_BIN" -c 'source "$INSTALLER_PATH"; sync_repository' 2>&1)"; then
+  echo 'ERROR: sync_repository fast-forwarded a checkout on the wrong branch' >&2
+  exit 1
+fi
+grep -Fq "on branch 'old-branch'" <<<"$wrong_branch_output"
+grep -Fq "expected 'main'" <<<"$wrong_branch_output"
+if grep -Fq 'fetch --prune origin' "$git_calls"; then
+  echo 'ERROR: sync_repository fetched a checkout on the wrong branch before refusing' >&2
+  exit 1
+fi
+if grep -Fq 'pull --ff-only' "$git_calls"; then
+  echo 'ERROR: sync_repository pulled a checkout on the wrong branch before refusing' >&2
+  exit 1
+fi
+echo 'PASS sync_repository: existing checkout on the WRONG branch -> refuses before any fetch/pull, names both branches'
+
+# (a3) The same defect, reproduced with REAL git (no stub) exactly as the
+# reviewer did: a bare origin carrying both main and old-branch, a local
+# clone sitting on old-branch, and a genuine second commit pushed to
+# origin/old-branch so a real fast-forward is actually available. Proves the
+# fix against real fetch/pull mechanics, not only against a recorded call.
+real_git_fixture="$FIXTURE_ROOT/sync-real-git"
+install -d -m 700 "$real_git_fixture"
+git init -q --bare "$real_git_fixture/origin.git"
+git init -q "$real_git_fixture/seed"
+git -C "$real_git_fixture/seed" config user.email test@example.invalid
+git -C "$real_git_fixture/seed" config user.name 'Test'
+git -C "$real_git_fixture/seed" commit -q --allow-empty -m 'root on main'
+git -C "$real_git_fixture/seed" branch -m main
+git -C "$real_git_fixture/seed" checkout -q -b old-branch
+git -C "$real_git_fixture/seed" commit -q --allow-empty -m 'old-branch commit 1'
+git -C "$real_git_fixture/seed" remote add origin "$real_git_fixture/origin.git"
+git -C "$real_git_fixture/seed" push -q origin main old-branch
+git clone -q -b old-branch "$real_git_fixture/origin.git" "$real_git_fixture/INSTALL_ROOT"
+before_head="$(git -C "$real_git_fixture/INSTALL_ROOT" rev-parse HEAD)"
+# Advance origin/old-branch for real, so a fast-forward genuinely exists.
+git -C "$real_git_fixture/seed" commit -q --allow-empty -m 'old-branch commit 2 (upstream advance)'
+git -C "$real_git_fixture/seed" push -q origin old-branch
+upstream_head="$(git -C "$real_git_fixture/seed" rev-parse origin/old-branch)"
+if [[ "$before_head" == "$upstream_head" ]]; then
+  echo 'ERROR: real-git fixture set up no actual fast-forward opportunity' >&2
+  exit 1
+fi
+if real_git_output="$(INSTALL_ROOT="$real_git_fixture/INSTALL_ROOT" \
+  REPO_URL="$real_git_fixture/origin.git" BOOTSTRAP_LIB_ONLY=true INSTALLER_PATH="$INSTALLER" \
+  "$BASH_BIN" -c 'source "$INSTALLER_PATH"; sync_repository' 2>&1)"; then
+  echo 'ERROR: sync_repository (real git) fast-forwarded a checkout on the wrong branch' >&2
+  exit 1
+fi
+grep -Fq "on branch 'old-branch'" <<<"$real_git_output"
+grep -Fq "expected 'main'" <<<"$real_git_output"
+after_head="$(git -C "$real_git_fixture/INSTALL_ROOT" rev-parse HEAD)"
+after_branch="$(git -C "$real_git_fixture/INSTALL_ROOT" rev-parse --abbrev-ref HEAD)"
+if [[ "$after_head" != "$before_head" ]]; then
+  echo "ERROR: real-git INSTALL_ROOT moved from $before_head to $after_head -- it was fast-forwarded" >&2
+  exit 1
+fi
+[[ "$after_branch" == old-branch ]]
+printf '%s\n' 'FAIL-BEFORE sync_repository (8998610, reproduced against real git): fetched and fast-forwarded old-branch, exited 0, never checked main'
+printf 'REAL GIT before=%s after=%s (unchanged) upstream-old-branch=%s (a real fast-forward existed and was correctly refused)\n' \
+  "$before_head" "$after_head" "$upstream_head"
+echo 'PASS sync_repository: real git reproduction -- a genuine available fast-forward on the wrong branch is refused, not taken'
+
+# (b) absent INSTALL_ROOT -> clone on the expected branch (REPO_BRANCH,
+# default main) explicitly -- never left to the remote's default HEAD.
 : > "$git_calls"
 PATH="$sync_fixture/bin:$CORE_PATH" BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$sync_fixture/absent-repo" \
   REPO_URL='https://example.invalid/bpa-dev-infrastructure.git' INSTALLER_PATH="$INSTALLER" \
   "$BASH_BIN" -c 'source "$INSTALLER_PATH"; sync_repository'
-grep -Fxq -- "clone https://example.invalid/bpa-dev-infrastructure.git $sync_fixture/absent-repo" "$git_calls"
-echo 'PASS sync_repository: absent INSTALL_ROOT -> clone REPO_URL'
+grep -Fxq -- "clone --branch main https://example.invalid/bpa-dev-infrastructure.git $sync_fixture/absent-repo" "$git_calls"
+echo 'PASS sync_repository: absent INSTALL_ROOT -> clone REPO_URL on the expected branch explicitly'
 
 # (c) INSTALL_ROOT exists but is not a git checkout (a plain file): the
 # donor's fail-closed guard against clobbering an unrelated path. Assert the

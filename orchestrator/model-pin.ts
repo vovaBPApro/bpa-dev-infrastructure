@@ -55,7 +55,7 @@ if (!/^[a-z0-9][a-z0-9._-]*$/.test(requested)) {
   refuse(`cause=malformed-request provider=${provider}`);
 }
 if (requested !== pinnedModel) {
-  refuse(`cause=mismatch provider=${provider} pinned=${pinnedModel} live-request=${requested}`);
+  refuse(`cause=mismatch provider=${provider} pinned=${pinnedModel} detail=requested-differs`);
 }
 
 console.log(pinnedModel);

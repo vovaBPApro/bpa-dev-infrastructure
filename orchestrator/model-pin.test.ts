@@ -80,7 +80,7 @@ test("runtime environment cannot replace the checker or tracked pin", async () =
 test("executor refuses a mismatched tracked pin before startup", async () => {
   const result = run(params(), "claude-sonnet-5");
   expect(result.exitCode).toBe(78);
-  expect(result.output).toContain("cause=mismatch provider=claude pinned=claude-fable-5 live-request=claude-sonnet-5");
+  expect(result.output).toContain("cause=mismatch provider=claude pinned=claude-fable-5 detail=requested-differs");
   expect(await result.marker.exists()).toBe(false);
 });
 
@@ -109,5 +109,13 @@ test("malformed request is refused without reflecting its value", () => {
   const result = run(params(), requested);
   expect(result.exitCode).toBe(78);
   expect(result.output).toContain("cause=malformed-request");
+  expect(result.output).not.toContain(requested);
+});
+
+test("valid mismatched request is refused without reflecting its value", () => {
+  const requested = "sensitive-fixture-value";
+  const result = run(params(), requested);
+  expect(result.exitCode).toBe(78);
+  expect(result.output).toContain("cause=mismatch provider=claude pinned=claude-fable-5 detail=requested-differs");
   expect(result.output).not.toContain(requested);
 });

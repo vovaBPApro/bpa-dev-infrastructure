@@ -42,7 +42,7 @@ esac
     FAIL_STAGE: failStage,
     EXPECTED_SHA: checkedOutSha || sha,
     METEORITE_DONOR_SHA: sha,
-    METEORITE_DONOR_REF: `refs/meteorite/${sha}-v2-deprecated`,
+    METEORITE_DONOR_REF: `refs/meteorite-candidates/1700000000-123-${sha}/v2-deprecated`,
   };
   return { env, report, trace, sha };
 }

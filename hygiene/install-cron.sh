@@ -55,6 +55,7 @@ filtered="$(printf '%s\n' "$current" | awk -v begin="$begin" -v end="$end" '
     printf '%s\n' "$begin"
     printf '%s\n' "19 * * * * $script_dir/reap.sh branches --repo $repo_dir --apply >> $log_dir/branches.log 2>&1"
     printf '%s\n' "29 * * * * $script_dir/reap.sh worktrees --repo $repo_dir --apply >> $log_dir/worktrees.log 2>&1"
+    printf '%s\n' "39 * * * * $script_dir/reap.sh meteorite-refs --repo $repo_dir --apply >> $log_dir/meteorite-refs.log 2>&1"
     printf '%s\n' "$end"
   fi
 } > "$tmp"

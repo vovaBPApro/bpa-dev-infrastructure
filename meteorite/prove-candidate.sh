@@ -7,7 +7,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ref=""
 remote="origin"
-published_refs=()
+cleanup_complete=false
 
 usage() {
   printf 'Usage: meteorite/prove-candidate.sh --ref <40-character-commit-sha>\n'
@@ -45,22 +45,40 @@ case "$remote_url" in
   https://*) clone_url="$remote_url" ;;
   *) printf 'ERROR: tracked origin has no credential-free clone URL\n' >&2; exit 2 ;;
 esac
-temp_ref="refs/meteorite/$ref"
+created_at="${METEORITE_CREATED_AT:-$(date +%s)}"
+[[ "$created_at" =~ ^[0-9]+$ ]] || { printf 'ERROR: METEORITE_CREATED_AT must be epoch seconds\n' >&2; exit 2; }
+publication_id="${created_at}-$$-${ref}"
+temp_ref="refs/meteorite-candidates/$publication_id/candidate"
 donor_sha="$(git -C "$repo_root" rev-parse 'v2-deprecated^{commit}')"
-donor_ref="refs/meteorite/$ref-v2-deprecated"
+donor_ref="refs/meteorite-candidates/$publication_id/v2-deprecated"
+published_refs=("$temp_ref" "$donor_ref")
+
+revise_report_for_leak() {
+  local leaked="$1" report="${METEORITE_REPORT:-$repo_root/reports/meteorite-latest.md}" tmp
+  [[ -f "$report" ]] || return 0
+  tmp="$(mktemp "$(dirname "$report")/.meteorite-cleanup.XXXXXX")" || return 1
+  awk -v leaked="$leaked" '
+    /^- result: / { print "- result: NO-GO"; next }
+    /^- blocker: / { print "- blocker: published meteorite ref cleanup failed: " leaked; next }
+    { print }
+  ' "$report" > "$tmp" && mv "$tmp" "$report"
+}
 
 cleanup() {
   local status=$?
   trap - EXIT INT TERM
+  "$cleanup_complete" && exit "$status"
   local published_ref
   for published_ref in "${published_refs[@]}"; do
     if git -C "$repo_root" push "$remote" ":$published_ref"; then
       printf '[meteorite-publish] cleanup: removed %s\n' "$published_ref"
     else
       printf '[meteorite-publish] cleanup: NO-GO removing %s\n' "$published_ref" >&2
+      revise_report_for_leak "$published_ref" || printf '[meteorite-publish] cleanup: NO-GO revising report\n' >&2
       status=1
     fi
   done
+  cleanup_complete=true
   exit "$status"
 }
 trap cleanup EXIT INT TERM
@@ -74,9 +92,7 @@ done
 
 printf '[meteorite-publish] mechanism: temporary tracked-remote ref %s\n' "$temp_ref"
 git -C "$repo_root" push "$remote" "$ref:$temp_ref"
-published_refs+=("$temp_ref")
 git -C "$repo_root" push "$remote" "$donor_sha:$donor_ref"
-published_refs+=("$donor_ref")
 METEORITE_REPO_URL="$clone_url" \
 METEORITE_DONOR_SHA="$donor_sha" \
 METEORITE_DONOR_REF="$donor_ref" \

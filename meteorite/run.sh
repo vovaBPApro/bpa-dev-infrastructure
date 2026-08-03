@@ -137,7 +137,7 @@ if [[ -n "$donor_sha" && ! "$donor_sha" =~ ^[0-9a-fA-F]{40}$ ]]; then
   fail "ref-validation" "donor SHA must be a 40-character commit SHA" || true
   exit 2
 fi
-if [[ -n "$donor_ref" && ! "$donor_ref" =~ ^refs/meteorite/[0-9a-fA-F]{40}-v2-deprecated$ ]]; then
+if [[ -n "$donor_ref" && ! "$donor_ref" =~ ^refs/meteorite-candidates/[0-9]+-[0-9]+-[0-9a-fA-F]{40}/v2-deprecated$ ]]; then
   fail "ref-validation" "donor ref has an unsupported shape" || true
   exit 2
 fi

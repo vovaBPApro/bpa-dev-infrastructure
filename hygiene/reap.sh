@@ -37,7 +37,7 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: reap.sh <branches|worktrees> [options]
+Usage: reap.sh <branches|worktrees|meteorite-refs> [options]
 
 Options:
   --repo PATH           Git repository (default: current directory)
@@ -48,6 +48,8 @@ Options:
   --protected-file PATH ADD another protected-branches list; never replaces
                          the default one (see below)
   --apply               Perform the narrowly defined mutations
+  --remote NAME         Remote swept by meteorite-refs (default: origin)
+  --max-age-seconds N   Minimum meteorite-ref age (default: 86400)
   -h, --help            Show this help without changing anything
 
 All commands are dry-run by default. A branch is deleted under --apply only
@@ -79,6 +81,8 @@ stale_days=30
 apply=false
 dispositions_path=""
 protected_path=""
+remote="origin"
+max_age_seconds=86400
 extra_protect=()
 while (($#)); do
   case "$1" in
@@ -89,11 +93,14 @@ while (($#)); do
     --dispositions) dispositions_path="${2:?--dispositions requires a path}"; shift 2 ;;
     --protected-file) protected_path="${2:?--protected-file requires a path}"; shift 2 ;;
     --apply) apply=true; shift ;;
+    --remote) remote="${2:?--remote requires a name}"; shift 2 ;;
+    --max-age-seconds) max_age_seconds="${2:?--max-age-seconds requires a number}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
 done
 [[ "$stale_days" =~ ^[0-9]+$ ]] || die "--stale-days must be a non-negative integer"
+[[ "$max_age_seconds" =~ ^[0-9]+$ ]] || die "--max-age-seconds must be a non-negative integer"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 own_root="$(cd "$script_dir/.." && pwd)"
@@ -278,8 +285,40 @@ reap_worktrees() {
   fi
 }
 
+reap_meteorite_refs() {
+  git_repo
+  local now ref created_at age remote_output output=() invalid=false
+  now="$(date +%s)"
+  remote_output="$(git -C "$repo" ls-remote --refs "$remote" 'refs/meteorite-candidates/*')" || die "cannot enumerate reserved meteorite namespace on remote: $remote"
+  while IFS= read -r ref || [[ -n "$ref" ]]; do
+    [[ -n "$ref" ]] || continue
+    if [[ ! "$ref" =~ ^refs/meteorite-candidates/([0-9]+)-[0-9]+-[0-9a-fA-F]{40}/(candidate|v2-deprecated)$ ]]; then
+      say "invalid meteorite ref, refusing unmeasured cleanup: $ref"
+      invalid=true
+      continue
+    fi
+    created_at="${BASH_REMATCH[1]}"
+    (( created_at <= now )) || { say "future-dated meteorite ref, refusing: $ref"; invalid=true; continue; }
+    age=$((now - created_at))
+    if (( age < max_age_seconds )); then
+      say "active meteorite ref, retaining: $ref (${age}s old)"
+      continue
+    fi
+    say "orphaned meteorite ref: $ref (${age}s old)"
+    output+=("$ref")
+  done < <(printf '%s\n' "$remote_output" | awk '{print $2}')
+  "$invalid" && die "reserved meteorite namespace contains unparseable refs"
+  if "$apply"; then
+    for ref in "${output[@]}"; do
+      git -C "$repo" push "$remote" ":$ref"
+      say "deleted orphaned meteorite ref: $ref"
+    done
+  fi
+}
+
 case "$command_name" in
   branches) reap_branches ;;
   worktrees) reap_worktrees ;;
+  meteorite-refs) reap_meteorite_refs ;;
   *) usage >&2; die "unknown subcommand: $command_name" ;;
 esac

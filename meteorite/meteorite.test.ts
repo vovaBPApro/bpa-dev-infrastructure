@@ -41,6 +41,8 @@ esac
     DOCKER_TRACE: trace,
     FAIL_STAGE: failStage,
     EXPECTED_SHA: checkedOutSha || sha,
+    METEORITE_DONOR_SHA: sha,
+    METEORITE_DONOR_REF: `refs/meteorite/${sha}-v2-deprecated`,
   };
   return { env, report, trace, sha };
 }
@@ -74,17 +76,31 @@ describe("meteorite runner", () => {
     expect(report).toContain(`tested SHA: \`${f.sha}\``);
     expect(report).toContain(`requested SHA: \`${f.sha}\``);
     expect(report).toContain("source: `https://example.invalid/infra.git`");
+    expect(report).toContain("source mechanism: `tracked-remote`");
     expect(report).toContain("sha-verification: PASS");
     expect(report).toContain("container image: `ubuntu:24.04`");
     expect(report).toContain("result: clean");
     expect(report).toContain("bootstrap-dry-run: PASS");
     expect(report).toContain("bootstrap-verify-source: PASS");
+    expect(report).toContain("test-prerequisites: PASS");
     expect(report).toContain("full-test-suite: PASS");
     expect(report).toContain("unit-drift: PASS");
     expect(report).toContain("unit activation —");
     expect(report).toContain("watchdog arm —");
     expect(report).toContain("Telegram transport —");
     expect(await readFile(f.trace, "utf8")).toContain("stop -t 5 container-id");
+  });
+
+  test("a local source cannot yield a clean report", async () => {
+    const f = await fixture();
+    const run = Bun.spawnSync(["bash", runner, "--ref", f.sha, "--repo-url", "/tmp/local-candidate"], { env: f.env });
+    expect(run.exitCode).not.toBe(0);
+    const report = await readFile(f.report, "utf8");
+    expect(report).toContain("result: NO-GO");
+    expect(report).toContain("source-validation: NO-GO");
+    expect(report).toContain("source: `/tmp/local-candidate`");
+    expect(report).not.toContain("result: clean");
+    expect(await Bun.file(f.trace).exists()).toBe(false);
   });
 
   test("a checkout at a different SHA is NO-GO and names both SHAs", async () => {

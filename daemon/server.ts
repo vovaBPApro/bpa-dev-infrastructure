@@ -524,7 +524,16 @@ const PHOTO_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp']);
 // and it also supports a self-hosted Bot API server. Unset means real Telegram.
 const bot = new Bot(TOKEN, {
   client: process.env.TELEGRAM_API_ROOT
-    ? { apiRoot: process.env.TELEGRAM_API_ROOT }
+    ? {
+        apiRoot: process.env.TELEGRAM_API_ROOT,
+        // grammY's Node shim combines node-fetch with a Node http.Agent. That
+        // request never leaves Bun when apiRoot targets a local/self-hosted
+        // HTTP fixture. Bun's native fetch proves and supports that boundary.
+        fetch: ((input: unknown, init: Record<string, unknown> = {}) => {
+          const { agent: _nodeAgent, duplex: _nodeDuplex, ...bunInit } = init;
+          return globalThis.fetch(input as RequestInfo | URL, bunInit as RequestInit);
+        }) as typeof globalThis.fetch,
+      }
     : undefined,
 });
 

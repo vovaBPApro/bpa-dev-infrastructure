@@ -63,6 +63,7 @@ TRIAGE_CLI="${ORCH_TRIAGE_CLI:-$INSTALL_ROOT/tools/instructions/triage.ts}"
 NUDGE_OUTBOX_FILE="${NUDGE_OUTBOX_FILE:-$RUNTIME_DIR/nudges.outbox}"
 FLEET_IDLE_NUDGE_MS="${FLEET_IDLE_NUDGE_MS:-900000}"
 FLEET_NUDGE_REPEAT_MS="${FLEET_NUDGE_REPEAT_MS:-3600000}"
+INSTANCE_PARAMS_FILE="${ORCH_INSTANCE_PARAMS_FILE:-$REPO_DIR/instance/params.yaml}"
 DISK_ALERT_PCT="${DISK_ALERT_PCT:-80}"
 # ── Disk remediation thresholds ─────────────────────────────────────────────
 # At DISK_ALERT_PCT the tick reclaims Docker space and re-measures; only if the
@@ -602,8 +603,24 @@ check_disk_pressure() {
 }
 
 check_mission_pressure() {
-  local status_output now measured
+  local status_output now measured fleet_line running_lanes notify_below params_mode
   state_available || { log "SKIP reason=mission-pressure-state-db-absent path=$STATE_DB"; return; }
+  params_mode="$(stat -c '%a' "$INSTANCE_PARAMS_FILE" 2>/dev/null || true)"
+  if [[ ! -f "$INSTANCE_PARAMS_FILE" || ! -r "$INSTANCE_PARAMS_FILE" || ! "$params_mode" =~ ^[0-7]{3,4}$ ]] || (( (8#$params_mode & 8#444) == 0 )); then
+    log "WATCHDOG NO-GO reason=fleet-config-unreadable path=$INSTANCE_PARAMS_FILE"
+    return 1
+  fi
+  notify_below="$(awk '
+    /^fleet:[[:space:]]*$/ { in_fleet=1; next }
+    in_fleet && /^[^[:space:]]/ { in_fleet=0 }
+    in_fleet && /^[[:space:]]+notify_human_below:[[:space:]]*/ {
+      sub(/^[^:]*:[[:space:]]*/, ""); sub(/[[:space:]]+#.*/, ""); print; exit
+    }
+  ' "$INSTANCE_PARAMS_FILE")"
+  if ! knob_check "$notify_below" 1 1000; then
+    log "WATCHDOG NO-GO reason=fleet-notify-threshold-invalid path=$INSTANCE_PARAMS_FILE"
+    return 1
+  fi
   if ! status_output="$(mission_cli status 2>/dev/null)"; then
     log "WATCHDOG NO-GO reason=mission-pressure-status-unavailable"
     return 1
@@ -632,6 +649,7 @@ const status = JSON.parse(await Bun.stdin.text());
 const missions = requiredArray(status, "missions");
 const allLanes = requiredArray(status, "lanes");
 const leases = requiredArray(status, "leases");
+const openLaneIds = new Set();
 for (const mission of missions) {
   const missionId = requiredString(mission, "id", "mission");
   const correlation = requiredString(mission, "correlationId", `mission ${missionId}`);
@@ -642,15 +660,34 @@ for (const mission of missions) {
     requiredTerminalVerdict(lane);
   }
   const lanes = missionLanes.filter((lane) => lane.terminalVerdict === null);
+  for (const lane of lanes) openLaneIds.add(lane.id);
   const active = leases.filter((lease) => lanes.some((lane) => lane.id === requiredString(lease, "key", "lease"))).length;
   const updatedAt = Math.max(requiredTime(mission, "updatedAt", `mission ${missionId}`), ...missionLanes.map((lane) => lane.updatedAt));
   console.log([correlation, lanes.length, active, updatedAt].join("\t"));
 }
+const running = new Set(leases
+  .map((lease) => requiredString(lease, "key", "lease"))
+  .filter((key) => openLaneIds.has(key))).size;
+console.log(["FLEET", running].join("\t"));
 ' 2>>"$LOG_FILE")"; then
     log "WATCHDOG NO-GO reason=mission-pressure-status-contract-invalid"
     return 1
   fi
+  fleet_line="$(printf '%s\n' "$measured" | awk -F '\t' '$1 == "FLEET" { print; found=1 } END { if (!found) exit 1 }')" || {
+    log "WATCHDOG NO-GO reason=fleet-pressure-measurement-missing"
+    return 1
+  }
+  running_lanes="${fleet_line#*$'\t'}"
+  if [[ ! "$running_lanes" =~ ^[0-9]+$ ]]; then
+    log "WATCHDOG NO-GO reason=fleet-pressure-measurement-malformed"
+    return 1
+  fi
+  if (( running_lanes < notify_below )) && nudge_due fleet-pressure global "$now"; then
+    append_nudge "FLEET STALL: running lanes=$running_lanes, notify threshold=$notify_below. Dispatch or inspect blocked lanes."
+    record_nudge fleet-pressure global "$now"
+  fi
   while IFS=$'\t' read -r correlation open_lanes active updated_at; do
+    [[ "$correlation" == FLEET ]] && continue
     [[ -n "$correlation" ]] || continue
     if [[ ! "$open_lanes" =~ ^[0-9]+$ || ! "$active" =~ ^[0-9]+$ || ! "$updated_at" =~ ^[0-9]+$ ]]; then
       log "WATCHDOG NO-GO reason=mission-pressure-measurement-malformed"

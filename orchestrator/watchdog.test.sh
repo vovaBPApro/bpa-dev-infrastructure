@@ -36,6 +36,7 @@ chmod +x "$SHIM/tmux" "$SHIM/df"
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 contains() { grep -Fq -- "$1" "$2" || fail "missing: $1"; }
+not_contains() { ! grep -Fq -- "$1" "$2" || fail "unexpected: $1"; }
 not_exists() { [[ ! -e "$1" ]] || fail "unexpected file: $1"; }
 mission_id() { sed -nE 's/^MISSION id=([^ ]+) state=.*/\1/p'; }
 
@@ -49,7 +50,7 @@ create_mission() {
   printf '%s\n' "$mission"
 }
 
-seed_running() {
+seed_fixture_state() {
   local db="$1" mission="$2" lane="$3" with_lease="$4"
   INFRA_STATE_DB="$db" bun -e \
     'import { Database } from "bun:sqlite";
@@ -60,6 +61,11 @@ seed_running() {
        db.query("UPDATE lanes SET lease_owner = ?, fencing_token = ?, lease_deadline_at = ?, updated_at = ? WHERE id = ?")
          .run("fixture-owner", 1, Date.now() + 600000, Date.now(), process.argv[2]);
      }' "$mission" "$lane" "$with_lease"
+}
+
+dispatch_running() {
+  local db="$1" lane="$2" owner="dispatcher-$2"
+  INFRA_STATE_DB="$db" bun "$MISSION_CLI" lane claim "$lane" "$owner" 600000 >/dev/null
 }
 
 run_watchdog() {
@@ -73,10 +79,67 @@ run_watchdog() {
     ORCH_RUNTIME_DIR="$runtime" ORCH_WATCHDOG_LOG="$runtime/watchdog.log" \
     ORCH_DONE_SENTINEL="$SCRATCH/no-done-sentinel" ORCH_DAEMON_HEALTH_URL="" \
     ORCH_MISSION_CLI="$cli" \
+    ORCH_INSTANCE_PARAMS_FILE="${ORCH_INSTANCE_PARAMS_FILE:-$SCRIPT_DIR/../instance/params.yaml}" \
     NUDGE_OUTBOX_FILE="$outbox" ORCH_INSTALL_ROOT="$SCRATCH" DISK_ALERT_PCT=99 \
     FLEET_IDLE_NUDGE_MS=1000 FLEET_NUDGE_REPEAT_MS=3600000 ORCH_WATCHDOG_NOW_MS="$now" \
     "$SCRIPT_DIR/watchdog.sh"
 }
+
+# Fleet pressure counts dispatch-owned live lane leases, not systemd units.
+# Zero lanes alerts once through the daemon-drained outbox; the repeat tick is
+# quiet, and a threshold count is quiet. Changing the config changes behavior,
+# which locks the executor property (the knob must actually be read).
+FLEET_DB="$SCRATCH/fleet.db"
+FLEET_OUTBOX="$SCRATCH/fleet.outbox"
+FLEET_PARAMS="$SCRATCH/params.yaml"
+printf 'fleet:\n  notify_human_below: 3\n' > "$FLEET_PARAMS"
+fleet_mission="$(create_mission "$FLEET_DB" fleet-pressure lane-fleet-1)"
+fleet_now=10000000
+ORCH_INSTANCE_PARAMS_FILE="$FLEET_PARAMS" run_watchdog "$FLEET_DB" "$SCRATCH/fleet-runtime" "$FLEET_OUTBOX" "$fleet_now"
+contains 'FLEET STALL: running lanes=0, notify threshold=3. Dispatch or inspect blocked lanes.' "$FLEET_OUTBOX"
+ORCH_INSTANCE_PARAMS_FILE="$FLEET_PARAMS" run_watchdog "$FLEET_DB" "$SCRATCH/fleet-runtime" "$FLEET_OUTBOX" "$(( fleet_now + 1000 ))"
+[[ "$(grep -Fc 'FLEET STALL:' "$FLEET_OUTBOX")" == 1 ]] || fail 'sustained fleet stall emitted more than once'
+dispatch_running "$FLEET_DB" lane-fleet-1
+fleet_mission_2="$(create_mission "$FLEET_DB" fleet-pressure-2 lane-fleet-2)"
+dispatch_running "$FLEET_DB" lane-fleet-2
+FLEET_BELOW_OUTBOX="$SCRATCH/fleet-below-threshold.outbox"
+ORCH_INSTANCE_PARAMS_FILE="$FLEET_PARAMS" run_watchdog "$FLEET_DB" "$SCRATCH/fleet-below-threshold-runtime" "$FLEET_BELOW_OUTBOX" "$(( fleet_now + 1500 ))"
+contains 'FLEET STALL: running lanes=2, notify threshold=3.' "$FLEET_BELOW_OUTBOX"
+fleet_mission_3="$(create_mission "$FLEET_DB" fleet-pressure-3 lane-fleet-3)"
+dispatch_running "$FLEET_DB" lane-fleet-3
+FLEET_THRESHOLD_OUTBOX="$SCRATCH/fleet-at-threshold.outbox"
+ORCH_INSTANCE_PARAMS_FILE="$FLEET_PARAMS" run_watchdog "$FLEET_DB" "$SCRATCH/fleet-at-threshold-runtime" "$FLEET_THRESHOLD_OUTBOX" "$(( fleet_now + 2000 ))"
+not_exists "$FLEET_THRESHOLD_OUTBOX"
+fleet_mission_4="$(create_mission "$FLEET_DB" fleet-pressure-4 lane-fleet-4)"
+dispatch_running "$FLEET_DB" lane-fleet-4
+FLEET_ABOVE_OUTBOX="$SCRATCH/fleet-above-threshold.outbox"
+ORCH_INSTANCE_PARAMS_FILE="$FLEET_PARAMS" run_watchdog "$FLEET_DB" "$SCRATCH/fleet-above-threshold-runtime" "$FLEET_ABOVE_OUTBOX" "$(( fleet_now + 2500 ))"
+not_exists "$FLEET_ABOVE_OUTBOX"
+printf 'fleet:\n  notify_human_below: 4\n' > "$FLEET_PARAMS"
+FLEET_KNOB_OUTBOX="$SCRATCH/fleet-knob.outbox"
+ORCH_INSTANCE_PARAMS_FILE="$FLEET_PARAMS" run_watchdog "$FLEET_DB" "$SCRATCH/fleet-knob-runtime" "$FLEET_KNOB_OUTBOX" "$(( fleet_now + 3000 ))"
+not_exists "$FLEET_KNOB_OUTBOX"
+printf 'fleet:\n  notify_human_below: 5\n' > "$FLEET_PARAMS"
+ORCH_INSTANCE_PARAMS_FILE="$FLEET_PARAMS" run_watchdog "$FLEET_DB" "$SCRATCH/fleet-knob-live-runtime" "$FLEET_KNOB_OUTBOX" "$(( fleet_now + 3500 ))"
+contains 'FLEET STALL: running lanes=4, notify threshold=5.' "$FLEET_KNOB_OUTBOX"
+
+# Missing, empty, unreadable and malformed threshold configuration are all
+# explicit NO-GO states. None may silently restore the original no-alert path.
+assert_bad_fleet_config() {
+  local label="$1" params="$2" runtime
+  runtime="$SCRATCH/fleet-config-$label-runtime"
+  ORCH_INSTANCE_PARAMS_FILE="$params" run_watchdog "$FLEET_DB" "$runtime" "$SCRATCH/fleet-config-$label.outbox" "$(( fleet_now + 4000 ))"
+  contains 'WATCHDOG NO-GO reason=fleet-' "$runtime/watchdog.log"
+  not_exists "$SCRATCH/fleet-config-$label.outbox"
+}
+assert_bad_fleet_config missing "$SCRATCH/params-missing.yaml"
+: > "$SCRATCH/params-empty.yaml"
+assert_bad_fleet_config empty "$SCRATCH/params-empty.yaml"
+printf 'fleet:\n  notify_human_below: 3\n' > "$SCRATCH/params-unreadable.yaml"
+chmod 000 "$SCRATCH/params-unreadable.yaml"
+assert_bad_fleet_config unreadable "$SCRATCH/params-unreadable.yaml"
+printf 'fleet:\n  notify_human_below: nope\n' > "$SCRATCH/params-malformed.yaml"
+assert_bad_fleet_config malformed "$SCRATCH/params-malformed.yaml"
 
 run_status() {
   local db="$1"
@@ -91,7 +154,7 @@ run_status() {
 STALLED_DB="$SCRATCH/stalled.db"
 STALLED_OUTBOX="$SCRATCH/stalled.outbox"
 stalled_mission="$(create_mission "$STALLED_DB" stalled-populated lane-stalled)"
-seed_running "$STALLED_DB" "$stalled_mission" lane-stalled lease
+seed_fixture_state "$STALLED_DB" "$stalled_mission" lane-stalled lease
 stalled_updated="$(INFRA_STATE_DB="$STALLED_DB" bun -e \
   'import { Database } from "bun:sqlite";
    const db = new Database(process.env.INFRA_STATE_DB);
@@ -105,7 +168,7 @@ contains 'NUDGE mission=stalled-populated open_lanes=1 active=1 idle_ms=10000' "
 PROGRESS_DB="$SCRATCH/progress.db"
 PROGRESS_OUTBOX="$SCRATCH/progress.outbox"
 progress_mission="$(create_mission "$PROGRESS_DB" winding-down lane-progress)"
-seed_running "$PROGRESS_DB" "$progress_mission" lane-progress no-lease
+seed_fixture_state "$PROGRESS_DB" "$progress_mission" lane-progress no-lease
 INFRA_STATE_DB="$PROGRESS_DB" bun -e \
   'import { Database } from "bun:sqlite";
    const db = new Database(process.env.INFRA_STATE_DB);
@@ -118,14 +181,14 @@ progress_updated="$(INFRA_STATE_DB="$PROGRESS_DB" bun -e \
    console.log(Math.max(db.query("SELECT updated_at FROM missions").get().updated_at,
      db.query("SELECT updated_at FROM lanes").get().updated_at));')"
 run_watchdog "$PROGRESS_DB" "$SCRATCH/progress-runtime" "$PROGRESS_OUTBOX" "$(( progress_updated + 100 ))"
-not_exists "$PROGRESS_OUTBOX"
+not_contains 'NUDGE mission=winding-down' "$PROGRESS_OUTBOX"
 
 # Terminal lanes remain in the durable audit snapshot, but stale ownership
 # columns cannot make them active or open work at either operator consumer.
 TERMINAL_DB="$SCRATCH/terminal.db"
 TERMINAL_OUTBOX="$SCRATCH/terminal.outbox"
 terminal_mission="$(create_mission "$TERMINAL_DB" terminal-finished lane-terminal)"
-seed_running "$TERMINAL_DB" "$terminal_mission" lane-terminal lease
+seed_fixture_state "$TERMINAL_DB" "$terminal_mission" lane-terminal lease
 terminal_updated="$(INFRA_STATE_DB="$TERMINAL_DB" bun -e \
   'import { Database } from "bun:sqlite";
    const db = new Database(process.env.INFRA_STATE_DB);
@@ -133,7 +196,7 @@ terminal_updated="$(INFRA_STATE_DB="$TERMINAL_DB" bun -e \
      .run("clean", "clean", "lane-terminal");
    console.log(db.query("SELECT updated_at FROM lanes WHERE id = ?").get("lane-terminal").updated_at);')"
 run_watchdog "$TERMINAL_DB" "$SCRATCH/terminal-runtime" "$TERMINAL_OUTBOX" "$(( terminal_updated + 10000 ))"
-not_exists "$TERMINAL_OUTBOX"
+not_contains 'NUDGE mission=terminal-finished' "$TERMINAL_OUTBOX"
 status_output="$(run_status "$TERMINAL_DB")"
 grep -Fq 'mission    terminal-finished open_lanes=0 active=0' <<<"$status_output" || \
   fail 'status did not exclude terminal lane from open and active counts'

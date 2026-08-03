@@ -1,0 +1,994 @@
+branch	tip_sha	last_commit	subject
+ag-ancestry-gate-r4-1581	50f4b34cf5ee2f942066a1c89295661f5bb797f3	2026-08-03	[CODER] record ancestry gate r4 evidence correction
+ag-archive-recovery	17d0f88c1d20a3509a11cc4582aed7208a4d1219	2026-08-01	[CODER] Document safe Telegram archive recovery
+ag-audit-hr1275-ci-parity	a277787a41b4336d1317cbc32b7250e97949eb87	2026-08-02	[REVIEW] audit HR-1275 CI landing parity
+ag-audit-hr1275-clone	8b076f9f64d53cf8bfdecc86405269e36beb33bf	2026-08-02	[REVIEW] audit HR-1275 clean-clone boundary
+ag-audit-hr1275-external-network	f7da47ee5d5dd70172fc3888287c1b868efc6d4d	2026-08-02	[REVIEW] audit external-network leakage in tests
+ag-audit-hr1275-false-green	0eb220b4d25fa37ecee21280ae2fd60be6f1b820	2026-08-02	[REVIEW] reject mandatory verify false green
+ag-audit-hr1275-inventory	8456bb50a924bc9188192bb1fc982478462b67b3	2026-08-02	[REVIEW] inventory tracked HR-1275 verification surfaces
+ag-audit-hr1275-isolation-r2	0b930d2511406dd2b1e64bf3a71563c2b8cbb489	2026-08-02	[REVIEW] audit HR-1275 test isolation topology
+ag-audit-hr1275-landing-rollback	b628dc99e8c718fc08536f4203b579cfa4cc2f3e	2026-08-02	[REVIEW] reject landing rollback boundary
+ag-audit-hr1275-launcher-red	40afaa4b5f9398e0ef26f730eccb60c9119f165a	2026-08-02	[REVIEW] audit launcher regression fail-before evidence
+ag-audit-hr1275-shell	522f6aa0667804a57e24e5742a327016ae2d43c7	2026-08-02	[REVIEW] audit HR-1275 shell discovery
+ag-audit-hr1275-suite-manifest	b4ad79ba7d6681dfa585c30abf9367b522df2b8a	2026-08-02	[REVIEW] audit HR-1275 suite manifest contract
+ag-audit-hr1275-suite-runtime	96459b773a1d92d48b4d49c5c09258276fa8d188	2026-08-02	[REVIEW] audit HR-1275 suite runtime partitions
+ag-audit-hr1295-arch	a915240aefa1e2829200a727a18e84735afde016	2026-08-02	[REVIEW] audit HR-1295 recovery architecture
+ag-audit-hr1295-budget	24e0636a1ee4938e44837bfb7edf59a47be669e0	2026-08-02	[REVIEW] define HR-1295 restart context budget
+ag-audit-hr1295-command-boundary	49b762b06edf1fb0c8bf54c35d959edb2b3c4c7f	2026-08-02	[REVIEW] audit Telegram restart command boundary
+ag-audit-hr1295-envelope-cursor	0a8d196f9be54447e0b1e11b39d76b042145376a	2026-08-02	[REVIEW] design HR-1295 recovery envelope cursor
+ag-audit-hr1295-fence	d3f6ecb8deeb22a0779890e3d0648093deb8143a	2026-08-02	[REVIEW] audit HR-1295 stale provider fencing
+ag-audit-hr1295-generation-fence	e200a1fe1eb10481896f912fbcb02121b2a8df73	2026-08-02	[REVIEW] define HR-1295 generation fence contract
+ag-audit-hr1295-legacy	8627380d995ef92fe23c0745de479d6cf0baf2da	2026-08-02	[REVIEW] inventory HR-1295 legacy restart parity
+ag-audit-hr1295-provider-symmetry	5ba6a5e1617216892b04f7e1c2e468f693db8859	2026-08-02	[REVIEW] reject provider-asymmetric fresh restart
+ag-audit-hr1295-state-db-path	aaacb822359ad211d296f5f2985796e13a4fe2a3	2026-08-02	[REVIEW] audit canonical durable state DB path
+ag-branch-hygiene-audit	1787a67d8c03c8c6dc500da220ff29628f1ad453	2026-08-01	[CODER] audit branch and worktree hygiene
+ag-capture-telegram-report-format	5abd296458882eb879520c62fe95403aefd007f3	2026-08-01	[ORCH] capture incremental Telegram report format
+ag-checkpoint-baseline-interface-probe-1581	a5a51f84342801aa71505bc239e47d1fee6b0fc7	2026-08-03	[REVIEW] inventory checkpoint baseline interfaces
+ag-checkpoint-design-r10-recut-1581	de8c2dfdb67db707aa3d01bd19dc08804e11f50a	2026-08-03	[CODER] record checkpoint design recut NO-GO
+ag-checkpoint-manual-orchestration-1577	5523ef87eed4583eb6395b4ec82154f4f9d3b17c	2026-08-03	[CODER] record manual orchestration checkpoint
+ag-checkpoint-reconciliation-design-r6-1581	0f8fcaa6ccf493db761bdde84f174b42f437f086	2026-08-03	[CODER] correct checkpoint restore architecture r6
+ag-checkpoint-reconciliation-design-r8-recut-1581	e2c47d9117dc05a30fbac218f179ca802baa25cf	2026-08-03	[CODER] record checkpoint design r8 NO-GO
+ag-codex-appserver-design-r4-1544	365662471449ff70646348e3b878be4a5ca81a6a	2026-08-02	[REVIEW] close app-server ordering and rollback authority
+ag-codex-appserver-foundation-r1-1533	a8b58cd9e91f040274bd1e5efb07e5085ddd06cd	2026-08-02	[REVIEW] design authenticated Codex app-server provenance
+ag-codex-appserver-generator-image-1544	cd6747eada81917d52c21ea8f70adf3146ccb8ee	2026-08-02	[REVIEW] propose Codex fixture generator image
+ag-codex-appserver-pin-1544	cc1f5ad27b13bdeb3aa18daa3d6c220625adfcc9	2026-08-02	[REVIEW] record approved Codex app-server pin
+ag-codex-appserver-tcb-probe-1533	389973b1eb541897002263e8a8186c094ebb7bda	2026-08-02	[REVIEW] Probe Codex app-server protocol and stdio TCB
+ag-codex-launcher	173c124c492239b209a7aa32f50accab501a7760	2026-07-31	[CODER] harden Codex lane security boundaries
+ag-daemon-control-aggregate-repair-r12-1581	ddbe2632ba9ac11eb91a9ef976ca023985409223	2026-08-03	[CODER] isolate daemon control aggregate fixtures
+ag-daemon-control-r12-terminal-evidence-1581	d392e669d07acb2d9fb49028c2af0de92317aaaa	2026-08-03	[CODER] record daemon control terminal evidence
+ag-daemon-control-r13-owned-scratch-1581	d7b4f170c5574cbb6fcafb189cd08483b7c66154	2026-08-03	[CODER] correct owned scratch evidence SHA
+ag-daemon-media-aggregate-r13-causal-locks-1581	3eecae27aa8b0cff87eed45afae972621af9f6ea	2026-08-03	[CODER] lock media fixture causal boundaries
+ag-daemon-media-aggregate-repair-r12-1581	5085afb44bf01f2e068236faec7036f42abff565	2026-08-03	[CODER] repair daemon media aggregate fixture
+ag-daemon-media-r14-readiness-rework-1581	786f4885dcab7cab4b93e103d9c544f05c6db83d	2026-08-03	[CODER] make media readiness observation independent
+ag-daemon-media-r15-deps-verify-1581	f976fd9fa0f0ed0da1660ce791ac41115d85e911	2026-08-03	[CODER] record media readiness terminal verification
+ag-daemon-media-r16-deps-1581	147bde109006efeb33546d140ccb0ef26646010c	2026-08-03	[CODER] record independent readiness causal evidence
+ag-daily-consilium-sprint-1500	c347e68402da4c576b258457a9346000fffb19d1	2026-08-02	[CODER] Add daily consilium sprint loop
+ag-daily-sprint-close-r4-1581	3d3729a5ff2591d155a9933d023b4f3f4754a631	2026-08-03	[CODER] reject contradictory sprint verification claims
+ag-daily-sprint-close-r4-terminal-1581	e86be47e56a2839b7a93fcd4e6b9848e1ae2b326	2026-08-03	[CODER] retain sprint-close candidate evidence
+ag-daily-sprint-close-r5-evidence-1581	56e83f9aad4de36c47698e7db0eb4e1ccbdd426a	2026-08-03	[CODER] retain sprint-close correction evidence
+ag-daily-sprint-close-r6-evidence-rework-1581	e74de004a2dd90e1498a1a080c6cc0ccec5b2eb5	2026-08-03	[CODER] report sprint-close r6 verification
+ag-daily-sprint-close-r7b-impl-1581	eb01f3564b7bb05dfa9421763427dddcc674e132	2026-08-03	[CODER] retain exact-SHA suite evidence report
+ag-daily-sprint-close-r8-impl-1581	dfe9330ceb5a832e1cc6dc94810691a19f34d941	2026-08-03	[CODER] report full-suite evidence binding
+ag-database-internal-net-r3-1533	d78a63ddee39c5dca5a8e2957ddb089166419817	2026-08-02	[CODER] Make database fixture cleanup reproducible
+ag-database-internal-r4-1542	1b7f696221d7279f81da60559c53be87ec1dda72	2026-08-02	[CODER] Record database reaper r4 evidence
+ag-database-loopback-boundary-r5-1581	ca12f0cd084d1cf2cbec0e7a9c65197ef4aa4369	2026-08-03	[CODER] record database mediation blocker
+ag-database-loopback-fixture-r1-1561	3e6a0097870af1fb2ed82a3fa93af100d1bb76aa	2026-08-02	[CODER] correct database loopback fixture boundary
+ag-database-loopback-r2-1565	510b9f0fad7be2e78430c9e467860d6e2297f141	2026-08-02	[CODER] fence database fixture collision cleanup
+ag-database-mediated-app-path-r6-1581	7f0eed2f7dbf09918bec045ce36f0e348f935265	2026-08-03	[CODER] record database mediation evidence
+ag-database-readiness-timeout-r2-1581	c07b7894cbe222cfcc7ae2139b3fc890e22f80fc	2026-08-03	[CODER] retain database readiness R2 evidence
+ag-diag-buildkit-gate-baseline-1572	c16f6ce0700a2b2d98a920bf01654d956a85f7d6	2026-08-03	[REVIEW] diagnose BuildKit gate baseline timeout
+ag-diag-codex-provenance-1533	df73cf4f295c38c1ecaff5f5b63866b44dce6f16	2026-08-02	[REVIEW] diagnose Codex control provenance
+ag-diag-containerd-blob-1544	e5f501387847562540ee4c56a26b8dda61726c2c	2026-08-02	[REVIEW] Diagnose containerd blob commit failure
+ag-diag-docker-published-port-1533	a4b0130d36a1549ce29142bdd8f22acedaeaacf6	2026-08-02	[REVIEW] Diagnose Docker published-port reachability
+ag-diag-full-suite-1524	a746a3d734c5b864532cdddd55b7f74ae2b63b0a	2026-08-02	[REVIEW] correct fixture cleanup evidence
+ag-diag-host-loopback-1533	5477b1f39338fea8bd446042e45629bf856685de	2026-08-02	[REVIEW] diagnose lane loopback cgroup boundary
+ag-diag-hr1295-mcp-timeout	9a5c985ad8580b72562b884820a8736c97c93b27	2026-08-02	[REVIEW] diagnose HR-1295 MCP test timeout
+ag-diag-hr1295-restart-timeout	d01c46fc24a6e22deccc8ec0b443ba146ecfb4a7	2026-08-02	[REVIEW] diagnose HR-1295 restart test timeout
+ag-diag-lane-loopback-1508	dd022ad9d89494bcd4d3585b17da98bcdf443dd7	2026-08-02	[REVIEW] Diagnose loopback runtime capability
+ag-diag-report-binding-1524	c2e98f8ce419fd595f1cde188cfa4a49acc8b246	2026-08-02	[REVIEW] diagnose terminal report self-binding
+ag-diag-runtime-loopback-r11-1544	81985720f3cab517edd6a3699f2473fe061a546a	2026-08-02	[REVIEW] diagnose runtime-loopback external boundary
+ag-diag-tg-transport-1494	edcd2776894a5eb268d42a02292dd0568efa3cb0	2026-08-02	[REVIEW] diagnose Telegram transport degradation
+ag-diagnose-watchdog-health-w20-1551	16f6205f7a7ee403c03fccf3e464fb0454f003e6	2026-08-02	[REVIEW] diagnose W20 watchdog health failures
+ag-estimate-parallel-1494	21b3e18c0959c7a534632efac51ae7635b3fd19d	2026-08-02	[CODER] Estimate delivery from parallel critical path
+ag-fill10-authority-ops	4e7fdfb1574984dae5376d4fc310a54480ff9185	2026-08-03	[REVIEW] reject unresolved authority candidate fill10
+ag-fill10-authority-ops2	d23719515dd3a5564cefe184e4eb527c46c49f70	2026-08-03	[REVIEW] reject authority r22 ops residue false green
+ag-fill10-authority-sec	f7d0c5e16388a59922b6b561bc62880a5b9ff85d	2026-08-03	[REVIEW] reject authority r23 interruption false green
+ag-fill10-check-sec	e515e43a5ede3198a6b95eebdcad1897dfa4276d	2026-08-03	[REVIEW] reject checkpoint restore design r5
+ag-fill10-land-reg	739047561431886a947a5bfba8171a6d8c24a9a1	2026-08-03	[REVIEW] accept landing recovery r8 regression locks
+ag-fill10-land-sec	75ab4aac50f33ab859a41089a7aa2ccb0ba36fe0	2026-08-03	[REVIEW] accept landing recovery r8 security fill10
+ag-fill10-provider-reg	98e74e0008360566f9d82dcb96933a11f0e494de	2026-08-03	[REVIEW] reject provider launch r6 false-green locks
+ag-fill10-provider-sec	30b7738ef5c8e6113fcf82fba80139a35f7196d7	2026-08-03	[REVIEW] reject provider routing r7 security boundary
+ag-fill10-sprint-reg	eed29849961d1114290dce36f1b6de26dd10733a	2026-08-03	[REVIEW] reject sprint-close subject false green
+ag-fill11-authority-ops	1ff2dde39aea23cbe7c1396079e10c231c7ffdc5	2026-08-03	[REVIEW] reject authority r21 identity topology
+ag-fill11-authority-ops2	5324fcc98266571b45c079491b00b77175e1d97e	2026-08-03	[REVIEW] accept authority r22 migration rollback operations
+ag-fill11-authority-sec	4c360091a1dc6f135c96f45c683afaf139dd0464	2026-08-03	[REVIEW] reject authority r23 security false greens
+ag-fill11-check-sec	fd80837606060760156abc593609ff93f30f41c4	2026-08-03	[REVIEW] reject checkpoint restore design r5
+ag-fill11-land-reg	fbf0f1df764a628e84830ff2cd25d8ae3c17d5bf	2026-08-03	[REVIEW] accept landing recovery r8 regression fill11
+ag-fill11-land-sec	6021e4899260b54e09a555cf02a84f787b3bd8c0	2026-08-03	[REVIEW] accept landing recovery r8 fill11 security
+ag-fill11-media-reg	6bd5e3ea2ecac7579687b31130aa24fd7f1c55f6	2026-08-03	[REVIEW] accept media r14 readiness regression lock
+ag-fill11-provider-reg	af19489560e46554169b1b37a35e2dbae0de9680	2026-08-03	[REVIEW] reject provider launch r6 false-green lock
+ag-fill11-provider-sec	9a0245b8de5abb6fef33a590952e089adb26cb68	2026-08-03	[REVIEW] reject provider routing r7 false green
+ag-fill11-sprint-reg	06691f5aece3e632b216a372e84484a26cb011ae	2026-08-03	[REVIEW] reject sprint-close evidence false green
+ag-fill12-authority-ops	2c9d78923bd4c00b53e5e6a545a50b44252edf8a	2026-08-03	[REVIEW] reject authority r21 candidate identity fill12
+ag-fill12-authority-sec	7baf0158310734ded0b9c9b24753a5ee02495e2a	2026-08-03	[REVIEW] reject authority r23 security false greens
+ag-fill12-check-sec	2616d684de389f73df937bb5ec660b42bbb695c2	2026-08-03	[REVIEW] reject checkpoint restore architecture r5
+ag-fill12-provider-reg	a4c39743476f54f4f6515521da19713db4e0a68a	2026-08-03	[REVIEW] reject provider launch r6 false-green lock fill12
+ag-fill12-provider-sec	2fb4bfb652f46af0dbc1a4bf82894b63a2d1b16b	2026-08-03	[REVIEW] reject provider routing r7 namespace boundary
+ag-fill12-sprint-reg	51d408b8bdeb4fdbf133d9d5cd3d9a49fdc5e757	2026-08-03	[REVIEW] reject sprint-close evidence false green
+ag-fill13-authority-ops	2e43e2e439a3cef416716634f79c5b78ba165822	2026-08-03	[REVIEW] reject authority r21 identity topology fill13
+ag-fill13-authority-sec-review	d45725dfbaffb0f0fe3bc93c6a923037e2c1b9e3	2026-08-03	[REVIEW] reject authority r23 security false greens fill13
+ag-fill13-check-sec	b2ec875b0ca575cce6abc9b2fe7467c69a53e5ee	2026-08-03	[REVIEW] reject checkpoint restore design r5
+ag-fill13-land-sec	96c9b11d18f5bf4d318dc15d3d06f9a1f7ff0319	2026-08-03	[REVIEW] accept landing recovery r8 fill13 security
+ag-fill13-provider-reg	c9726a47a567b842c75c07980fb900af6031b544	2026-08-03	[REVIEW] reject provider launch r6 false-green lock fill13
+ag-fill13-provider-sec	66e2ec4ac1f09372ce35b555b9feab3dcbd14e8a	2026-08-03	[REVIEW] reject provider routing r7 cleanup evidence
+ag-fill13-sprint-reg	71461790683d5f68ec2a952cd18dd89510d47ea5	2026-08-03	[REVIEW] reject sprint-close evidence false green
+ag-fill14-authority-ops	ad21008cac26586d6fdd7128ce82d2ccae8a2e7f	2026-08-03	[REVIEW] accept authority r21 operations rollback
+ag-fill14-authority-ops2	9d9dae9fea40c0670d28892df0b647b301196794	2026-08-03	[REVIEW] reject authority r22 upgrade residue false green
+ag-fill14-authority-sec	3d3a7805a942f5a18f1efa1aa3d42a1061e42821	2026-08-03	[REVIEW] accept authority r23 residue rework
+ag-fill14-check-sec	5e5a2721882a9613a6e3afbe2593fccab629e609	2026-08-03	[REVIEW] reject checkpoint restore design r5
+ag-fill14-land-reg	0ec72042dd172dd73924cb8539836fb421d61c0d	2026-08-03	[REVIEW] accept landing recovery regression lock
+ag-fill14-land-sec	3c1c818f1d511ef7944a790a3a3b9d16e808dff6	2026-08-03	[REVIEW] accept landing recovery r8 fill14 security
+ag-fill14-media-reg	468f88ad969ea803199b85add8a5aeecf1798e5c	2026-08-03	[REVIEW] reject media r14 aggregate hang
+ag-fill14-provider-reg	7d6a909d47d607813ce4b204bd53cf4dfb4d2f97	2026-08-03	[REVIEW] reject provider sandbox false green
+ag-fill14-provider-sec	58515ce2a03157cea3556468feae135b92f2fceb	2026-08-03	[REVIEW] reject provider routing r7 false green fill14
+ag-fill14-sprint-reg	8e320857753f31e6626e381d8b95cc22d0da9674	2026-08-03	[REVIEW] reject sprint-close evidence false green
+ag-fill15-authority-ops	fcc554fe1139b99c2f5d2f464fd94c0742a97c5a	2026-08-03	[REVIEW] reject unresolved authority candidate fill15
+ag-fill15-authority-ops2	be78f491a21b73d7ed54c93595cac28db16eb97b	2026-08-03	[REVIEW] accept authority r22 operations recovery
+ag-fill15-authority-sec	5474f75098cfa704663c6bdcc18f6f5a4894d513	2026-08-03	[REVIEW] accept authority r23 residue cleanup
+ag-fill15-check-sec	3421e552def12a7f09cd10c6e20ac96c57524b8a	2026-08-03	[REVIEW] reject checkpoint restore design r5 security
+ag-fill15-land-reg	d67601798b4eecb7cf88b942843dc874962c2d65	2026-08-03	[REVIEW] accept landing recovery regression lock
+ag-fill15-land-sec	4e2ade1db47816bce278136b64de88b501083690	2026-08-03	[REVIEW] accept landing recovery r8 fill15 security
+ag-fill15-media-reg-review	946d8647b576bd8cd03c11551b8efa9ec1eab96f	2026-08-03	[REVIEW] reject media r14 readiness candidate
+ag-fill15-provider-reg	933c4e44a690de378c1476029da055bd26a5c6df	2026-08-03	[REVIEW] reject provider launch r6 false green
+ag-fill15-provider-sec	7ba3ca00c42ddb3a7881e5afa76d1bf44932259e	2026-08-03	[REVIEW] reject provider routing r7 cleanup false green
+ag-fill15-sprint-reg	7f525bf5679ef0f557cc98e276a4acd7ad147d8b	2026-08-03	[REVIEW] reject sprint-close false-green candidate
+ag-fill16-authority-ops	5d23d8ee39c063c8cbacc53accb831967c356f51	2026-08-03	[REVIEW] reject authority r21 operations topology
+ag-fill16-authority-ops2	cc40fffc34ad91a2313e4cf6b1f84dc08b272af8	2026-08-03	[REVIEW] reject authority r22 operations residue false green
+ag-fill16-authority-sec	6cf83b4b02c99a6cbd69299df2bad4359b530d6e	2026-08-03	[REVIEW] accept authority r23 residue cleanup fill16
+ag-fill16-check-sec	279ef04977353632d3b71b3699c2aa16ac7acc44	2026-08-03	[REVIEW] reject checkpoint restore design r5
+ag-fill16-land-reg	97cdd3f0c46fd311f05b19ea935b08a0bc24a3ab	2026-08-03	[REVIEW] accept landing recovery r8 regression
+ag-fill16-land-sec	74277de5d366071ceafb91e84898dee5803262a3	2026-08-03	[REVIEW] accept landing recovery r8 security boundary
+ag-fill16-provider-reg	46c0d488141e8eece81d7da32c351ca67e7ac407	2026-08-03	[REVIEW] reject provider launch false-green lock
+ag-fill16-provider-sec	e5ca126fe4f1336f08dc23cba2477380cd79d301	2026-08-03	[REVIEW] reject provider routing r7 cleanup false green
+ag-fill16-sprint-reg	5850e7f5af078f34b0c59a43ce3d5e4fe79be8c8	2026-08-03	[REVIEW] reject sprint-close candidate on incomplete full suite
+ag-fill17-authority-ops	40b84769c84d3c2a51d5324d682d42db72f4ea2c	2026-08-03	[REVIEW] reject unavailable fill17 authority candidate
+ag-fill17-authority-ops2	a8d7b1df291d17a83941ecea80d13cc76f86629a	2026-08-03	[REVIEW] reject authority r22 owned systemd residue
+ag-fill17-authority-sec	e45e53c024c99f4f566cc5f5eb0fe71b3936c246	2026-08-03	[REVIEW] reject authority r23 interruption false green
+ag-fill17-check-sec	149f75f05f6474f5aec8890edea8aa44fe7c7e9f	2026-08-03	[REVIEW] reject checkpoint restore design r5
+ag-fill17-land-reg	693a5b90af720afbfb567e64d26e1c9bef264432	2026-08-03	[REVIEW] accept landing recovery r8 regression
+ag-fill17-land-sec	db4c95fb7d7d52dab3b050b07b63fa1dbfa60b41	2026-08-03	[REVIEW] accept landing recovery r8 security boundary
+ag-fill17-provider-reg	07a6ff8140623977633fe85c882042117332755b	2026-08-03	[REVIEW] reject provider launch r6 false-green evidence
+ag-fill17-provider-sec	1c5954861cc0ea9c0cb6568e284548f0da584fe4	2026-08-03	[REVIEW] reject provider routing r7 cleanup false-green
+ag-fill17-sprint-reg	243a472e6d6f07dce71fcdd4c60458c4d7fe3b50	2026-08-03	[REVIEW] reject sprint-close evidence false green
+ag-fill18-authority-ops	89f10243e46d065fb0ce6c1eaf2ca2f37e391ecb	2026-08-03	[REVIEW] reject unresolved authority candidate fill18
+ag-fill18-authority-sec	e5d570e16e02fa1819597e5b4cf5cb058e038990	2026-08-03	[REVIEW] reject authority r23 residue lock
+ag-fill18-check-sec	cea78f77e3fc57574e92d3704e79c9677e3b88de	2026-08-03	[REVIEW] reject checkpoint restore design r5
+ag-fill18-land-reg	20e33e8e526e3443bed6d360cfec9d2048b5ff92	2026-08-03	[REVIEW] accept landing recovery r8 regression
+ag-fill18-land-sec	9e2f1e1fb170ecca5a78908111bedbb97e4cc993	2026-08-03	[REVIEW] accept landing recovery r8 security fill18
+ag-fill18-media-reg	94884e68ea0c490c70e0e0646d22cd10364c1882	2026-08-03	[REVIEW] reject media r14 readiness false-green
+ag-fill18-provider-reg	44adea37324e38b6e226cac52a1c642017965a47	2026-08-03	[REVIEW] reject provider r6 live false-green lock
+ag-fill18-provider-sec	1a468255af1eccd1a0525cb60e5b462ce5e91761	2026-08-03	[REVIEW] reject provider routing r7 cleanup and readiness
+ag-fill18-sprint-reg	07a1c64ccb5ebbe4b715ed7a16debe3f33aca307	2026-08-03	[REVIEW] reject sprint-close cleanup false green
+ag-fill19-authority-ops	1af56595868c61abe0315f9899adb835f84ba9f4	2026-08-03	[REVIEW] reject authority r21 fill19 topology mismatch
+ag-fill19-authority-ops2	6ddcc0ff83430fb7472a83d39c65ffc3e43ddbcd	2026-08-03	[REVIEW] reject authority r22 operations residue false green
+ag-fill19-authority-sec	d8273e14ce8baac6c2bc07469906f63fa468824c	2026-08-03	[REVIEW] reject authority r23 interruption false green
+ag-fill19-check-sec	2fa833cd26e991f25185a782056744ce8bc46f20	2026-08-03	[REVIEW] reject checkpoint restore architecture r5
+ag-fill19-land-reg	881769b2053d4d570b7750a760c1dfcb93dfbedf	2026-08-03	[REVIEW] accept landing recovery mutation locks
+ag-fill19-land-sec	8371f4a3391b5a1af92ca955123c025c8e1e17a1	2026-08-03	[REVIEW] accept landing recovery r8 security
+ag-fill19-media-reg	fa1aedf37a05928740e361ef000f48abb00afcd3	2026-08-03	[REVIEW] reject media r14 readiness evidence
+ag-fill19-provider-reg	c528e087496826a5cec576b31eff412cc5362ed6	2026-08-03	[REVIEW] reject provider live sandbox false green
+ag-fill19-provider-sec	b55e7cae21ccd79b994795209f37e9204d4de576	2026-08-03	[REVIEW] reject provider routing r7 namespace boundary
+ag-fill19-sprint-reg	dcb657ef197605d2955815433a1a4989f640af90	2026-08-03	[REVIEW] reject sprint-close evidence false greens
+ag-fill20-authority-ops	824e7491b4514b032827cd3ab3642b9a34a92fa8	2026-08-03	[REVIEW] reject unavailable authority r20 candidate
+ag-fill20-authority-sec	ad516d3dea214a725fbfde7a75850073c2c23466	2026-08-03	[REVIEW] reject authority r23 residue lock false green
+ag-fill20-check-sec	f8a762aa40a6865ef59abd3ca9033fd48951cd71	2026-08-03	[REVIEW] reject checkpoint restore design r5
+ag-fill20-land-sec	d6b11d0ea848edf9edd1e2eb32893524bcc27a05	2026-08-03	[REVIEW] accept landing recovery r8 fill20 security
+ag-fill20-media-reg	81e587f2d2a3209cea0e816e32ac3f3e5ed2d957	2026-08-03	[REVIEW] reject media r14 on aggregate failure
+ag-fill20-provider-reg	263a18f3b40b1e67f065b67b3bc2d175bc8e89e1	2026-08-03	[REVIEW] reject provider launch r6 false-green locks
+ag-fill20-provider-sec	1cc73a13a89f9984dbcc1f2c0e45d164fbb943ba	2026-08-03	[REVIEW] reject provider routing r7 namespace evidence
+ag-fill20-sprint-reg	0f2aa89155f1d2482e3ca2ab39e6c6f9df1e23f4	2026-08-03	[REVIEW] reject sprint-close evidence false green
+ag-fill21-authority-ops	224cbb6a96739297da826169eeae475065df700e	2026-08-03	[REVIEW] reject authority r21 candidate identity
+ag-fill21-authority-sec	e37ee7c57e164263ddc0808ddc70be426c7a83e3	2026-08-03	[REVIEW] accept authority r23 residue lock
+ag-fill21-check-sec	d180638441c3c54bdd1c1a82146e4841224f0b4f	2026-08-03	[REVIEW] reject checkpoint restore design r5
+ag-fill21-media-reg	cfcdd50ae8a8709e966ad507d2b5969fbf3ecfbd	2026-08-03	[REVIEW] accept media r14 readiness rework
+ag-fill21-provider-reg	791f1bc61442c660c35a489a84d6938d23e4bc7f	2026-08-03	[REVIEW] reject provider sandbox deletion false green
+ag-fill21-provider-sec	c2f1e62af82e963ebddc383fa59e8de623d5e099	2026-08-03	[REVIEW] reject provider routing r7 namespace boundary
+ag-fill21-sprint-reg	d6ba09c017ec27c4122e60645abbf164f5dad4b9	2026-08-03	[REVIEW] NO-GO sprint-close candidate on full-suite evidence
+ag-fill22-authority-ops	7cdda843b32ec4c6d4a343ee46761e13ab678a9e	2026-08-03	[REVIEW] reject unresolved authority candidate
+ag-fill22-authority-sec	3583c151f71d5d62e7cb8055411fe2f9b8572336	2026-08-03	[REVIEW] accept authority r23 security evidence
+ag-fill22-check-sec	65e136c1acf1c4958945cd725f9632eeb08603e6	2026-08-03	[REVIEW] reject checkpoint restore design r5
+ag-fill22-land-sec	e5aeef45e380d041fdbe527183222868c1224a37	2026-08-03	[REVIEW] accept landing recovery r8 fill22 security
+ag-fill22-media-reg	42f29b66697556d50f9189dea40e58565d87d91a	2026-08-03	[REVIEW] accept media r14 readiness causal locks
+ag-fill22-provider-reg	41be5a0f9911d32a5c555a01e526d23a5390cf60	2026-08-03	[REVIEW] reject provider sandbox deletion false green
+ag-fill22-provider-sec	bd42031fe2ef8006f490cf81ecee28b32aeeba8d	2026-08-03	[REVIEW] reject provider routing deletion false green
+ag-fill22-sprint-reg	3105b917374195cc7edb38288b7dfc5b72acf47a	2026-08-03	[REVIEW] reject sprint-close evidence false green
+ag-fill23-authority-ops	623f3b11f005a2e9db3300fd2e4fa54ed3634281	2026-08-03	[REVIEW] reject authority r21 ancestry mismatch
+ag-fill23-authority-sec	79aa6a3836008284a42f6650c2a1175def4b1f75	2026-08-03	[REVIEW] accept authority r23 residue security
+ag-fill23-check-sec	36b2fd4de5262863980993750724d54981b0bb62	2026-08-03	[REVIEW] reject checkpoint restore design r5
+ag-fill23-provider-reg	fd0cbddd91efafa2eecf1eea7eedafccea906ceb	2026-08-03	[REVIEW] reject provider launch r6 false-green lock
+ag-fill23-provider-sec	425cb0435226c3d0757a502211c956ccc1d80ccc	2026-08-03	[REVIEW] reject provider routing r7 real-systemd evidence
+ag-fill23-sprint-reg	fbd8d996abfbd016e51d5b7fb3541b95df234489	2026-08-03	[REVIEW] reject sprint-close evidence false green
+ag-fill24-authority-ops	fd841fa2355f1eec63e0350e50ec15df8678a597	2026-08-03	[REVIEW] reject unresolved authority r21 candidate fill24
+ag-fill24-authority-sec	39049e344169f912c7e3ff7675aef104a5de3ef0	2026-08-03	[REVIEW] accept authority r23 residue fill24 security
+ag-fill24-check-sec	663f793454a39e1cbdeaa016022660f025f77885	2026-08-03	[REVIEW] reject checkpoint restore design r5
+ag-fill24-land-reg	b39a4a75cb21ef8847a46d437402adcaf5fd5ee9	2026-08-03	[REVIEW] accept landing recovery r8 regression
+ag-fill24-land-sec	0ef079f7e05ad80dc856b8825a90ee89eb35f0c2	2026-08-03	[REVIEW] accept landing recovery r8 security locks
+ag-fill24-media-reg	57fceafc00cc8b795eb3febeee9febd019176f10	2026-08-03	[REVIEW] reject media r14 aggregate false green
+ag-fill24-provider-reg	d496ba7ee47dcc93de21836a6703ff4fe84d43cc	2026-08-03	[REVIEW] reject provider routing r6 false-green locks
+ag-fill24-provider-sec	40e50b5a91ac65a2b16e4ea8aa4f070a8505a5fa	2026-08-03	[REVIEW] reject provider namespace confinement
+ag-fill24-sprint-reg	f8fba358dc633a25f208422aeac055d39933e304	2026-08-03	[REVIEW] reject sprint-close source-only evidence
+ag-fill25-authority-ops2	752174bb8bebea5933e249c8a4e275e249e3b111	2026-08-03	[REVIEW] reject authority r22 operations residue
+ag-fill25-authority-sec	26c8a594b0f357e8a2f0f7374b3be21ac89367f2	2026-08-03	[REVIEW] reject authority r23 loaded collision gap
+ag-fill25-checkpoint-sec	fbb096a26bb208445d3f16e203c0fcfdf8dd60a4	2026-08-03	[REVIEW] reject checkpoint restore design r5
+ag-fill25-landing-sec	6dec299e33fc18e805b6bbd0ffb3b656fcd86ed3	2026-08-03	[REVIEW] accept landing recovery r8 fill25 security
+ag-fill25-media-reg	c2d9878acbcd9607e52a4f4d4026f0cbd33a72ba	2026-08-03	[REVIEW] accept media r14 readiness independence
+ag-fill25-provider-reg	05f93321980e7ec1b084d53afb5a9293efe77b00	2026-08-03	[REVIEW] reject provider routing r6 false-green locks fill25
+ag-fill25-provider-sec	ff90f945a7f744c608254713168ad8cf29378298	2026-08-03	[REVIEW] reject provider routing r7 security locks
+ag-fill25-sprint-reg	de9700ae2f422fc90982f0322ce47061c38d522e	2026-08-03	[REVIEW] reject sprint-close source-only evidence gate
+ag-fill27-authority-ops	32b97a0abfd3a6c5508f1abc68a2279952c35557	2026-08-03	[REVIEW] reject authority r21 identity topology
+ag-fill27-authority-sec	a726e8d0916e2e2c7145e4d72c426d04852f52e9	2026-08-03	[REVIEW] reject authority r23 loaded collision gap
+ag-fill27-checkpoint-sec	70395922261a78444f01e0031f096e9b3f5b7e06	2026-08-03	[REVIEW] reject checkpoint restore design r5
+ag-fill27-landing-reg	772b6f973717d02461a726b3f8e8b96d86de246c	2026-08-03	[REVIEW] accept landing recovery mutation locks
+ag-fill27-landing-sec	a041246a8bb97ac0d7f7ecc5d7809fad832f7f4a	2026-08-03	[REVIEW] accept landing recovery r8 fill27 security
+ag-fill27-provider-reg	a17779bd35acb4031f001a07e7189ddc9a4684a3	2026-08-03	[REVIEW] reject provider r6 false-green locks
+ag-fill27-provider-sec	8f5d62999547be49c32caddba8bffa8b71f34d9a	2026-08-03	[REVIEW] reject provider routing r7 fill27 security
+ag-fill27-sprint-reg	641fc2bed11133dea634fbb50ba8bc1753bdc898	2026-08-03	[REVIEW] reject sprint-close source-only evidence gate
+ag-fill28-authority-sec	3a50f8ffec829ec1b658af1614bf48f04c60203f	2026-08-03	[REVIEW] reject authority r23 loaded collision fill28
+ag-fill28-provider-sec	c307b6049dbe458eeff6fda1c6c7d42fccb32e9a	2026-08-03	[REVIEW] reject provider routing r7 namespace boundary
+ag-fill29-provider-sec	014417428bde70f746d656cf41dce1e8534102df	2026-08-03	[REVIEW] reject provider routing r7 lock evidence
+ag-fill3-authority-ops	6b5e6d8cb58b71f5805f393521bfaa266fbe5147	2026-08-03	[REVIEW] reject authority r21 fill3 topology mismatch
+ag-fill3-authority-sec	1b46ae428982a267941225c4282412c8e70cc8f5	2026-08-03	[REVIEW] reject authority r23 residue lock
+ag-fill3-check-sec	f81510a5aadffdea0c34b824e3e5cef230523cbf	2026-08-03	[REVIEW] reject checkpoint restore design r5
+ag-fill3-land-reg	e212b4036b447fa78056b635dbdd3eb611fe2fbf	2026-08-03	[REVIEW] accept landing recovery r8 fill3 regression
+ag-fill3-land-sec	f288d0cb603ddf99bc1e8b0e84633e44ec313c15	2026-08-03	[REVIEW] accept landing recovery r8 security lock
+ag-fill3-media-reg	77decad6ba43a1339a982207511f888688eacada	2026-08-03	[REVIEW] reject media r14 readiness false green
+ag-fill3-provider-reg	f0e0ef45a050fd497480cde77212b550e69fb6bc	2026-08-03	[REVIEW] reject provider launch r6 false-green lock
+ag-fill3-provider-sec	a80946567b4f69392afd0bcac90d4d94c2c63b05	2026-08-03	[REVIEW] reject flaky provider routing evidence
+ag-fill3-sprint-reg	f0a10396e76f69bd57406d8e28cd72ab21a1831f	2026-08-03	[REVIEW] reject sprint-close evidence false green
+ag-fill30-authority-ops	23171397f599800541fcfd7dcc125b5ae5fb013d	2026-08-03	[REVIEW] reject authority r21 SHA topology mismatch
+ag-fill30-authority-sec	d50d387a5752fb8abc7354ca88288123e3db45e6	2026-08-03	[REVIEW] accept authority r23 residue rework
+ag-fill30-checkpoint-sec	48ac14d1fe875503f9760f01a2f88ab4aa904c69	2026-08-03	[REVIEW] reject checkpoint restore design r5
+ag-fill30-provider-reg	4d6062e9cd0a014cf44663566bdd304b5a8eefca	2026-08-03	[REVIEW] reject provider launch r6 false-green lock
+ag-fill30-sprint-reg	2ac3341e2ae887f156b30ea6052408ab7b8da3e8	2026-08-03	[REVIEW] reject sprint-close evidence false greens
+ag-fill31-authority-ops	146ed50728ecd490be47cd76a158bdf16ed5dd11	2026-08-03	[REVIEW] reject unavailable authority candidate fill31
+ag-fill31-authority-sec	77051bbc4e336551ee0c639c15dcfae0636cf294	2026-08-03	[REVIEW] accept authority r23 residue security
+ag-fill31-checkpoint-sec	853bb00e37dedb0a95dad5c684e47ec6c3fd9cfa	2026-08-03	[REVIEW] reject checkpoint restore design r5
+ag-fill31-landing-reg	e99de04d94a185d1b7285acbd2cd72f251299a32	2026-08-03	[REVIEW] accept landing recovery r8 regression
+ag-fill31-landing-sec	5536de0da0c6885e3cccc8474fc30c38e36728bf	2026-08-03	[REVIEW] accept landing recovery r8 mutation locks
+ag-fill31-provider-reg	156e98d3a5007ce3768a8047922198e8ba4ba003	2026-08-03	[REVIEW] reject provider r6 false-green locks fill31
+ag-fill31-provider-sec	285933db9201f21ac2402934c0ddb9c119e96d45	2026-08-03	[REVIEW] reject provider routing r7 flaky ownership locks
+ag-fill31-sprint-reg	d89bbee585aeefd28f51fff177fe92b9cfcc2974	2026-08-03	[REVIEW] reject sprint-close evidence false green
+ag-fill32-authority-ops	15588913527e3a3927bc5b7a27d95178cd36b0a0	2026-08-03	[REVIEW] reject authority r21 operations topology
+ag-fill32-authority-sec	d98775f1fe80be07c8ed5355fdb49aeadc9a7439	2026-08-03	[REVIEW] accept authority r23 residue security fill32
+ag-fill32-checkpoint-sec	77bd07789bc40e103d23cc71fffc22da2c2497fa	2026-08-03	[REVIEW] reject checkpoint restore design r5 fill32
+ag-fill32-landing-reg	aa45e1bc1dd3a9be08554ce24d14dad3417c89e8	2026-08-03	[REVIEW] accept landing recovery r8 fill32 regression
+ag-fill32-landing-sec	02bf24e76df0d399789ffa4ad352c789dce1cc32	2026-08-03	[REVIEW] reject landing recovery r8 flaky gate suite
+ag-fill32-provider-reg	745287a068d645c57e57e2f3ecc8b31235d85531	2026-08-03	[REVIEW] reject provider r6 false-green locks fill32
+ag-fill32-provider-sec	9a083530c086d54bf20655eeb672f1a0309d4ced	2026-08-03	[REVIEW] reject provider routing r7 namespace boundary
+ag-fill32-sprint-reg	13a68ef2fdd9870551e3688030dc8c25af920e19	2026-08-03	[REVIEW] reject sprint-close false-green candidate
+ag-fill33-authority-ops	ab5573928d33b73aced2341c5dc26180a66583c9	2026-08-03	[REVIEW] accept authority r21 operations rollback
+ag-fill33-authority-sec	0c2690f201bb292903e8e3e8722fbd08977036c6	2026-08-03	[REVIEW] accept authority r23 residue security fill33
+ag-fill33-checkpoint-sec	b7d5d3f84f3f5e404eb1e32e007b68630a997b70	2026-08-03	[REVIEW] reject checkpoint restore design r5
+ag-fill33-landing-reg	09112e84fb6808e26b811660731e752a66ccbef4	2026-08-03	[REVIEW] accept landing recovery r8 fill33 regression
+ag-fill33-landing-sec	942e650a4e805305fa85d09e0d06c26dc8340272	2026-08-03	[REVIEW] accept landing recovery r8 security fill33
+ag-fill33-media-reg	213cc8cbc5de6eac1fa8acad82c726b7427f1631	2026-08-03	[REVIEW] reject media r14 readiness rework
+ag-fill33-provider-reg	dc76474b3b7691b55161349812784c1c93a1dfbd	2026-08-03	[REVIEW] reject provider r6 false-green locks fill33
+ag-fill33-provider-sec	3f5d815c3e3f8b8760e89b2c571e8e71ca1939d9	2026-08-03	[REVIEW] reject provider routing r7 security lock
+ag-fill33-sprint-reg	856db9705d2e774039e7c6168516fa584917724d	2026-08-03	[REVIEW] reject sprint-close evidence false green
+ag-fill34-authority-ops	84e6666c0e79900101efb2b9963498e8ff363acb	2026-08-03	[REVIEW] no-go unavailable authority candidate fill34
+ag-fill34-authority-sec	d964bc5222611c2752a81fdb72a67dc57c272a9b	2026-08-03	[REVIEW] reject authority r23 residue evidence
+ag-fill34-checkpoint-sec	f295430d4d7df726c4cc8cf36af6cd992b3634a8	2026-08-03	[REVIEW] reject checkpoint restore design r5
+ag-fill34-landing-sec	98e011ff5de1c60e08474004a10dd8b01a1c5701	2026-08-03	[REVIEW] accept landing recovery r8 security fill34
+ag-fill34-provider-reg	592e9b9184dab32a2827bddc3788f2f546a00aaa	2026-08-03	[REVIEW] reject provider r6 false-green locks fill34
+ag-fill34-provider-sec	4873963f9af42f94bb62c23806bc0767f25529af	2026-08-03	[REVIEW] reject provider routing r7 security evidence
+ag-fill34-sprint-reg	d09966053fa287bc2837663b9b7ca6033ec8c225	2026-08-03	[REVIEW] reject sprint-close evidence false greens
+ag-fill35-authority-ops	a835c8c56d667c162d0c9a0698f325c41cb15535	2026-08-03	[REVIEW] reject unresolved authority r21 candidate
+ag-fill35-authority-sec	aae7ef21fe74bbf8bf416a8058a0d7fcbbc0a763	2026-08-03	[REVIEW] reject authority r23 residue evidence fill35
+ag-fill35-checkpoint-sec	0fb7ce02d6e8a2ceb200e50c3785613b8dfc200e	2026-08-03	[REVIEW] reject checkpoint restore architecture r5
+ag-fill35-landing-reg	8917e4807e99bf554826eed688ef00dc76178773	2026-08-03	[REVIEW] accept landing recovery binding locks
+ag-fill35-landing-sec	c4364ae71280f98016a85f43bdd7d5b09efe4fdb	2026-08-03	[REVIEW] accept landing recovery r8 security
+ag-fill35-media-reg	9187d8b45f1ba98a70cdd4bcdbc19a6173ae0a71	2026-08-03	[REVIEW] state complete media r14 blockers
+ag-fill35-provider-reg	8b10dd3d400f1a4332eb15388557515fadd8aee2	2026-08-03	[REVIEW] reject provider r6 false-green locks
+ag-fill35-provider-sec	5e4ba7fe4f06915d40638eb4f4f343805a2b4917	2026-08-03	[REVIEW] reject provider routing r7 security evidence
+ag-fill35-sprint-reg	d43e1d0538760ceeac2e0efc6bc778c83f054789	2026-08-03	[REVIEW] reject sprint-close evidence false green
+ag-fill4-authority-ops	3a8072ac398d255d88fc1b8652d295a3b4de2dd2	2026-08-03	[REVIEW] record authority review cleanup
+ag-fill4-authority-sec	5cd5df4e66593003ef097ae98e0aa63b57f80ec0	2026-08-03	[REVIEW] reject authority r23 interruption false-green
+ag-fill4-check-sec	df7ab2bec59c58550d10d89d7355384be4bdfc3c	2026-08-03	[REVIEW] reject checkpoint restore design r5
+ag-fill4-land-reg	3c85b9cc528f2ddfd036f20e8ce7139d0e7ce3ab	2026-08-03	[REVIEW] accept landing recovery mutation locks
+ag-fill4-land-sec	c5bb606b8bf108914bf4d93b3e40ada54e9dc51d	2026-08-03	[REVIEW] accept landing recovery r8 security locks
+ag-fill4-provider-reg	02351cfad852edd879d6368674a7005ecf47ffae	2026-08-03	[REVIEW] reject provider launch r6 false-green lock
+ag-fill4-provider-sec	5fc323c2aaa2330a1aef01ec5553a4ef3c89e6e3	2026-08-03	[REVIEW] reject flaky provider concurrency evidence
+ag-fill4-sprint-reg	50e937ba83432f1669648576b7a6ed8027001070	2026-08-03	[REVIEW] reject sprint-close r5 verdict false green
+ag-fill5-authority-ops	f133b83901ad27c1b27be0d253b2a16764bc33eb	2026-08-03	[REVIEW] reject unresolved authority candidate
+ag-fill5-authority-sec	be05588696b73de240259335bd12b7742c9ff5ab	2026-08-03	[REVIEW] reject authority r23 interruption false green
+ag-fill5-check-sec	a3f2fd8da1118640f83862a4c335c0ae3cd14b13	2026-08-03	[REVIEW] reject checkpoint restore design r5
+ag-fill5-land-reg	2a72287846052f02c0341d3dcaed3ec99c89f905	2026-08-03	[REVIEW] accept landing recovery mutation locks fill5
+ag-fill5-land-sec	c5a035db315953b7f59fb1f27c2ea4852fdf32fb	2026-08-03	[REVIEW] accept landing recovery r8 locks
+ag-fill5-media-reg	eae918f44452cc81845860e270ec1f8dfa86ec8f	2026-08-03	[REVIEW] reject media r14 readiness candidate
+ag-fill5-provider-reg	7a3988e007a866a9540c95b06ac4322c2b56f734	2026-08-03	[REVIEW] reject provider launch r6 false-green gaps
+ag-fill5-provider-sec	d6d2ee25a49db97490dc7766704994aa93923b60	2026-08-03	[REVIEW] reject provider routing r7 cleanup lock
+ag-fill5-sprint-reg	c49d953cef64ed08b1ac027c7c153882b1f59429	2026-08-03	[REVIEW] reject sprint-close evidence false green
+ag-fill6-authority-ops	55dd5c8450c3fcc1edaf268e5ae1ea90fe715f80	2026-08-03	[REVIEW] reject authority r21 identity topology mismatch
+ag-fill6-authority-sec	d6abd982d13c09b4a3462118233d30ea40129e72	2026-08-03	[REVIEW] reject authority r23 interruption false green
+ag-fill6-check-sec	bc2f69972f51bda58a8d44312e7172c8cebb6a80	2026-08-03	[REVIEW] reject checkpoint restore design r5 fill6
+ag-fill6-land-reg	34b5224d415c7d5401a6bc69f359e12facb9b70c	2026-08-03	[REVIEW] accept landing recovery regression locks
+ag-fill6-land-sec	ed03d09d5f4a66f8e3eadd841221b55067e8a00e	2026-08-03	[REVIEW] accept landing recovery r8 fill6 security
+ag-fill6-media-reg	ed603c747ebced8365475f2e71ba8f0404c6506e	2026-08-03	[REVIEW] accept media r14 readiness causal locks
+ag-fill6-provider-reg-review	0c99a2cfb417446f9ea31049cd9be49422caf695	2026-08-03	[REVIEW] reject provider launch r6 false-green lock
+ag-fill6-provider-sec	df1404be68495e053bad1ea681fcde32affb4cc2	2026-08-03	[REVIEW] reject provider routing r7 authority boundary
+ag-fill6-sprint-reg	71b89925f009a9e3d1f3d3321d4ff8343946e40b	2026-08-03	[REVIEW] reject sprint-close false-green candidate
+ag-fill7-authority-ops	3ae87ddee254c08e45e360b638ba4577d3d66bcd	2026-08-03	[REVIEW] reject authority r21 operations provenance
+ag-fill7-authority-sec	544dc2acc7cbfc3c23679861b0c233c6b06fbfbe	2026-08-03	[REVIEW] reject authority r23 interruption false green
+ag-fill7-check-sec	c0a1922b7a721c1a31a3862aed26e59fb2850140	2026-08-03	[REVIEW] reject checkpoint restore design r5
+ag-fill7-land-reg	196918fdb74ea89a91c0e6cc8943d81df64e0c21	2026-08-03	[REVIEW] accept landing recovery regression locks fill7
+ag-fill7-land-sec	17dd3bbf5d351bdc27da8d2f8cee071ea724e376	2026-08-03	[REVIEW] accept landing recovery r8 fill7 security
+ag-fill7-media-reg-review	6f1588e546fb1c9a3be7be1847ddeb1919537b97	2026-08-03	[REVIEW] reject media r14 on aggregate failure
+ag-fill7-provider-reg	6f2a9ee5dd1287098cd4f4d85ca93ae7303bfecd	2026-08-03	[REVIEW] reject provider launch r6 false-green matrix
+ag-fill7-provider-sec	5e7afcb6975774ffca73e43fb10f9a4c66476c04	2026-08-03	[REVIEW] reject provider routing r7 authority boundary fill7
+ag-fill7-sprint-reg	ba235afc076ef7f1772496c654a99b7c644d27ec	2026-08-03	[REVIEW] reject sprint-close missing fail-before proof
+ag-fill8-authority-ops	c08703050cb5258bc76fe781452b56914a09bb36	2026-08-03	[REVIEW] reject authority r21 operations residue
+ag-fill8-authority-sec	e7dd67af2dd7a4b3103fae547c21608c92a30bf4	2026-08-03	[REVIEW] accept authority r23 security teardown lock
+ag-fill8-check-sec	17bacf68d8ba4c1044a4d4d7613bb4994cc5520c	2026-08-03	[REVIEW] reject checkpoint restore design r5
+ag-fill8-land-reg	dd4629fa1c4c8c704c499d4451f00a8b1a91a1f2	2026-08-03	[REVIEW] accept landing recovery r8 regression locks
+ag-fill8-land-sec	e8c475368dd41ef1f19c4c35da85fde152775ebd	2026-08-03	[REVIEW] accept landing recovery r8 security locks
+ag-fill8-media-reg	e435c002bc7871af5e251813d8ef7b110c5bf44b	2026-08-03	[REVIEW] reject media r14 readiness candidate
+ag-fill8-provider-reg	f6aee26952bb1c54d51b37e682623f9fe6913dcc	2026-08-03	[REVIEW] reject provider r6 false-green matrix
+ag-fill8-provider-sec	f55f1b501acb26015cc4c752dae5f45ea63e5d90	2026-08-03	[REVIEW] reject provider routing r7 security boundary
+ag-fill8-sprint-reg	f676c60500e379a4fcf4b615dfabddf9a25c0adc	2026-08-03	[REVIEW] reject sprint-close evidence false green
+ag-fill9-authority-ops	9326e7753dfb08e2326eaeb4d562c993d6dfec8b	2026-08-03	[REVIEW] reject r21 authority operations topology
+ag-fill9-authority-ops2	db72d2db8a78b84ba12b783ff14cb83c2606e25d	2026-08-03	[REVIEW] reject authority r22 residue false green
+ag-fill9-authority-sec	7351248ec74c9668d0349decfcf08533062599c9	2026-08-03	[REVIEW] reject authority r23 mixed collision false green
+ag-fill9-check-sec	4656d99783e4157f67c56bc84fa0f511be6683e9	2026-08-03	[REVIEW] reject checkpoint restore architecture r5
+ag-fill9-land-reg	6a5062706b2607f7b63ebc549104d8c2aa0ae92c	2026-08-03	[REVIEW] accept landing recovery binding locks
+ag-fill9-land-sec	904328705acab9f0ae34e3e3cd96001123bcaccb	2026-08-03	[REVIEW] accept landing recovery r8 security fill9
+ag-fill9-provider-reg	8e43975751637e069117353de6a08ed87576212b	2026-08-03	[REVIEW] reject provider r6 false-green matrix
+ag-fill9-provider-sec	766858a1541cbbeaa098daac531aabbe13e1d3de	2026-08-03	[REVIEW] reject provider routing r7 security boundary fill9
+ag-fill9-sprint-reg	880849e05882592eabb6cc4b915aff4f7a47fd2c	2026-08-03	[REVIEW] reject sprint-close source-only evidence
+ag-fix-autonomy-night-idle	e66e6ba4af9996cfe618a85bfe403ac8e61a18ef	2026-08-02	[CODER] record overnight autonomy idle evidence
+ag-fleet-floor-enforcement	df97e79c7358ea53e1520fd6164d1ce5eb984567	2026-08-01	[CODER] alert Human when fleet drops below threshold
+ag-fleet-floor-enforcement-2	9fed6b8ee84ec5f09dc5e19779928523585c6088	2026-08-01	[CODER] fail closed on unknown fleet census
+ag-fullsuite-loopback-plan-1533	9677cf64f4a6a975121b1547d2e6937c259dea47	2026-08-02	[REVIEW] plan full-suite loopback capability routing
+ag-gap4-protocol-cons-1515	1cb72b11ff884b887817687ffce4f7237fc6c75c	2026-08-02	[REVIEW] analyze GAP-4 protocol ambiguity
+ag-gate-count-parser	ef98e102314a36af6e4252b3c9b2e2d1be373aa3	2026-08-01	[CODER] Accept padded Bun verify counts
+ag-gate-verify-count	101f208321fb7820935896b2f6996f6a32344646	2026-07-31	[REVIEW] reject overbroad skipped-suite gate
+ag-generator-buildkit-digest-r1-1551	cb0d77e8cdf32a08e43fd5adbfdc9acad6e39f8d	2026-08-02	[CODER] propose immutable BuildKit v0.24.0 digest
+ag-generator-buildkit-policy-arm-r2-1565	cf4065be9fb10b32f0b6981e435517911a58da5e	2026-08-02	[CODER] correct BuildKit policy causal lock
+ag-generator-buildkit-r3-1565	f10d28e5f67b07820660f58299fa34f8cc051158	2026-08-02	[CODER] reject unqualified BuildKit fallback
+ag-generator-image-proposal-r8-1551	a334edbb6c8fc7998b56a320fc4828beada9a58a	2026-08-02	[REVIEW] correct image-load response framing
+ag-google-single-callback	bbcae44f4a73fd42de4571b7eeca8783ba2d4242	2026-07-31	[CODER] Lock five-path edge contract
+ag-host-inventory-sweep	1b7d1d1b059307ca721900f9024a851272887232	2026-07-31	[CODER] inventory host dependencies against git
+ag-host-supplied-inventory	5332c2d3fbb4bdd309f9469520ac1fb28e7c78fe	2026-07-31	[CODER] inventory PostgreSQL host inputs
+ag-howto-core	b0a5178e8bc9fa2a9035a29b5a9f52b2b55fc771	2026-07-31	[CODER] deliver the operator core from its instance home
+ag-hr1275-ci-api	1d46f9a249710afbcc4bf495b1393b5a92cbfe6b	2026-08-02	[CODER] add tracked suite inventory API
+ag-hr1275-ci-api-r2	84bf51482f0bcc1d29bdf1db6bf574b2546271e8	2026-08-02	[CODER] make suite inventory pathname-safe
+ag-hr1275-ci-manifest-integrate	5a33c48d90ac865e3b037c1b8c3ecc7b9e20d76c	2026-08-02	[CODER] preserve CI lock executable mode
+ag-hr1275-db-fixture	8b68dc85be8d9bc0e1941172838a48608c83b1dc	2026-08-02	[CODER] isolate database access fixture
+ag-hr1275-db-fixture-r2	34e9be31d94643ab3b1594ee0f2395311c72b0fd	2026-08-02	[CODER] harden database fixture isolation
+ag-hr1275-deploy-fixture	252fe3925769128d43405b1dea13a5a042de92ef	2026-08-02	[CODER] isolate migration preflight PostgreSQL fixture
+ag-hr1275-deploy-fixture-r2	797ca333faca2bf178de11912a791e7a0a4a9193	2026-08-02	[CODER] pin migration preflight fixture inputs
+ag-hr1275-deps-closure	9f4f8c220f137606e2c213b7db3bd6ebc9952651	2026-08-02	[CODER] add clean-clone dependency closure
+ag-hr1275-deps-closure-r2	ffc01dcadcab191f4e8dd32071af9a4715ba3a8f	2026-08-02	[CODER] reject unsafe dependency closure paths
+ag-hr1275-deps-closure-r2b	da46bd569c100da6a05223063651348d6a30c5a9	2026-08-02	[CODER] Reject unsafe dependency closure paths
+ag-hr1275-deps-r3	e6e1f13467f5713c7cd3b506e4a7818bcd68aa44	2026-08-02	[CODER] clean failed clone provisioning artifacts
+ag-hr1275-fullsuite-consumer	1dafd2a627312c2137c17fa27d2d05884dcc8d75	2026-08-02	[CODER] consume tracked full-suite inventory API
+ag-hr1275-fullsuite-integrate	15d3f8e71b915df6e14325cf597b3de730bfa1ce	2026-08-02	[CODER] reconcile full-suite consumer with CI API
+ag-hr1275-fullsuite-nudge-r2	8ba7cb759f044cae7d45fc08a710721c6c72ebbe	2026-08-02	[CODER] harden full-suite signal notification
+ag-hr1275-landing-mandatory	b60ab6bffae76520bdc99a6c733b850263d9fe1c	2026-08-02	[CODER] require report verification after landing merge
+ag-hr1275-landing-mandatory-completion	4dac1cf685faa3d78b573b7a10982c4e0b85d723	2026-08-02	[CODER] lock mandatory landing verification
+ag-hr1275-landing-mandatory-r2	4dac1cf685faa3d78b573b7a10982c4e0b85d723	2026-08-02	[CODER] lock mandatory landing verification
+ag-hr1275-manifest-r3	a86899888f71e146a97b51cefce93e3ae5bfa242	2026-08-02	[CODER] record HR-1275 manifest r3 evidence
+ag-hr1275-suite-r1	d276960549cb361750e31582bb33fb8ac4b5344b	2026-08-02	[CODER] enforce exhaustive landing suite inventory
+ag-hr1275-topology-fixture	2a29770ca4eceaf93633b2bedadf56a6f9aba740	2026-08-02	[CODER] make topology fixture hermetic
+ag-hr1275-topology-fixture-r2	46c3b079698d6aecea4338f149a3d6e89c3352b2	2026-08-02	[CODER] assert exact topology journal payloads
+ag-hr1275-watchdog-fixture	65701a4dc253ddbd8596921fb2403628ae8ae74c	2026-08-02	[ORCH] define fresh-session recovery boundary
+ag-hr1275-watchdog-fixture-r2	3816bbb56b0cdfb679c5f91b016c2a4c87cd285d	2026-08-02	[CODER] make watchdog turn-end fixture hermetic
+ag-hr1295-fresh-r1	7da68290bf64964b192fddbd32ebef1f9bacea50	2026-08-02	[CODER] enforce fresh bounded restart sessions
+ag-impl-lane-loopback-1508	e3243e20cb554d82ac884ec2f1619c4339ce3349	2026-08-02	[CODER] add fail-closed runtime loopback capability
+ag-infrastructure-recurrence-plan	5926f8882c69316bfe6c584c973f0c0c287179b3	2026-08-01	[REVIEW] accept recurrence prevention architecture
+ag-instruction-graph	f927a89779e1e5f1b620cc644e9040f7a9083d83	2026-07-31	[CODER] Repair instruction graph authority
+ag-internal-provenance-r10-impl-1581	ccbf3c72b06d4b870a1d3e971cb027304c51da4e	2026-08-03	[CODER] record provenance candidate NO-GO
+ag-internal-unit-authority-impl-r2-1551	9e8f27d8f1babfd2c86319c5baf728ae31e4837f	2026-08-02	[CODER] Replace authority simulator with external fixtures
+ag-internal-unit-authority-r12-1551	1e8bc2f08bd2d6e77ab74832ef43b9f24c5be542	2026-08-02	[REVIEW] Correct internal-unit authority design r12
+ag-internal-unit-authority-r13-report-1551	d755da7df053fdf1857f8cc4ba7b1acd877f79e5	2026-08-02	[REVIEW] Record exact r13 report commit
+ag-internal-unit-event-filter-1533	fff31a77987589299ab7a1f2a18567a73f9cba8a	2026-08-02	[CODER] Filter internal units from lane events
+ag-internal-unit-event-filter-adversarial-r7-1581	7ea5d61d49d3955d0796816cad2e4944d3e0333f	2026-08-03	[CODER] Require launcher provenance for lane completion events
+ag-internal-unit-filter-r6-1544	153f76fa284fafcc3d39df89b833d3feac550ee6	2026-08-02	[CODER] Preserve migration lock executable mode
+ag-internal-unit-provenance-r9-impl-1581	adbe8ceea15e048a8870b1bfc442206f7bc1210e	2026-08-03	[CODER] record provenance r9 evidence
+ag-landing-contract-audit-1565	58497b922bc4374d7cf42f549735e83b159939c4	2026-08-02	[REVIEW] audit landing terminal artifact contract
+ag-landing-contract-docs-r1-1565	eae5f8a63419474d1c2da7a63a6172ca4c0d2902	2026-08-03	[CODER] document external landing evidence lifecycle
+ag-landing-contract-r4-1581	71d9c9afacc4108eb1ce0280756b1c8791793b4b	2026-08-03	[CODER] lock landing record orchestration boundaries
+ag-landing-contract-r5-postpush-recovery-1581	209250438c7694ba51ed9eff09abe5b68b3615fd	2026-08-03	[CODER] correct implementation evidence identity
+ag-landing-contract-r6-authentic-idempotent-1581	39d40badb507958dfb2ae8af1e630f49fe9d4e85	2026-08-03	[CODER] record landing recovery r6 evidence
+ag-landing-contract-r7-reviewed-recovery-1581	9f462190dcc28dc721248766b33d0445f09d8f50	2026-08-03	[CODER] record landing recovery r7 evidence
+ag-landing-contract-r8-regression-rework-1581	46ea2425637eec44b7784cc0720c5bb76dd06435	2026-08-03	[CODER] report landing recovery r8 NO-GO
+ag-lane-deps-preinstall	5aa49ca7ece254b2fb8377def95c3681b85c5ec6	2026-08-01	[CODER] Provision lane worktree dependencies
+ag-lane-preview-envs	39e1819e12c3038e1c5ff66bfa21113d7cf5bd3e	2026-07-31	[REVIEW] accept isolated preview environments
+ag-lane-provider-model-routing-r1-1562	e7298edcfb4b9de69449ce51dc7b7c2b7c693230	2026-08-02	[CODER] record provider model routing evidence
+ag-legacy-infra-parity-audit	ae980ffad1fd378412c5ab1420d878de6205af16	2026-08-02	[CODER] Audit legacy infrastructure recovery parity
+ag-legacy-infra-parity-audit-r3	601891703e0139910471ee90bced766138fe3029	2026-08-02	[CODER] Close recursive legacy infrastructure parity audit
+ag-loopback-contract-r5-1533	1b6cbb594bfc672def2ecacf2b9cbb6d068fb56a	2026-08-02	[CODER] declare durable loopback run journals
+ag-loopback-rework-r5-1533	cf54917f88c078f2ba3640e7668d2fd22c18ae4c	2026-08-02	[CODER] isolate runtime loopback Git metadata
+ag-media-polling-diagnostic-r17-1581	8e4cafabcdc856426d43caeb8e6c7f0ef491925f	2026-08-03	[CODER] record media r17 fail-closed evidence
+ag-media-r16-final-1581	f4e771dc95c62a191a5c29774b86f4b13b7fdd55	2026-08-03	[CODER] record media r16 fail-closed evidence
+ag-meteorite-docker	91ce4693e4fef458c0b7dda439cce0e4e9e62f20	2026-07-31	[CODER] execute Docker meteorite test
+ag-ml11-history-log	25d30bf6dc502824270dde6209537c583a2d80e0	2026-07-31	[CODER] add bounded redacted Telegram history
+ag-ml14-restart-context	da8dc2e59f24f627dc2e2da8fdb97c20ec0326d7	2026-07-31	[CODER] restore bounded restart chat reconciliation
+ag-ml15-fleet-status	f64702625b976637aaeeda9b4b7f29baa00a685f	2026-07-31	[CODER] make ML-15 verification reproducible
+ag-ml15-rework-r2-1479	acb8463b383d5162f3d0ae7090eb4406bf69ff91	2026-08-02	[CODER] make ML-15 fleet status fail closed
+ag-ml16-retry	a07de8384297a9d8c0bb937712597a18b73e6156	2026-07-31	[CODER] Record ML-16 retry evidence
+ag-ml16-rework-r2-1479	3ac78b3a61d3a7587c3912d56c9ecbd3427f8933	2026-08-02	[CODER] fence ML-16 live delivery
+ag-ml16-small-losses	8932116b4245a9e5cc13fdce22200186e2ac0ba1	2026-07-31	[CODER] relay Claude notifications as loud pings
+ag-ml6-quota-refresh	e50c7f140481e526c4e9848c07a2af4e5a153696	2026-08-01	[CODER] lock vendor quota status integration
+ag-ml6-quota-retry	d32938cc4249084c72e17414190b85fc5f0b1081	2026-07-31	[CODER] preserve undated re-login warnings
+ag-ml6-vendor-quota	9aec5df248866b4025ef7f6f3599221ccb757c31	2026-07-31	[CODER] show vendor quota from local JSONL
+ag-ml8-rework-r2-1479	d3faef5527c80a2b7bc3c8ce42a09fd18dd7bf3d	2026-08-02	[CODER] harden per-message unanswered ledger
+ag-ml8-unanswered	c56435d912c77cfb8f0d1254b84b9ba5c309b74e	2026-07-31	[CODER] retain every unanswered inbound message
+ag-ml8-unanswered-refresh	f4615d60b928c48abf6ca284704062f4b2fcfa1a	2026-08-01	[CODER] retain per-message unanswered state
+ag-next-authority-ops-1581	1af9cfca834ff8e03bb7a4c76324752ba98ec750	2026-08-03	[REVIEW] reject unresolved authority r21 candidate
+ag-next-authority-sec-1581	ef4b3b3164b8f205b31b4472bc5a78726b636b1e	2026-08-03	[REVIEW] reject authority r23 interruption false green
+ag-next-check-sec-1581	b9864d72f13f2b3727721d8d11f9354f80bf1fcf	2026-08-03	[REVIEW] reject checkpoint restore design r5
+ag-next-land-reg-1581	e7908aed94c7da0c82e5fc99ada3410c1a940125	2026-08-03	[REVIEW] accept landing recovery r8 regression locks
+ag-next-land-sec-1581	4ef29c2ed5b844929cc21342bd0091dfe77c57e2	2026-08-03	[REVIEW] accept landing recovery r8 security
+ag-next-media-reg-1581	abc696d5384b859be55fa2efd19381cc45355196	2026-08-03	[REVIEW] accept media r14 readiness regression
+ag-next-prov-sec-1581	549c844c9ea6607ce90e02c7b324e34c09cdc587	2026-08-03	[REVIEW] reject completion provenance authority
+ag-next-provider-reg-1581	9aaf6f81db878e49bf3ccd0fa5cc0be58fcc438b	2026-08-03	[REVIEW] reject provider r6 false-green lock
+ag-next-provider-sec-1581	b68c834ab663c51105566e85e3de1d482160c6fb	2026-08-03	[REVIEW] reject flaky provider routing evidence
+ag-next-sprint-reg-1581	167b368f222b9f0150ecc6b0529b4d57e037d391	2026-08-03	[REVIEW] reject sprint-close evidence false green
+ag-old-ui-capture	fbe256c05c72b3f21b283164240ddb19e1ad5c92	2026-07-31	[CODER] capture old shell UI evidence
+ag-onboarding-truth	8592f2cc7af06dba46f8ce02832e3ffdd06bd6af	2026-07-31	[REVIEW] record red edge regression lock
+ag-orch-unit-drift	114ccf7e9a8c7845b3a06d97856150eac92c8026	2026-07-31	[CODER] reconcile tracked system unit templates
+ag-pack-hygiene	3a7868b254ae8d4a483ed8be66cc21c9e74820ce	2026-07-31	[CODER] stop the review-tag runbook leak and close the floor-doc pack hole
+ag-personas-phase1	deae4583b201bbd52b874ffc2c84730360ea38d2	2026-07-31	[CODER] personas lint: cover authority vocabulary and exempt threat text
+ag-pinned-prereq-integration-plan-1551	996df4426d22c84804d44fa2a586b175b386aeb2	2026-08-02	[REVIEW] map pinned prerequisite integration
+ag-pinned-progress-r6-1544	d7e899d81a1ed912c7b5ca78914d819609b7567e	2026-08-02	[CODER] record pinned progress r6 evidence
+ag-pinned-progress-terminal-proof-plan-1544	d5caf7d7778de3482faa304e5f41c825ff8c05df	2026-08-02	[REVIEW] plan pinned progress terminal proof admission
+ag-pinned-terminal-plan-r2-1544	554a4d33fa2c8e5d92448b9dcf11a43241c80a3c	2026-08-02	[REVIEW] revise pinned terminal proof plan r2
+ag-pinned-v3-progress-r2-1533	be247a2d4de2004fb51a9083611fead0fd03deaf	2026-08-02	[CODER] fix pinned progress runtime boundaries
+ag-probe-loopback-executor-r2-1533	8f0e5f83b8c8f5f96d339389ad07187310d277d8	2026-08-02	[REVIEW] rework loopback executor feasibility proof
+ag-product-docs-hunt	10e6e3c1c3c8d3c4657e00c0d9aa9bb92ac30b1f	2026-07-31	[CODER] inventory legacy product migration docs
+ag-product-recover	9cf53b23e4703554611fca593a7b10e1e3104d53	2026-07-31	[CODER] Recover and observe legacy product v0.2.0
+ag-provider-r8b-impl-1581	af18e8a043988e30d04e812a17fe9c4f237190d5	2026-08-03	[CODER] record provider routing r7 terminal evidence
+ag-provider-routing-clean-recut-r4-1581	b84efac53cf45e99ca9deaca4ef25ba15ac941bc	2026-08-03	[CODER] record provider routing recut evidence
+ag-provider-routing-r2-1565	ffe045f5ee0ba0969a2193c1f32dc881e9edd23e	2026-08-02	[CODER] record immutable launch evidence verdict
+ag-provider-routing-r3-recut-1565	c7288546dd4329c948a796a1d827ab31d5ec4048	2026-08-03	[CODER] correct implementation evidence SHA
+ag-provider-routing-r8-impl-1581	f5ed3b86e2c85fa3833876db213001a9e26c5fc4	2026-08-03	[CODER] record provider routing r7 evidence
+ag-provider-routing-r9-ownership-1581	23cb1ef61a60059dd5005ea7c4847509737dfcb3	2026-08-03	[CODER] correct provider routing implementation SHA
+ag-provider-routing-r9-regression-1581	466550a22ed603c1976f4d922d6579a665c41dc8	2026-08-03	[REVIEW] reject provider routing r9 cleanup false-green
+ag-provider-routing-r9-security-1581	bf2437339c47b9de85f343fb81cdad0a3c1c1310	2026-08-03	[REVIEW] reject provider routing cleanup lock
+ag-provider-routing-security-r6-live-boundary-1581	2a3b8b3e53452f84f4efaeae2f660e843bf4acfd	2026-08-03	[CODER] record provider launch r6 evidence
+ag-provider-routing-security-r7-authority-proof-1581	dddb349736591bafd275d00c85f4df16ae7ce214	2026-08-03	[CODER] record provider authority r7 evidence
+ag-reconcile-full-history	82d847041ceb3bb43e0780d9961e849b4e2fabda	2026-08-01	[CODER] reconcile full Telegram history
+ag-recut-buildkit-r3-1565	ec77d8fd9f65269df09db7875c1c6185fa0ef2aa	2026-08-02	[CODER] recut BuildKit immutable-policy evidence
+ag-recut-test-resource-1565	494447152083e2d07dd56e84b6b909123a678d7d	2026-08-02	[CODER] record test resource recut evidence
+ag-refill-authority-ops-1581	bb0928974a6b8d5c3da7fa472d7f07c6fe1ffd83	2026-08-03	[REVIEW] reject unresolved authority candidate identity
+ag-refill-authority-sec-1581	89d8f4b6438f4bd73a768a7dd3fb1ecfee382d29	2026-08-03	[REVIEW] reject authority r23 interruption false green
+ag-refill-checkpoint-sec-1581	a099bb9df3b29b6fd621136c2dc03c580457fc58	2026-08-03	[REVIEW] reject checkpoint restore design r5
+ag-refill-landing-sec-1581	10330a444246d29fa5e5a3f27592989b3e28aa3f	2026-08-03	[REVIEW] accept landing recovery r8 security
+ag-refill-media-reg-1581	82698668ccc5fc1082c4f1c7b902ded83ca81796	2026-08-03	[REVIEW] accept independent media readiness observation
+ag-refill-provider-reg-1581	b37869744d911b8ae27df0d52b1aa3d5b21e2b89	2026-08-03	[REVIEW] reject provider authority false-green lock
+ag-refill-provider-sec-1581	79903d7a3148ce042750fa4b6c1cbb02dbb15dce	2026-08-03	[REVIEW] reject provider routing r7 security evidence
+ag-refill-sprint-reg-1581	ff6e3ad84818a795bbcf07fbf81c08eda2381672	2026-08-03	[REVIEW] reject sprint-close evidence false green
+ag-repair-loopback-suites-r3-1533	4790a4218657685d898f2f9abd847133796dc56a	2026-08-02	[CODER] record loopback executor terminal evidence
+ag-rev-ancestry-gate-r4-1581	8739d3ae9e820b3c0ec558cfd4fac075b698812a	2026-08-03	[REVIEW] accept ancestry gate r4 evidence correction
+ag-rev-authority-next-1581	2fe676c84735e83d309e16f93a01888d8a0ff13e	2026-08-03	[REVIEW] accept authority r23 residue security
+ag-rev-authority-ops2-1581	82a26988affd5c7da868d1d616e19a838cfd86eb	2026-08-03	[REVIEW] reject authority r21 topology mismatch
+ag-rev-authority-r23-operations-1581	1c80bae50072b6f679c1ce6078ca401707f65083	2026-08-03	[REVIEW] reject authority r23 loaded collision false-green
+ag-rev-buildkit-r3-1565	c0a62ea4a64a7b7461ec6543dc0b8a44a580bc20	2026-08-02	[REVIEW] accept BuildKit composed-policy lock r3
+ag-rev-checkpoint-manual-orchestration-1577	edc96665a26eaf74017ae23602bf2a5ca9298c64	2026-08-03	[REVIEW] reject unreachable manual checkpoint tag
+ag-rev-checkpoint-r7-1581	09d864f25fceb214ba3c489395ea7d3d7edd32a4	2026-08-03	[REVIEW] reject checkpoint recovery architecture r7
+ag-rev-checkpoint-r8-design-1581	c31127e2f066937d289eb35354ff8afd1cc488eb	2026-08-03	[REVIEW] reject checkpoint r8 design admission
+ag-rev-checkpoint-r9-followup-1581	392a9ee34424b9724c0fe9a95250f8a9894d386f	2026-08-03	[REVIEW] reject checkpoint recovery design r8
+ag-rev-checkpoint-r9-review-1581	6c5eab11856691a72530294811cd51797ab8c52c	2026-08-03	[REVIEW] reject checkpoint recovery design r8 exact SHA
+ag-rev-checkpoint-reconciliation-design-r5-1581	01c63d724abb725ac7ae67100394b84699a976ad	2026-08-03	[REVIEW] reject checkpoint restore architecture r5
+ag-rev-checkpoint2-1581	f1997cad7c98f6035afa20704cd8e28b9dfad276	2026-08-03	[REVIEW] reject checkpoint restore design r5
+ag-rev-codex-appserver-design-r2-1533	ada9f2fc3d39cfc8b18da94da238516aa7160a7d	2026-08-02	[REVIEW] reject Codex app-server architecture r2
+ag-rev-codex-appserver-r3-pin-1544	7950460f8ff8b83bebf2477d21c995d711a63229	2026-08-02	[REVIEW] reject Codex app-server r3 ordering gaps
+ag-rev-codex-appserver-r4-1544	2119f3ccc6ac1b224b49f8a01a5f86555c3bb8dc	2026-08-02	[REVIEW] accept Codex app-server r4 architecture
+ag-rev-codex-appserver-tcb-probe-1533	1f77b64fd4ac8d3850d76feff249193b5a683b73	2026-08-02	[REVIEW] Validate Codex app-server TCB probe
+ag-rev-consilium-provider-1565	a5d83c86c4ff634063ed6f8b4bd5d2478a504d49	2026-08-02	[REVIEW] reject invented Telegram 1565 provenance
+ag-rev-consilium-r2-1565	679814116ca3a6ffaa8811cdc1efe6a3bb275a2b	2026-08-02	[REVIEW] accept Telegram 1565 consilium provenance
+ag-rev-daemon-control-r13-1581	51fcfe0bc638490101906e43d2a0acd16bf557ef	2026-08-03	[REVIEW] accept daemon control r13 owned scratch
+ag-rev-daemon-media-r14-operations-1581	deac375b70039a9f9b590dcd7ae9cd7e30e0541f	2026-08-03	[REVIEW] reject media r14 operations candidate
+ag-rev-daemon-media-r14-regression-1581	62ccfe8e3168d8776e3bd1f0e1f7d23f3b316b67	2026-08-03	[REVIEW] reject media r14 readiness candidate
+ag-rev-daily-sprint-1500	7f97bd1c8b91d61d91175eee7e100dee43599a76	2026-08-02	[REVIEW] No-go daily consilium sprint loop
+ag-rev-daily-sprint-close-r4-terminal-1581	f171ffd4cbac736428bf6ba9fbd67a82561ee7fd	2026-08-03	[REVIEW] reject incomplete sprint close evidence contract
+ag-rev-daily-sprint-close-r5-process-1581	d836a84bdc1cc500a6f6202d8a97f75b1cdf52c2	2026-08-03	[REVIEW] accept sprint-close evidence correction
+ag-rev-daily-sprint-close-r5-regression-1581	5e3ce9c935c9d7acad1d2634169969a016815513	2026-08-03	[REVIEW] reject sprint-close false-green evidence
+ag-rev-daily-sprint-close-r6-1581	efdf4ce526e038a61151e1db65cd6514eb587b54	2026-08-03	[REVIEW] reject unmeasured sprint-close suite evidence
+ag-rev-database-internal-r4-1544	a233d2f023ed979e7c732f17b96096b755a51db5	2026-08-02	[REVIEW] No-go database internal network r4
+ag-rev-database-loopback-r2-1565	501d7dcdddb835613c79c5a9cece6dcb72bf6751	2026-08-02	[REVIEW] accept database loopback collision cleanup
+ag-rev-database-readiness-timeout-r1-1581	64bd7db358d369dbb57285c13fad131695fe1caa	2026-08-03	[REVIEW] reject unbounded database readiness evidence
+ag-rev-estimate-process-1500	ce6a55f8a2ea3edd465482cc95dc8e5b34d9ebf8	2026-08-02	[REVIEW] Accept parallel critical-path estimate rule
+ag-rev-estimate-reg-1500	38b5fe506a730bb3088f36d6caba8bb0aca8e439	2026-08-02	[REVIEW] Accept parallel critical-path estimate lock
+ag-rev-estimate-sec-1506	9a22c4735040336cfdd80d8ff7e8c26a33ca5f41	2026-08-02	[REVIEW] Accept parallel estimate governance rule
+ag-rev-gate-count-int-r2	2ced204ad0e357e294ea38f55ce8b2e60586a12e	2026-08-02	[REVIEW] Reject unsafe verify-count parsing
+ag-rev-gate-count-ops-1479	565acf8d5f1ab3b0083aa9716cb1acde08012153	2026-08-02	[REVIEW] Record W-36 landing operations verdict
+ag-rev-gate-count-reg-1479	f25eb6ef88ec82ea7e61b986bb779c2ca3b929b0	2026-08-02	[REVIEW] Reject inconsistent CRLF verify-count parsing
+ag-rev-gate-count-sec-1479	ef98e102314a36af6e4252b3c9b2e2d1be373aa3	2026-08-01	[CODER] Accept padded Bun verify counts
+ag-rev-generator-buildkit-digest-r1-1551	4f7c83d3a2f1c9146bc5832026d4752b46c71213	2026-08-02	[REVIEW] accept immutable BuildKit v0.24.0 digest
+ag-rev-generator-buildkit-policy-arm-r1-1551	d0be7574c46a81e5d974c474efab1fc64b52a967	2026-08-02	[REVIEW] reject false-green BuildKit policy lock
+ag-rev-generator-buildkit-r2-1565	d804d49d13788e4e89ca696b93acd2fac067c2ea	2026-08-02	[REVIEW] reject BuildKit policy causal lock false green
+ag-rev-generator-image-proposal-r2b-1544	c82d50481144031fd58d6b271855d77b5df54c95	2026-08-02	[REVIEW] reject generator image proposal r2
+ag-rev-generator-image-proposal-r8-1551	5e9511c36bc4548393f34b44f9126c544c4a4e9a	2026-08-02	[REVIEW] accept generator image proposal r8
+ag-rev-generator-image-r4-1551	e7943cf40229c83581f2b6b5e2d148d114bc5bc7	2026-08-02	[REVIEW] reject generator image proposal r4
+ag-rev-internal-provenance-r10-1581	dd6dd591484004db61cfdd57723ee3e615e4b3b1	2026-08-03	[REVIEW] reject duplicate provenance ambiguity
+ag-rev-internal-unit-authority-impl-r1-1551	9bfbf3e4525e4507def21810680cecc6eff1a112	2026-08-02	[REVIEW] Reject internal-unit authority r12 implementation
+ag-rev-internal-unit-authority-r12-design-only-1551	2093abb9dc6d4b849af2fcef4c5edaa8f051bc4a	2026-08-02	[REVIEW] Accept internal-unit authority r12 design
+ag-rev-internal-unit-authority-r13-1551	906fe2d353f9f32a47b97913b16984017a8d74fb	2026-08-02	[REVIEW] Reject stale r13 report tip
+ag-rev-internal-unit-filter-1533	99761889179edff9a16d85d537fcf8b78d2765a4	2026-08-02	[REVIEW] Reject internal unit filtering
+ag-rev-internal-unit-provenance-r8b-1581	1c2dbb92c91ae72dc981002e6b20a9f9bc79e941	2026-08-03	[REVIEW] NO-GO internal unit provenance r8
+ag-rev-internal-unit-r2b-1533	fc5fd12632a4a8170dde980df672e4468002b022	2026-08-02	[CODER] Fail closed on unproven lane identity
+ag-rev-internal-unit-r6-1544	8944f5b60ddda5de8c055291d8b4fb8a90d225ac	2026-08-02	[REVIEW] Reject forgeable migration role identities
+ag-rev-landing-contract-docs-r1-1565	c2a3505137bb82d24ef2ad67d6a80230b318289e	2026-08-03	[REVIEW] reject unmeasured landing provenance contract
+ag-rev-landing-contract-r3-1581	d754895669c010ecbf1f9f97c832832266e37d48	2026-08-03	[REVIEW] reject incomplete landing record boundary proof
+ag-rev-landing-contract-r8-operations-1581	cfe2275bd6b4f91a6fb2302f774c273f81a62793	2026-08-03	[REVIEW] accept landing recovery r8 operations
+ag-rev-landing-contract-r8-regression-1581	73199894bcbfe0b30cb351050a72943f72c0d7d5	2026-08-03	[REVIEW] accept landing recovery r8 regression
+ag-rev-landing-contract-r8-security-1581	c54cd97f3a52943bdc71a1860c05f1062159f04c	2026-08-03	[REVIEW] accept landing recovery r8 security
+ag-rev-landing-r7-ops-1581	01da3a2cfebaf7ea85e4c93ae0ca703a5558bc35	2026-08-03	[REVIEW] accept landing recovery r7 operations
+ag-rev-landing-r7-reg-1581	0b0a51203b2435602cb4dcedd64b0669fb927443	2026-08-03	[REVIEW] reject landing recovery r7 false green
+ag-rev-landing-r7-sec-1581	158ebf36362a3b05e1a2a502e3a7b428da14fa8c	2026-08-03	[REVIEW] accept landing recovery r7 security evidence
+ag-rev-landing2-1581	60fde6900f5e4e50972dafce6c4280944bbeff8f	2026-08-03	[REVIEW] accept landing recovery r8 regression
+ag-rev-lane-deps-ops-1479	5c057a423807825a93c76a90093732c2c93d932b	2026-08-02	[REVIEW] reject W-35 lane dependency preinstall
+ag-rev-lane-deps-reg-1479	f476a7953435c1a6317702172b60dddbb1c0c5f3	2026-08-02	[REVIEW] Reject incomplete W-35 regression locks
+ag-rev-lane-deps-sec-1479	4c67ff0400ee2b29b7122f9b3358c1ad3383ec19	2026-08-02	[REVIEW] Reject unsafe lane dependency provisioning
+ag-rev-loopback-contract-r4-1533	c08f4e0096ec50b9c9bd2c96cbc617fdb901c7b9	2026-08-02	[REVIEW] reject caller-selected loopback authority
+ag-rev-loopback-r3-ops-1529	68d1b28eb06a1573bf18728644ae5f5f87615c6d	2026-08-02	[REVIEW] reject runtime loopback r3 operations boundary
+ag-rev-loopback-r5-sec-1533	642973c929713362be03f1a31d2d6c8db0f322d5	2026-08-02	[REVIEW] reject runtime loopback r5 security boundary
+ag-rev-media-f976-operations-1581	00a3ac810275acedec1cee56969e49d356053d06	2026-08-03	[REVIEW] NO-GO media r14 operations runtime
+ag-rev-media-f976-regression-1581	88d973cbe0bf9406ff3797104c400befac968e88	2026-08-03	[REVIEW] accept media readiness regression lock
+ag-rev-media-r14-operations-final-1581	f2608379afe1d49a544ccead9ca99594b95d02bc	2026-08-03	[REVIEW] accept media r14 operations runtime
+ag-rev-media-r14-regression-final-1581	491191958776f85e74c8407dd9d9abd3184f4463	2026-08-03	[REVIEW] reject media r14 regression candidate
+ag-rev-media-r15-regression-1581	0f95b6443d7597bd2118d7e6383e29c62db54246	2026-08-03	[REVIEW] accept media r15 regression candidate
+ag-rev-ml15-data-1479	5ef8cc26a81624b44779ced3f14362124b2489f3	2026-08-02	[REVIEW] reject ML-15 fleet status data integrity
+ag-rev-ml15-ops-1479	6447b6dfa9f8bff409fc63f678c404dfb7cf1653	2026-08-02	[REVIEW] reject ML-15 fleet status truth candidate
+ag-rev-ml15-reg-1479	bebefb62daab1017a4bf9224f71d65ac432df225	2026-08-02	[REVIEW] reject ML-15 fleet status false greens
+ag-rev-ml16-corr-1479	6d3a986d400505e25ffe29da946422957373e7e2	2026-08-02	[REVIEW] Reject ML-16 small-losses candidate
+ag-rev-ml8-data-1479	273056a6425182c7b79308ec79a8e4b4c3b3c56e	2026-08-02	[REVIEW] reject ML-8 unanswered ledger candidate
+ag-rev-ml8-ops-1479	3686200ab4fae2e10405eb3f7f4a022b88bf45ee	2026-08-02	[REVIEW] reject ML-8 unanswered recovery candidate
+ag-rev-ml8-reg-1479	6a0c05160c62436f5dc1b2dac826f86417efbb9b	2026-08-02	[REVIEW] reject ML-8 unanswered ledger candidate
+ag-rev-pinned-progress-r6-1544	6e37fbd02cd734dedea67845ca933983cd1d5410	2026-08-02	[REVIEW] accept pinned progress r6 boundary lock
+ag-rev-pinned-terminal-plan-r2-1548	2ad0a518cebafa30975545a3e684e119c3fc93b6	2026-08-02	[REVIEW] accept pinned terminal proof plan r2
+ag-rev-pinned-v3-progress-r1-1533	f974409d56435d03053dadb3277f9fda6f9583b4	2026-08-02	[REVIEW] reject pinned v3 progress automation
+ag-rev-provenance2-1581	104d77d17abbf2d4776474c50b2c90541272ccf8	2026-08-03	[REVIEW] reject duplicate provenance receipts
+ag-rev-provider-cc71-operations-1581	bade8684bb427ce9b822a2dbba78093875421ca2	2026-08-03	[REVIEW] reject provider routing r7 cleanup false green
+ag-rev-provider-cc71-regression-1581	93fc040d7681e5df757054b149d0317b9b88c80c	2026-08-03	[REVIEW] reject unscoped provider concurrent lock
+ag-rev-provider-cc71-security-1581	cc71c9721bbae7b1d8d9e2bfc77f68335888723f	2026-08-03	[CODER] stabilize provider boundary live locks
+ag-rev-provider-r7-ops-1581	7596161e7d958ebb0231bcdad9320351b2e36331	2026-08-03	[REVIEW] reject provider routing r7 cleanup false-green
+ag-rev-provider-r9-ops-next-1581	e3b30822ca52431f212f897f9ca8c7905946ad1e	2026-08-03	[REVIEW] accept provider routing r9 operations boundary
+ag-rev-provider-r9-reg-next-1581	5be3164a17cdd7303667df1b4db00d65e3ca1218	2026-08-03	[REVIEW] reject provider sandbox false-green lock
+ag-rev-provider-r9-security-next-1581	14cbdcd28b8d8f3b906ae94bbf128876f9bbd798	2026-08-03	[REVIEW] reject provider routing cleanup false-green
+ag-rev-provider-routing-clean-r4-operations-1581	9819d5e5cbe2862a2e75ab194c96f71a670cef9d	2026-08-03	[REVIEW] accept provider routing operations recut
+ag-rev-provider-routing-clean-r4-regression-1581	ab3befc61388bfd724ef8d645ae649351eb8b508	2026-08-03	[REVIEW] accept provider routing regression lock
+ag-rev-provider-routing-clean-r4-security-1581	c7e22b0b87cbb29520fecda198d59108813d4edd	2026-08-03	[REVIEW] reject provider routing provenance recut
+ag-rev-provider-routing-r2-1565	debbb42185aa5cf4b863234fb0957deefea4500b	2026-08-02	[REVIEW] reject incomplete immutable launch evidence
+ag-rev-provider-routing-r3-recut-1581	a520b025a913f4997c4964e59d3a2fb31a5bb541	2026-08-03	[REVIEW] reject provider routing r3 stacked scope
+ag-rev-provider-routing-r7-operations-1581	7b61de0b62f655b0486e6a0fa4143ac7a24a2bbc	2026-08-03	[REVIEW] reject incomplete provider capability evidence
+ag-rev-provider-routing-r7-regression-1581	2882b773919f53e0c59d68fe118046c4d67919ff	2026-08-03	[REVIEW] reject provider routing r7 security evidence
+ag-rev-provider-routing-r7-security-1581	1f0ab0b2dfb8c8881a7f9feb83abde108660921c	2026-08-03	[REVIEW] reject provider routing r7 cleanup lock
+ag-rev-provider-routing-security-r5-operations-1581	f700a7a38ec6deedf4eefaa83cd5498bb1473fc1	2026-08-03	[REVIEW] reject provider routing operations candidate
+ag-rev-provider-routing-security-r5-regression-1581	51a4da2442cb46d7d8ea16e8dda8b052cc419590	2026-08-03	[REVIEW] reject provider routing security r5 regression
+ag-rev-provider-routing-security-r5-security-1581	553169a8afe04f17f9c7c15488ac2b89bdb5f14f	2026-08-03	[REVIEW] reject unmeasured provider launch isolation
+ag-rev-recut-buildkit-r3-1565	69e961f38b6d16515cb6e2949ee828e5e38e6e19	2026-08-03	[REVIEW] accept BuildKit policy evidence recut
+ag-rev-recut-test-resource-1565	7dc22dff18ea420018b048d6ed74f57b31058a49	2026-08-03	[REVIEW] reject test resource registry recut
+ag-rev-runner-event-protocol-plan-r5-1551	2487f38fd4e60df064ea02d39f7529559790e5dc	2026-08-02	[REVIEW] reject runner event protocol plan r5
+ag-rev-runner-event-protocol-r7-1561	060889225cfcec6b27e8bca4e0f540f30ff52b1c	2026-08-02	[REVIEW] reject runner event protocol plan r7
+ag-rev-runner-event-r9-1565	7c9f04c4e293a21ae095b8106ce082a89ee15add	2026-08-03	[REVIEW] reject runner event protocol plan r9
+ag-rev-runtime-loopback-payload-authority-r20-1551	66f6add29b7dcd5b6e636666df9127379c0b4a89	2026-08-02	[REVIEW] reject r20 authority contradictions
+ag-rev-runtime-loopback-r16-impl-1551	aa24533f7e44f7f45b1a72dee927e7af6fde26de	2026-08-02	[REVIEW] reject runtime loopback r16 implementation
+ag-rev-runtime-loopback-r23-1565	d3b5fadfa70243adf2c86dc67fcf32bc47282266	2026-08-02	[REVIEW] reject r23 ambiguous NV transition
+ag-rev-runtime-loopback-r6-ops-1533	2b4325c3d8794496fe9c4209360b645c94e3fdd7	2026-08-02	[REVIEW] reject runtime loopback r6 operations boundary
+ag-rev-runtime-loopback-r6-sec-1533	80d8af33772f815fb4618fcdd7351850b0a2723b	2026-08-02	[REVIEW] reject runtime-loopback r6 security boundary
+ag-rev-runtime-r24-1565	4e7b11b87aaac2643b94ae5c6ac21a713a0459a0	2026-08-03	[REVIEW] accept r24 transition digest architecture
+ag-rev-sprint-close-r7-followup-1581	605f94e8c74ede8de9376a3aaee97ff5d508ebfc	2026-08-03	[REVIEW] reject unmeasured sprint-close evidence
+ag-rev-sprint2-1581	5e028278d550c4c3f44abe001c8c25391af157a4	2026-08-03	[REVIEW] reject sprint-close r5 false-green evidence
+ag-rev-telegram-format-r2-1531	a4e3638bcad1c900c7b461c9e34c7d8c08f0ddf9	2026-08-02	[REVIEW] NO-GO Telegram formatting UTF-8 r2
+ag-rev-telegram-steer-noise-r2-1533	3b67553b7f1c1d4a3d962022a9bef5294ed640f7	2026-08-02	[REVIEW] reject incomplete steer-noise suppression
+ag-rev-telegram-steer-noise-r2b-1533	b579fe4b48b4e192f8b77ad10aa97a14a5ee1a3c	2026-08-02	[REVIEW] reject relay control provenance r2b
+ag-rev-telegram-steer-r3-1533	adfbbb0f6369d062e2f5a99bb16c0fd704681bf6	2026-08-02	[CODER] record provenance-safe relay evidence
+ag-rev-telegram-steer-r3b-1533	177dc82317f83edcc76b84acc4cccffa7c5c2876	2026-08-02	[REVIEW] record Telegram steer-noise r3 Tier-A verdict
+ag-rev-test-executor-foundation-r5-1551	296a3fdbf4c99be1c2b169b316176aee0a04ca9a	2026-08-02	[REVIEW] reject test executor r5 security slice
+ag-rev-test-executor-lease-r2-1544	be6e72aca6615d660a8bc3dbeae963a09cfebe51	2026-08-02	[REVIEW] reject trusted test-executor design r2
+ag-rev-test-executor-r11-operations-1581	a2f3f639d36dcec488d1bc764a63cd19b6843aca	2026-08-03	[REVIEW] reject r11 operations recovery evidence
+ag-rev-test-executor-r11-regression-1581	098d605408e3eb327cf26db0a4f2dd46e81da762	2026-08-03	[REVIEW] reject unbounded executor recovery evidence
+ag-rev-test-executor-r11-security-1581	a4f286447c315d022cd980bb231556dcc08eac00	2026-08-03	[REVIEW] reject r11 security boundary evidence
+ag-rev-test-executor-r6-1544	76448d070b789c1d61bd9177a1c1f884cc2d2aeb	2026-08-02	[REVIEW] accept test-executor publication boundary r6
+ag-rev-test-executor-r8-ops-1565	7e52acc8bb9eeb35ead005172a2e80b34ae7d129	2026-08-02	[REVIEW] reject test executor r8 operations recovery
+ag-rev-test-executor-r8-reg-1565	e7125c014bdd98f0822a6cd7c0e6865bb27009e6	2026-08-02	[REVIEW] reject test executor r8 false rollback
+ag-rev-test-executor-r8-sec-1565	5ea19556f4a3e553d6e4a4c43f9bcb5dc0f71f76	2026-08-02	[CODER] align test executor r8 evidence
+ag-rev-test-resource-inventory-r10-1565	9913006da8f572e54cf108382b66daa4918033c7	2026-08-02	[REVIEW] reject r10 Unicode comment false green
+ag-rev-test-resource-r11-1565	74f7ba25c62971440d27df8b4967941e99ed474c	2026-08-02	[REVIEW] accept r11 line terminator inventory fix
+ag-rev-test-resource-report-r2-1565	74f7ba25c62971440d27df8b4967941e99ed474c	2026-08-02	[REVIEW] accept r11 line terminator inventory fix
+ag-rev-v3-authority-r11-sec-1544	c4240a7d586518e93674ffc85ca15128f060c9ad	2026-08-02	[REVIEW] Reject v3 authority r11 security candidate
+ag-rev-v3-authority-r14-upgrade-security-1551	9affa238bbc0117af7da7aac96648acf96ab94ba	2026-08-02	[REVIEW] reject authority r14 upgrade security
+ag-rev-v3-authority-r15-exclusive-runtime-1551	56764d89b849e14fea2f69c867064ff7400790a0	2026-08-02	[REVIEW] reject r15 exclusive runtime authority
+ag-rev-v3-authority-r22-operations-1581	3f1863f4b76b886d293151382fef5de49107401a	2026-08-03	[REVIEW] reject authority r22 operations residue false-green
+ag-rev-v3-authority-r22-regression-1581	f09a3e1401d6e21d2447441179d787b2d91e06e7	2026-08-03	[REVIEW] reject authority r22 false-green residue
+ag-rev-v3-authority-r23-security-1581	f36af2aa5df96f1b97ce4ec45fec0eb3a1f1f9a6	2026-08-03	[REVIEW] accept authority r23 security teardown
+ag-rev-v3-authority-r6-core-1533	63f05a79174040aaa45a7fd2a47399cbd71c9cc7	2026-08-02	[REVIEW] Reject v3 authority r6 protected core
+ag-rev-v3-authority-r9-ops-1537	acdca7172a6021236a2dcc0b0e90031d5735ff6c	2026-08-02	[REVIEW] Reject authority r9 operations recovery
+ag-rev-v3-gap1-r2-ops-1506	0ddd5861e57edeaabc0971c6148398dc264457b0	2026-08-02	[REVIEW] record V3-GAP-1 r2 operations verdict
+ag-rev-v3-gap1-r2-sec-1506	d7072dcd0b1990ee03c434b24f4409ef68c9b5ae	2026-08-02	[REVIEW] record V3-GAP-1 r2 security verdict
+ag-rev-v3-gap1-recut-ops-1508	edc19c75f799943600356db622eca451814b113f	2026-08-02	[REVIEW] accept GAP-1 recut operations evidence
+ag-rev-v3-gap1-recut-reg-1508	bcdb7e4e66e78b68e708e6e570e1dc81889c10c8	2026-08-02	[REVIEW] no-go comparable GAP-1 recut
+ag-rev-v3-gap1-recut-sec-1508	17a2a0b937a54727a52e9b234ed2d32d70daf5b0	2026-08-02	[REVIEW] no-go GAP-1 recut security evidence
+ag-rev-v3-gap1-red-r2-1515	1e56ef2c70c5b6e3610b164970f194bea5d05d64	2026-08-02	[REVIEW] reject stale GAP-1 evidence binding
+ag-rev-v3-gap1-reg-1499	f64855339060d1b34a9ad5883db2eb1f5869b2bc	2026-08-02	[REVIEW] reject V3-GAP-1 false-green regression evidence
+ag-rev-v3-gap2-evidence-r5-1533	60795e0ab14a2e426f708b9e3e484ff43cce6047	2026-08-02	[REVIEW] NO-GO GAP-2 r5 evidence
+ag-rev-v3-gap2-r3-sec-1508	38017421a2024dffa4000cee474d393e1cc47aa0	2026-08-02	[REVIEW] no-go GAP-2 r3 on unverifiable scan base
+ag-rev-v3-gap2-r4-reg-1524	0a60398d1d1811360b6b049a79d0c870315c75f9	2026-08-02	[REVIEW] reject GAP-2 r4 regression evidence
+ag-rev-v3-gap2-r5-ops-1533	73db42dbb21e8559dbc90446a6b2c918fd7d0ddf	2026-08-02	[REVIEW] NO-GO GAP-2 r5 operations security
+ag-rev-v3-gap2-r7-1533	45f468fbab21d06403b47b2a7d8965e99a0e7267	2026-08-02	[REVIEW] NO-GO GAP-2 r7 operational evidence
+ag-rev-v3-gap2-recut-ops-1515	24b00900c1e505d3bcdd382235ea854ae374ce05	2026-08-02	[REVIEW] record GAP-2 operations NO-GO
+ag-rev-v3-gap2-recut-reg-1515	7e9c0958012a2ee492d2cefb2feac9b80daa15d1	2026-08-02	[REVIEW] reject incomplete GAP-2 regression evidence
+ag-rev-v3-gap2-recut-sec-1508	d4609c181061887624cd702f402647a35dc6d8e7	2026-08-02	[REVIEW] accept exact GAP-2 durability lock SHA
+ag-rev-v3-gap3-r2-reg-1515	35dde602fe1f0b7412c095d4557e0458eda6c472	2026-08-02	[REVIEW] reject GAP-3 r2 runtime wiring regression
+ag-rev-v3-gap3-r3-ops-1529	ca651b29a15d6e2a6795c63e9da72bec20392904	2026-08-02	[REVIEW] record GAP-3 r3 operations NO-GO
+ag-rev-v3-gap3-r3-sec-1529	c12ec6fcca1b8ef3a890908ac2e55e654f944a6a	2026-08-02	[REVIEW] record GAP-3 r3 security NO-GO
+ag-rev-v3-gap4-atleastonce-1524	83c704a52f7e1a400acc2241749e71cc31b40fab	2026-08-02	[REVIEW] NO-GO GAP-4 at-least-once candidate
+ag-rev-v3-gap4-r3-ops-1508	d34d793acfe8e95076d2666569ed9a42ff5ea5ba	2026-08-02	[REVIEW] reject GAP-4 r3 operations evidence
+ag-rev-v3-gap4-r3-reg-1508	199d2d8464fbe6f90db77ac9a7bdcc86a5aed3be	2026-08-02	[REVIEW] reject GAP-4 r3 regression evidence
+ag-rev-v3-gap4-r3-sec-1508	eb562522d65e9f4f0f28e97d6c32f058ebe1f254	2026-08-02	[REVIEW] reject GAP-4 r3 security evidence
+ag-rev-v3-gap4-recut-ops-1508	d86f26fad5cb5623c84f20ca4787877dd6808f5b	2026-08-02	[REVIEW] reject GAP-4 recut operations evidence
+ag-rev-v3-gap4-recut-sec-1508	1137e1663d4923965434b86caa6a3109b9485795	2026-08-02	[REVIEW] reject GAP-4 recut security evidence
+ag-rev-v3-gap5-r2-ops-1524	85f36ecde58f669f1f94e77556d2086e42af15f3	2026-08-02	[REVIEW] reject incomplete GAP-5 runtime evidence
+ag-rev-v3-gap5-r2-reg-1529	ef8bc786a5a1b180f58b5c350ea08b56253d96ef	2026-08-02	[REVIEW] reject comparable GAP-5 r2 evidence
+ag-rev-v3-gap5-r2-sec-1524	1fb1dc5c3db0cf21c90c30dbeddef997a5a35dcf	2026-08-02	[REVIEW] reject comparable GAP-5 r2
+ag-rev-v3-gap5-r8-1544	b2cbeff3893adcb6abbbc78c80d94ec0e9a05986	2026-08-02	[REVIEW] accept GAP-5 r8 exact-owned cleanup
+ag-rev-v3-gap5-r9b-1551	ddf00c04880323d73c3f13a0bee14eab12d33b2c	2026-08-02	[REVIEW] reject GAP-5 r9b evidence SHA mismatch
+ag-rev-v3-gap5-r9c-1551	c32491b6becf79aea1d08a5f93479cbb42cb46fb	2026-08-02	[REVIEW] accept GAP-5 r9 exact SHA
+ag-rev-v3-prepare-design-1565	1ed1e6e428fcef7dafd4dc645989251f61fd02d5	2026-08-02	[REVIEW] reject non-terminal teardown proof design
+ag-rev-v3-prepare-r3-1565	2f822541c9f48db670a39d4a8ececba47b2087c5	2026-08-03	[REVIEW] accept teardown convergence design
+ag-rev-v3-r16-operations-1565	3d0258c6e8e1204e80607aec82cbee4cd56338a7	2026-08-02	[REVIEW] reject r16 operations recovery candidate
+ag-rev-v3-r16-regression-1565	09040509e6aaaaeb8d99e94ed089bb15e00a3bfd	2026-08-02	[REVIEW] reject R16 authority migration false-green gaps
+ag-rev-v3-r16-security-1565	f9ab2636c161ee6e4c9c9f0b6067e1b5fcdeb54a	2026-08-02	[CODER] correct r16 authority migration safety
+ag-rev-v3-scope-r4-process-1529	816f5b724a86f0fe8b5bcb523cf70af59cdb35db	2026-08-02	[REVIEW] Reject forgeable v3 cutover authority
+ag-rev-v3-scope-r4-reg-1529	0c5641386b2842ab5286af04b1f2e7b091da46fb	2026-08-02	[REVIEW] Reject v3 cutover scope r4 authority locks
+ag-rev-v3-scope-r5-proto-1533	3547adfdb019ff71e63dd1729488e699c58881cf	2026-08-02	[REVIEW] Reject v3 authority r5 protocol
+ag-rev-v3-scope-r5-sec-1533	8988c73b19d83a9e4f5a9184d72bacc5afd3c8ce	2026-08-02	[REVIEW] Reject v3 scope authority r5
+ag-rev-w15-media-hermetic-r6-1551	e6c2420e0a19bce73cb222e14061aeffc7aa1708	2026-08-02	[REVIEW] reject W15 hermetic boundary r6
+ag-rev-w15-media-r10-1579	6337fc19c4a6f072b1fd7be915b8771ae9c10bb8	2026-08-03	[REVIEW] accept W15 causal interruption evidence
+ag-rev-w15-media-socket-boundary-r3-1551	9a5a40fa0e8b6ac595167433f9fc7f35e5fc63c6	2026-08-02	[REVIEW] reject W15 hermetic boundary r3
+ag-rev-w20-ops-1479	73ce7ae466beab80960950ca37d6154ad4b9c651	2026-08-02	[REVIEW] reject W-20 path ownership operations
+ag-rev-w20-path-authority-impl-r1-1551	ca67bd2bdde1fc66046a32cc8731a802c2a24679	2026-08-02	[REVIEW] reject W-20 path authority implementation r1
+ag-rev-w20-path-authority-r7-1565	a32377f893f27ea59263fc1d92d5549647c90a89	2026-08-02	[REVIEW] reject W-20 path authority r7
+ag-rev-w20-r2-1544	9010fe99565b3816004d3b60ba2b63a31f23f426	2026-08-02	[REVIEW] reject W-20 path ownership r2
+ag-rev-w20-reg-1479	97018c47b96987d01c70270c12aced9e1591c0d8	2026-08-02	[REVIEW] reject W-20 path ownership candidate
+ag-rev-w20-sec-1479	7bc696b55e25da3995b9b970666f8e749cb4e825	2026-08-02	[REVIEW] reject W-20 path ownership boundary
+ag-rev-w35-daemon-deps-r10-1565	c0b561ac6a5c2539368d8a1b4341a2db166b551f	2026-08-02	[REVIEW] Accept daemon dependency bootstrap
+ag-rev-w35-daemon-deps-r11-recut-1581	3511d16556bf81b828db48dc3d1a9b5e9e99f09d	2026-08-03	[REVIEW] accept bounded W35 recut with aggregate NO-GO
+ag-rev-w35-ops-r3	e83a1714d7ea275fc2576e57e4378e71c0c1a7eb	2026-08-02	[REVIEW] Reject W-35 rework r2 operations rollback
+ag-rev-w35-r5-ops-1515	017c92e1b3d15d56b4627acf683f642bbbb8c2aa	2026-08-02	[REVIEW] Accept W-35 r5 operations boundary
+ag-rev-w35-r5-reg-1515	c784d7d741f209c47e360c85ad551a7c58020ded	2026-08-02	[REVIEW] Accept W-35 r5 regression boundary
+ag-rev-w35-r5-sec-1515	eb1593f6e1863ced140fdeb801bd327d412038d8	2026-08-02	[REVIEW] Accept W-35 r5 security boundary
+ag-rev-w35-r5-synth-1524	ce64ec39479af74fcbb6e298ab18495bed3090a8	2026-08-02	[REVIEW] Synthesize W-35 r5 landing readiness
+ag-rev-w35-r6-live-1533	c241ddc6f27cd13326cc21b795fb833576b72575	2026-08-02	[REVIEW] Reject W-35 r6 non-atomic repair
+ag-rev-w35-r7-1533	99a0bba9e2e22c202c12ec8caa399c916fd4c631	2026-08-02	[REVIEW] NO-GO W-35 launcher r7
+ag-rev-w35-reg-r3	6cc3055b6391bb04b758fbcee36343ec0d0e4287	2026-08-02	[REVIEW] Reject W-35 rework r2 false-green locks
+ag-rev-w35-sec-r3	440f9217d23573938261e3bd66de2dae57b9c4af	2026-08-02	[REVIEW] Reject W-35 root capability boundary
+ag-rev-w36-db-deps-1506	7f31ffbdd430ad8b692941af0c7347d5552bf12d	2026-08-02	[REVIEW] Reject W-36 database inventory portability
+ag-rev-w36-int-r3	74c950704ee621533d90fb34dc10b97749f26295	2026-08-02	[REVIEW] Record W-36 rework r2 integrity verdict
+ag-rev-w36-reg-r3	494475a624a44f228e92584f4af84958638c18e5	2026-08-02	[REVIEW] Reject W-36 r2 regression evidence
+ag-rev-w43-corr-r1	35bcdc11bbc986b8403acec387396c839d9eab1c	2026-08-02	[REVIEW] reject W-43 queue invariant candidate
+ag-rev-watchdog-readiness-r5-1575	7aa979f4703e6cd960ab72bf077f37642fe98401	2026-08-03	[REVIEW] accept watchdog readiness teardown evidence
+ag-rev-watchdog-transport-boundary-r2-1581	200055c11a8380322cf370c9af835cbdcad30f15	2026-08-03	[REVIEW] reject watchdog transport boundary false green
+ag-review-autonomy-night-idle	e66e6ba4af9996cfe618a85bfe403ac8e61a18ef	2026-08-02	[CODER] record overnight autonomy idle evidence
+ag-review-capture-telegram-report-format	b2bd1251800c5d57799cbe30a31c14d69b83dc90	2026-08-01	[REVIEW] accept Telegram report-format capture
+ag-review-fleet-floor	5a3c493cd70d21484073f6023873a296ce46490f	2026-08-01	[REVIEW] reject fleet floor enforcement
+ag-review-fleet-floor-2	d539742cf072386d6ea8f96342896165879b235f	2026-08-01	[REVIEW] accept fleet floor enforcement
+ag-review-hr1275-1295-instr	eec9edd809827044d1237b64a2090e4b165f3055	2026-08-02	[REVIEW] reject incomplete HR-1275 and HR-1295 routing
+ag-review-hr1275-ci-api	5abc9b5ce46961fb3710c449bb689f3e1caddc02	2026-08-02	[REVIEW] reject HR-1275 CI inventory API
+ag-review-hr1275-db-fixture	b57e6ce615107d8b725342604abded2786e7bcb1	2026-08-02	[REVIEW] reject database access fixture
+ag-review-hr1275-deploy-fixture	f209eec6964c2636eb56b8d9a13f974337c7be6b	2026-08-02	[REVIEW] reject mutable migration fixture image
+ag-review-hr1275-deps-closure	05dd9a626c4a6b7817d948c77da0ef452b45b4d2	2026-08-02	[REVIEW] reject HR-1275 dependency closure helper
+ag-review-hr1275-deps-r2	1e7d9d731da2c1f35445d6221a7043a18d33c354	2026-08-02	[REVIEW] reject HR-1275 dependency closure r2
+ag-review-hr1275-fullsuite	537baf181867f4c918e466879ed4bb0fcce59c99	2026-08-02	[REVIEW] reject HR-1275 full-suite consumer
+ag-review-hr1275-instruction-r1	7fae16d462fba25bb45777c8827aca38f0357316	2026-08-02	[REVIEW] accept HR-1275 instruction routing
+ag-review-hr1275-landing-mandatory	d7b7cde4e944dd1f109d6528f1c50d6a18adf494	2026-08-02	[REVIEW] accept mandatory landing verification
+ag-review-hr1275-manifest	fbfdb9b72b2f9b4a9e413fb43de606077fa4287f	2026-08-02	[REVIEW] reject HR-1275 exact suite manifest
+ag-review-hr1275-topology-fixture	f457e49c4207c704d133911ea883c4e12f2d174a	2026-08-02	[REVIEW] reject topology fixture evidence
+ag-review-hr1295-fresh-r1	3d9cd080e82535d44d3699e7c3fa66c27ceffb2e	2026-08-02	[REVIEW] reject HR-1295 fresh-session candidate
+ag-review-infrastructure-recurrence-independent	9b959eea181510f93004735d87634b339c284d4d	2026-08-01	[REVIEW] reject recurrence plan authority and snapshot gaps
+ag-review-infrastructure-recurrence-r2	2a8d75273f29cdeb47aef32d43ce3b2e403295a0	2026-08-01	[REVIEW] accept recurrence prevention plan round 2
+ag-review-instr-unmeasured	d77aeae42fc8cc809ba0c175d1a6a08aa4ac347a	2026-08-02	[REVIEW] Accept unmeasured fail instruction
+ag-review-legacy-infra-parity	5abc099aa0411c889ab37d4fca26874b2a41a01a	2026-08-02	[REVIEW] Reject incomplete legacy infrastructure parity audit
+ag-review-legacy-parity-r2	4fa060682070f7a3d161e50e05b6142ad4efc51f	2026-08-02	[REVIEW] Reject incomplete legacy parity audit r2
+ag-review-ml6-quota	002f5b9305a237f4db632fe2f292218f14b54caa	2026-08-01	[REVIEW] accept ML-6 vendor quota visibility
+ag-review-provider-reg-1581-final	0a91c1622eae2a6a1da7820d8c349ded0c94f075	2026-08-03	[REVIEW] reject provider sandbox false-green lock
+ag-review-session-survival	f8d9b3ec65828aedc8617152f3dd4c106ccb5023	2026-08-01	[REVIEW] reject unproven daemon restart survival
+ag-review-session-survival-2	d28842a3817a4072c0763a63b10eeca2c26e0fcf	2026-08-01	[REVIEW] reject incomplete W-31 survival rework
+ag-review-session-survival-3	041fe6ed976209d55b66f8ac8c397840e9b1edd1	2026-08-01	[REVIEW] accept W-31 session survival round 3
+ag-review-status-human-2	887ad1e89139e66b3c19cd6193a2629314d34f02	2026-08-01	[REVIEW] Accept human-useful Telegram status
+ag-review-telegram-operator-language-3-boundary	e2702adfb4b28c9f7ae19030d53139df8a97dc33	2026-08-01	[REVIEW] reject Telegram language round 3 boundary
+ag-review-telegram-operator-language-4-ops	5491e85be9f4a36c7b1319f5675a0d4aa9036df0	2026-08-01	[REVIEW] reject Telegram language round 4 false-green
+ag-review-telegram-operator-language-5	c3028abae3997dbd68770fe565b2cf17c1957f01	2026-08-02	[REVIEW] reject Telegram language round 5 false-greens
+ag-review-telegram-operator-language-6	51644f315767e24d9f24c3b4bbcbe2f1c409ac75	2026-08-02	[REVIEW] reject Telegram language round 6
+ag-review-telegram-report-format-2	e056fcdd775985b755af8279f4f0ff129133a667	2026-08-01	[REVIEW] reject Telegram report projection round 2
+ag-review-telegram-report-format-3	af66853649c116f2f2d396e933c932ed66fa91e3	2026-08-01	[REVIEW] reject Telegram report projection round 3
+ag-review-telegram-report-format-4	49c3192647832bbe0a13c4ecfa2df398ba6d0974	2026-08-01	[REVIEW] reject Telegram report projection round 4
+ag-review-telegram-report-format-5	e85b53878290f5babfc5b23a897f328597715ac6	2026-08-02	[REVIEW] reject Telegram report projection round 5
+ag-review-telegram-report-format-6	7ed13564a8f8182b9349e0cb95cc0d1ffd2cd568	2026-08-02	[REVIEW] reject Telegram report projection round 6
+ag-review-telegram-report-format-7	1089153d1724e9080b613feb9dc5f4fe8a6f381c	2026-08-02	[REVIEW] reject Telegram report projection round 7
+ag-review-terminal-alarm	7f7f1aded4b7279f04a011d9c384a9dbabc02cd6	2026-08-01	[REVIEW] Reject unsafe terminal alert narrowing
+ag-review-terminal-alarm-10	0f934db03dd5264d7fb1243294474eac2cfc8dd5	2026-08-01	[REVIEW] accept terminal alert round 10
+ag-review-terminal-alarm-2	5e94d9f48f8f3599b357519e15c982eac4e2dafc	2026-08-01	[REVIEW] Reject terminal alarm self-echo bypass
+ag-review-terminal-alarm-3	79e835061395f47a5ffa96ad47b0052bff4231f5	2026-08-01	[REVIEW] Reject broad terminal alert echo suppression
+ag-review-terminal-alarm-4	e6b71fea153e4b807844da4822a653d231bfd683	2026-08-01	[REVIEW] Reject round-4 terminal echo suppression
+ag-review-terminal-alarm-5	4aa864db5c92f26e500c802b6119730e982d9923	2026-08-01	[REVIEW] reject forgeable terminal alert frames
+ag-review-terminal-alarm-6	81262c43c3f320a194f54641b3b1295d3cb1c722	2026-08-01	[REVIEW] reject replayable terminal alert nonce
+ag-review-terminal-alarm-8	d1b255d3dae60308779a4935994d1e2f49f2b103	2026-08-01	[REVIEW] accept terminal echo round 8
+ag-review-terminal-alarm-9	1fa199a5e5ae41413222165678667e88997c4752	2026-08-01	[REVIEW] reject round 9 terminal alert echo boundary
+ag-review-turnend-a1	23fc9255fd1ed14782fb3edd45b7cab4cd5bbf43	2026-08-01	[REVIEW] accept watchdog A1 startup-wait bound
+ag-review-w26-guard	fb7e569d26fba38b6397f36e716bac5adee77c9a	2026-08-01	[REVIEW] Reject incomplete W-26 dispatch guard
+ag-review-w37-alert-routing	699e5ff22b756cb5f54655d775a023a8ed94ad08	2026-08-01	[REVIEW] reject W-37 unsafe alert pointer nonce
+ag-review-w37-routing-10-cumulative	7accbbfefb1417ce7f3eb5650d56ae74275be8e5	2026-08-01	[REVIEW] accept W-37 round 10 cumulative fix
+ag-review-w37-routing-2b	35221ab56b00ef93ca9aae171bdc73fd419995b8	2026-08-01	[REVIEW] reject W-37 round 2 false-green topology evidence
+ag-review-w37-routing-3	f63c93a5f6af47f767b213979ab12886c8792335	2026-08-01	[REVIEW] reject W-37 round 3 journal acceptance
+ag-review-w37-routing-4	14f9ebfa5004c91eaa7dfc42f0cfef3306861924	2026-08-01	[REVIEW] reject W-37 round 4 routing
+ag-review-w37-routing-5	c52ac95117688dceb241ce1bc08e751ced6c528f	2026-08-01	[REVIEW] reject W-37 round 5 fixture cleanup
+ag-review-w37-routing-6	e3abd7b8e9a06c88d3fa4ff9f704eff031dc3ad8	2026-08-01	[REVIEW] reject W-37 round 6 lifecycle evidence
+ag-review-w37-routing-7	7eee7db1e07e205d57c3143e45635d570ae38b0a	2026-08-01	[REVIEW] accept W-37 round 7 topology and cleanup
+ag-review-w37-routing-8-cumulative	1c81e331d0a9a558a76d3c377f06a99f1d14cb78	2026-08-01	[REVIEW] reject W-37 cumulative candidate
+ag-review-w37-routing-9-cumulative	54d7abf83e70c8c3e17bd9537a5b18af3aed4ac1	2026-08-01	[REVIEW] reject W-37 cumulative lifecycle gap
+ag-review-watchdog-recovery-10-ops	4c1e1ba6e70b0ffcfaf7c54e2a2dd38ece7bb2b4	2026-08-01	[REVIEW] accept watchdog round 10 operations security
+ag-review-watchdog-recovery-10-regression	0a930d940d9318e74fb4b9473661eaec36f4e1cc	2026-08-01	[REVIEW] accept watchdog recovery round 10 regressions
+ag-review-watchdog-recovery-2-ops	7d71c3317287265cac783062cbae8326ad9354dd	2026-08-01	[REVIEW] reject watchdog recovery round 2 operations
+ag-review-watchdog-recovery-2-regression	5f8033b474dc46b649f7a49dda83f832037612c9	2026-08-01	[REVIEW] reject watchdog recovery round 2 regression evidence
+ag-review-watchdog-recovery-3-ops	4b1caf162698d78b0533a4d6adf2550773c95567	2026-08-01	[REVIEW] reject watchdog recovery round 3 operations
+ag-review-watchdog-recovery-3-regression	8592b5cba3628ddf35731cfcf59721a89978fa66	2026-08-01	[REVIEW] reject watchdog recovery round 3 regression evidence
+ag-review-watchdog-recovery-4-ops	101539a778b69d15a406606029f50c57347420f1	2026-08-01	[REVIEW] reject watchdog recovery round 4 ops evidence
+ag-review-watchdog-recovery-4-regression	f85803003656d41c55f820fda05bd30fee74f6ce	2026-08-01	[REVIEW] reject watchdog recovery round 4 regression evidence
+ag-review-watchdog-recovery-5-ops	906beaa6668b6b58db0e512d0c18f5380dad5108	2026-08-01	[REVIEW] reject watchdog round 5 missing-token gate
+ag-review-watchdog-recovery-5-regression	af69ebeed22a1c48893f14748a4d6be9ad3b3dfd	2026-08-01	[REVIEW] reject watchdog round 5 false-green locks
+ag-review-watchdog-recovery-6-ops	2c54586ca38388caae9af11ce2e550c29b246cb5	2026-08-01	[REVIEW] reject watchdog round 6 alert proof
+ag-review-watchdog-recovery-6-regression	9fa53726dc6452b6357d0b77fab536f084b5f78f	2026-08-01	[REVIEW] reject watchdog round 6 false-green gates
+ag-review-watchdog-recovery-7-ops	a60731132e2904d31f6ea22b2bfa19885cfeb72f	2026-08-01	[REVIEW] reject watchdog round 7 EnvironmentFile mismatch
+ag-review-watchdog-recovery-7-regression	d92f75ce5ae131d28a3a0ed435276fac1b7e3007	2026-08-01	[REVIEW] reject watchdog recovery round 7
+ag-review-watchdog-recovery-8-ops	62c1a67b1f295c034eae79f46851982688cd87b1	2026-08-01	[REVIEW] accept watchdog recovery round 8 ops
+ag-review-watchdog-recovery-8-regression	9e2672f4571cb5b249357fbde885352bbe60f786	2026-08-01	[REVIEW] reject watchdog round 8 NUL false green
+ag-review-watchdog-recovery-9-ops	89556540b74cf054068f603fa4c874a3fcac43c9	2026-08-01	[REVIEW] reject watchdog round 9 UTF-8 false green
+ag-review-watchdog-recovery-9-regression	470901835c13a7ce98d62879eb5ab5b50f1fa596	2026-08-01	[REVIEW] reject watchdog round 9 Unicode false green
+ag-review-watchdog-recovery-ops	cfd8ea60ee582582b047328a330d4e3f50ab5355	2026-08-01	[REVIEW] reject watchdog recovery runtime candidate
+ag-review-watchdog-recovery-regression	7a6ded5ec96bee97c52981507b5893812e3df9c9	2026-08-01	[REVIEW] reject watchdog recovery regression evidence
+ag-review2-hr1275-db-fixture	49d1880da7faec2b309d61666d7a3c3abd7cc7d1	2026-08-02	[REVIEW] reject HR-1275 database fixture
+ag-review2-hr1275-fullsuite	138a2a1f82956d07c5055a54878e9ec506c4ef64	2026-08-02	[REVIEW] reject full-suite consumer integration
+ag-review2-hr1275-landing-mandatory	9fd8a6cc55ad69c3bd3da85917c71eb279f23e60	2026-08-02	[REVIEW] reject incomplete mandatory landing inventory
+ag-review2-hr1275-topology-fixture	94d93bd7b3ebc512af7cab617f8d88c7480d60df	2026-08-02	[REVIEW] reject topology fixture regression lock
+ag-review3-hr1275-ci-integrate	2f335b2ce85d956cbbf4bb93eada7b93b602b887	2026-08-02	[REVIEW] reject CI manifest integration false greens
+ag-review3-hr1275-db-r2	1b3838c6fad8bffb0c3b5ea0ae0c223e082f678b	2026-08-02	[REVIEW] accept database fixture r2
+ag-review3-hr1275-deploy-r2	9f34d8566e42821bea41cfdca5cfab3956701b1c	2026-08-02	[REVIEW] accept HR-1275 deploy fixture r2
+ag-review3-hr1275-fullsuite-r2	9a603298f3ead45fbc1d4e1192ddc7b397b3ad73	2026-08-02	[REVIEW] reject full-suite signal notification r2
+ag-review3-hr1275-topology-r2	518fb07122dd7b1654741d34d5e3e95e33761292	2026-08-02	[REVIEW] reject incomplete topology timeout lock
+ag-runner-event-protocol-plan-r8-1565	d27c3646e59cfb4b8cc14122a57f8e9a0876b68b	2026-08-02	[CODER] correct runner event protocol plan r8
+ag-runner-event-r9-1565	399216a7cb9661edb2a0611131103a1bd4718e42	2026-08-02	[CODER] revise runner event durability plan r9
+ag-runtime-loopback-payload-authority-r22-1565	319cc42ea6c3ff01428292708306dcee0ddcfdd7	2026-08-02	[CODER] correct r22 payload authority transition
+ag-runtime-loopback-r13-result-1544	0a0049fb81822deedcbc0415617f765e4dd62d4c	2026-08-02	[CODER] record runtime loopback r13 socket-cgroup blocker
+ag-runtime-loopback-r16-design-1551	d862e007d9b9e1d339ec7fe893ff63f5032ea703	2026-08-02	[REVIEW] specify executable runtime loopback r16 correction
+ag-runtime-loopback-r16-impl-1551	56bbc2277616b3d8c72f2b82c0ac128673e66267	2026-08-02	[CODER] implement runtime loopback r16 native primitives
+ag-runtime-loopback-r24-1565	369472fb376cf845c8321912bfcf697c41188998	2026-08-02	[CODER] correct r24 transition digest bytes
+ag-session-survival	d790bc11bae8c18c8525a57bcffa6f99b721bf9e	2026-08-01	[CODER] keep orchestrator outside daemon cgroup
+ag-session-survival-2	a3ad2284fe8b3f399db6df92d1ec6cbba78a3737	2026-08-01	[CODER] prove session survives daemon restart
+ag-session-survival-3	409714ee699434c9ca18b7a440687d68bb7dcd41	2026-08-01	[CODER] Assert tmux server cgroup survival
+ag-session-survival-4	0648138eb3c398c1a3038bee5327db356851197e	2026-08-01	[CODER] record W-31 round 4 evidence
+ag-spark-w10-timer-plan-1565	663b1fc9ee321b3491b9047a45757f1bf47284ab	2026-08-02	[REVIEW] review W-10 timer install artifacts and row state
+ag-spark-w35-deps-inventory-1565	a70f1fb3604609463548a1d7886aeab46a7c4756	2026-08-02	[REVIEW] W-35 dependency bootstrap inventory and lock gap map
+ag-spark-workboard-triage-1562	ae5947d1e40a2d8ebd87fbf005ea55a2709c42aa	2026-08-02	[REVIEW] triage spark workboard open rows
+ag-sprint-close-r8b-impl-1581	dc05046ad1f5348310cb7510194a68ff28d09b45	2026-08-03	[CODER] make terminal verification replayable
+ag-stack-postmortem	0fdbacd5d185bcfa437e4a383675c6a65bada7db	2026-07-31	[REVIEW] define one-app shell design
+ag-stacked-ancestry-audit-1565	1d31fa625910d76e9b3598a479da02c56efd986f	2026-08-02	[REVIEW] audit stacked landing ancestry
+ag-statecontract-argv	ca75c21c4a13fee9ca4313eeb89ab60156aa98b2	2026-07-31	[CODER] state-contract checker: close three fail-open holes that manufactured a false red
+ag-status-human	dc0c435160e053ca11ec523c5aad556439264bee	2026-07-31	[CODER] secure human status summary (HR-150)
+ag-telegram-format-encoding-1515	9af7e1101b95215e151201ffe9ce1757e8458245	2026-08-02	[CODER] lock Telegram rich text and UTF-8 documents
+ag-telegram-format-fullsuite-r3-1533	312cbe449c01ac2486c703165a94b1e26dcc2506	2026-08-02	[CODER] retain Telegram full-suite loopback blocker
+ag-telegram-format-r2-1524	914d7cfd3f424f1100f42fb34edd419c40270540	2026-08-02	[CODER] fix Telegram UTF-8 adapter formatting
+ag-telegram-operator-language	17cc82ff6c14860e2ddc2459098555cd2f1710e9	2026-08-01	[CODER] record Telegram language verification blocker
+ag-telegram-operator-language-2	c02d786f6bbd0734b6aede7c5a34b3e6a8cc28fb	2026-08-01	[CODER] rework Telegram operator language delivery
+ag-telegram-operator-language-3	fa9c903a15652fd5fea0c0e6c6f874320077a808	2026-08-01	[REVIEW] reject Telegram language round 3 lifecycle gaps
+ag-telegram-operator-language-4	f941278ff6d2ff53c370db5076224428c2fb7eca	2026-08-01	[CODER] inventory Human notify producers and exact delivery
+ag-telegram-operator-language-4-evidence	1a97716c007db250b6588efa7aa973c1e88a872f	2026-08-01	[CODER] refresh Telegram language round 4 evidence
+ag-telegram-operator-language-5	24f07027249c10afce11706bf82be6ba573cff80	2026-08-02	[CODER] report Telegram producer payload locks
+ag-telegram-operator-language-6	afe60f5f693e11766690b23524cbf3b2564ff452	2026-08-02	[CODER] report Telegram language round 6 evidence
+ag-telegram-operator-language-7	e93f47d4a97db57db1c2b68a0afa41415f967362	2026-08-02	[CODER] report Telegram language round 7 evidence
+ag-telegram-report-format-2	b4bb28dbf78925654e542dd476a4c73ab09b03d7	2026-08-01	[CODER] preserve full Telegram directive in triage
+ag-telegram-report-format-3	efe48ee1e882d91e33f130058ae2f637aa3cf2d6	2026-08-01	[CODER] record Telegram report projection round 3 evidence
+ag-telegram-report-format-4	00b392279710f7f0fdac0d24137f8718e27ea16f	2026-08-01	[CODER] record Telegram projection round 4 evidence
+ag-telegram-report-format-5	32bd1d890bc52f6e41e8def25f67e2c5f7b702a7	2026-08-01	[CODER] record Telegram projection round 5 evidence
+ag-telegram-report-format-6	c71768af6b1bb7547392a0d6e7dc8645c1424986	2026-08-02	[CODER] record Telegram projection round 6 evidence
+ag-telegram-report-format-7	afb97981c04992f0af17cfc6a4d287bdee3ccf47	2026-08-02	[CODER] record Telegram projection round 7 evidence
+ag-telegram-steer-noise-r3-1533	adfbbb0f6369d062e2f5a99bb16c0fd704681bf6	2026-08-02	[CODER] record provenance-safe relay evidence
+ag-terminal-alarm-false-positive-3	ebe54591b9676bfa3c9cdd6d5b1df793bc1fe340	2026-08-01	[CODER] Narrow terminal alert echo suppression
+ag-test-executor-boundary-r6-1544	c4de239badc1c973cebc343d1e09d2e89309a3eb	2026-08-02	[REVIEW] record r6 verification evidence
+ag-test-executor-contention-audit-1537	b89f244833c5a6a220d4422e29e0457ac78ba478	2026-08-02	[REVIEW] audit shared test executor contention
+ag-test-executor-enforcement-probe-1542	7acce01330446b9fdeb5836fa2f8ad6d0ee05d13	2026-08-02	[REVIEW] probe test executor enforcement boundary
+ag-test-executor-foundation-r1-1544	ae93978ddcd6d919a3f96d1e9d6f8b01d8504fe7	2026-08-02	[REVIEW] replace test executor lease with broker boundary
+ag-test-executor-foundation-r8-1561	5ea19556f4a3e553d6e4a4c43f9bcb5dc0f71f76	2026-08-02	[CODER] align test executor r8 evidence
+ag-test-executor-lease-design-r2-1542	7a21f92b1338e3140fffbbcd43db3794929ff1c0	2026-08-02	[REVIEW] revise trusted test-executor boundary design r2
+ag-test-executor-r10-security-boundary-1575	fef310b800d4baa38b8c0104075d00368ed2b906	2026-08-03	[CODER] record r10 security boundary evidence
+ag-test-executor-r11-operations-1581	415f62fd9d2e3fe14a82a92364be846f3c7d52bf	2026-08-03	[CODER] retain r11 operations terminal evidence
+ag-test-executor-r12-hermetic-security-1581	5de7c6050a5e9da0c1fd3353552a754515da436a	2026-08-03	[REVIEW] accept r12 hermetic executor correction
+ag-test-executor-r9-1565	8ba84c4c162c3451b761e22859c1d6b4e6b1a828	2026-08-03	[CODER] correct test executor r9 review boundaries
+ag-test-executor-resource-inventory-1544	1e2ed89170fa048c268ad6dd17a33e4451852d45	2026-08-02	[REVIEW] Inventory test executor resources
+ag-test-resource-inventory-r11-1565	e316bc91d93178939a22bedf527f059fe090feb0	2026-08-02	[CODER] record resource inventory r11 evidence
+ag-typecheck-repair	7d862173da40bcd5cb65f1d3522278a4957e1a5d	2026-07-31	[CODER] Fix media fixture response body type
+ag-v3-authority-design-1533	6187f7449056d0ae2aa6de791873d518dac71835	2026-08-02	[REVIEW] Design v3 authority producer protocol
+ag-v3-authority-r11-ops-1544	793dfc8b5b4cf4f0dce603023d2935f793d409e2	2026-08-02	[CODER] Correct authority r11 operations evidence
+ag-v3-authority-r11-sec-1544	b2d71de89eb5e8ec6ff60628bc9c9b8ab9ae8339	2026-08-02	[CODER] Record v3 authority r11 evidence
+ag-v3-authority-r12-combined-1548	7f1e2ba9443b492c6423bd5a1981aaf5ecad0aaf	2026-08-02	[CODER] Compose v3 authority r12 candidate
+ag-v3-authority-r12-integration-plan-1544	99fd3af00972924e42e72971c037e02fb71c64ab	2026-08-02	[REVIEW] plan v3 authority r12 integration
+ag-v3-authority-r13-wiring-1551	b5ec28bd4aad3a79367654752e65d20378753c46	2026-08-02	[CODER] Correct authority r13 implementation SHA
+ag-v3-authority-r14-upgrade-1551	c7244fdf9517ae9f9504772c6b6c33b31bb4df29	2026-08-02	[CODER] make authority unit upgrade rollback-safe
+ag-v3-authority-r15-reconcile-1551	f869278c1754453b1d9883be9aeb32e0fb2045ba	2026-08-02	[CODER] reconcile authority security and operations
+ag-v3-authority-r19-1579	1503a6f3a3aa7fc7e036f5a6642c49d0e4a7e450	2026-08-03	[CODER] record authority r19 terminal evidence
+ag-v3-authority-r20-operations-1581	8dd7d705cf3d9e966eb0146dd754919e96d41ea1	2026-08-03	[CODER] record authority r20 terminal evidence
+ag-v3-authority-r21-security-regression-1581	bf44830e9796817c51c8408a9617e3d1b705fc82	2026-08-03	[CODER] close authority inventory security locks
+ag-v3-authority-r22-clean-recut-1581	880421df076a666488298b89c363acd4e93eda83	2026-08-03	[CODER] record authority r22 terminal evidence
+ag-v3-authority-r23-residue-rework-1581	e5d6476864d4ee26fd6b55e0b3e500abf946647b	2026-08-03	[CODER] record authority r23 residue evidence
+ag-v3-cons-arch-final	a51527f6a1280c381a882e0ded6b108d661691b7	2026-08-02	[REVIEW] conclude v3 architecture consilium
+ag-v3-cons-deliv-final	5ebea01263a11282006f4b70bc9c38fc350ee81d	2026-08-02	[REVIEW] conclude v3 delivery consilium
+ag-v3-cons-port-final	e62f3023275c5587f9ab75b9124e957a822db5d6	2026-08-02	[REVIEW] conclude v3 portability consilium
+ag-v3-cons-process-final	4b13f64f0f4549a651030a15733b69a2a8915d38	2026-08-02	[REVIEW] conclude v3 process admission
+ag-v3-cons-synthesis	5e6a19046851955141f71b86991091e0dde15534	2026-08-02	[REVIEW] synthesize v3 final consilium
+ag-v3-container	365d7d72b504dddba89629d2b94c379953a4a9fb	2026-08-02	[CODER] Add deterministic non-root meteorite container
+ag-v3-container-r2	be4ae7c60e8fef646112ef85e4699884681e9618	2026-08-02	[CODER] Fix exact-SHA image and plain Docker stand
+ag-v3-container-r3	dea3be7447fb6e7bd813b032ad4518ebb673c432	2026-08-02	[CODER] Initialize runtime volumes before dropping root
+ag-v3-container-r4	14026b38ca988e27a1db15b4ba32531cd985ac62	2026-08-02	[CODER] Lock image entrypoints and document Docker stand
+ag-v3-cutover-scope-1508	50765f7ddaef343d8c1036f5f5ac2b866c9d0b36	2026-08-02	[CODER] Fix August 5 v3 scope denominator
+ag-v3-dispatch	0b38407da19614158b9f791dbcdd5560fde1af92	2026-08-02	[CODER] record v3 dispatcher terminal evidence
+ag-v3-dispatch-r11	acb8af6cd494be8df846222b893f9d8cb4d44bdd	2026-08-02	[CODER] correct dispatcher evidence SHA
+ag-v3-dispatch-r3	0d6ef12290a783f9ab0b3fbfcff09d9763379732	2026-08-02	[CODER] recover post-PID gated worker
+ag-v3-dispatch-r4	d8eda5040e3ae2ab55e41a40e78fafe201be2fb6	2026-08-02	[CODER] lock pre-intent dispatcher regression
+ag-v3-fixture-gating	4f768e966ba8934e97d32ecb890801a6d3b8515e	2026-08-02	[CODER] Guard non-standalone donor daemon fixtures
+ag-v3-fixture-gating-r2	f98a119dec2b86adb4d2956b903baac74410e218	2026-08-02	[CODER] Record fixture gating evidence
+ag-v3-foundation	02574c44ad691b71541782e821a53a6895bbd3ec	2026-08-02	[CODER] Bootstrap v3 instruction foundation and donor fixtures
+ag-v3-foundation-r4	9490314b4c7c555d3521e12e37a4c44e4d467e81	2026-08-02	[CODER] Make v3 foundation admitted tests self-contained
+ag-v3-gap1-recut-1506	73853d6f8aad5911431ffec9ed58b05f9fb35034	2026-08-02	[CODER] record comparable GAP-1 evidence
+ag-v3-gap1-red-rework-1515	46de903f613e07d40cfab5b338ff64ced9fbcab9	2026-08-02	[CODER] repair comparable GAP-1 red evidence
+ag-v3-gap1-report-r3-1524	fcef33da93e9534b39cdf13d71cc3e2f0877ab66	2026-08-02	[CODER] bind GAP-1 report to repaired evidence tip
+ag-v3-gap1-rework-r2-1500	20208bab73419b29730c8a7f62b765584682e98e	2026-08-02	[CODER] record V3-GAP-1 rework evidence
+ag-v3-gap1-unit-1479	1922a4b4d0dc2bd6b505d9f0d13c36a221055a1a	2026-08-02	[CODER] record V3-GAP-1 terminal evidence
+ag-v3-gap2-evidence-r7-1533	5a1c68d61ba8a66c9a8903f2afc937d548952647	2026-08-02	[CODER] record GAP-2 r7 terminal evidence
+ag-v3-gap2-recut-1508	f26664b9a33f7e5cef5cd4d0df8eb55eb9d40f8d	2026-08-02	[CODER] restore canonical GAP-2 durability locks
+ag-v3-gap2-rework-r3-1506	d13cd964493ee7486d855044802cdd2bd464150d	2026-08-02	[CODER] validate canonical SQLite index set
+ag-v3-gap2-state-1479	cfa71ed96c3e95edd16dfeb45ee9172743dc72b2	2026-08-02	[CODER] make supervisor consume canonical SQLite state
+ag-v3-gap3-fullsuite-r4-1533	08dcebbf984c1c72480e2da55660438fdf46a6fc	2026-08-02	[CODER] Bound PostgreSQL published-port readiness
+ag-v3-gap3-recut-1508	638e4acb1ef5e6869ed27d42c79b7355ddab2b56	2026-08-02	[CODER] create durable successors for stale lanes
+ag-v3-gap3-rework-r3-1524	2c64655582e13df6720335e60aae41aba1c20abd	2026-08-02	[CODER] order durable lease refusal before singleton fallback
+ag-v3-gap3-successor-1506	f9266342781f1640c817bba446b9b8a10e582871	2026-08-02	[CODER] record W-48 GAP-3 terminal evidence
+ag-v3-gap4-alert-1479	7a9aa7ec3c68d76cfdca9221438173c785c4dcbf	2026-08-02	[CODER] record W-48 delivery evidence
+ag-v3-gap4-atleastonce-1515	d2aa9f13ef07d7c1bbdf0a2d0fd2b83c7269ed46	2026-08-02	[CODER] Make Telegram delivery honestly at-least-once
+ag-v3-gap4-recut-1506	b31102475db5a7c36493d99f8f4897890efbdaf5	2026-08-02	[CODER] report GAP-4 recut evidence
+ag-v3-gap4-rework-r2-1500	06a5fbb4321897dc9dca6a5b7f930e3a65b8df51	2026-08-02	[CODER] rework durable escalation delivery
+ag-v3-gap4-rework-r4-1508	b33ab6ee8812f9e9582c5e732dfc1b9226bf38d9	2026-08-02	[CODER] report GAP-4 r4 reconciliation blocker
+ag-v3-gap5-journal-1506	1b6f4ac51a949171e679c00f5c2b23a98ad788be	2026-08-02	[CODER] add durable missed-tick journal
+ag-v3-gap5-rework-r4-1533	e81ea8e8e3da29894ccb0e0cc2e80e279a98e950	2026-08-02	[CODER] record GAP-5 r4 terminal evidence
+ag-v3-meteorite	ab8afadb54c6cbef025acb360f5dfaf590c90b8d	2026-08-02	[CODER] align meteorite evidence export mount
+ag-v3-meteorite-r2	b07743848055dba342e72124b606f1fa8f32454a	2026-08-02	[CODER] point plain Docker build at tracked Dockerfile
+ag-v3-meteorite-r4	9dbd0338551dd8367cfbf5e910b5d2c4f2670228	2026-08-02	[CODER] Mark unobserved meteorite gates fail-closed
+ag-v3-prepare-design-r3-1565	b4f8963236f54f39f1fc453e8862c04b64d27c4b	2026-08-02	[CODER] harden teardown signal convergence design
+ag-v3-prepare-teardown-impl-r1-1565	0483f1ec36d03fd670c10e37129c7727c111d13d	2026-08-03	[CODER] update final R15 implementation evidence
+ag-v3-prepare-teardown-proof-design-1565	a54dc1200d973d8b8446afa28e6b776ccf4017e7	2026-08-02	[REVIEW] design prepare-unit teardown proof
+ag-v3-recovery	e9a115346835c7d30514964c452d5e017b13c5dc	2026-08-02	[CODER] record v3 recovery terminal evidence
+ag-v3-recovery-r2	b482805fb519d01b00836bafbb46a1bedc70be05	2026-08-02	[CODER] gate watchdog fixture on state integration
+ag-v3-recovery-r3	f11b155959e69b6ebbd698a63dc1ca40efe6662c	2026-08-02	[CODER] gate standalone daemon watchdog locks
+ag-v3-recovery-r4	f11b155959e69b6ebbd698a63dc1ca40efe6662c	2026-08-02	[CODER] gate standalone daemon watchdog locks
+ag-v3-recovery-r6	efdeb838a7c242924c93f957a925e27d8dd82519	2026-08-02	[CODER] quarantine proven source-defective transport lock
+ag-v3-review	d66c81668559bf925aefe4c698401d6a4d5b08b4	2026-08-02	[ORCH] v3 root — marriage of old-orchestrator base and v2 additions (HR-1382)
+ag-v3-review-10	15118fd4180c3909ecb186b06ad0beb699a36479	2026-08-02	[REVIEW] accept v3 state dispatcher pair
+ag-v3-review-11	760e4f72bfed0166292759f1f8879b57342da755	2026-08-02	[REVIEW] Record v3 root-suite pair verdict
+ag-v3-review-12	660c018e08c7c12a6cc88123a96c62337ac381fd	2026-08-02	[REVIEW] reject git-less provenance recovery
+ag-v3-review-13	af6e61594128c3c6969d7425fb1fe34ee1d19822	2026-08-02	[REVIEW] reject dispatcher escalation kill window
+ag-v3-review-14	522043633ecab20fbd6aa9bdcce13f11dcd46bf3	2026-08-02	[REVIEW] reject dispatcher r10 lineage evidence
+ag-v3-review-2	9a7fa161aca7258095ae775b35ea301580806b0d	2026-08-02	[REVIEW] Reject unsafe v3 candidates
+ag-v3-review-3	d66c81668559bf925aefe4c698401d6a4d5b08b4	2026-08-02	[ORCH] v3 root — marriage of old-orchestrator base and v2 additions (HR-1382)
+ag-v3-review-4	d66c81668559bf925aefe4c698401d6a4d5b08b4	2026-08-02	[ORCH] v3 root — marriage of old-orchestrator base and v2 additions (HR-1382)
+ag-v3-review-5	6b394ab01e23830f7624fe450ff540beec98d656	2026-08-02	[REVIEW] Reject broken v3 container launcher chain
+ag-v3-review-6	d8ecec8bf422f6bc204302af304b3994e33354f2	2026-08-02	[REVIEW] review v3 dispatch and recovery r3
+ag-v3-review-7a	690ebf06b0b43237d2f21f91443f734b73551056	2026-08-02	[REVIEW] record v3 runtime trio final findings
+ag-v3-review-7b	a2448e976900cd12d7ed9b858e7c795dfba94eeb	2026-08-02	[REVIEW] interrogate v3 stand provenance
+ag-v3-review-8	281a2e69e58e8a732a8896e690ddfb07884d4e24	2026-08-02	[REVIEW] record v3 r5 pair verdicts
+ag-v3-review-9	481b58f381357e5c16d81e7bcaa91b1453e892ff	2026-08-02	[REVIEW] reject false-green donor fixture gating
+ag-v3-review15-1479	3b95b042008377ef72e3fe3681aa67f3c8b5f2c8	2026-08-02	[REVIEW] accept atomic state and dispatcher r11
+ag-v3-scope-authority-r6-1533	61674424d059db935522552e033759f81b6a19cf	2026-08-02	[CODER] Add authority v1 protected producer core
+ag-v3-scope-rework-r5-1533	c9e62fbff25ed3f52b55abb8c5d9360ce0c36134	2026-08-02	[CODER] Record v3 cutover r5 NO-GO evidence
+ag-v3-state	10d6c269f9928288f220716571345050cc5f284b	2026-08-02	[CODER] add fenced v3 durable state schema
+ag-v3-state-r4	23498a7c6f97023e6dfb04bde767e10fae0fff41	2026-08-02	[CODER] make terminal escalation atomic
+ag-v3-state-r4b	dee8ba19ccfd835f09c1c6c5d9fc85d9808fa2be	2026-08-02	[CODER] pin canonical v3 state report commit
+ag-v3-telegram	7801803bd26804143ce8de99407226268a56f84f	2026-08-02	[CODER] record v3 Telegram verification evidence
+ag-v3-telegram-r3	14699af86055a908497553bf192cce00fac28053	2026-08-02	[CODER] fix Telegram end-to-end durability contracts
+ag-v3-telegram-r6	c052787a6ec16ded6804250b22f793bcf799082d	2026-08-02	[CODER] record v3 Telegram r6 evidence
+ag-verbatim-allowed	b56e09707832ab479d26cc284d372c6595108c9e	2026-07-31	[CODER] Allow verbatim context in triage ledger
+ag-verbatim-allowed-2	0dfe6fefb047407e5a3158b6558e45af0393d866	2026-07-31	[CODER] allow verbatim triage quotes with secret scan
+ag-verify-hr1275-ci-api	7ceeed86146ec3d4e05523906addeb3a92f8020f	2026-08-02	[REVIEW] record HR-1275 CI API no-go
+ag-verify-hr1275-deploy-fixture	a48f520675b83c3ae90c1656159107ed8ff7549f	2026-08-02	[REVIEW] reject deploy fixture without tracked migration
+ag-verify-hr1275-deps-r2	ffc01dcadcab191f4e8dd32071af9a4715ba3a8f	2026-08-02	[CODER] reject unsafe dependency closure paths
+ag-verify-hr1295-fresh-r1	b7dd7a4523d55ea7c9f05c21cf8402cc91357383	2026-08-02	[REVIEW] audit HR-1295 fresh clean clone
+ag-verify2-hr1275-landing-mandatory	d0d260081f2d2042e0edd0c8ad06e1fd0bf1ca19	2026-08-02	[REVIEW] reject HR-1275 mandatory landing candidate
+ag-verify3-hr1275-db-r2	c028c6fc2f8c4ba6022b59c8f21a56344daab753	2026-08-02	[REVIEW] accept database fixture r2 runtime evidence
+ag-verify3-hr1275-deploy-r2	d4f1d995d355d84d9a72280ea4ddb664065580fc	2026-08-02	[REVIEW] accept pinned migration preflight fixture
+ag-w08-memory-dispositions-r1-1565	2c6194c78d0cc086520b40c5f6a9fa17138b66f6	2026-08-03	[CODER] record current W-08 memory dispositions
+ag-w08-terminal-artifact-1565	81d7c143e9466c9fae3b64a481ed266b2ad5efe0	2026-08-02	[CODER] record W-08 terminal NO-GO evidence
+ag-w10-prerequisite-audit-1565	402e7062c6f528621c8b309517b1f5ac31e6b8a2	2026-08-02	[REVIEW] audit W-10 dispatch prerequisites
+ag-w10-systemd-alternative-1565	29a0d86cc9446da7055c0c4e472e483bb23811d8	2026-08-02	[REVIEW] audit W-10 system timer alternative
+ag-w15-media-hermetic-r10-1565	e690a7d9b35357ec83d546a1d696c5e61ab2e286	2026-08-03	[CODER] record W15 causal interruption evidence
+ag-w15-media-socket-boundary-r3-1551	8d1e84563e54f96c2aa8ce3ee78bc837219d25c7	2026-08-02	[CODER] add hermetic W15 Telegram boundary
+ag-w15-media-timeout-diagnostic-1544	851e420e1f81f9d9dc1248117fb104c8293cbdbc	2026-08-02	[REVIEW] diagnose W15 media aggregate timeout
+ag-w20-path-authority-impl-r1-1551	9b0c037bfc816071c81e905611d344f98f922bbd	2026-08-02	[CODER] implement fail-closed path authority r5
+ag-w20-path-authority-r8-1565	3efdfd0600e88fb7f328390632f7b04ee35b7425	2026-08-03	[CODER] pin W-20 receipt verification identity
+ag-w20-rework-r2-1479	7d563ef5319b0db2145a4ca9eab6d5a7d6214105	2026-08-02	[CODER] enforce durable lane path ownership at landing
+ag-w26-dispatch-guard	cf62130d274c4d3f22ff160468272783865def4e	2026-08-01	[CODER] Guard fleet launch against invalid mission bodies
+ag-w35-daemon-deps-r10-1565	76e9e71e8eb136dd3d0924ab7652f6e351315ba2	2026-08-02	[CODER] Record daemon dependency bootstrap evidence
+ag-w35-daemon-deps-r11-recut-1565	a00746146149f64385852e59910238cf4a7dcfb8	2026-08-03	[CODER] record W35 dependency recut evidence
+ag-w35-evidence-r8-1533	489b2c2640a8eb66c7ea9caa4f04d1c68f3127af	2026-08-02	[CODER] Record W-35 r8 terminal evidence
+ag-w35-exclusive-suite-r9-1533	e85f90aa6d57332e700be1b932fb28d9ea4cbbca	2026-08-02	[REVIEW] Record W-35 r9 exclusive-suite contention
+ag-w35-rework-r7-1533	8e662963148ea1ef2090540e357144345532599e	2026-08-02	[CODER] Record W-35 r7 terminal evidence
+ag-w36-inv-db-deps-1500	f975a1b922edde69102036ec5e530c376ef4f0ff	2026-08-02	[CODER] Make database access lock use container network
+ag-w36-inv-mcp-notify-1500	8ac7f921fbc23160fde6ada6a592671adb465da7	2026-08-02	[CODER] Make verify count parsing exact and consistent
+ag-w36-inv-media-1500	8ac7f921fbc23160fde6ada6a592671adb465da7	2026-08-02	[CODER] Make verify count parsing exact and consistent
+ag-w36-inv-restart-watch-1500	46e52f41a4006138b1472eb7dade24690ca5acb1	2026-08-02	[CODER] isolate restart and watchdog daemon harnesses
+ag-w36-rework-r2-1479	8ac7f921fbc23160fde6ada6a592671adb465da7	2026-08-02	[CODER] Make verify count parsing exact and consistent
+ag-w43-queue-1479	903fcfb92f1e2804acd015154e43ba6795bd2378	2026-08-02	[CODER] lock end-of-queue dispatch invariant
+ag-watchdog-readiness-r5-1572	adedede76726595d594b1bcbd53f513deac4d0d4	2026-08-03	[CODER] measure watchdog teardown completion
+ag-watchdog-recovery-failclosed	9af011d47f86ff961bada3e71c1d51a40382a041	2026-08-01	[CODER] bound watchdog lease verification
+ag-watchdog-telegram-readiness-r1-1551	16f6205f7a7ee403c03fccf3e464fb0454f003e6	2026-08-02	[REVIEW] diagnose W20 watchdog health failures
+ag-watchdog-telegram-readiness-r2-1561	cce7ac74b07d17fafcbc570b102ab4f2d3b24f45	2026-08-02	[CODER] correct watchdog Telegram readiness transport
+ag-watchdog-transport-boundary-r1-1581	1fef8c89be9e7215b75e7cdf97db769822980c1a	2026-08-02	[ORCH] land lane ag-consilium-provider-r2-1565
+ag-watchdog-transport-boundary-r3-1581	1c73b0a618df994634eba8e0459d98a63bc2cd0e	2026-08-03	[CODER] retain corrected watchdog boundary evidence
+ag-wave-authority-ops-1581	fe4de901db3fa7f7ca713033a2fcfb572fd89627	2026-08-03	[REVIEW] reject authority r21 identity topology mismatch
+ag-wave-authority-sec-1581	0d523ca02a6a10f233df548c2902d9c05e08bb90	2026-08-03	[REVIEW] reject authority r23 interruption false green
+ag-wave-checkpoint-sec-1581	11cd42f919a7205e1057b7af976ad365168c8508	2026-08-03	[REVIEW] reject checkpoint restore design r5
+ag-wave-landing-ops-1581-review	9d6e1de2a58713760cd9a5f108f346e1c6d5c42f	2026-08-03	[REVIEW] accept landing recovery r8 operations
+ag-wave-landing-sec-1581	d9f30b996e4644763c3ab97a93b9b917c60990cd	2026-08-03	[REVIEW] accept landing recovery r8
+ag-wave-media-reg-1581	0f09540cfc6bf0983f8d270e4e80608a871b4a6d	2026-08-03	[REVIEW] accept media r14 readiness regression
+ag-wave-provenance-sec-1581	0891e22256862756063508b38c5d482945659806	2026-08-03	[REVIEW] reject duplicate provenance receipts
+ag-wave-provider-sec-1581	a51d6f7f2223e8cf2f8eb220c4873560160a3ac3	2026-08-03	[REVIEW] reject provider routing r7 systemd race
+ag-wave-sprint-reg-1581	51fe6a17683dcba7a358a2875cf73d9d79adeac9	2026-08-03	[REVIEW] reject sprint-close r5 false-green gate
+ag-wave2-authority-ops-1581	f2b13d778e3154dccfd7451418f46984845b8f06	2026-08-03	[REVIEW] reject unresolved authority candidate
+ag-wave2-authority-sec-1581	1be2cb17b14cc09a3d555abf4008804786cfa9e0	2026-08-03	[REVIEW] reject authority r23 interruption false green
+ag-wave2-checkpoint-sec-1581	5adffc1d17825af914e295955c6e8afebd1faa6d	2026-08-03	[REVIEW] reject checkpoint restore design r5
+ag-wave2-landing-sec-1581	7e2be3b665316b1b9ebbb5f2b490c7b2a88f2ed5	2026-08-03	[REVIEW] accept landing recovery r8 security boundary
+ag-wave2-media-reg-1581	9e6901524e0ea6f57747c4521c20e670aea3b6cf	2026-08-03	[REVIEW] reject media r14 readiness candidate
+ag-wave2-provider-reg-1581	2c4ffdfad3e43b6f1ed9d052a72cb39a1924e08b	2026-08-03	[REVIEW] reject provider r6 deletion-insensitive lock
+ag-wave2-provider-sec-1581	e152f019d929bb6701074531199152ecdbb4b008	2026-08-03	[REVIEW] accept provider routing r7 security boundary
+ag-wave2-sprint-reg-1581	7100854c4db7df219f15bf24212add316f411fbb	2026-08-03	[REVIEW] reject sprint-close false greens
+ag-whisper-test-stability	7c9557b3b8bd3e2348478efec8bcaead572ba517	2026-07-31	[CODER] stabilize and isolate real Whisper acceptance
+branch-hygiene	52b4a8db19022e8ba3daefa0ec1577da6b8b17e0	2026-07-31	[CODER] lock branch reap against unique content
+channel/orch-to-oldorch	4e659abdbb26ac3f698f625412800c3302dfa91b	2026-07-30	MAILBOX: transport bootstrap — and the gap this does not close
+consilium-gate-instruction	844f9c5d87bf1681bf0422c1119f6fba6ddc49d7	2026-07-31	[CODER] Gate visual delivery through consilium
+deploy-pipeline	723e609f10ca7b64413e005512f0a359325cfe44	2026-08-01	[CODER] add atomic live stand deployment and staleness alarm
+deploy-pipeline-2	a8cea67f90c06e271b01eebab7b871d69da8842e	2026-08-01	[CODER] preflight migrations and prove exact-SHA rollback
+deploy-pipeline-3	3d5bdf6a43ab625fd12e6d65133ba6eca41bd9c9	2026-08-01	[CODER] harden live deploy failure recovery
+deploy-pipeline-4	5085fdb09b2848ae80a37d37ccf999025a36fa6a	2026-08-01	[CODER] fail loudly on health identity contract drift
+dispatch-entrypoint	b7ddd7d35888d3d2523fb9a628bfda8b06d0416e	2026-08-01	[CODER] add guarded idempotent lane dispatch
+gate-dependency-install	8da8ddea51fd2297e00e130028d7a594643678c5	2026-08-01	[CODER] refuse gate verification without dependencies
+infra-full-suite	77539e21229d9002ac51c0a7fb2e6ff2561539de	2026-07-31	[CODER] make full suite hermetic and honestly attributed
+landing-gate	b9c99fbb012ad6774d72d9012adb0d230e3f93be	2026-08-01	[CODER] make red trees impossible to land
+landing-gate-2	7def94c16da6b14034ecdafc6e1008cb75e82148	2026-08-01	[CODER] make landing verification mandatory
+landing-gate-3	016a70f218a556caf3934b8729ce03ca75741681	2026-08-01	[CODER] close batch landing verification bypass
+landing-gate-4	65796cc4bf15c5e4f60d2e72e1311c6c26dc5dec	2026-08-01	[CODER] enforce declared landing checks
+landing-report-shape	01f0d49d1cf273093f21abce8a79a6e4b0e7c37c	2026-08-01	[CODER] require committed lane terminal reports
+lane-db-isolation	afdd8432632b34cc1401d820c499e47caed766ef	2026-08-01	[CODER] isolate lane databases and detect schema drift
+lane-db-isolation-2	772b26bf54122b9e62de763351c9acdec97e437b	2026-08-01	[CODER] close rejected lane database boundaries
+lane-db-isolation-3	edf00d8522199130f4ebada302aff38e46b4d600	2026-08-01	[CODER] make production databases unreachable from lanes
+lane-db-network-boundary	9800c5488b39f6b59bc7b2d0abfae82e6754379b	2026-08-01	[CODER] isolate lane network from production database
+lane-disposable-db	8ab0085e5f6c392895377346327198d9167cac92	2026-08-01	[CODER] record fail-closed database evidence
+lane-disposable-db-2	3299c02dbc3519ef3af9f963841a8745eb04d542	2026-08-01	[CODER] drop Compose from disposable lane database
+lane-disposable-db-3	4cdcd709532cc812fc2c0f2805f1de5b71df53ac	2026-08-01	[CODER] prove disposable database runtime isolation
+lane-path-ownership	226def1da9263e4ecebff2bab42f5f836b90f6f5	2026-08-01	[CODER] enforce lane path ownership and safe additive merges
+lane-test-envs	8bafa1ed9827a05559d6a2f75368dc692e688e99	2026-08-01	[CODER] fix orphan lane project lookup
+morning-brief	62c45f906c144b860e950e97b941f1ce95ccccb7	2026-08-01	[CODER] record live-verified morning brief
+orchestrator-night-report	a76dca45441fb15fc4c759433b12e2d76ef82e71	2026-08-01	[CODER] record overnight verified evidence
+preview-edge-fix-2	21c31f9b799744e3a9c2fa3c006ecfc1498bad81	2026-08-01	[CODER] Declare edge activation lock state
+preview-tool-fix	afb1c0607e035028a1a083b516428589e3f371d4	2026-08-01	[CODER] Fix preview HTTPS route activation
+report-contract-redesign	612f2e6b9bc0c41c6bd4544ffe19b095bb57830c	2026-08-01	[CODER] isolate report-only landing regression state
+review-auth-final-2	bbbdfe1acfc5ceae34d5e9ea8382111244d06ecc	2026-08-01	[REVIEW] reject incomplete live auth readiness evidence
+review-auth-final-3	d733c76bd857512cbe9384a7c8afdef8602d1cf2	2026-08-01	[REVIEW] reject incomplete auth enablement evidence
+review-branch-reap	c0f755e29a635423b586d8220888b863d4a0a299	2026-07-31	[REVIEW] reject incomplete branch reap safety lock
+review-branch-reap-2	0b44b8c1cf53b74c246a0adae1011d0cb8e470a3	2026-07-31	[REVIEW] record fail-closed full-suite result
+review-deploy-pipeline	baee59b60871ca4616d761cd762870a52d6524e4	2026-08-01	[REVIEW] reject unsafe live stand deploy pipeline
+review-deploy-poison	d2b7cf6ed3fd2b2b168036e01479c14691da72df	2026-08-01	[REVIEW] correct reviewed migration guard SHA
+review-dispatch	b1cd665d599da43ad87de01db3ecd40e93ae09e1	2026-08-01	[CODER] add honest dispatch terminal verification
+review-dispatch-entrypoint	cf463be921be57bee5ace2dee45967d3fe19188d	2026-08-01	[REVIEW] reject bypassable dispatch mission guard
+review-gate-corroboration	6a387a34a2111f8c22845656eafc77c7e74314d7	2026-08-01	[REVIEW] reject empty-suite corroboration bypass
+review-landing-gate	5c83c2c285587bf2e53fbee8d236d19e55d2e4a7	2026-08-01	[REVIEW] reject bypassable batch landing gate
+review-landing-gate-3	d675880f176cdb9b7e136bec9a5fa628d9ae1abb	2026-08-01	[REVIEW] reject skipped declared verification scripts
+review-landing-gate-4	8dd5fd6c7efc0de1f90b4d59333dd15e4730b357	2026-08-01	[REVIEW] reject caller-controlled Bun gate bypass
+review-landing-gate-6	d0cf7bd2b0d6573d46389e7afd53a9c799a0b75d	2026-08-01	[REVIEW] lock rewritten declared-check bypass
+review-landing-gate-final	c93d91fd4b0d36287905792f2f91373fe4c0d786	2026-08-01	[REVIEW] reject PATH-substitutable landing checks
+review-landing-shape	6a986c884a567acc495e8dc808034d157b97cc1a	2026-08-01	[REVIEW] reject impossible committed terminal report contract
+review-lane-db	5e2112cdcae7b8ca0b1a73cb2f79474a5e153f00	2026-08-01	[REVIEW] reject porous lane database boundary
+review-lane-isolation	ceb7b52544ebd7b4d4dc2eaa6988994da0807e5d	2026-08-01	[REVIEW] reject incomplete lane database isolation
+review-lenses	740971add951279dee3d899c88232836f0e5f149	2026-07-31	[CODER] Route reviews through explicit risk lenses
+review-preview-edge	d89eed958f7a7b7c6c62a225c68f03e555a49b5d	2026-08-01	[REVIEW] reject unsafe preview edge activation
+review-preview-edge-2	c2c8d73116fb7247b74593e5325f9972d4aafce0	2026-08-01	[REVIEW] reject nonportable preview edge activation
+review-report-contract	4767184f95df19cca95b624bf6760a0eb0e47e5d	2026-08-01	[REVIEW] reject unsafe report-only path bypass
+review-rotation	eed106a72c8fb196aa21d81374648436a28e502f	2026-08-01	[REVIEW] Accept credential rotation readiness
+review-secret-masking	5a095bfa9ed89c78a224dce138448deb42f82b58	2026-07-31	[REVIEW] reject unsafe secret masking boundaries
+review-secret-masking-2	41db1b330ac5e29999d32a21a6bea2746aec23e5	2026-07-31	[REVIEW] reject incomplete secret masking fixes
+review-stand-role	efe92b9c9ac255482f45118579d6b18f5990c97d	2026-08-01	[REVIEW] accept read-only stand verifier identity
+review-state-contract	b0f396cbbc2c621fb47a044739be7dfef06a50ab	2026-07-31	[REVIEW] Accept state contract declarations
+review-watchdog-workboard	642f6a3578b3755b04f25437ca10b046fc5ecfec	2026-07-31	[REVIEW] reject workboard watchdog truth change
+rotation-readiness	eb353bb8c9ba216ae7e43320748228f152f6acd7	2026-08-01	[CODER] Prepare current credential rotation sequence
+secret-masking	8b8d29b571823d85d6774eb022ece39b8d530978	2026-08-01	[CODER] make log masking sweep idempotent
+secret-survivor-verify	ff9baf08dfa09e6d5a7c5d9adf988a65094cf148	2026-08-01	[CODER] Settle Claude credential survivor evidence
+w19-session-cleanup	b30f1663adb678a8ea6d5908972158a5a54fe0c3	2026-07-31	[CODER] record bounded session-secret cleanup
+watchdog-liveness	cf89fd52598bbd8ee108f64af73a6a8f65bbf2d5	2026-07-31	[CODER] Watch the fleet watchdog heartbeat
+workboard-truth	506f35573be122277ac4c1c34ddc74c9379bb936	2026-07-31	[CODER] make workboard open count truthful

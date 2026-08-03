@@ -9,5 +9,5 @@ await writeFile(ack,JSON.stringify({at:new Date().toISOString(),attempt,ownerTok
 if(process.env.DISPATCH_WORK_MS)await Bun.sleep(Number(process.env.DISPATCH_WORK_MS));
 await writeFile(artifact,"deterministic worker artifact\n");
 const sha=Bun.spawnSync(["git","rev-parse","HEAD"]).stdout.toString().trim();
-await writeFile(report,`lane: ${laneId}\nattempt: ${attempt}\ncommit: ${sha}\nresult: clean\nblocker: none\n`);
+await writeFile(report,`commit: ${sha} synthetic worker\nverify: true\nresult: clean\nsecret-scan: clean\nremaining: none\n`);
 await writeFile(terminal,JSON.stringify({laneId,attempt,ownerToken,at:new Date().toISOString(),reportPath:report,sha,verdict:"clean"}));

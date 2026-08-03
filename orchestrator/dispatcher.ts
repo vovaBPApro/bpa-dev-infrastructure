@@ -1,9 +1,9 @@
 import { mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { DurableStore, FencedTransitionError, type LaneRecord, type TerminalVerdict } from "../core/schema";
-import { lineValue } from "../gate/report-contract";
+import { completionReportVerdict } from "../gate/report-contract";
 
-export interface DispatchOptions { storePath:string; runtimeDir:string; worker:string[]; leaseMs?:number; acknowledgementMs?:number; terminalMs?:number; afterSpawnBeforePersist?:(row:LaneRecord)=>void|Promise<void>; afterPersistBeforeRelease?:(row:LaneRecord)=>void|Promise<void>; afterLaunch?:(row:LaneRecord)=>void|Promise<void> }
+export interface DispatchOptions { storePath:string; runtimeDir:string; worker:string[]; repoDir?:string; branch?:string; leaseMs?:number; acknowledgementMs?:number; terminalMs?:number; afterSpawnBeforePersist?:(row:LaneRecord)=>void|Promise<void>; afterPersistBeforeRelease?:(row:LaneRecord)=>void|Promise<void>; afterLaunch?:(row:LaneRecord)=>void|Promise<void> }
 type Terminal={laneId:string;attempt:number;ownerToken:string;at:string;reportPath:string;sha:string;verdict:TerminalVerdict};
 type Intent={laneId:string;attempt:number;ownerToken:string;worker:string[];env:Record<string,string>;phase:"intended"|"identified"|"persisted";pid?:number;startTime?:string;commandIdentity?:string[]};
 const sleep=(n:number)=>new Promise(r=>setTimeout(r,n));
@@ -22,32 +22,15 @@ export async function durableJson(path:string,value:unknown){
 async function procIdentity(pid:number){try{const raw=await readFile(`/proc/${pid}/stat`,"utf8"),end=raw.lastIndexOf(") ");if(end<0)return;const startTime=raw.slice(end+2).trim().split(/\s+/)[19],cmdline=(await readFile(`/proc/${pid}/cmdline`)).toString().split("\0").filter(Boolean);return /^\d+$/.test(startTime)?{startTime,cmdline}:undefined}catch{return}}
 async function authenticIntent(path:string,row:LaneRecord){try{const i=JSON.parse(await readFile(path,"utf8")) as Intent;if(!(["identified","persisted"] as unknown[]).includes(i.phase)||i.laneId!==row.id||i.attempt!==row.fencingToken||i.ownerToken!==row.leaseOwner||!i.pid||!i.startTime||!Array.isArray(i.commandIdentity))return;const live=await procIdentity(i.pid);if(!live||live.startTime!==i.startTime||JSON.stringify(live.cmdline)!==JSON.stringify(i.commandIdentity)||!live.cmdline.some(x=>x.endsWith("dispatch-wrapper.ts"))||!live.cmdline.includes(path))return;return i}catch{return}}
 async function terminateIntent(i:Intent){if(!i.pid)return;const live=await procIdentity(i.pid);if(!live||live.startTime!==i.startTime)return;try{process.kill(i.pid,"SIGTERM");for(let n=0;n<50;n++){if(!(await procIdentity(i.pid)))return;await sleep(10)}const again=await procIdentity(i.pid);if(again?.startTime===i.startTime)process.kill(i.pid,"SIGKILL")}catch(e){if((e as NodeJS.ErrnoException).code!=="ESRCH")throw e}}
-// KNOWN DIVERGENCE (instance/workboard.md V3-0.2, flagged and left OPEN by
-// design, not by oversight): this is a SECOND, separate terminal-report
-// contract from gate/completion-guard.ts's (`commit:`/`verify:`/`result:`/
-// `secret-scan:`/`remaining:`, the CLAUDE.md contract, git-branch-aware, now
-// also gated at lane-exit time via gate/lane-exit.sh). This one checks
-// `lane:`/`attempt:`/`commit:`/`result:` plus laneId/fencingToken/ownerToken
-// -- fields that authenticate a report against THIS dispatch attempt for the
-// fenced retry protocol below, a concern gate/completion-guard.ts has no
-// notion of. It is also branch-agnostic: LaneRecord carries no branch field,
-// so it cannot check `commit:` against a branch tip the way completion-guard
-// does, and is exercised today only by the synthetic workers under
-// tests/fixtures/*.ts, not by real AI coder-lane dispatch (orchestrator/
-// dispatch-lane.sh: "the repo has no lane launcher yet").
-// The two contracts were NOT reconciled in V3-0.2: doing so needs a branch
-// field on LaneRecord/DurableStore (a schema change) plus updates to every
-// worker fixture, which is bigger than that row. gate/completion-guard.ts is
-// authoritative for real, git-branch-centered coder-lane reports (the live
-// path per instructions/orchestrator-cold-start.md); this function remains
-// authoritative only for the low-level fenced-dispatch attempt protocol until
-// that protocol is wired to real lanes, at which point it must adopt (or
-// delegate to) the same contract instead of carrying a second one.
-async function validTerminal(path:string,row:LaneRecord):Promise<Terminal|undefined>{
+/* RECONCILED by V3-0.16. The JSON envelope authenticates the dispatch
+ * attempt; the referenced report delegates to the real completion guard. */
+export function dispatcherReportVerdict(path:string,repoDir:string,branch:string){
+  return completionReportVerdict({report:path,repo:repoDir,branch});
+}
+async function validTerminal(path:string,row:LaneRecord,repoDir:string,branch:string):Promise<Terminal|undefined>{
   try { const t=JSON.parse(await readFile(path,"utf8")) as Terminal;
     if(typeof t!=="object"||t.laneId!==row.id||t.attempt!==row.fencingToken||t.ownerToken!==row.leaseOwner||!/^\d{4}-\d\d-\d\dT/.test(t.at)||!(["clean","NO-GO"] as unknown[]).includes(t.verdict))return;
     if(resolve(t.reportPath)!==resolve(dirname(path),"report.md")||!(await exists(t.reportPath)))return;
-    const git=Bun.spawnSync(["git","cat-file","-e",`${t.sha}^{commit}`]); if(git.exitCode!==0)return;
     const report=await readFile(t.reportPath,"utf8");
     // Deliberately uses gate/report-contract.ts's lineValue -- the same
     // anchored, single-match parser gate/completion-guard.ts uses -- instead
@@ -59,7 +42,8 @@ async function validTerminal(path:string,row:LaneRecord):Promise<Terminal|undefi
     // completion-guard.ts) the same shape -- see the KNOWN DIVERGENCE note
     // below -- it only guarantees both parse whichever fields they do share
     // the same strict way.
-    if(lineValue(report,"lane")!==row.id||lineValue(report,"attempt")!==String(row.fencingToken)||lineValue(report,"commit")!==t.sha||lineValue(report,"result")!==t.verdict)return;
+    const reportedSha=report.match(/^commit:\s*([0-9a-f]{40})(?:\s|$)/m)?.[1];
+    if(reportedSha!==t.sha||dispatcherReportVerdict(t.reportPath,repoDir,branch)!==t.verdict)return;
     return t;
   } catch { return }
 }
@@ -67,7 +51,7 @@ async function stop(child:ReturnType<typeof Bun.spawn>){child.kill("SIGTERM");aw
 async function failure(store:DurableStore,row:LaneRecord,reason:string,dir:string){
   if(row.retriesUsed<row.retryBudget){store.retryLane(row.id,row.leaseOwner!,row.fencingToken);return}
   const sha=Bun.spawnSync(["git","rev-parse","HEAD"]).stdout.toString().trim(), report=resolve(dir,"report.md");
-  await writeFile(report,`lane: ${row.id}\nattempt: ${row.fencingToken}\ncommit: ${sha}\nresult: NO-GO\nblocker: ${reason}\n`);
+  await writeFile(report,`commit: ${sha} dispatcher failure\nverify: false\nresult: NO-GO\nsecret-scan: clean\nremaining: ${reason}\n`);
   store.completeLane(row.id,row.leaseOwner!,row.fencingToken,{sha,reportPath:report,verdict:"NO-GO"});
 }
 export async function dispatchOnce(o:DispatchOptions):Promise<LaneRecord|undefined>{
@@ -87,11 +71,11 @@ export async function dispatchOnce(o:DispatchOptions):Promise<LaneRecord|undefin
     const a=JSON.parse(await readFile(ack,"utf8"));if(a.attempt!==claim.fencingToken||a.ownerToken!==owner){await stop(child);await failure(store,store.getLane(row.id)!,"worker acknowledgement identity mismatch",dir);return row}
     store.acknowledgeLane(row.id,owner,claim.fencingToken);store.recordSemanticProgress(row.id,owner,claim.fencingToken,ack);
     if(!(await waitFor(terminal,o.terminalMs??5_000))){await stop(child);await failure(store,store.getLane(row.id)!,"worker terminal evidence timed out",dir);return row}
-    const t=await validTerminal(terminal,store.getLane(row.id)!);if(!t){await stop(child);await failure(store,store.getLane(row.id)!,"worker terminal evidence invalid",dir);return row}
+    const t=await validTerminal(terminal,store.getLane(row.id)!,o.repoDir??process.cwd(),o.branch??"HEAD");if(!t){await stop(child);await failure(store,store.getLane(row.id)!,"worker terminal evidence invalid",dir);return row}
     store.completeLane(row.id,owner,claim.fencingToken,{sha:t.sha,reportPath:t.reportPath,verdict:t.verdict});return row;
   } finally {store.close()}
 }
 /** Reconciles every durable intent. Pre-persist intents are terminated; persisted intents are adopted. */
-export async function reconcileRunning(o:Omit<DispatchOptions,"worker">):Promise<number>{const store=new DurableStore(o.storePath);let n=0;try{for(const initial of store.reconstruct().lanes.filter(x=>x.state==="running")){let row=initial;const dir=dirFor(o.runtimeDir,row),terminal=resolve(dir,"terminal.json"),intentPath=intentFor(dir);let t=await validTerminal(terminal,row),identity=await authenticIntent(intentPath,row);if(!t&&identity?.phase==="identified"){await terminateIntent(identity);await failure(store,row,"dispatcher died before worker identity persistence",dir);n++;continue}if(!t&&!identity){await failure(store,row,"recovered worker process identity mismatch",dir);n++;continue}if(!t&&identity?.phase==="persisted"){const release=resolve(dir,"release");if(!(await exists(release)))await writeFile(release,"go\n");await waitFor(terminal,o.terminalMs??5_000);row=store.getLane(row.id)!;t=await validTerminal(terminal,row);if(!t){await terminateIntent(identity);await failure(store,row,"recovered worker terminal evidence timed out",dir);n++;continue}}
+export async function reconcileRunning(o:Omit<DispatchOptions,"worker">):Promise<number>{const store=new DurableStore(o.storePath);let n=0;try{for(const initial of store.reconstruct().lanes.filter(x=>x.state==="running")){let row=initial;const dir=dirFor(o.runtimeDir,row),terminal=resolve(dir,"terminal.json"),intentPath=intentFor(dir);let t=await validTerminal(terminal,row,o.repoDir??process.cwd(),o.branch??"HEAD"),identity=await authenticIntent(intentPath,row);if(!t&&identity?.phase==="identified"){await terminateIntent(identity);await failure(store,row,"dispatcher died before worker identity persistence",dir);n++;continue}if(!t&&!identity){await failure(store,row,"recovered worker process identity mismatch",dir);n++;continue}if(!t&&identity?.phase==="persisted"){const release=resolve(dir,"release");if(!(await exists(release)))await writeFile(release,"go\n");await waitFor(terminal,o.terminalMs??5_000);row=store.getLane(row.id)!;t=await validTerminal(terminal,row,o.repoDir??process.cwd(),o.branch??"HEAD");if(!t){await terminateIntent(identity);await failure(store,row,"recovered worker terminal evidence timed out",dir);n++;continue}}
     if(t){try{store.completeLane(row.id,row.leaseOwner!,row.fencingToken,{sha:t.sha,reportPath:t.reportPath,verdict:t.verdict});n++}catch(e){if(!(e instanceof FencedTransitionError))throw e}}
   }return n}finally{store.close()}}

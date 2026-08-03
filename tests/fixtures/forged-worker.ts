@@ -6,5 +6,5 @@ import {readFile,writeFile} from "node:fs/promises";const e=process.env;while(tr
 // file and wrongly accepts; a parser anchored to the actual `commit:` line
 // (gate/report-contract.ts's lineValue, shared with gate/completion-guard.ts)
 // reads the wrong value and correctly rejects. See orchestrator/dispatcher.test.ts.
-const reportBody=kind==="line-injection"?`lane: ${laneId}\nattempt: ${attempt}\ncommit: ${"0".repeat(40)}\nresult: clean\nnote: see commit: ${sha} in the log\n`:`lane: ${laneId}\nattempt: ${attempt}\ncommit: ${sha}\nresult: clean\n`;
+const reportBody=kind==="line-injection"?`commit: ${"0".repeat(40)}\nverify: true\nresult: clean\nsecret-scan: clean\nremaining: see commit: ${sha} in the log\n`:`commit: ${sha}\nverify: true\nresult: clean\nsecret-scan: clean\nremaining: none\n`;
 await writeFile(report,reportBody);await writeFile(e.DISPATCH_TERMINAL_PATH!,JSON.stringify({laneId,attempt:kind==="attempt"?attempt+1:attempt,ownerToken,at:new Date().toISOString(),reportPath:report,sha,verdict:"clean"}));

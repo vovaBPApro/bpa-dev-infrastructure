@@ -138,7 +138,17 @@ load_protected_file() {
   if [[ ! -f "$list_path" || ! -r "$list_path" ]]; then
     die "protected-branches list is not a readable regular file: $list_path -- refusing to reap with an unverifiable protect list (this is not the same as an empty list; create the file, even comments-only, or pass --protected-file explicitly)"
   fi
-  while IFS= read -r name; do
+  # `read -r name || [[ -n "$name" ]]`, not a bare `read -r name`: `read`
+  # returns nonzero at EOF even on a line it successfully populated, so a
+  # file whose last line has no trailing newline (a `printf` append, or an
+  # editor that doesn't force one) would otherwise make the loop CONDITION
+  # false before the body ever runs for that line -- silently dropping the
+  # last name from protected_set with no error, no crash, exit 0. That is
+  # not "fails closed", it is a protected branch quietly losing protection,
+  # which is worse: `v3` reproducibly deleted this way. `|| [[ -n "$name" ]]`
+  # keeps the loop going for exactly one more (partial, final) iteration when
+  # `read` hit EOF but still captured content.
+  while IFS= read -r name || [[ -n "$name" ]]; do
     name="${name%%#*}"
     name="${name#"${name%%[![:space:]]*}"}"
     name="${name%"${name##*[![:space:]]}"}"
@@ -173,7 +183,13 @@ disposition_reason() {
   local list_path="${dispositions_path:-${DISPOSITIONS_FILE:-$own_root/instance/hygiene-branch-dispositions.txt}}"
   [[ -r "$list_path" ]] || return 1
   local line
-  while IFS= read -r line; do
+  # Same `|| [[ -n "$line" ]]` fix as load_protected_file, for the same
+  # reason: a disposition on the last, unterminated line of the file would
+  # otherwise be silently invisible to `read`. Lower severity here than the
+  # protect-list case -- a missed disposition fails TOWARD safety (the
+  # branch stays report-only forever instead of being deleted), not away
+  # from it -- but the same fix keeps the two loops honest with each other.
+  while IFS= read -r line || [[ -n "$line" ]]; do
     case "$line" in
       ''|'#'*) continue ;;
     esac

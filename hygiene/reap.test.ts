@@ -380,6 +380,58 @@ test("--protected-file unions its own names on top of the defaults, both take ef
   expect(sh("git show-ref --verify --quiet refs/heads/v3 && echo present", repo).trim()).toBe("present");
 });
 
+// --- round-4 review lock: a final line with no trailing newline must not
+// silently lose its protection.
+//
+// `while IFS= read -r name; do ...; done < file` treats a final,
+// newline-less line the way it treats end-of-file: `read` still populates
+// `name` with the line's content, but returns non-zero because it never saw
+// a delimiter, so the loop CONDITION is false and the body never runs for
+// that line. No crash, no `set -e` trip, no error of any kind -- exit 0, no
+// output -- and the name that line held is simply never added to
+// protected_set. This was misjudged in round 3 as "fails closed" because it
+// does not crash; it does not fail closed, it silently fails OPEN, which is
+// the same failure class as rounds 1 and 2 (v3/v2-deprecated losing
+// protection through a config-file edge case), reached by nothing more than
+// `printf` (rather than `echo`) appending a name, or a text editor that
+// doesn't force a final newline. Reproduced against fec502d before the fix
+// (see terminal.md for the full transcript): a protect file containing
+// `v2-deprecated\nv3` with no trailing newline after `v3`, exit 0, no
+// output, `v3` actually deleted.
+
+function runWithEnv(args: string[], env: Record<string, string>) {
+  return spawnSync("bash", [reap, ...args], { encoding: "utf8", env: { ...process.env, ...env } });
+}
+
+test("a protected-branches file whose final line has no trailing newline still protects that line's branch", () => {
+  const { dir, repo } = buildFixture();
+  sh("git branch v3", repo); // merged, no worktree -- deletable unless the last line is honored
+  const path = join(dir, "no-trailing-newline.txt");
+  // Deliberately NOT using writeProtectFile: this is the one test that needs
+  // the file to end WITHOUT a trailing newline, which is the whole point.
+  writeFileSync(path, "v2-deprecated\nv3");
+
+  const result = runWithEnv(["branches", "--repo", repo, "--apply"], { PROTECT_BRANCHES_FILE: path });
+  expect(result.status).toBe(0);
+  expect(result.stdout).toContain("protected branch, refusing: v3");
+  expect(sh("git show-ref --verify --quiet refs/heads/v3 && echo present", repo).trim()).toBe("present");
+});
+
+test("a disposition file whose final line has no trailing newline still applies that disposition", () => {
+  // Same fix, lower-severity direction: a missed disposition here means the
+  // branch stays report-only forever (safe), not that it gets deleted. Still
+  // fixed for consistency between the two loops.
+  const { dir, repo } = buildFixture();
+  const path = join(dir, "no-trailing-newline-dispositions.txt");
+  writeFileSync(path, "unmerged operator ruling, no trailing newline after this line");
+
+  const apply = run(["branches", "--repo", repo, "--dispositions", path, "--apply"]);
+  expect(apply.status).toBe(0);
+  expect(apply.stdout).toContain("dispositioned branch: unmerged:");
+  const check = spawnSync("git", ["show-ref", "--verify", "--quiet", "refs/heads/unmerged"], { cwd: repo });
+  expect(check.status).not.toBe(0);
+});
+
 test("an explicit disposition deletes an otherwise-unmerged branch; no disposition never does", () => {
   const { dir, repo } = buildFixture();
   const dispositions = join(dir, "dispositions.txt");

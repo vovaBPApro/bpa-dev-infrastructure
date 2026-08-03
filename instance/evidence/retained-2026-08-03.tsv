@@ -1,0 +1,14 @@
+branch	tip_sha	reason
+ag-test-executor-foundation-r1-1544	ae93978ddcd6d919a3f96d1e9d6f8b01d8504fe7	worktree-dirty-or-locked
+ag-v3-container-r2	be4ae7c60e8fef646112ef85e4699884681e9618	worktree-dirty-or-locked
+ag-v3-container-r3	dea3be7447fb6e7bd813b032ad4518ebb673c432	worktree-dirty-or-locked
+ag-v3-dispatch-r3	0d6ef12290a783f9ab0b3fbfcff09d9763379732	worktree-dirty-or-locked
+ag-v3-dispatch-r4	d8eda5040e3ae2ab55e41a40e78fafe201be2fb6	worktree-dirty-or-locked
+ag-v3-gap4-rework-r2-1500	06a5fbb4321897dc9dca6a5b7f930e3a65b8df51	worktree-dirty-or-locked
+ag-v3-meteorite-r2	b07743848055dba342e72124b606f1fa8f32454a	worktree-dirty-or-locked
+ag-v3-recovery-r2	b482805fb519d01b00836bafbb46a1bedc70be05	worktree-dirty-or-locked
+ag-v3-recovery-r3	f11b155959e69b6ebbd698a63dc1ca40efe6662c	worktree-dirty-or-locked
+ag-v3-recovery-r4	f11b155959e69b6ebbd698a63dc1ca40efe6662c	worktree-dirty-or-locked
+ag-v3-telegram-r3	14699af86055a908497553bf192cce00fac28053	worktree-dirty-or-locked
+ag-watchdog-telegram-readiness-r1-1551	16f6205f7a7ee403c03fccf3e464fb0454f003e6	worktree-dirty-or-locked
+ag-watchdog-transport-boundary-r1-1581	1fef8c89be9e7215b75e7cdf97db769822980c1a	worktree-dirty-or-locked

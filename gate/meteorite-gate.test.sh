@@ -63,17 +63,19 @@ cat >"$fixture/fake-bin/docker" <<'EOF'
 test "${1:-}" = info && test "${FAKE_DOCKER_DAEMON:-up}" = up
 EOF
 chmod +x "$fixture/fake-bin/docker"
+candidate_sha="$(git -C "$fixture/repo" rev-parse ag-broken)"
+main_sha="$(git -C "$fixture/repo" rev-parse main)"
 if FAKE_DOCKER_DAEMON=down PATH="$fixture/fake-bin:/usr/bin:/bin" land_run_meteorite "$fixture/repo" \
-    "$(git -C "$fixture/repo" rev-parse ag-broken)" >"$fixture/daemon.out" 2>&1; then
+    "$candidate_sha" "$main_sha" >"$fixture/daemon.out" 2>&1; then
   echo 'dead Docker daemon unexpectedly passed meteorite gate' >&2; exit 1
 fi
 grep -Fq 'LAND meteorite blocker=docker-daemon-unavailable' "$fixture/daemon.out"
 
 if PATH="$fixture/fake-bin:/usr/bin:/bin" land_run_meteorite "$fixture/repo" \
-    "$(git -C "$fixture/repo" rev-parse ag-broken)" >"$fixture/missing-prover.out" 2>&1; then
+    "$candidate_sha" "$main_sha" >"$fixture/missing-prover.out" 2>&1; then
   echo 'missing candidate prover unexpectedly passed meteorite gate' >&2; exit 1
 fi
-grep -Fq 'LAND meteorite blocker=candidate-prover-unavailable' "$fixture/missing-prover.out"
+grep -Fq 'LAND meteorite blocker=trusted-prover-unavailable' "$fixture/missing-prover.out"
 
 cat >"$fixture/repo/meteorite/prove-candidate.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -81,14 +83,17 @@ echo 'deliberately broken bootstrap fixture' >&2
 exit 42
 EOF
 chmod +x "$fixture/repo/meteorite/prove-candidate.sh"
+git -C "$fixture/repo" add meteorite/prove-candidate.sh
+git -C "$fixture/repo" commit -m trusted-broken-prover >/dev/null
+broken_prover_sha="$(git -C "$fixture/repo" rev-parse HEAD)"
 if TMPDIR="$fixture/missing/report-dir" PATH="$fixture/fake-bin:/usr/bin:/bin" land_run_meteorite "$fixture/repo" \
-    "$(git -C "$fixture/repo" rev-parse ag-broken)" >"$fixture/allocation.out" 2>&1; then
+    "$candidate_sha" "$broken_prover_sha" >"$fixture/allocation.out" 2>&1; then
   echo 'failed report allocation unexpectedly passed meteorite gate' >&2; exit 1
 fi
 grep -Fq 'LAND meteorite blocker=report-allocation-failed' "$fixture/allocation.out"
 
 if PATH="$fixture/fake-bin:/usr/bin:/bin" land_run_meteorite "$fixture/repo" \
-    "$(git -C "$fixture/repo" rev-parse ag-broken)" >"$fixture/broken.out" 2>&1; then
+    "$candidate_sha" "$broken_prover_sha" >"$fixture/broken.out" 2>&1; then
   echo 'deliberately broken rebuild unexpectedly passed meteorite gate' >&2
   exit 1
 fi
@@ -119,37 +124,47 @@ cat >"\$METEORITE_REPORT" <<'REPORT'
 REPORT
 EOF
   chmod +x "$fixture/repo/meteorite/prove-candidate.sh"
+  git -C "$fixture/repo" add meteorite/prove-candidate.sh
+  git -C "$fixture/repo" commit -m trusted-report-prover >/dev/null
+  trusted_prover_sha="$(git -C "$fixture/repo" rev-parse HEAD)"
 }
 
-candidate_sha="$(git -C "$fixture/repo" rev-parse ag-broken)"
+# The candidate forges a perfect report and runs nothing. The gate executes the
+# trusted pre-merge prover instead, so candidate-authored evidence is irrelevant.
+write_clean_report_prover "$candidate_sha" 0000000000000000000000000000000000000000
 printf '#!/usr/bin/env bash\nexit 0\n' >"$fixture/repo/meteorite/prove-candidate.sh"
 chmod +x "$fixture/repo/meteorite/prove-candidate.sh"
-if PATH="$fixture/fake-bin:/usr/bin:/bin" land_run_meteorite "$fixture/repo" "$candidate_sha" >"$fixture/stub.out" 2>&1; then
+if PATH="$fixture/fake-bin:/usr/bin:/bin" land_run_meteorite "$fixture/repo" "$candidate_sha" "$trusted_prover_sha" >"$fixture/stub.out" 2>&1; then
   echo 'reportless exit-zero prover unexpectedly passed' >&2; exit 1
 fi
 grep -Fq 'LAND meteorite blocker=rebuild-proof-evidence-invalid' "$fixture/stub.out"
 
-write_clean_report_prover "$candidate_sha" 0000000000000000000000000000000000000000
-if PATH="$fixture/fake-bin:/usr/bin:/bin" land_run_meteorite "$fixture/repo" "$candidate_sha" >"$fixture/wrong-sha.out" 2>&1; then
+if PATH="$fixture/fake-bin:/usr/bin:/bin" land_run_meteorite "$fixture/repo" "$candidate_sha" "$trusted_prover_sha" >"$fixture/wrong-sha.out" 2>&1; then
   echo 'wrong-SHA report unexpectedly passed' >&2; exit 1
 fi
 grep -Fq 'LAND meteorite blocker=rebuild-proof-evidence-invalid' "$fixture/wrong-sha.out"
 
 printf '#!/usr/bin/env bash\nprintf "%%s" "- result: clean" >"$METEORITE_REPORT"\n' >"$fixture/repo/meteorite/prove-candidate.sh"
 chmod +x "$fixture/repo/meteorite/prove-candidate.sh"
-if PATH="$fixture/fake-bin:/usr/bin:/bin" land_run_meteorite "$fixture/repo" "$candidate_sha" >"$fixture/truncated.out" 2>&1; then
+git -C "$fixture/repo" add meteorite/prove-candidate.sh
+git -C "$fixture/repo" commit -m trusted-truncated-prover >/dev/null
+trusted_prover_sha="$(git -C "$fixture/repo" rev-parse HEAD)"
+if PATH="$fixture/fake-bin:/usr/bin:/bin" land_run_meteorite "$fixture/repo" "$candidate_sha" "$trusted_prover_sha" >"$fixture/truncated.out" 2>&1; then
   echo 'truncated report unexpectedly passed' >&2; exit 1
 fi
 grep -Fq 'LAND meteorite blocker=rebuild-proof-evidence-invalid' "$fixture/truncated.out"
 
 printf '#!/usr/bin/env bash\nsleep 2\n' >"$fixture/repo/meteorite/prove-candidate.sh"
 chmod +x "$fixture/repo/meteorite/prove-candidate.sh"
-if LAND_METEORITE_TIMEOUT_SECONDS=1 PATH="$fixture/fake-bin:/usr/bin:/bin" land_run_meteorite "$fixture/repo" "$candidate_sha" >"$fixture/timeout.out" 2>&1; then
+git -C "$fixture/repo" add meteorite/prove-candidate.sh
+git -C "$fixture/repo" commit -m trusted-sleeping-prover >/dev/null
+trusted_prover_sha="$(git -C "$fixture/repo" rev-parse HEAD)"
+if LAND_METEORITE_TIMEOUT_SECONDS=1 PATH="$fixture/fake-bin:/usr/bin:/bin" land_run_meteorite "$fixture/repo" "$candidate_sha" "$trusted_prover_sha" >"$fixture/timeout.out" 2>&1; then
   echo 'hung prover unexpectedly passed' >&2; exit 1
 fi
 grep -Fq 'LAND meteorite blocker=rebuild-proof-timeout' "$fixture/timeout.out"
 
 write_clean_report_prover "$candidate_sha" "$candidate_sha"
-PATH="$fixture/fake-bin:/usr/bin:/bin" land_run_meteorite "$fixture/repo" "$candidate_sha" >"$fixture/clean.out" 2>&1
+PATH="$fixture/fake-bin:/usr/bin:/bin" land_run_meteorite "$fixture/repo" "$candidate_sha" "$trusted_prover_sha" >"$fixture/clean.out" 2>&1
 grep -Fq "LAND meteorite status=pass sha=$candidate_sha" "$fixture/clean.out"
 printf 'meteorite gate regression: PASS\n'

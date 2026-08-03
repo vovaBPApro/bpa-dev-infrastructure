@@ -333,7 +333,7 @@ land_validate_meteorite_report() {
 }
 
 land_run_meteorite() {
-  local repo="$1" sha="$2" report docker_bin timeout_seconds prover_status
+  local repo="$1" sha="$2" trusted_sha="${3:-}" report docker_bin timeout_seconds prover_status trusted_tree
   docker_bin=$(command -v docker 2>/dev/null || true)
   if [ -z "$docker_bin" ]; then
     echo "LAND meteorite blocker=docker-binary-unavailable" >&2
@@ -343,8 +343,9 @@ land_run_meteorite() {
     echo "LAND meteorite blocker=docker-daemon-unavailable" >&2
     return 1
   fi
-  if [ ! -r "$repo/meteorite/prove-candidate.sh" ]; then
-    echo "LAND meteorite blocker=candidate-prover-unavailable" >&2
+  if [[ ! "$trusted_sha" =~ ^[0-9a-fA-F]{40}$ ]] ||
+     [ "$(git -C "$repo" rev-parse "$trusted_sha^{commit}" 2>/dev/null || true)" != "${trusted_sha,,}" ]; then
+    echo "LAND meteorite blocker=trusted-prover-sha-invalid" >&2
     return 1
   fi
   report=$(mktemp "${TMPDIR:-/tmp}/bpa-land-meteorite.XXXXXX.md") || {
@@ -358,9 +359,24 @@ land_run_meteorite() {
     return 1
   fi
   echo "LAND meteorite status=running sha=$sha"
+  trusted_tree=$(mktemp -d "${TMPDIR:-/tmp}/bpa-land-meteorite-trusted.XXXXXX") || {
+    rm -f "$report"
+    echo "LAND meteorite blocker=trusted-prover-allocation-failed" >&2
+    return 1
+  }
+  if ! git -C "$repo" worktree add --detach "$trusted_tree" "$trusted_sha" >/dev/null 2>&1 ||
+     [ ! -r "$trusted_tree/meteorite/prove-candidate.sh" ]; then
+    git -C "$repo" worktree remove --force "$trusted_tree" >/dev/null 2>&1 || true
+    rm -rf "$trusted_tree"
+    rm -f "$report"
+    echo "LAND meteorite blocker=trusted-prover-unavailable" >&2
+    return 1
+  fi
   prover_status=0
   METEORITE_REPORT="$report" timeout --foreground --kill-after=10 "$timeout_seconds" \
-    bash "$repo/meteorite/prove-candidate.sh" --ref "$sha" || prover_status=$?
+    bash "$trusted_tree/meteorite/prove-candidate.sh" --ref "$sha" || prover_status=$?
+  git -C "$repo" worktree remove --force "$trusted_tree" >/dev/null 2>&1 || true
+  rm -rf "$trusted_tree"
   if [ "$prover_status" -eq 124 ] || [ "$prover_status" -eq 137 ]; then
     rm -f "$report"
     echo "LAND meteorite blocker=rebuild-proof-timeout" >&2

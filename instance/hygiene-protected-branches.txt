@@ -23,7 +23,8 @@ v3
 # Park record: instance/parked/V3-1.1-stage2-2026-08-03.md
 ag-s3-2-r3
 
-# Parked work retained under HR-1726's three-round exit — the v3 meteorite
-# runner. Unmerged by design; the branch is the evidence and the recut base.
-# Park record: instance/parked/V3-1.5-meteorite-2026-08-03.md
-ag-s3-1-r3
+# ag-s3-1-r3 was retained here while V3-1.5 was parked. The recut landed at
+# 133541c and meteorite/run.sh + prove-candidate.sh are on main, so the branch
+# no longer holds the only copy of anything. Unprotected 2026-08-03 at the
+# operator's question ("ці для чого захищати??", Telegram 1931). It remains on
+# origin as history; nothing depends on it.

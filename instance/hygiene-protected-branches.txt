@@ -23,6 +23,12 @@ v3
 # Park record: instance/parked/V3-1.1-stage2-2026-08-03.md
 ag-s3-2-r3
 
+# V3-3.4 round 3 — the durable review-round cap. PARKED at the HR-1726 cap with
+# one open blocker: counted-but-unlanded attempts never reach target history, so a
+# new clone can repeat them. The branch IS the evidence and the starting point.
+# Park record: instance/parked/V3-3.4-review-rounds-2026-08-03.md
+ag-s6-13
+
 # V3-1.9 round 3 — the branch that carries the correct single-service-user model.
 # PARKED at the HR-1726 cap: the remaining blocker is operator provisioning of the
 # service account and its credentials, not more code. This branch IS the evidence

@@ -11,6 +11,7 @@ import {
   type RuntimeStatusDeps,
   type ShRunner,
 } from './status';
+import { formatVendorQuota, readVendorQuota, type VendorQuotaFs } from './vendor-quota';
 
 test('REGRESSION ML-4: dead or half-open transport is not connected', () => {
   expect(
@@ -75,6 +76,37 @@ test('REGRESSION W-14: normal status is human-readable and keeps unknowns honest
   expect(unknown).toContain('Лейни: невідомо (state DB unreadable)');
   expect(unknown).toContain('Останнє landed: невідомо (git timeout)');
   expect(unknown).toContain('Квота: Codex невідомо; Claude невідомо; MCP не підключено');
+});
+
+test('REGRESSION ML-6: status exercises the real quota read/parse/format boundary', () => {
+  const fixture = `${JSON.stringify({
+    type: 'event_msg',
+    timestamp: '2026-08-04T10:00:00Z',
+    payload: {
+      type: 'token_count',
+      rate_limits: {
+        primary: { used_percent: 21, window_minutes: 300 },
+        secondary: { used_percent: 64, window_minutes: 10080 },
+      },
+    },
+  })}\n`;
+  const fs: VendorQuotaFs = {
+    readdirSync: () => [{ name: 'session.jsonl', isDirectory: () => false, isFile: () => true }],
+    statSync: () => ({ mtimeMs: Date.parse('2026-08-04T10:00:00Z') }),
+    readFileSync: () => fixture,
+  };
+  const now = Date.parse('2026-08-04T10:17:00Z');
+  const vendorQuota = formatVendorQuota(readVendorQuota('/fixture', now, fs), now);
+  const lines = buildHumanStatus({
+    mission: { present: false },
+    lanes: [],
+    lastLanded: null,
+    claudeConnected: false,
+    vendorQuota,
+  });
+  expect(lines.at(-1)).toBe(
+    'Квота: Codex 5h 21%, 7d 64%, вік 17хв; Claude невідомо (Claude CLI не надає квоту локально); MCP не підключено',
+  );
 });
 
 test('REGRESSION: daemon health uses process-local honest field names and epochs', () => {

@@ -56,6 +56,33 @@ function fixtureDir(): string {
   return dir;
 }
 
+test("sweeps a killed publisher only inside the reserved meteorite namespace", () => {
+  const root = fixtureDir();
+  const source = join(root, "source");
+  const remote = join(root, "remote.git");
+  mkdirSync(source);
+  sh("git init -q -b main && git config user.email test@example.invalid && git config user.name test && touch seed && git add seed && git commit -qm seed", source);
+  sh(`git init -q --bare ${JSON.stringify(remote)} && git remote add origin ${JSON.stringify(remote)}`, source);
+  const sha = sh("git rev-parse HEAD", source).trim();
+  for (const name of ["main", "v3", "v2-deprecated", "ag-s3-1-r3", "ag-s3-2-r3"]) {
+    sh(`git push -q origin ${sha}:refs/heads/${name}`, source);
+  }
+  const leaked = `refs/meteorite-candidates/1-999-${sha}/candidate`;
+  const crashed = spawnSync("bash", ["-c", `git push -q origin ${sha}:${leaked} && kill -KILL $$`], { cwd: source, encoding: "utf8" });
+  expect(crashed.signal).toBe("SIGKILL");
+  expect(sh(`git ls-remote origin ${leaked}`, source)).toContain(leaked);
+
+  const swept = run(["meteorite-refs", "--repo", source, "--max-age-seconds", "0", "--apply"]);
+  expect(swept.status).toBe(0);
+  expect(swept.stdout).toContain(`orphaned meteorite ref: ${leaked}`);
+  expect(swept.stdout).toContain(`deleted orphaned meteorite ref: ${leaked}`);
+  expect(sh(`git ls-remote origin ${leaked}`, source)).toBe("");
+  const survivors = sh("git ls-remote --heads origin", source);
+  for (const name of ["main", "v3", "v2-deprecated", "ag-s3-1-r3", "ag-s3-2-r3"]) {
+    expect(survivors).toContain(`refs/heads/${name}`);
+  }
+});
+
 function unprivilegedFixtureDir(): string {
   const env = { ...process.env };
   delete env.TMPDIR;

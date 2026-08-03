@@ -84,16 +84,18 @@ exit 0
 EOF
 chmod +x "$SCRATCH/bin/"*
 chown -R "$fixture_uid:$fixture_gid" "$SCRATCH/home" "$SCRATCH/repo" "$SCRATCH/bin" "$SCRATCH/tmp" "$SCRATCH/service.conf" "$SCRATCH/task.md"
-export DISPATCH_OVERRIDE=fixture-tests-candidate-launcher
-
+cd "$SCRATCH/repo"
 run_launcher() {
-  PATH="$SCRATCH/bin:/usr/local/bin:/usr/bin:/bin" BUN_BIN="$SCRATCH/bin/bun" \
+  env -u DISPATCH_OVERRIDE PATH="$SCRATCH/bin:/usr/local/bin:/usr/bin:/bin" BUN_BIN="$SCRATCH/bin/bun" \
     PROOF_DIR="$SCRATCH" AGENT_COMMAND_FILE="$SCRATCH/agent.conf" TMPDIR="$SCRATCH/tmp" \
     "$fixture_launcher" --name proof --role coder --task-file "$SCRATCH/task.md" \
     --repo "$SCRATCH/repo" --lanes-dir "$SCRATCH/home/lanes" --base HEAD \
     --branch ag-fleet-launch-proof --service-config "$SCRATCH/service.conf"
 }
-run_launcher >"$SCRATCH/output"
+run_launcher >"$SCRATCH/output" 2>"$SCRATCH/output.err"
+if grep -Fq 'OVERRIDE accepted' "$SCRATCH/output" "$SCRATCH/output.err"; then
+  printf 'nominal launcher bypassed dispatch validation\n' >&2; exit 1
+fi
 grep -Fxq "$fixture_uid" "$SCRATCH/euid"
 grep -Fxq "$fixture_gid" "$SCRATCH/egid"
 setpriv --reuid="$fixture_uid" --regid="$fixture_gid" --init-groups \
@@ -237,7 +239,9 @@ done
 # must stop before any of those post-dispatch artifacts exist.
 cp "$fixture_launcher" "$SCRATCH/repo/orchestrator/fleet/launch-lane.bad-dispatch.sh"
 sed -i 's/cat "$pack_dir\/preamble.md"/printf "malformed pack\\n"/' "$SCRATCH/repo/orchestrator/fleet/launch-lane.bad-dispatch.sh"
-if env -u DISPATCH_OVERRIDE PATH="$SCRATCH/bin:$PATH" BUN_BIN="$SCRATCH/bin/bun" AGENT_COMMAND_FILE="$SCRATCH/agent.conf" \
+if setpriv --reuid="$fixture_uid" --regid="$fixture_gid" --init-groups \
+  env -u DISPATCH_OVERRIDE HOME="$SCRATCH/home" USER="$fixture_user" LOGNAME="$fixture_user" \
+  PATH="$SCRATCH/bin:$PATH" BUN_BIN="$SCRATCH/bin/bun" AGENT_COMMAND_FILE="$SCRATCH/agent.conf" \
   TMPDIR="$SCRATCH/tmp" "$SCRATCH/repo/orchestrator/fleet/launch-lane.bad-dispatch.sh" \
   --name dispatchfail --role coder --task-file "$SCRATCH/task.md" --repo "$SCRATCH/repo" \
   --lanes-dir "$SCRATCH/home/lanes" --base HEAD --service-config "$SCRATCH/service.conf" \

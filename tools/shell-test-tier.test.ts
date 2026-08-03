@@ -46,6 +46,15 @@ test("shell fixtures cannot claim host-global refs, locks, or ports", () => {
       ).toContain("$SCRATCH");
     }
 
+    // A disposable clone can inherit a fixture branch from its source. Require
+    // every explicit launcher ref to be allocated through a per-run variable;
+    // a literal ref merely relocates the original global-name collision.
+    if (relativePath === "orchestrator/fleet/launch-lane.test.sh") {
+      expect(source, `${relativePath} contains a fixed fixture ref`).not.toMatch(
+        /--branch\s+["']?[A-Za-z0-9][A-Za-z0-9._/-]*/,
+      );
+    }
+
     // Lock files must be derived from private fixture state, never a fixed
     // host path. TMPDIR itself is caller-controlled and therefore not private.
     expect(source, `${relativePath} contains a fixed host-global lock path`).not.toMatch(

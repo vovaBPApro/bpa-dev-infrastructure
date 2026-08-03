@@ -6,10 +6,11 @@ SOURCE_REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SCRATCH="$(mktemp -d)"
 chmod 700 "$SCRATCH"
 REPO_DIR="$SCRATCH/repo"
+REF_PREFIX="meteorite-candidates/fleet-launch-${SCRATCH##*/}"
 cleanup() {
   for lane in proof race retry valid invalid crashed; do
     git -C "$REPO_DIR" worktree remove --force "$SCRATCH/lanes/$lane" >/dev/null 2>&1 || true
-    git -C "$REPO_DIR" branch -D "ag-fleet-launch-$lane" >/dev/null 2>&1 || true
+    git -C "$REPO_DIR" branch -D "$REF_PREFIX-$lane" >/dev/null 2>&1 || true
   done
   rm -rf "$SCRATCH"
 }
@@ -68,14 +69,14 @@ PATH="$SCRATCH/bin:$PATH" AGENT_COMMAND_FILE="$SCRATCH/agent.conf" \
   MOCK_SYSTEMD_ARGS="$SCRATCH/systemd.args" MOCK_AGENT_ARGS="$SCRATCH/agent.args" \
   MOCK_AGENT_EXECUTED="$SCRATCH/agent.executed" TMPDIR="$SCRATCH/tmp-parent" \
   "$SCRIPT_DIR/launch-lane.sh" --name proof --role coder --task-file "$SCRATCH/task.md" \
-  --repo "$REPO_DIR" --lanes-dir "$SCRATCH/lanes" --base HEAD --branch ag-fleet-launch-proof \
+  --repo "$REPO_DIR" --lanes-dir "$SCRATCH/lanes" --base HEAD --branch "$REF_PREFIX-proof" \
   >"$SCRATCH/output"
 
 grep -Fq 'launched lane-proof' "$SCRATCH/output"
 test -f "$SCRATCH/lanes/proof/.git"
 grep -Fq '<!-- compose.ts pack v1 role=coder' "$SCRATCH/lanes/lane-proof.prompt.md"
 grep -Fq '# Dispatch proof' "$SCRATCH/lanes/lane-proof.prompt.md"
-git -C "$SCRATCH/lanes/proof" symbolic-ref --short HEAD | grep -Fxq ag-fleet-launch-proof
+git -C "$SCRATCH/lanes/proof" symbolic-ref --short HEAD | grep -Fxq "$REF_PREFIX-proof"
 grep -Fxq -- '--property=IPAddressDeny=localhost' "$SCRATCH/systemd.args"
 grep -Fq 'daemon/mask-stream.ts' "$SCRATCH/systemd.args"
 grep -Fq "TMPDIR=$SCRATCH/tmp-parent/infra-lane-tmp-$UID/proof" "$SCRATCH/systemd.args"
@@ -114,7 +115,7 @@ for mode in valid invalid crash; do
   PATH="$SCRATCH/bin:$PATH" BUN_BIN="$(command -v bun)" AGENT_COMMAND_FILE="$SCRATCH/$mode.conf" \
     MOCK_SYSTEMD_ARGS="$SCRATCH/$mode.systemd.args" TMPDIR="$SCRATCH/tmp-parent" \
     "$SCRIPT_DIR/launch-lane.sh" --name "$lane" --role coder --task-file "$SCRATCH/task.md" \
-    --repo "$REPO_DIR" --lanes-dir "$SCRATCH/lanes" --base HEAD --branch "ag-fleet-launch-$lane" \
+    --repo "$REPO_DIR" --lanes-dir "$SCRATCH/lanes" --base HEAD --branch "$REF_PREFIX-$lane" \
     >"$SCRATCH/$mode.output"
 done
 grep -Fxq 'state: terminal' "$SCRATCH/lanes/lane-valid.status" || { cat "$SCRATCH/lanes/lane-valid.status" "$SCRATCH/lanes/lane-valid.log" >&2; exit 1; }
@@ -132,7 +133,7 @@ if PATH="$SCRATCH/bin:$PATH" AGENT_COMMAND_FILE="$SCRATCH/agent.conf" \
   MOCK_SYSTEMD_ARGS="$SCRATCH/systemd.args" MOCK_AGENT_ARGS="$SCRATCH/agent.args" \
   MOCK_AGENT_EXECUTED="$SCRATCH/agent.executed" TMPDIR="$SCRATCH/tmp-parent" \
   "$SCRIPT_DIR/launch-lane.sh" --name proof --role coder --task-file "$SCRATCH/task.md" \
-  --repo "$REPO_DIR" --lanes-dir "$SCRATCH/lanes" --base HEAD --branch ag-fleet-launch-proof \
+  --repo "$REPO_DIR" --lanes-dir "$SCRATCH/lanes" --base HEAD --branch "$REF_PREFIX-proof" \
   >"$SCRATCH/reused.output" 2>"$SCRATCH/reused.error"; then
   printf 'launcher reused an existing lane name\n' >&2
   exit 1
@@ -152,7 +153,7 @@ for contender in 1 2; do
     MOCK_AGENT_EXECUTED="$SCRATCH/race-$contender.agent.executed" \
     TMPDIR="$SCRATCH/tmp-parent" \
     "$SCRIPT_DIR/launch-lane.sh" --name race --role coder --task-file "$SCRATCH/task.md" \
-    --repo "$REPO_DIR" --lanes-dir "$SCRATCH/lanes" --base HEAD --branch ag-fleet-launch-race \
+    --repo "$REPO_DIR" --lanes-dir "$SCRATCH/lanes" --base HEAD --branch "$REF_PREFIX-race" \
     >"$SCRATCH/race-$contender.output" 2>"$SCRATCH/race-$contender.error" &
   eval "race_pid_$contender=$!"
 done
@@ -202,7 +203,7 @@ done
 if PATH="$SCRATCH/bin:$PATH" AGENT_COMMAND_FILE="$SCRATCH/agent.conf" \
   MOCK_SYSTEMD_FAIL=1 TMPDIR="$SCRATCH/tmp-parent" \
   "$SCRIPT_DIR/launch-lane.sh" --name retry --role coder --task-file "$SCRATCH/task.md" \
-  --repo "$REPO_DIR" --lanes-dir "$SCRATCH/lanes" --base HEAD --branch ag-fleet-launch-retry \
+  --repo "$REPO_DIR" --lanes-dir "$SCRATCH/lanes" --base HEAD --branch "$REF_PREFIX-retry" \
   >"$SCRATCH/retry-failed.output" 2>"$SCRATCH/retry-failed.error"; then
   printf 'launcher accepted a failed unit start\n' >&2
   exit 1
@@ -218,7 +219,7 @@ PATH="$SCRATCH/bin:$PATH" AGENT_COMMAND_FILE="$SCRATCH/agent.conf" \
   MOCK_SYSTEMD_ARGS="$SCRATCH/retry.systemd.args" MOCK_AGENT_ARGS="$SCRATCH/retry.agent.args" \
   MOCK_AGENT_EXECUTED="$SCRATCH/retry.agent.executed" TMPDIR="$SCRATCH/tmp-parent" \
   "$SCRIPT_DIR/launch-lane.sh" --name retry --role coder --task-file "$SCRATCH/task.md" \
-  --repo "$REPO_DIR" --lanes-dir "$SCRATCH/lanes" --base HEAD --branch ag-fleet-launch-retry \
+  --repo "$REPO_DIR" --lanes-dir "$SCRATCH/lanes" --base HEAD --branch "$REF_PREFIX-retry" \
   >"$SCRATCH/retry.output"
 grep -Fq 'launched lane-retry' "$SCRATCH/retry.output"
 

@@ -206,4 +206,97 @@ assert_output_lacks "$dirty_out" 'LAND verdict=aborted'
 assert test "$(git -C "$fixture_root/dirty-tree-repo" rev-parse main)" = "$dirty_before"
 assert test -n "$(git -C "$fixture_root/dirty-tree-repo" status --porcelain)"
 
+# --- 6. Defect (review round 3): an unreadable /proc/<pid>/fd must never --
+#        glob away silently into "stale".
+# land_lock_is_stale scans /proc/<pid>/fd for every candidate pid. If a
+# candidate's fd/ directory cannot be read (mode 0700, owned by a UID the
+# scanner is not running as -- e.g. a root-owned process left by a verify:
+# step that used sudo or Docker, scanned by a non-root land.sh, or the
+# reverse), bash's glob for that pid's fd/* contributes nothing, silently:
+# no error, no non-zero status. The pre-round-3 code walked the combined glob
+# `/proc/[0-9]*/fd/*` and never noticed a candidate it could not see, so it
+# reported "stale" for a lock that was genuinely live.
+#
+# End-to-end note: reproducing this through gate/land.sh's own CLI entry
+# point was attempted and abandoned for this environment. Dropping privilege
+# for Bun (tried via both `setpriv` and `su`) leaves `process.env.PATH`
+# unset inside the Bun runtime here, so completion-guard.ts's own `git`
+# subprocess spawn fails with EACCES before a landing ever reaches the
+# rollback step -- a property of this sandbox's Bun runtime under a dropped
+# UID, not of gate/land.sh, and it blocks testing *through the CLI*
+# specifically, not the property itself. This fixture instead calls
+# land_force_reset directly -- the exact function gate/land.sh's rollback
+# paths call, not a reimplementation of it -- while a lock is held open by a
+# root-owned process and land_force_reset runs as `nobody`, the UID the
+# scanner cannot inspect. Confirmed against the pre-fix function: it deleted
+# the live lock and returned success (exit 0). The fix must refuse, leave
+# the lock in place, and return failure.
+if ! command -v setpriv >/dev/null 2>&1 || ! id nobody >/dev/null 2>&1; then
+  echo 'uid-fd-visibility: SKIPPED (setpriv or the nobody user is unavailable in this environment)'
+else
+  # Lives under $fixture_root (not a separate mktemp -d) so the trap-driven
+  # cleanup() sweeps it -- including its now-nobody-owned contents, which
+  # root can still remove -- even if an assertion below exits early.
+  uid_fixture="$fixture_root/uid-fixture"
+  mkdir -p "$uid_fixture"
+  chmod 777 "$uid_fixture"
+  # $fixture_root itself is 700 (mktemp -d default); grant search-only
+  # access so `nobody` can traverse down into $uid_fixture without gaining
+  # any visibility into the other (root-owned) fixtures alongside it.
+  chmod o+x "$fixture_root"
+  uid_repo="$uid_fixture/repo"
+  mkdir -p "$uid_repo"
+  git init -q --initial-branch=main "$uid_repo"
+  git -C "$uid_repo" config user.email land@example.test
+  git -C "$uid_repo" config user.name Land
+  printf 'base\n' > "$uid_repo/base.txt"
+  git -C "$uid_repo" add base.txt
+  git -C "$uid_repo" commit -qm base
+  uid_pre_merge_sha=$(git -C "$uid_repo" rev-parse HEAD)
+  printf 'advanced\n' > "$uid_repo/advanced.txt"
+  git -C "$uid_repo" add advanced.txt
+  git -C "$uid_repo" commit -qm advanced
+  uid_advanced_sha=$(git -C "$uid_repo" rev-parse HEAD)
+
+  # land-lib.sh in this checkout is mode 700 (root-only); `nobody` cannot
+  # source it in place, so a readable copy travels with the rest of the
+  # nobody-owned fixture instead of chmod'ing the tracked file.
+  uid_lib_copy="$uid_fixture/land-lib.sh"
+  cp "$root/gate/land-lib.sh" "$uid_lib_copy"
+  uid_home="$uid_fixture/home"
+  mkdir -p "$uid_home"
+  printf '[safe]\n\tdirectory = *\n' > "$uid_home/.gitconfig"
+  chown -R nobody:nogroup "$uid_fixture"
+  chmod 644 "$uid_lib_copy"
+
+  # Root-owned lock holder, started only after the fixture is handed to
+  # nobody, so its /proc/<pid>/fd is exactly the kind of directory the
+  # scanning (nobody) side cannot list.
+  uid_lock="$uid_repo/.git/index.lock"
+  setsid sh -c "exec 8>'$uid_lock'; sleep 20" </dev/null >/dev/null 2>&1 &
+  uid_holder_pid=$!
+  sleep 0.3
+
+  uid_driver="$uid_fixture/driver.sh"
+  {
+    printf 'source "%s"\n' "$uid_lib_copy"
+    printf 'land_force_reset "%s" "%s"\n' "$uid_repo" "$uid_pre_merge_sha"
+    printf 'echo "RESULT_EXIT=$?"\n'
+  } > "$uid_driver"
+  chmod 644 "$uid_driver"
+  chown nobody:nogroup "$uid_driver"
+
+  uid_out="$uid_fixture/out.txt"
+  setpriv --reuid=nobody --regid=nogroup --clear-groups env HOME="$uid_home" \
+    bash "$uid_driver" > "$uid_out" 2>&1
+
+  kill "$uid_holder_pid" 2>/dev/null
+
+  assert_output_has "$uid_out" 'RESULT_EXIT=1'
+  assert test -e "$uid_lock"
+  assert test "$(git -c safe.directory='*' -C "$uid_repo" rev-parse HEAD)" = "$uid_advanced_sha"
+
+  rm -rf "$uid_fixture"
+fi
+
 echo 'land rollback tests: pass'

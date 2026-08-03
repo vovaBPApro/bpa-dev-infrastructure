@@ -29,18 +29,35 @@ land_changed_base() {
 # Fail-closed: if liveness cannot be determined at all (e.g. /proc is
 # unavailable on this host), the lock is NOT considered stale -- land_force_reset
 # must then fail through to the caller's land_fail_rollback rather than guess.
+#
+# Candidate pids are walked one directory at a time rather than through the
+# single combined glob `/proc/[0-9]*/fd/*`: when a candidate's own fd/
+# directory is unreadable (mode 0700, owned by a UID this scanner is not
+# running as -- e.g. a root-owned process left behind by a verify: step that
+# used sudo or Docker, scanned by a non-root land.sh, or the reverse), bash's
+# default glob expansion silently contributes NOTHING for that pid -- no
+# error, no non-zero status, no indication anything was skipped. The loop
+# would then finish having never inspected that holder and report "stale"
+# for a lock that is genuinely live. Inability to inspect a candidate is
+# inability to prove it is not the holder, so an unreadable fd/ directory
+# fails the whole check closed instead of being globbed away.
 land_lock_is_stale() {
-  local lock_file="$1" real fd_link fd_target
+  local lock_file="$1" real pid_dir fd_dir fd_link fd_target
   [ -e "$lock_file" ] || return 0
   [ -d /proc ] || return 1
   real=$(readlink -f -- "$lock_file" 2>/dev/null) || return 1
   [ -n "$real" ] || return 1
-  for fd_link in /proc/[0-9]*/fd/*; do
-    [ -e "$fd_link" ] || continue
-    fd_target=$(readlink -f -- "$fd_link" 2>/dev/null) || continue
-    if [ "$fd_target" = "$real" ]; then
-      return 1
-    fi
+  for pid_dir in /proc/[0-9]*; do
+    [ -d "$pid_dir" ] || continue
+    fd_dir="$pid_dir/fd"
+    [ -r "$fd_dir" ] || return 1
+    for fd_link in "$fd_dir"/*; do
+      [ -e "$fd_link" ] || continue
+      fd_target=$(readlink -f -- "$fd_link" 2>/dev/null) || continue
+      if [ "$fd_target" = "$real" ]; then
+        return 1
+      fi
+    done
   done
   return 0
 }

@@ -56,6 +56,23 @@ function fixtureDir(): string {
   return dir;
 }
 
+function unprivilegedFixtureDir(): string {
+  const env = { ...process.env };
+  delete env.TMPDIR;
+  delete env.TMP;
+  delete env.TEMP;
+  const systemTmp = spawnSync(process.execPath, ["-e", 'process.stdout.write(require("node:os").tmpdir())'], {
+    encoding: "utf8",
+    env,
+  });
+  if (systemTmp.status !== 0 || !systemTmp.stdout) {
+    throw new Error(`fixture setup failed: could not derive the system temporary directory\n${systemTmp.stderr}`);
+  }
+  const dir = mkdtempSync(join(systemTmp.stdout, "hygiene-reap-unprivileged-"));
+  cleanup.push(dir);
+  return dir;
+}
+
 // Builds a repo with:
 //  - main, one commit
 //  - "merged": branched from main, no extra commits (trivially an ancestor)
@@ -64,8 +81,8 @@ function fixtureDir(): string {
 //    checked out in a live worktree at the time of the sweep
 //  - "stale-merged": branched from main, merged into main, authored/committed
 //    far in the past, to exercise the age-reporting arithmetic too
-function buildFixture(): { dir: string; repo: string; worktree: string } {
-  const dir = fixtureDir();
+function buildFixture(makeDir: () => string = fixtureDir): { dir: string; repo: string; worktree: string } {
+  const dir = makeDir();
   const repo = join(dir, "repo");
   mkdirSync(repo);
   sh("git init -q -b main .", repo);
@@ -185,7 +202,7 @@ function currentUid(): number {
 // actually open and run them. The real checkout lives under /root, which a
 // non-root user cannot traverse at all.
 function worldReadableToolroot(): string {
-  const root = fixtureDir();
+  const root = unprivilegedFixtureDir();
   mkdirSync(join(root, "hygiene"));
   mkdirSync(join(root, "gate"));
   sh(`cp ${JSON.stringify(reap)} ${JSON.stringify(join(root, "hygiene", "reap.sh"))}`, root);
@@ -221,7 +238,7 @@ test("branches refuses to run at all when the protected-branches list exists but
     );
   }
 
-  const { dir, repo } = buildFixture();
+  const { dir, repo } = buildFixture(unprivilegedFixtureDir);
   sh("git branch v3", repo);
   chmodSync(dir, 0o755);
   sh(`chmod -R a+rX ${JSON.stringify(repo)}`, dir);
@@ -237,6 +254,16 @@ test("branches refuses to run at all when the protected-branches list exists but
     // faithful reproduction of the reviewer's "chmod 000" request that is
     // actually meaningful in a root-run environment.
     const toolroot = worldReadableToolroot();
+    const fixtureProbe = spawnSync(
+      "setpriv",
+      ["--reuid=65534", "--regid=65534", "--clear-groups", "test", "-x", join(toolroot, "hygiene", "reap.sh")],
+      { encoding: "utf8" },
+    );
+    if (fixtureProbe.status !== 0) {
+      throw new Error(
+        `fixture setup failed: dropped-privilege user cannot traverse and execute the copied reap.sh (${fixtureProbe.stderr.trim()})`,
+      );
+    }
     const nobodyHome = join(dir, "nobody-home");
     mkdirSync(nobodyHome);
     chmodSync(nobodyHome, 0o777);

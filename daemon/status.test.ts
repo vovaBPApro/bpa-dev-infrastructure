@@ -98,7 +98,7 @@ test('REGRESSION ML-6: status exercises the real quota read/parse/format boundar
   const now = Date.parse('2026-08-04T10:17:00Z');
   const vendorQuota = formatVendorQuota(readVendorQuota('/fixture', now, fs), now);
   const lines = buildHumanStatus({
-    mission: { present: false },
+    mission: { present: false, reason: 'fixture has no mission state' },
     lanes: [],
     lastLanded: null,
     claudeConnected: false,
@@ -107,6 +107,33 @@ test('REGRESSION ML-6: status exercises the real quota read/parse/format boundar
   expect(lines.at(-1)).toBe(
     'Квота: Codex 5h 21%, 7d 64%, вік 17хв; Claude невідомо (Claude CLI не надає квоту локально); MCP не підключено',
   );
+});
+
+test('REGRESSION HR-302: final quota line stays bounded after every MCP suffix', () => {
+  const reason = 'x'.repeat(179);
+  const vendorQuota = formatVendorQuota({
+    codex: {
+      fiveHour: { state: 'unknown', reason },
+      sevenDay: { state: 'unknown', reason },
+      observedAt: null,
+    },
+    claude: { state: 'unknown', reason },
+  });
+  expect(vendorQuota.length).toBe(600);
+
+  for (const claudeConnected of [false, true]) {
+    const line = buildHumanStatus({
+      mission: { present: false, reason: 'fixture has no mission state' },
+      lanes: [],
+      lastLanded: null,
+      claudeConnected,
+      vendorQuota,
+    }).at(-1)!;
+    expect(line.length).toBeLessThanOrEqual(600);
+    expect(line).toBe(
+      `Квота: деталі перевищують ліміт; MCP ${claudeConnected ? 'підключено' : 'не підключено'}`,
+    );
+  }
 });
 
 test('REGRESSION: daemon health uses process-local honest field names and epochs', () => {

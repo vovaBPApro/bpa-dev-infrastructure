@@ -73,6 +73,17 @@ export type HumanStatusInput = {
   vendorQuota: string;
 };
 
+const MAX_HUMAN_STATUS_LINE_LENGTH = 600;
+
+function buildQuotaStatusLine(vendorQuota: string, claudeConnected: boolean): string {
+  const mcpSuffix = `; MCP ${claudeConnected ? 'підключено' : 'не підключено'}`;
+  const line = `${vendorQuota}${mcpSuffix}`;
+  if (line.length <= MAX_HUMAN_STATUS_LINE_LENGTH) return line;
+  // Bound the final operator-facing line, after every status suffix is present.
+  // Replace optional detail atomically rather than truncating its meaning.
+  return `Квота: деталі перевищують ліміт${mcpSuffix}`;
+}
+
 // The normal Telegram view is intentionally a projection, not a dump of the
 // diagnostic fields. Unknown inputs stay visibly unknown.
 export function buildHumanStatus(input: HumanStatusInput): string[] {
@@ -101,7 +112,7 @@ export function buildHumanStatus(input: HumanStatusInput): string[] {
     `Лейни: ${laneLine}`,
     `Останнє landed: ${input.lastLanded ?? `невідомо (${input.lastLandedError ?? 'git недоступний'})`}`,
     `Блокери: ${blockedLine}`,
-    `${input.vendorQuota}; MCP ${input.claudeConnected ? 'підключено' : 'не підключено'}`,
+    buildQuotaStatusLine(input.vendorQuota, input.claudeConnected),
   ];
 }
 

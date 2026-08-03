@@ -1,0 +1,10 @@
+# ref<TAB>reason
+# Each row names a branch that must exist on GitHub and whose branch API
+# `protected` flag must be true. This flag covers protection visible through
+# GitHub's branch endpoint (classic branch protection and applicable rulesets);
+# the verifier does not inspect or validate the individual protection rules.
+main	the v3 working line; deleting it loses the default branch
+v3	the orphan-history root; not reachable from main by merge-base
+v2-deprecated	the only copy of bootstrap/, meteorite/, database/, deploy/, edge/, preview/, soak/, stand/, workspace/
+ag-s3-1-r3	parked meteorite work retained under the HR-1726 cap
+ag-s3-2-r3	parked bootstrap stage-2 work retained under the HR-1726 cap

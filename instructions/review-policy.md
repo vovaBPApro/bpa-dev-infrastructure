@@ -65,7 +65,9 @@ The landing gate checks the caller's item against the tracked instance review-it
 registry on the target branch. That registry maps a durable mission/acceptance id
 to a stable branch root; disposable `-rN` recuts therefore share one counter and
 unknown ids fail instead of minting state. The gate records every reviewed landing
-attempt in an origin-visible, non-branch Git ref before continuing the landing.
+attempt in two origin-visible, non-branch Git ref namespaces before continuing
+the landing. The gate requires an exact mirror: independently forging or deleting
+either record is detected and fails closed before the counter is reconstructed.
 The target-branch JSON and Git-common-dir copy are reconstructable caches over
 those refs, so restarting the orchestrator, deleting the cache, or making a fresh
 clone does not reset either measure. Existing malformed or unsafe state still
@@ -76,11 +78,14 @@ An item receives at most three review rounds. A fourth is refused and parked as
 concerns become executable fail-before and pass-after locks; if that cannot be
 done, the item remains parked for recut.
 
-Root-equivalent lanes can still edit Git-common-dir state or the gate itself;
-mode bits and an audit log cannot prevent that. Tamper resistance therefore
-depends on V3-1.9's non-root lane boundary plus independent landing review. This
-mechanism prevents supported-interface evasion; it does not claim protection
-from a malicious root process.
+The counter is honest-but-not-tamper-resistant while lanes are root-equivalent.
+A root lane can coordinate the same rewrite or deletion across both remote
+namespaces, edit Git-common-dir state, or edit the gate itself; the mirror detects
+independent forgery and suppression, not a coordinated root attack. Tamper
+resistance depends on V3-1.9's non-root lane boundary plus independent landing
+review. This mechanism prevents supported-interface evasion and detects
+single-surface origin tampering; it does not claim protection from a malicious
+root process.
 
 Separately, consecutive reviewed attempts without a landed SHA are counted as
 no progress. Reaching the configured limit parks the item as `no-progress`.

@@ -103,6 +103,7 @@ esac
 review_round_history_rel=".bpa/review-rounds.json"
 review_round_history="$repo/$review_round_history_rel"
 review_attempt_namespace="refs/bpa-review-attempts"
+review_attempt_mirror_namespace="refs/bpa-review-attempt-mirrors"
 case "$git_dir" in
   /*) lock_file="$git_dir/bpa-land.lock" ;;
   *) lock_file="$repo/$git_dir/bpa-land.lock" ;;
@@ -241,7 +242,18 @@ fi
 # replay every later ref in strict sequence after a clone or host rebuild.
 item_key=$(printf '%s' "$item_id" | git -C "$repo" hash-object --stdin) || land_fail review-rounds 2
 attempt_prefix="$review_attempt_namespace/$item_key"
+attempt_mirror_prefix="$review_attempt_mirror_namespace/$item_key"
 attempt_refs=$(git -C "$repo" ls-remote --refs origin "$attempt_prefix/*") || land_fail review-rounds 2
+attempt_mirror_refs=$(git -C "$repo" ls-remote --refs origin "$attempt_mirror_prefix/*") || land_fail review-rounds 2
+# The mirror is deliberately a separate remote namespace. A lane can mutate
+# either namespace today, but a forged or suppressed record in only one is
+# detectable. Coordinated root mutation of both is outside this mechanism's
+# authority and is documented as such in review-policy.
+normalized_attempt_refs=$(printf '%s\n' "$attempt_refs" | sed "s#refs/bpa-review-attempts/#refs/bpa-review-attempt-mirrors/#")
+if [ "$normalized_attempt_refs" != "$attempt_mirror_refs" ]; then
+  echo "LAND review-rounds attempt-mirror-mismatch item=$item_id" >&2
+  land_fail review-rounds 2
+fi
 if [ "$review_history_present" = false ] && [ -n "$attempt_refs" ]; then
   rm -f "$review_round_state"
   if ! "$BUN_BIN" "$script_dir/review-rounds.ts" init --state "$review_round_state" --cap 3 --no-progress-limit 3 >/dev/null; then
@@ -296,13 +308,15 @@ fi
 rounds=$((rounds + 1))
 branch_sha=$(git -C "$repo" rev-parse --verify "${branch}^{commit}") || land_fail branch-tip 2
 attempt_ref="$attempt_prefix/$rounds-$branch_sha"
-if ! git -C "$repo" push origin "$branch_sha:$attempt_ref" >/dev/null; then
+attempt_mirror_ref="$attempt_mirror_prefix/$rounds-$branch_sha"
+if ! git -C "$repo" push --atomic origin "$branch_sha:$attempt_ref" "$branch_sha:$attempt_mirror_ref" >/dev/null; then
   echo "LAND review-rounds attempt-persist-failed ref=$attempt_ref" >&2
   land_fail review-rounds 2
 fi
 persisted_attempt_sha=$(git -C "$repo" ls-remote --refs origin "$attempt_ref" 2>/dev/null | awk 'NR == 1 { print $1 }')
+persisted_attempt_mirror_sha=$(git -C "$repo" ls-remote --refs origin "$attempt_mirror_ref" 2>/dev/null | awk 'NR == 1 { print $1 }')
 remote_target_sha=$(git -C "$repo" ls-remote --refs origin "refs/heads/$default_branch" 2>/dev/null | awk 'NR == 1 { print $1 }')
-if [ "$persisted_attempt_sha" != "$branch_sha" ] || [ "$remote_target_sha" != "$pre_merge_sha" ]; then
+if [ "$persisted_attempt_sha" != "$branch_sha" ] || [ "$persisted_attempt_mirror_sha" != "$branch_sha" ] || [ "$remote_target_sha" != "$pre_merge_sha" ]; then
   echo "LAND review-rounds attempt-persist-mismatch ref=$attempt_ref found=${persisted_attempt_sha:-missing} target=${remote_target_sha:-missing} expected-target=$pre_merge_sha" >&2
   land_fail review-rounds 2
 fi

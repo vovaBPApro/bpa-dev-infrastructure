@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+unset BUN_BIN
 
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 land="${LAND_UNDER_TEST:-$root/gate/land.sh}"
@@ -145,6 +146,20 @@ assert grep -Fq '"rounds": 3' "$clone_b/.git/bpa-review-rounds.json"
 rm "$clone_b/.git/bpa-review-rounds.json"
 if "$land" --branch ag-failed-attempts --item-id ag-failed-attempts --report "$fixture_root/failed-review-attempts.md" --repo "$clone_b" --no-push >"$fixture_root/failed-review-attempts-cache-deleted.out" 2>&1; then exit 1; fi
 assert_output_has "$fixture_root/failed-review-attempts-cache-deleted.out" 'parked=no-progress'
+
+# Root-equivalent lanes can mutate either origin namespace. Independent
+# forgery or suppression must nevertheless be detected by the mirrored record.
+genuine_ref=$(git -C "$bare" for-each-ref --format='%(refname)' refs/bpa-review-attempts/ | head -n 1)
+genuine_mirror=${genuine_ref/refs\/bpa-review-attempts/refs\/bpa-review-attempt-mirrors}
+git -C "$bare" update-ref -d "$genuine_ref"
+if "$land" --branch ag-failed-attempts --item-id ag-failed-attempts --report "$fixture_root/failed-review-attempts.md" --repo "$clone_b" --no-push >"$fixture_root/attempt-suppressed.out" 2>&1; then exit 1; fi
+assert_output_has "$fixture_root/attempt-suppressed.out" 'LAND review-rounds attempt-mirror-mismatch item=ag-failed-attempts'
+git -C "$bare" update-ref "$genuine_ref" "$(git -C "$bare" rev-parse "$genuine_mirror")"
+forged_sha=$(git -C "$clone_b" rev-parse ag-failed-attempts)
+git -C "$bare" update-ref "${genuine_ref%/*}/4-$forged_sha" "$forged_sha"
+if "$land" --branch ag-failed-attempts --item-id ag-failed-attempts --report "$fixture_root/failed-review-attempts.md" --repo "$clone_b" --no-push >"$fixture_root/attempt-forged.out" 2>&1; then exit 1; fi
+assert_output_has "$fixture_root/attempt-forged.out" 'LAND review-rounds attempt-mirror-mismatch item=ag-failed-attempts'
+git -C "$bare" update-ref -d "${genuine_ref%/*}/4-$forged_sha"
 
 # Regression lock: the copied gate must support the orphan v3 family range,
 # while callers that do not select a family still resolve against main.
@@ -853,12 +868,12 @@ assert git -C "$fixture_root/lock-repo" show-ref --verify --quiet refs/heads/ag-
 make_fixture push-rollback
 push_rollback_sha=$(make_lane "$fixture_root/push-rollback-repo" ag-push-rollback)
 report "$fixture_root/push-rollback-report.md" "$push_rollback_sha"
-printf '#!/usr/bin/env bash\nexit 1\n' > "$fixture_root/push-rollback-origin.git/hooks/pre-receive"
+printf '#!/usr/bin/env bash\nwhile read -r _old _new ref; do [ "$ref" != refs/heads/main ] || exit 1; done\nexit 0\n' > "$fixture_root/push-rollback-origin.git/hooks/pre-receive"
 chmod +x "$fixture_root/push-rollback-origin.git/hooks/pre-receive"
 push_rollback_output="$fixture_root/push-rollback-output.txt"
 if "$land" --branch ag-push-rollback --item-id ag-push-rollback --report "$fixture_root/push-rollback-report.md" --repo "$fixture_root/push-rollback-repo" >"$push_rollback_output" 2>&1; then exit 1; fi
-assert_output_has "$push_rollback_output" 'LAND review-rounds attempt-persist-failed'
-assert_output_has "$push_rollback_output" 'LAND step=review-rounds status=fail'
+assert_output_has "$push_rollback_output" 'LAND step=push status=fail'
+assert_output_has "$push_rollback_output" 'main reset to origin/main'
 assert test "$(git -C "$fixture_root/push-rollback-repo" rev-parse main)" = "$(git -C "$fixture_root/push-rollback-repo" rev-parse origin/main)"
 assert git -C "$fixture_root/push-rollback-repo" show-ref --verify --quiet refs/heads/ag-push-rollback
 

@@ -24,6 +24,16 @@ if ! command -v useradd >/dev/null || ! command -v loginctl >/dev/null; then
 fi
 cd "$repo_root"
   export LANE_PROVISION_STATE_ROOT=/var/lib/provision-test
+  cleanup() {
+    if [[ -e /usr/sbin/useradd.hidden && ! -e /usr/sbin/useradd ]]; then
+      mv /usr/sbin/useradd.hidden /usr/sbin/useradd
+    fi
+    for test_user in laneproof outsider unownedhome; do
+      getent passwd "$test_user" >/dev/null 2>&1 && userdel --remove "$test_user" >/dev/null 2>&1 || true
+    done
+    rm -rf /home/laneproof /home/outsider /home/unowned-home /var/lib/provision-test
+  }
+  trap cleanup EXIT
   cat >/usr/local/bin/loginctl <<"EOF"
 #!/bin/bash
 set -eu

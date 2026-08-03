@@ -29,7 +29,7 @@ const input = await Bun.stdin.text(); const status = JSON.parse(input);
 console.log(`counts     missions=${status.missions.length} lanes=${status.lanes.length} leases=${status.leases.length}`);
 if (status.missions.length === 0) console.log("missions   SKIP no open missions");
 for (const mission of status.missions) {
-  const lanes = status.lanes.filter((lane) => lane.missionId === mission.id);
+  const lanes = status.lanes.filter((lane) => lane.missionId === mission.id && lane.terminalVerdict === null);
   const active = status.leases.filter((lease) => lanes.some((lane) => lane.id === lease.key)).length;
   console.log(`mission    ${mission.correlationId} open_lanes=${lanes.length} active=${active}`);
 }'

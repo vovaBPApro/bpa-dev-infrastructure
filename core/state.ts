@@ -10,6 +10,9 @@ export {
   type DeliveryState,
   type LaneRecord,
   type LaneState,
+  type LeaseRecord,
+  type ManagerRecord,
+  type MissionRecord,
   type OutboxRecord,
   type TerminalVerdict,
 } from "./schema";

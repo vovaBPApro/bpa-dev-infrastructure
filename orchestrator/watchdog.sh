@@ -602,29 +602,65 @@ check_disk_pressure() {
 }
 
 check_mission_pressure() {
-  local status_output now
+  local status_output now measured
   state_available || { log "SKIP reason=mission-pressure-state-db-absent path=$STATE_DB"; return; }
   if ! status_output="$(mission_cli status 2>/dev/null)"; then
-    log "SKIP reason=mission-pressure-status-unavailable"
-    return
+    log "WATCHDOG NO-GO reason=mission-pressure-status-unavailable"
+    return 1
   fi
   now="${ORCH_WATCHDOG_NOW_MS:-$(( $(date +%s) * 1000 ))}"
+  if ! measured="$(printf '%s' "$status_output" | "$BUN_BIN" -e '
+const requiredArray = (object, key) => {
+  if (!Array.isArray(object?.[key])) throw new Error(`mission status missing array: ${key}`);
+  return object[key];
+};
+const requiredString = (object, key, subject) => {
+  if (typeof object?.[key] !== "string" || object[key].length === 0) throw new Error(`${subject} missing string: ${key}`);
+  return object[key];
+};
+const requiredTime = (object, key, subject) => {
+  if (!Number.isSafeInteger(object?.[key]) || object[key] < 0) throw new Error(`${subject} missing timestamp: ${key}`);
+  return object[key];
+};
+const requiredTerminalVerdict = (lane) => {
+  if (lane?.terminalVerdict !== null && lane?.terminalVerdict !== "clean" && lane?.terminalVerdict !== "NO-GO") {
+    throw new Error(`lane ${lane?.id ?? "unknown"} invalid terminal verdict`);
+  }
+  return lane.terminalVerdict;
+};
+const status = JSON.parse(await Bun.stdin.text());
+const missions = requiredArray(status, "missions");
+const allLanes = requiredArray(status, "lanes");
+const leases = requiredArray(status, "leases");
+for (const mission of missions) {
+  const missionId = requiredString(mission, "id", "mission");
+  const correlation = requiredString(mission, "correlationId", `mission ${missionId}`);
+  const missionLanes = allLanes.filter((lane) => requiredString(lane, "missionId", "lane") === missionId);
+  for (const lane of missionLanes) {
+    requiredString(lane, "id", "lane");
+    requiredTime(lane, "updatedAt", `lane ${lane.id}`);
+    requiredTerminalVerdict(lane);
+  }
+  const lanes = missionLanes.filter((lane) => lane.terminalVerdict === null);
+  const active = leases.filter((lease) => lanes.some((lane) => lane.id === requiredString(lease, "key", "lease"))).length;
+  const updatedAt = Math.max(requiredTime(mission, "updatedAt", `mission ${missionId}`), ...missionLanes.map((lane) => lane.updatedAt));
+  console.log([correlation, lanes.length, active, updatedAt].join("\t"));
+}
+' 2>>"$LOG_FILE")"; then
+    log "WATCHDOG NO-GO reason=mission-pressure-status-contract-invalid"
+    return 1
+  fi
   while IFS=$'\t' read -r correlation open_lanes active updated_at; do
     [[ -n "$correlation" ]] || continue
-    [[ "$open_lanes" =~ ^[0-9]+$ && "$active" =~ ^[0-9]+$ && "$updated_at" =~ ^[0-9]+$ ]] || continue
+    if [[ ! "$open_lanes" =~ ^[0-9]+$ || ! "$active" =~ ^[0-9]+$ || ! "$updated_at" =~ ^[0-9]+$ ]]; then
+      log "WATCHDOG NO-GO reason=mission-pressure-measurement-malformed"
+      return 1
+    fi
     if (( open_lanes > 0 && now - updated_at >= FLEET_IDLE_NUDGE_MS )) && nudge_due mission "$correlation" "$now"; then
       append_nudge "NUDGE mission=$correlation open_lanes=$open_lanes active=$active idle_ms=$(( now - updated_at ))"
       record_nudge mission "$correlation" "$now"
     fi
-  done < <(printf '%s' "$status_output" | "$BUN_BIN" -e '
-const input = await Bun.stdin.text();
-const status = JSON.parse(input);
-for (const mission of status.missions) {
-  const lanes = status.lanes.filter((lane) => lane.missionId === mission.id);
-  const active = status.leases.filter((lease) => lanes.some((lane) => lane.id === lease.key)).length;
-  const updatedAt = Math.max(mission.updatedAt, ...lanes.map((lane) => lane.updatedAt));
-  console.log([mission.correlationId, lanes.length, active, updatedAt].join("\t"));
-}')
+  done <<<"$measured"
 }
 
 # The daemon holds the Telegram token AND drains the nudge outbox, so if it is

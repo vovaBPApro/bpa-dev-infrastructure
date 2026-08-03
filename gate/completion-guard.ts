@@ -140,11 +140,34 @@ const reportPath = resolve(options.report!);
 const repoPath = resolve(options.repo!);
 let report: Report | undefined;
 
+function reviewFieldValues(contents: string): string[] {
+  const values: string[] = [];
+  let fence: { marker: "`" | "~"; length: number } | undefined;
+
+  for (const line of contents.split(/\r?\n/)) {
+    if (fence) {
+      const closing = line.match(/^\s{0,3}(`+|~+)\s*$/);
+      if (closing && closing[1][0] === fence.marker && closing[1].length >= fence.length) fence = undefined;
+      continue;
+    }
+
+    const opening = line.match(/^\s{0,3}(`{3,}|~{3,})(?:[^\r\n]*)$/);
+    if (opening) {
+      fence = { marker: opening[1][0] as "`" | "~", length: opening[1].length };
+      continue;
+    }
+
+    const field = line.match(/^\s*review\s*:\s*(.*)$/i);
+    if (field) values.push(field[1].trim());
+  }
+
+  return values;
+}
+
 function checkClaimedReview(contents: string, commit: string | undefined): void {
-  const hasReviewField = /^review:/m.test(contents);
-  if (!hasReviewField) return;
-  const review = lineValue(contents, "review");
-  if (review === undefined || !review) {
+  const reviewFields = reviewFieldValues(contents);
+  if (reviewFields.length === 0) return;
+  if (reviewFields.length !== 1 || !reviewFields[0]) {
     fail("review-field", "must-occur-once-and-be-nonempty");
     return;
   }

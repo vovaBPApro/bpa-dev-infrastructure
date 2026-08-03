@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -80,6 +80,39 @@ describe("completion guard", () => {
     expect(result.stdout).toContain(`FAIL review-artifact missing file=${join(item.directory, "master.review.md")}`);
   });
 
+  test.each([
+    "Review: ACCEPT",
+    " review: ACCEPT",
+    "review : ACCEPT",
+    " Review : ACCEPT ",
+  ])("rejects a visually equivalent review field without an artifact: %s", (claim) => {
+    const item = fixture();
+    const body = valid(item.sha).replace("remaining: none", `${claim}\nremaining: none`);
+    const result = run(report(item.directory, body), item.repo, ["--branch", "master"]);
+    expect(result.status).toBe(2);
+    expect(result.stdout).toContain(`FAIL review-artifact missing file=${join(item.directory, "master.review.md")}`);
+  });
+
+  test.each([
+    "```\nreview: example only\n```",
+    "```text\nReview : example only\n```",
+    "~~~~ markdown\n review: example only\n~~~~",
+  ])("ignores review-looking lines inside a fenced block", (example) => {
+    const item = fixture();
+    const body = valid(item.sha).replace("remaining: none", `${example}\nremaining: none`);
+    const result = run(report(item.directory, body), item.repo, ["--branch", "master"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("GUARD verdict=pass");
+  });
+
+  test("ignores a quoted review-looking line", () => {
+    const item = fixture();
+    const body = valid(item.sha).replace("remaining: none", "> review: example only\nremaining: none");
+    const result = run(report(item.directory, body), item.repo, ["--branch", "master"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("GUARD verdict=pass");
+  });
+
   test("accepts a review claim backed by an ACCEPT artifact for the branch tip", () => {
     const item = fixture();
     reviewArtifact(item.directory, "master", item.sha);
@@ -87,6 +120,60 @@ describe("completion guard", () => {
     const result = run(report(item.directory, body), item.repo, ["--branch", "master"]);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("PASS review-artifact");
+  });
+
+  test("accepts a CRLF review field backed by an ACCEPT artifact", () => {
+    const item = fixture();
+    reviewArtifact(item.directory, "master", item.sha);
+    const body = valid(item.sha).replace("remaining: none", "Review : independent ACCEPT\nremaining: none").replaceAll("\n", "\r\n");
+    const result = run(report(item.directory, body), item.repo, ["--branch", "master"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("PASS review-artifact");
+  });
+
+  test.each([
+    ["empty", "review: \n"],
+    ["duplicate", "review: ACCEPT\nReview : ACCEPT\n"],
+  ])("rejects a %s review field", (_case, fields) => {
+    const item = fixture();
+    const body = valid(item.sha).replace("remaining: none", `${fields}remaining: none`);
+    const result = run(report(item.directory, body), item.repo, ["--branch", "master"]);
+    expect(result.status).toBe(2);
+    expect(result.stdout).toContain("FAIL review-field must-occur-once-and-be-nonempty");
+  });
+
+  test.each(["directory", "symlink"])("rejects a %s review artifact", (kind) => {
+    const item = fixture();
+    const artifact = join(item.directory, "master.review.md");
+    if (kind === "directory") mkdirSync(artifact);
+    else {
+      const target = join(item.directory, "review-target.md");
+      writeFileSync(target, `verdict: ACCEPT\nreviewed-sha: ${item.sha}\n`);
+      symlinkSync(target, artifact);
+    }
+    const body = valid(item.sha).replace("remaining: none", "review: ACCEPT\nremaining: none");
+    const result = run(report(item.directory, body), item.repo, ["--branch", "master"]);
+    expect(result.status).toBe(2);
+    expect(result.stdout).toContain("FAIL review-artifact unreadable-or-non-regular");
+  });
+
+  test("rejects a REJECT review artifact", () => {
+    const item = fixture();
+    const artifact = reviewArtifact(item.directory, "master", item.sha);
+    writeFileSync(artifact, `verdict: REJECT\nreviewed-sha: ${item.sha}\n`);
+    const body = valid(item.sha).replace("remaining: none", "review: rejected\nremaining: none");
+    const result = run(report(item.directory, body), item.repo, ["--branch", "master"]);
+    expect(result.status).toBe(2);
+    expect(result.stdout).toContain("FAIL review-artifact verdict-must-be-ACCEPT");
+  });
+
+  test("allows unrelated structured evidence fields without a review field", () => {
+    const item = fixture();
+    const fields = "manifest: consumed\nregression-evidence: retained\nconsumption-check: clean\n";
+    const body = valid(item.sha).replace("remaining: none", `${fields}remaining: none`);
+    const result = run(report(item.directory, body), item.repo, ["--branch", "master"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("GUARD verdict=pass");
   });
 
   test("rejects a review artifact naming a different SHA", () => {

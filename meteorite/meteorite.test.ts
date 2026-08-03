@@ -48,6 +48,40 @@ esac
 }
 
 describe("meteorite runner", () => {
+  test("every publisher-supplied test prerequisite is validated by environment name before Docker starts", async () => {
+    const source = await readFile(runner, "utf8");
+    const prerequisiteCommand = source.match(/"test-prerequisites\|([^\n]+)"/)?.[1] ?? "";
+    const shellNames = new Map([
+      ["donor_sha", "METEORITE_DONOR_SHA"],
+      ["donor_ref", "METEORITE_DONOR_REF"],
+    ]);
+    const requiredInputs = [...prerequisiteCommand.matchAll(/test -n '\$([a-z_]+)'/g)].map((match) => shellNames.get(match[1]));
+    expect(requiredInputs.length).toBeGreaterThan(0);
+    expect(requiredInputs.every(Boolean)).toBe(true);
+
+    for (const input of requiredInputs as string[]) {
+      const f = await fixture();
+      const env = { ...f.env };
+      delete env[input];
+      const run = Bun.spawnSync(["bash", runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env });
+      expect(run.exitCode).toBe(2);
+      const report = await readFile(f.report, "utf8");
+      expect(report).toContain(`blocker: required input ${input} is unset or empty; use meteorite/prove-candidate.sh --ref <40-character-commit-sha>`);
+      expect(report).toContain("input-validation: NO-GO");
+      expect(await Bun.file(f.trace).exists()).toBe(false);
+    }
+  });
+
+  test("a malformed donor ref names the input and supported entry point before Docker starts", async () => {
+    const f = await fixture();
+    const env = { ...f.env, METEORITE_DONOR_REF: "refs/meteorite-candidates/bad/v2-deprecated" };
+    const run = Bun.spawnSync(["bash", runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env });
+    expect(run.exitCode).toBe(2);
+    const report = await readFile(f.report, "utf8");
+    expect(report).toContain("blocker: METEORITE_DONOR_REF has an unsupported shape; use meteorite/prove-candidate.sh --ref <40-character-commit-sha>");
+    expect(await Bun.file(f.trace).exists()).toBe(false);
+  });
+
   test("a bare run fails closed instead of selecting origin/main", async () => {
     const f = await fixture();
     const run = Bun.spawnSync(["bash", runner], { env: f.env });

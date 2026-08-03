@@ -108,6 +108,14 @@ fail() {
   return 1
 }
 
+require_publisher_input() {
+  local name="$1" value="$2"
+  if [[ -z "$value" ]]; then
+    fail "input-validation" "required input $name is unset or empty; use meteorite/prove-candidate.sh --ref <40-character-commit-sha>" || true
+    exit 2
+  fi
+}
+
 if ! command -v git >/dev/null 2>&1; then
   fail "preflight" "git not found on PATH" || true
   exit 1
@@ -134,12 +142,14 @@ if [[ ! "$ref" =~ ^[0-9a-fA-F]{40}$ ]]; then
   fail "ref-validation" "ref must be a 40-character commit SHA" || true
   exit 2
 fi
-if [[ -n "$donor_sha" && ! "$donor_sha" =~ ^[0-9a-fA-F]{40}$ ]]; then
-  fail "ref-validation" "donor SHA must be a 40-character commit SHA" || true
+require_publisher_input "METEORITE_DONOR_SHA" "$donor_sha"
+require_publisher_input "METEORITE_DONOR_REF" "$donor_ref"
+if [[ ! "$donor_sha" =~ ^[0-9a-fA-F]{40}$ ]]; then
+  fail "input-validation" "METEORITE_DONOR_SHA must be a 40-character commit SHA; use meteorite/prove-candidate.sh --ref <40-character-commit-sha>" || true
   exit 2
 fi
-if [[ -n "$donor_ref" && ! "$donor_ref" =~ ^refs/meteorite-candidates/[0-9]+-[0-9]+-[0-9a-fA-F]{40}/v2-deprecated$ ]]; then
-  fail "ref-validation" "donor ref has an unsupported shape" || true
+if [[ ! "$donor_ref" =~ ^refs/meteorite-candidates/[0-9]+-[0-9]+-[0-9a-fA-F]{40}/v2-deprecated$ ]]; then
+  fail "input-validation" "METEORITE_DONOR_REF has an unsupported shape; use meteorite/prove-candidate.sh --ref <40-character-commit-sha>" || true
   exit 2
 fi
 if [[ ! "$repo_url" =~ ^[A-Za-z0-9._~:/@%+=,-]+$ ]]; then

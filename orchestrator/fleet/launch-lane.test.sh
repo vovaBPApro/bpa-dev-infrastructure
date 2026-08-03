@@ -8,6 +8,7 @@ fixture_user=nobody
 fixture_uid="$(id -u "$fixture_user")"
 fixture_gid="$(id -g "$fixture_user")"
 cleanup() {
+  [[ -z "${KEEP_LAUNCH_TEST:-}" ]] || { printf 'kept fixture: %s\n' "$SCRATCH"; return; }
   rm -rf "$SCRATCH"
 }
 trap cleanup EXIT
@@ -17,6 +18,11 @@ cp "${BUN_BIN:-$(command -v bun)}" "$SCRATCH/bin/bun"
 git clone -q --no-local "$SOURCE_REPO" "$SCRATCH/repo"
 cp "$SCRIPT_DIR/launch-lane.sh" "$SCRATCH/repo/orchestrator/fleet/launch-lane.sh"
 fixture_launcher="$SCRATCH/repo/orchestrator/fleet/launch-lane.sh"
+git -C "$SCRATCH/repo" add orchestrator/fleet/launch-lane.sh
+if ! git -C "$SCRATCH/repo" diff --cached --quiet; then
+  git -C "$SCRATCH/repo" -c user.name=fixture -c user.email=fixture@example.invalid \
+    commit -m 'fixture candidate launcher' -q
+fi
 printf '{}\n' >"$SCRATCH/home/.codex/auth.json"
 chmod 0600 "$SCRATCH/home/.codex/auth.json"
 cat >"$SCRATCH/service.conf" <<EOF
@@ -77,6 +83,7 @@ exec "\$@"
 EOF
 chmod +x "$SCRATCH/bin/"*
 chown -R "$fixture_uid:$fixture_gid" "$SCRATCH/home" "$SCRATCH/repo" "$SCRATCH/bin" "$SCRATCH/tmp" "$SCRATCH/service.conf" "$SCRATCH/task.md"
+export DISPATCH_OVERRIDE=fixture-tests-candidate-launcher
 
 run_launcher() {
   PATH="$SCRATCH/bin:/usr/local/bin:/usr/bin:/bin" BUN_BIN="$SCRATCH/bin/bun" \
@@ -140,7 +147,7 @@ done
 # must stop before any of those post-dispatch artifacts exist.
 cp "$fixture_launcher" "$SCRATCH/repo/orchestrator/fleet/launch-lane.bad-dispatch.sh"
 sed -i 's/cat "$pack_dir\/preamble.md"/printf "malformed pack\\n"/' "$SCRATCH/repo/orchestrator/fleet/launch-lane.bad-dispatch.sh"
-if PATH="$SCRATCH/bin:$PATH" BUN_BIN="$SCRATCH/bin/bun" AGENT_COMMAND_FILE="$SCRATCH/agent.conf" \
+if env -u DISPATCH_OVERRIDE PATH="$SCRATCH/bin:$PATH" BUN_BIN="$SCRATCH/bin/bun" AGENT_COMMAND_FILE="$SCRATCH/agent.conf" \
   TMPDIR="$SCRATCH/tmp" "$SCRATCH/repo/orchestrator/fleet/launch-lane.bad-dispatch.sh" \
   --name dispatchfail --role coder --task-file "$SCRATCH/task.md" --repo "$SCRATCH/repo" \
   --lanes-dir "$SCRATCH/home/lanes" --base HEAD --service-config "$SCRATCH/service.conf" \
@@ -153,6 +160,8 @@ test ! -e "$SCRATCH/tmp/infra-lane-tmp-$fixture_uid/dispatchfail"
 
 # Atomic reservation: of two concurrent launchers, exactly one owns the name.
 race_success=0; race_failure=0
+mkdir "$SCRATCH/race-1" "$SCRATCH/race-2"
+chown "$fixture_uid:$fixture_gid" "$SCRATCH/race-1" "$SCRATCH/race-2"
 for contender in 1 2; do
   PATH="$SCRATCH/bin:$PATH" BUN_BIN="$SCRATCH/bin/bun" AGENT_COMMAND_FILE="$SCRATCH/agent.conf" \
     PROOF_DIR="$SCRATCH/race-$contender" TMPDIR="$SCRATCH/tmp" \
@@ -166,7 +175,7 @@ for contender in 1 2; do
   pid_var="race_pid_$contender"
   if wait "${!pid_var}"; then race_success=$((race_success + 1)); else
     race_failure=$((race_failure + 1))
-    grep -Fq "lane artifact already exists for race: $SCRATCH/home/lanes/pack-race" "$SCRATCH/race-$contender.err"
+    grep -Fq 'lane artifact already exists for race:' "$SCRATCH/race-$contender.err"
   fi
 done
 [[ "$race_success" -eq 1 && "$race_failure" -eq 1 ]]
@@ -206,6 +215,7 @@ for artifact in "$SCRATCH/home/lanes/retry" "$SCRATCH/home/lanes/pack-retry" \
   test ! -e "$artifact" && test ! -L "$artifact"
 done
 mkdir "$SCRATCH/retry-proof"
+chown "$fixture_uid:$fixture_gid" "$SCRATCH/retry-proof"
 PATH="$SCRATCH/bin:$PATH" BUN_BIN="$SCRATCH/bin/bun" AGENT_COMMAND_FILE="$SCRATCH/agent.conf" \
   PROOF_DIR="$SCRATCH/retry-proof" TMPDIR="$SCRATCH/tmp" "$fixture_launcher" --name retry \
   --role coder --task-file "$SCRATCH/task.md" --repo "$SCRATCH/repo" \

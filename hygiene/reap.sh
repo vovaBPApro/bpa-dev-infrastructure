@@ -45,7 +45,8 @@ Options:
   --protect NAME        Additional protected branch name; repeatable
   --stale-days DAYS     Report unmerged branches older than DAYS (default: 30)
   --dispositions PATH   Override the branch-disposition exceptions file
-  --protected-file PATH Override the protected-branches list file
+  --protected-file PATH ADD another protected-branches list; never replaces
+                         the default one (see below)
   --apply               Perform the narrowly defined mutations
   -h, --help            Show this help without changing anything
 
@@ -54,10 +55,14 @@ when it is not protected, not held by any worktree, and either provably
 carried by the main branch (land_assert_reap_safe) or explicitly dispositioned.
 Everything else is report-only, unconditionally.
 
-The protected-branches list (default: instance/hygiene-protected-branches.txt)
-must be readable, even if empty of names beyond comments: `branches` refuses
-to run at all if it cannot be read. An unreadable protect list is never
-treated as an empty one -- see load_protected in this script.
+The default protected-branches list (instance/hygiene-protected-branches.txt,
+or PROTECT_BRANCHES_FILE) and, if given, --protected-file must each be
+readable, even if empty of names beyond comments: `branches` refuses to run
+at all if either cannot be read. An unreadable protect list is never treated
+as an empty one -- see load_protected_file in this script. --protected-file
+is additive only: it can only add protected names on top of the default
+list, never remove or replace it, so a caller cannot silently drop
+protection by pointing it at an empty file.
 EOF
 }
 
@@ -100,26 +105,30 @@ git_repo() {
   git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not a git repository: $repo"
 }
 
-# Protected-branch set: the default branch, every --protect flag, and every
+# Protected-branch set: the default branch, every --protect flag, every
 # non-comment, non-blank line of instance/hygiene-protected-branches.txt (this
 # script's own repo, not necessarily --repo -- the list is a fact about this
-# installation, not about whatever fixture is being swept).
+# installation, not about whatever fixture is being swept), and, if given,
+# every non-comment, non-blank line of --protected-file.
 #
 # FAIL CLOSED, deliberately: an unreadable protect list is never treated as an
 # empty one. "I could not read the protect list" and "the protect list is
 # empty" are different facts, and collapsing them silently is the single
 # worst failure mode this script has -- in this repository it is the
 # difference between refusing to run and deleting `v2-deprecated` or `v3`,
-# the only copies of the host rebuild path and the current line. There is
-# deliberately no bypass flag: if a caller genuinely has nothing to protect,
-# the fix is an explicit, present, empty (comments-only) file at the resolved
-# path, not a missing one.
+# the only copies of the host rebuild path and the current line.
+#
+# --protected-file is UNION-ONLY, never a replacement for the default list.
+# A caller may only ADD protections, never remove one by pointing at a
+# different (or empty) file: a legitimate, readable, empty override file
+# would otherwise pass every check and silently drop every default
+# protection, which is functionally an undocumented bypass flag even though
+# no flag was named "bypass". There is still no way to opt out of the
+# default list at all -- if a caller genuinely has nothing to add beyond it,
+# the fix is to simply not pass --protected-file.
 declare -A protected_set=()
-load_protected() {
-  protected_set["$main_branch"]=1
-  local name
-  for name in "${extra_protect[@]}"; do protected_set["$name"]=1; done
-  local list_path="${protected_path:-${PROTECT_BRANCHES_FILE:-$own_root/instance/hygiene-protected-branches.txt}}"
+load_protected_file() {
+  local list_path="$1" name
   # Require a regular, readable file -- not just `-r`. A directory at this
   # path is also "-r" true (root can list it) but `read ... < "$list_path"`
   # fails with EISDIR *inside* the while loop, which does not trip `set -e`
@@ -133,8 +142,27 @@ load_protected() {
     name="${name%%#*}"
     name="${name#"${name%%[![:space:]]*}"}"
     name="${name%"${name##*[![:space:]]}"}"
-    [[ -n "$name" ]] && protected_set["$name"]=1
+    # `if ... fi`, deliberately not `[[ ... ]] && ...`: an untaken `&&`
+    # right-hand side makes the LEFT side's failure the exit status of the
+    # whole expression, which (as the loop body's last statement, under
+    # `set -e`, called as a bare statement) silently kills the entire script
+    # the moment a trailing blank or comment line is the last line read --
+    # exactly the class of defect this file exists to prevent, just aimed at
+    # itself. `if` with no branch taken always returns 0.
+    if [[ -n "$name" ]]; then
+      protected_set["$name"]=1
+    fi
   done < "$list_path"
+}
+load_protected() {
+  protected_set["$main_branch"]=1
+  local name
+  for name in "${extra_protect[@]}"; do protected_set["$name"]=1; done
+  local default_list="${PROTECT_BRANCHES_FILE:-$own_root/instance/hygiene-protected-branches.txt}"
+  load_protected_file "$default_list"
+  if [[ -n "$protected_path" ]]; then
+    load_protected_file "$protected_path"
+  fi
 }
 is_protected() { [[ -n "${protected_set["$1"]:-}" ]]; }
 

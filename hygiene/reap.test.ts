@@ -289,6 +289,97 @@ test("branches refuses to run at all when the protected-branches path is a direc
   expect(sh("git show-ref --verify --quiet refs/heads/v3 && echo present", repo).trim()).toBe("present");
 });
 
+// --- round-3 review defect: `&&` as a loop body's last statement under set -e
+//
+// `load_protected`'s per-line loop originally ended with
+// `[[ -n "$name" ]] && protected_set["$name"]=1`. When the last line read
+// strips to empty (an ordinary trailing blank line, or a file that ends on a
+// comment), that `[[ ]]` is false, its exit status becomes the loop body's
+// exit status, which becomes the (bare, uncontrolled) while loop's exit
+// status, which -- because `load_protected_file` and `load_protected` are
+// both called as bare statements -- kills the entire script under `set -e`
+// with ZERO output: not even the `ERROR:` line `die` would have printed,
+// because the script never got that far. A one-character edit to a config
+// file (an editor adding a trailing newline) would put this reaper back in
+// exactly the "wired into nothing, nobody notices" state this row exists to
+// fix, just via silence at the *branches* subcommand instead of the *cron
+// entry* the donor never wired up. Confirmed against ce67a2b, both variants,
+// before writing the fix: completely silent, `status !== 0`, zero stdout,
+// zero stderr.
+
+function writeProtectFile(dir: string, name: string, lines: string[]): string {
+  const path = join(dir, name);
+  // Every line, including the last, is newline-terminated -- what a normal
+  // editor produces. `lines: [..., ""]` therefore adds one genuine trailing
+  // BLANK LINE (an extra "\n"), not merely "no final newline"; the latter is
+  // a separate, unrelated `read`/EOF quirk (an unterminated last line is
+  // silently dropped by `while read`) that this suite does not exercise --
+  // it is not the defect this round is about, and a hand-edited config file
+  // ending without a trailing newline at all is not the realistic case.
+  writeFileSync(path, lines.map((line) => `${line}\n`).join(""));
+  return path;
+}
+
+test("a protected-branches file ending in a trailing blank line does not silently crash the script", () => {
+  const { dir, repo } = buildFixture();
+  sh("git branch v3", repo);
+  // Trailing blank line after the last real entry -- the exact shape a text
+  // editor adds without anyone noticing.
+  const path = writeProtectFile(dir, "trailing-blank.txt", ["v2-deprecated", "v3", ""]);
+
+  const result = run(["branches", "--repo", repo, "--protected-file", path, "--apply"]);
+  expect(result.status).toBe(0);
+  expect(`${result.stdout}${result.stderr}`.length).toBeGreaterThan(0); // not a silent crash
+  expect(result.stdout).toContain("protected branch, refusing: v3");
+  expect(sh("git show-ref --verify --quiet refs/heads/v3 && echo present", repo).trim()).toBe("present");
+});
+
+test("a protected-branches file ending in a comment line does not silently crash the script", () => {
+  const { dir, repo } = buildFixture();
+  sh("git branch v3", repo);
+  const path = writeProtectFile(dir, "trailing-comment.txt", ["v2-deprecated", "v3", "# trailing comment, nothing after it"]);
+
+  const result = run(["branches", "--repo", repo, "--protected-file", path, "--apply"]);
+  expect(result.status).toBe(0);
+  expect(`${result.stdout}${result.stderr}`.length).toBeGreaterThan(0);
+  expect(result.stdout).toContain("protected branch, refusing: v3");
+  expect(sh("git show-ref --verify --quiet refs/heads/v3 && echo present", repo).trim()).toBe("present");
+});
+
+// --- round-3 review item 2: --protected-file must be additive, not a
+// replacement, or an empty override file functions as an undocumented
+// bypass of every default protection (including v2-deprecated and v3).
+// Chosen fix: UNION. --protected-file's names are added to the default
+// list; they can never subtract from it. This is the safer shape for
+// something intended to run unattended (a cron/timer executor with nobody
+// reviewing each invocation): a caller may only ever ask for MORE branches
+// to be protected, never fewer, so a mistaken or malicious override file
+// degrades to "did nothing extra," not "disabled the safety net."
+
+test("--protected-file only ADDS protections; a legitimate, readable, empty override does not drop the defaults", () => {
+  const { dir, repo } = buildFixture();
+  sh("git branch v3", repo); // protected only via the default instance/ file, not via this override
+  const emptyOverride = writeProtectFile(dir, "empty.txt", ["# nothing here, on purpose"]);
+
+  const result = run(["branches", "--repo", repo, "--protected-file", emptyOverride, "--apply"]);
+  expect(result.status).toBe(0);
+  expect(result.stdout).toContain("protected branch, refusing: v3");
+  expect(sh("git show-ref --verify --quiet refs/heads/v3 && echo present", repo).trim()).toBe("present");
+});
+
+test("--protected-file unions its own names on top of the defaults, both take effect", () => {
+  const { dir, repo } = buildFixture();
+  const override = writeProtectFile(dir, "extra.txt", ["merged"]); // an otherwise-deletable branch
+  sh("git branch v3", repo); // covered only by the default list, not this override
+
+  const result = run(["branches", "--repo", repo, "--protected-file", override, "--apply"]);
+  expect(result.status).toBe(0);
+  expect(result.stdout).toContain("protected branch, refusing: merged"); // from --protected-file
+  expect(result.stdout).toContain("protected branch, refusing: v3"); // from the default list, still active
+  expect(sh("git show-ref --verify --quiet refs/heads/merged && echo present", repo).trim()).toBe("present");
+  expect(sh("git show-ref --verify --quiet refs/heads/v3 && echo present", repo).trim()).toBe("present");
+});
+
 test("an explicit disposition deletes an otherwise-unmerged branch; no disposition never does", () => {
   const { dir, repo } = buildFixture();
   const dispositions = join(dir, "dispositions.txt");

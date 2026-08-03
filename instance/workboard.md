@@ -25,7 +25,7 @@ human nursing it.
 
 | id | row | acceptance | state |
 |---|---|---|---|
-| V3-0.1 | Port `gate/land.sh --target-branch` from the abandoned line. Without it landing is only possible onto the repository default branch. | `bash gate/land-target-branch.test.sh; echo $?` → 0, run twice in a row | **blocked** — reviewed ACCEPT on the old line, but its verify fails intermittently when run under `gate/land.sh` while other work is in flight, and passes standalone. Flakiness must be diagnosed before it lands; landing a flaky gate test is a false-green generator. |
+| V3-0.1 | Port `gate/land.sh --target-branch` from the abandoned line. Without it landing is only possible onto the repository default branch. | `env -u BUN_BIN bash gate/land-target-branch.test.sh; echo $?` → 0 | **done** — landed `f331295`, `verdict=landed review=accepted`. See "Nested gate invocations" below: the apparent flakiness was the verify command, not the change. |
 | V3-0.2 | Lane terminal reports: enforce the corrected convention. The report is an external file naming the branch tip; a report committed into its own branch can never match the tip (proven, see `report-pinning-convention`). Wire `gate/completion-guard.ts` at lane exit, not only at land time. | a dispatched lane cannot end while `bun gate/completion-guard.ts --report <path> --repo . --branch <tip>` exits non-zero | not started |
 | V3-0.3 | Landing gate rollback defect: an aborted landing left local `main` advanced to the merged commit with a dirty tree. Origin was never touched, so the push boundary held, but the local ref moved after `verdict=aborted`. | a test that aborts a landing at post-merge-verify and asserts `git rev-parse <target>` is unchanged | not started |
 | V3-0.4 | Ledger drift check — **done**, landed 2687420 + 76c5363. | `bun test tools/check-decision-ledger-drift.test.ts` → 2 pass | **done** |
@@ -67,7 +67,7 @@ Human and then lost when the fork copied a file tree instead of a ledger.
 | V3-3.1 | `/model` switches the live session, not only the next relaunch. | HR-1349 |
 | V3-3.2 | Spark routable as the cheap tier for mechanical lanes; quota is measured today and cannot be spent. | HR-1734, restating 1562 |
 | V3-3.3 | Weekly per-provider model discovery with fit metadata, pluggable providers, fail-closed to the last committed catalog. | HR-1739 |
-| V3-3.4 | Review round cap enforced by a counter and the gate, not by prose. The current rule carries a PROSE ONLY banner because nothing counts rounds. | HR-1726 |
+| V3-3.4 | Review round cap enforced by a counter and the gate, not by prose. The current rule carries a PROSE ONLY banner because nothing counts rounds. **Plus a no-progress detector** (operator ask, Telegram 1780): the cap counts attempts, which is not the same as detecting a stuck item. If N consecutive rounds on one item produce no landed SHA, park it automatically — an item can burn rounds while looking busy, which is exactly what the `authority` epic did across r6–r23. | HR-1726, HR-1780 |
 | V3-3.5 | Decision-request options explained in the message body; a button label is ~3 legible words. | HR-1752 |
 | V3-3.6 | Vendor quota display, so a quota cliff is visible before it is hit. | ML-6 |
 | V3-3.7 | Self-hosted, user-teachable OCR. | HR-1418 |
@@ -83,6 +83,38 @@ Only after Phases 0–2 hold.
 | V3-4.3 | Host cutover — the operator's "почищу сервак і з нуля почнемо". | his explicit go, after 4.1 and 4.2 |
 
 ---
+
+## Nested gate invocations — a property to know before writing a `verify:`
+
+`gate/land-lib.sh:19-23` (`land_resolve_bun`) refuses to run when `BUN_BIN` is already
+set in the environment:
+
+```sh
+if [ -n "${BUN_BIN:-}" ]; then
+  echo "LAND step=preflight status=fail detail=caller-bun-override-refused" >&2
+  return 1
+fi
+```
+
+That is a deliberate supply-chain control: a caller must not be able to choose which
+`bun` binary the landing gate trusts. It resolves only from the fixed host baseline
+`/usr/local/bin:/usr/bin:/bin` and canonicalises symlinks.
+
+The consequence is easy to trip over. `gate/land.sh` exports `BUN_BIN` for its own
+run, so **any test that itself invokes `gate/land.sh` will fail when used as a
+landing's `verify:` command** — the nested gate correctly refuses. It passes standalone
+and fails under the gate, which looks exactly like flakiness and is not.
+
+This cost roughly an hour of misdiagnosis on 2026-08-03, including a workboard row
+wrongly marked blocked. The fix in a `verify:` line is `env -u BUN_BIN`, which restores
+the standalone condition without weakening the control — the nested gate still resolves
+its own bun from the trusted path.
+
+Note also that this host carries two bun installations: `/usr/local/bin/bun` 1.2.22
+(the one the gate's trusted path finds) and `/root/.bun/bin/bun` 1.3.14 (the one on
+the interactive `PATH`, which lanes test with). The gate is not wrong to pin the
+baseline, but lanes verifying on a different version than the gate is a skew worth
+closing in Phase 1.
 
 ## Standing check this plan creates
 

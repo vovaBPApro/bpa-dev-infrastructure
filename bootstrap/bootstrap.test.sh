@@ -5,7 +5,7 @@
 # bash from its own inherited environment, not in this shell -- that is the
 # whole point of INSTALLER_PATH="$INSTALLER" ... bash -c '...INSTALLER_PATH...'.
 #
-# Stub-fixture tests for bootstrap/install.sh STAGE 1 (S2-3 / V3-1.1). No
+# Stub-fixture tests for bootstrap/install.sh STAGE 2 (S3-2 / V3-1.1). No
 # container, no Docker, no network, no writes outside this script's own
 # fixtures: every prerequisite/bun/git/apt call below is a recorded stub, and
 # INSTALL_ROOT/ENV_FILE/STATE_DB are always fixture paths under mktemp.
@@ -44,7 +44,7 @@ trap 'rm -rf "$FIXTURE_ROOT"' EXIT
 # `dirname`. First match wins, mirroring ordinary PATH precedence.
 CORE_PATH="$FIXTURE_ROOT/core-utils"
 mkdir -p "$CORE_PATH"
-EXCLUDED_TOOLS=(git curl tmux flock findmnt unzip apt-get sudo)
+EXCLUDED_TOOLS=(git curl tmux flock findmnt envsubst crontab unzip apt-get sudo)
 is_excluded_tool() {
   local candidate="$1" excluded
   for excluded in "${EXCLUDED_TOOLS[@]}"; do
@@ -70,7 +70,7 @@ grep -Fxq 'INSTALL_ROOT="${INSTALL_ROOT:-/root/bpa-dev-infrastructure}"' "$INSTA
 # document why they were left out), so the scan first drops comment-only
 # lines and checks only what is left -- code, not prose about code.
 installer_code_only="$(grep -v '^[[:space:]]*#' "$INSTALLER")"
-for absent in workspace_status run_install_test_gate render_units activate_units \
+for absent in workspace_status activate_units \
   '--verify)' '--arm-watchdog' '--disarm-watchdog' '--no-cron'; do
   if grep -Fq -- "$absent" <<<"$installer_code_only"; then
     echo "ERROR: out-of-scope donor surface present in install.sh CODE: $absent" >&2
@@ -81,17 +81,18 @@ echo 'PASS static shape (INSTALL_ROOT default present, out-of-scope surface abse
 
 # ── --dry-run / --help / argument validation ─────────────────────────────
 dry_run="$($INSTALLER --dry-run)"
-for expected in 'PLAN apt' 'PLAN bun' 'PLAN repository' 'PLAN environment' 'PLAN state-db'; do
+for expected in 'PLAN apt' 'PLAN bun' 'PLAN repository' 'PLAN environment' 'PLAN state-db' \
+  'PLAN hygiene' 'PLAN test-gate' 'PLAN units'; do
   grep -Fq "$expected" <<<"$dry_run"
 done
 # Trimmed-scope proof: the donor's later-stage plan rows must NOT appear.
-for dropped in 'PLAN workspace' 'PLAN hygiene' 'PLAN test-gate' 'PLAN units' 'PLAN activate'; do
+for dropped in 'PLAN workspace' 'PLAN activate'; do
   if grep -Fq "$dropped" <<<"$dry_run"; then
     echo "ERROR: --dry-run printed an out-of-scope plan row: $dropped" >&2
     exit 1
   fi
 done
-echo 'PASS --dry-run plan (stage-1 rows present, later-stage rows absent)'
+echo 'PASS --dry-run plan (stage-2 rows present, activation absent)'
 
 "$INSTALLER" --help >/dev/null
 "$INSTALLER" -h >/dev/null
@@ -115,14 +116,14 @@ echo 'PASS argument validation (--help, unknown flag, --verify, combined flags)'
 prereq_fixture="$FIXTURE_ROOT/prereq"
 install -d -m 700 "$prereq_fixture/bin-complete" "$prereq_fixture/bin-missing-flock" \
   "$prereq_fixture/bin-missing-flock-no-root" "$prereq_fixture/bin-missing-unzip"
-for tool in git curl tmux flock findmnt unzip; do
+for tool in git curl tmux flock findmnt envsubst crontab unzip; do
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$prereq_fixture/bin-complete/$tool"
 done
-for tool in git curl tmux findmnt unzip; do
+for tool in git curl tmux findmnt envsubst crontab unzip; do
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$prereq_fixture/bin-missing-flock/$tool"
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$prereq_fixture/bin-missing-flock-no-root/$tool"
 done
-for tool in git curl tmux flock findmnt; do
+for tool in git curl tmux flock findmnt envsubst crontab; do
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$prereq_fixture/bin-missing-unzip/$tool"
 done
 chmod 700 "$prereq_fixture"/bin-complete/* "$prereq_fixture"/bin-missing-flock/* \
@@ -551,11 +552,85 @@ printf '%s\n' 'FAIL-BEFORE initialize_state_db: no such function exists before t
 echo 'PASS initialize_state_db: second (idempotent) call preserves prior real state, does not wipe the database'
 
 # ══════════════════════════════════════════════════════════════════════════
+# stage 2: hygiene cron, repository gate, and manifest-driven unit rendering
+# ══════════════════════════════════════════════════════════════════════════
+stage2_fixture="$FIXTURE_ROOT/stage2"
+install -d -m 700 "$stage2_fixture/root/hygiene" "$stage2_fixture/bin" \
+  "$stage2_fixture/root/bootstrap/units" "$stage2_fixture/root/instance/units" \
+  "$stage2_fixture/systemd"
+cron_calls="$stage2_fixture/cron.calls"
+cat > "$stage2_fixture/root/hygiene/install-cron.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$CRONTAB_CMD" > "$CRON_CALLS"
+EOF
+chmod 700 "$stage2_fixture/root/hygiene/install-cron.sh"
+BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$stage2_fixture/root" CRONTAB_CMD=fixture-crontab \
+  CRON_CALLS="$cron_calls" INSTALLER_PATH="$INSTALLER" "$BASH_BIN" -c \
+  'source "$INSTALLER_PATH"; install_hygiene_cron'
+grep -Fxq fixture-crontab "$cron_calls"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 9' > "$stage2_fixture/root/hygiene/install-cron.sh"
+chmod 700 "$stage2_fixture/root/hygiene/install-cron.sh"
+if BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$stage2_fixture/root" INSTALLER_PATH="$INSTALLER" \
+  "$BASH_BIN" -c 'source "$INSTALLER_PATH"; install_hygiene_cron'; then
+  echo 'ERROR: install_hygiene_cron accepted a failed cron installer' >&2
+  exit 1
+fi
+echo 'PASS install_hygiene_cron: invokes tracked installer and propagates failure'
+
+cat > "$stage2_fixture/bin/bun" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$stage2_fixture/bun.calls"
+printf '%s\n' "\${TMPDIR-unset}" >> "$stage2_fixture/bun.tmpdir"
+exit "\${BUN_STUB_EXIT:-0}"
+EOF
+chmod 700 "$stage2_fixture/bin/bun"
+BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$stage2_fixture/root" BUN_BIN="$stage2_fixture/bin/bun" \
+  INSTALLER_PATH="$INSTALLER" "$BASH_BIN" -c 'source "$INSTALLER_PATH"; run_install_test_gate'
+grep -Fxq test "$stage2_fixture/bun.calls"
+grep -Fxq unset "$stage2_fixture/bun.tmpdir"
+if BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$stage2_fixture/root" BUN_BIN="$stage2_fixture/bin/bun" \
+  BUN_STUB_EXIT=7 INSTALLER_PATH="$INSTALLER" "$BASH_BIN" -c \
+  'source "$INSTALLER_PATH"; run_install_test_gate' >/dev/null 2>&1; then
+  echo 'ERROR: run_install_test_gate accepted a failed repository suite' >&2
+  exit 1
+fi
+echo 'PASS run_install_test_gate: runs complete repository test command and propagates failure'
+
+printf '%s\t%s\n%s\t%s' first.service generic second.timer instance > "$stage2_fixture/expected.tsv"
+printf '%s\n' '[Service]' 'ExecStart=${BUN_BIN} ${INSTALL_ROOT}/first.ts' > \
+  "$stage2_fixture/root/bootstrap/units/first.service.in"
+printf '%s\n' '[Timer]' 'OnCalendar=hourly' > "$stage2_fixture/root/instance/units/second.timer.in"
+BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$stage2_fixture/root" BUN_BIN="$stage2_fixture/bin/bun" \
+  SYSTEMD_SYSTEM_DIR="$stage2_fixture/systemd" EXPECTED_UNITS_FILE="$stage2_fixture/expected.tsv" \
+  INSTALLER_PATH="$INSTALLER" "$BASH_BIN" -c 'source "$INSTALLER_PATH"; render_units'
+grep -Fq "ExecStart=$stage2_fixture/bin/bun $stage2_fixture/root/first.ts" \
+  "$stage2_fixture/systemd/first.service"
+[[ "$(stat -c '%a' "$stage2_fixture/systemd/second.timer")" == 644 ]]
+if rg -n 'systemctl' "$stage2_fixture" >/dev/null; then
+  echo 'ERROR: render_units invoked or emitted systemctl' >&2
+  exit 1
+fi
+rm "$stage2_fixture/root/instance/units/second.timer.in"
+if BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$stage2_fixture/root" BUN_BIN="$stage2_fixture/bin/bun" \
+  SYSTEMD_SYSTEM_DIR="$stage2_fixture/systemd" EXPECTED_UNITS_FILE="$stage2_fixture/expected.tsv" \
+  INSTALLER_PATH="$INSTALLER" "$BASH_BIN" -c 'source "$INSTALLER_PATH"; render_units' >/dev/null 2>&1; then
+  echo 'ERROR: render_units accepted a manifest-listed missing template' >&2
+  exit 1
+fi
+echo 'PASS render_units: renders both inventories, reads final unterminated row, and rejects manifest deletion'
+
+# ══════════════════════════════════════════════════════════════════════════
 # --verify-source
 # ══════════════════════════════════════════════════════════════════════════
 verify_fixture="$FIXTURE_ROOT/verify"
-install -d -m 700 "$verify_fixture/root/.git" "$verify_fixture/root/core" "$verify_fixture/bin"
+install -d -m 700 "$verify_fixture/root/.git" "$verify_fixture/root/core" \
+  "$verify_fixture/root/bootstrap" "$verify_fixture/bin" "$verify_fixture/systemd"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/bin/bun"
+printf '%s\n' '#!/usr/bin/env bash' \
+  'if [[ "${1:-}" == -l ]]; then echo "# BEGIN bpa-dev-infrastructure hygiene"; fi' \
+  'exit 0' > "$verify_fixture/bin/crontab"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/root/bootstrap/check-unit-drift.sh"
+chmod 700 "$verify_fixture/root/bootstrap/check-unit-drift.sh"
 for tool in git curl tmux flock findmnt; do
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/bin/$tool"
 done
@@ -563,12 +638,15 @@ chmod 700 "$verify_fixture/bin"/*
 install -m 600 /dev/null "$verify_fixture/root/.env"
 
 good_output="$(PATH="$verify_fixture/bin:$CORE_PATH" INSTALL_ROOT="$verify_fixture/root" \
-  ENV_FILE="$verify_fixture/root/.env" BUN_BIN="$verify_fixture/bin/bun" "$INSTALLER" --verify-source)"
+  ENV_FILE="$verify_fixture/root/.env" BUN_BIN="$verify_fixture/bin/bun" \
+  CRONTAB_CMD="$verify_fixture/bin/crontab" SYSTEMD_SYSTEM_DIR="$verify_fixture/systemd" \
+  "$INSTALLER" --verify-source)"
 for expected in 'PASS git' 'PASS curl' 'PASS tmux' 'PASS flock' 'PASS findmnt' 'PASS bun' \
-  'PASS repository' 'PASS environment file' 'PASS environment permissions' 'PASS state-db'; do
+  'PASS repository' 'PASS environment file' 'PASS environment permissions' 'PASS state-db' \
+  'PASS hygiene-cron' 'PASS rendered units'; do
   grep -Fq "$expected" <<<"$good_output"
 done
-echo 'PASS --verify-source: every stage-1 boundary PASSes against a satisfied fixture'
+echo 'PASS --verify-source: every stage-2 boundary PASSes against a satisfied fixture'
 
 # Fail-closed proof: a single broken boundary (wrong .env mode) must flip the
 # overall exit code, not just print one FAIL line lost among PASSes.
@@ -636,4 +714,4 @@ else
   echo 'SKIP shellcheck: not present on this host'
 fi
 
-echo 'PASS bootstrap stage 1: dry-run, argument validation, all five in-scope functions, --verify-source, secret scan'
+echo 'PASS bootstrap stage 2: dry-run, all eight in-scope functions, failure locks, --verify-source, secret scan'

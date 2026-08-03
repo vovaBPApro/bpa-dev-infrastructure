@@ -52,14 +52,41 @@ skip log; see the gate's usage output for operational mechanics.
 Binding per `instance/decisions/HR-1726.md`. Review rounds are bounded; testing, not
 another opinion, is the escalation.
 
+> **Enforcement status: PROSE ONLY — not machine-checked.** No tool counts rounds or
+> requires a lock before landing: `gate/land.sh` verifies `reviewed-sha` and
+> `independence` and nothing else. Treat this section as a rule agents must follow
+> deliberately, not as a gate that will stop them. Wiring it is tracked as W-CAP-1/2
+> in `instance/workboard.md`. Until then, do not cite "the cap" as evidence that a
+> bounded review actually happened — say which round this is and show it.
+
 - **Count rounds per work item, not per SHA.** A round is one full pass of the
-  required lenses over a candidate. The item is identified by its mission id, so
-  recuts and renamed branches continue the same count rather than resetting it.
+  required lenses over a candidate. Recuts and renamed branches continue the same
+  count rather than resetting it.
+- **Identify the item by its `correlation_id`, and reuse it.** Do *not* rely on the
+  mission id: `core/mission-cli.ts` mints a fresh `crypto.randomUUID()` on every
+  `mission create`, and `core/state.ts:262` puts no UNIQUE constraint on
+  `correlation_id`, so a second `mission create` for the same work silently produces
+  a new identity and a reset count. Per `instructions/orchestrator-cold-start.md`,
+  create once when the correlation id is absent and retain it. A recut that mints a
+  new id has not reset the count; it has lost it, and the count restarts from the
+  round history recorded in the item's review records.
 - **The cap is 3 rounds.** A fourth round is not an available action.
 - **Carry ACCEPT forward.** A lens that returned `ACCEPT` is not re-run on a later
   candidate unless the new diff touches that lens's surface. Only the lenses that
   rejected review the delta. Record the carried verdict and the SHA it was issued
   against, so the record still names what was reviewed.
+- **Lens surfaces are computed, not judged.** "Touches that lens's surface" means
+  `git diff --name-only <prior-reviewed-sha>..<candidate>` matches that lens's
+  prefixes:
+  - *security*: `daemon/`, `core/`, `bootstrap/`, `gate/`, `tools/permissions/`,
+    anything touching auth, secrets, or a network boundary;
+  - *operations/runtime*: `orchestrator/`, `bootstrap/units/`, `soak/`, `hygiene/`,
+    systemd units, timers, and any host-deployment path;
+  - *tests/regression*: any `*.test.*` file, `gate/`, and the lock or fixture files
+    the candidate's evidence depends on.
+  A path matching no lens does not re-open any lens. Overlap re-opens every lens it
+  matches. When a candidate's paths are genuinely ambiguous, that is a Tier A
+  classification question and resolves to Tier A, not to reviewer preference.
 - **At the cap, exactly two exits exist:**
   1. **Escalate to locks.** Every open concern becomes an executable regression lock
      that demonstrably fails before the fix and passes at the reviewed SHA. The item
@@ -73,6 +100,13 @@ The cap ends review rounds; it never lowers evidence. Hard Floor 7 continues to
 apply — running out of rounds is not a pass, an unmeasured subject is not a pass, and
 "no lock was written" is a park, not a landing. Tier A classification, session
 independence, and the approval boundary are unchanged by the cap.
+
+Escalating to locks does **not** waive the Tier A independent consilium. For a Tier A
+item, an independent reviewer must inspect and accept the lock itself — that the lock
+exercises the real surface, fails before the fix, and cannot pass vacuously — before
+landing. Lock-passed is never sufficient on its own for auth, authorization,
+migrations, money, orchestrator or watchdog core, secrets, CI or environment schema,
+production infrastructure, or evidence-gate changes.
 
 ## Constrained-provider review
 

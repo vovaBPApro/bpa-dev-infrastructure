@@ -350,6 +350,18 @@ fi
 baseline_test_count="$LAND_FRAMEWORK_TEST_COUNT"
 land_pass baseline-checks
 
+# Measure the candidate range before main moves. After the merge, using main as
+# the merge-base would collapse the range to empty and silently skip proof.
+meteorite_required=false
+if land_meteorite_required "$repo" "$branch"; then
+  meteorite_required=true
+else
+  meteorite_required_status=$?
+  if [ "$meteorite_required_status" -ne 1 ]; then
+    land_fail meteorite-trigger 2
+  fi
+fi
+
 if ! git -C "$repo" merge --no-ff "$branch" -m "[ORCH] land lane $branch" -m "secret-scan: clean"; then
   git -C "$repo" merge --abort >/dev/null 2>&1 || true
   land_fail merge
@@ -372,8 +384,10 @@ fi
 merge_sha=$(git -C "$repo" rev-parse HEAD)
 land_pass merge
 
-if land_meteorite_required "$repo" "$branch"; then
-  if ! land_run_meteorite "$repo" "$merge_sha"; then
+if [ "$meteorite_required" = true ]; then
+  # The runner is read from the independently accepted pre-merge tree. The
+  # candidate remains the tested SHA, but cannot replace its own observer.
+  if ! land_run_meteorite "$repo" "$merge_sha" "$pre_merge_sha"; then
     if ! land_force_reset "$repo" "$pre_merge_sha"; then
       land_fail_rollback meteorite "$pre_merge_sha" "$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)"
     fi
@@ -383,15 +397,6 @@ if land_meteorite_required "$repo" "$branch"; then
   fi
   land_pass meteorite
 else
-  meteorite_required_status=$?
-  if [ "$meteorite_required_status" -ne 1 ]; then
-    if ! land_force_reset "$repo" "$pre_merge_sha"; then
-      land_fail_rollback meteorite-trigger "$pre_merge_sha" "$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)"
-    fi
-    merged=false
-    merge_sha="none"
-    land_fail meteorite-trigger
-  fi
   land_skip meteorite
 fi
 

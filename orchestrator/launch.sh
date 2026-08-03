@@ -22,6 +22,8 @@ MODEL="${ORCH_MODEL:-}"
 LOCK_FILE="${ORCH_LOCK_FILE:-$RUNTIME_DIR/launch.lock}"
 AUTH_PREFLIGHT="${ORCH_AUTH_PREFLIGHT:-$SCRIPT_DIR/preflight-cli-auth.sh}"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+MODEL_PIN_FILE="${ORCH_MODEL_PIN_FILE:-$REPO_DIR/instance/params.yaml}"
+MODEL_PIN_CHECKER="${ORCH_MODEL_PIN_CHECKER:-$SCRIPT_DIR/model-pin.ts}"
 SINGLETON_LOCK_FILE="${ORCH_SINGLETON_LOCK_FILE:-$REPO_DIR/runtime/orchestrator.singleton.lock}"
 SINGLETON_RECOVERY_LOCK_FILE="${ORCH_SINGLETON_RECOVERY_LOCK_FILE:-$SINGLETON_LOCK_FILE.recovery}"
 SINGLETON_OWNER_FILE="${ORCH_SINGLETON_OWNER_FILE:-$SINGLETON_LOCK_FILE.owner}"
@@ -78,7 +80,7 @@ CODEX_MODEL="${ORCH_CODEX_MODEL:-${MODEL:-gpt-5.6-sol}}"
 # Precedence: ORCH_CLAUDE_MODEL > ORCH_MODEL (legacy) > pin. The Telegram
 # /model command writes ORCH_CLAUDE_MODEL — provider-scoped on purpose, so an
 # escalation to Fable can never leak into a codex launch.
-CLAUDE_MODEL="${ORCH_CLAUDE_MODEL:-${MODEL:-claude-opus-5}}"
+CLAUDE_MODEL="${ORCH_CLAUDE_MODEL:-${MODEL:-claude-fable-5}}"
 # codex-cli defaults this box to `reasoning effort: none`, which is not adequate
 # for the judgement this role does (routing, evidence verdicts, landing calls).
 CODEX_REASONING_EFFORT="${ORCH_CODEX_REASONING_EFFORT:-high}"
@@ -108,6 +110,20 @@ model_report() {
   printf 'config_file=%s\n' "$CONFIG_FILE"
   printf 'claude_model=%s\n' "$CLAUDE_MODEL"
   printf 'codex_model=%s\n' "$CODEX_MODEL"
+}
+
+assert_model_pin() {
+  local requested
+  case "$PROVIDER" in
+    claude) requested="$CLAUDE_MODEL" ;;
+    codex) requested="$CODEX_MODEL" ;;
+    *) requested="${MODEL:-}" ;;
+  esac
+  if [[ ! -f "$MODEL_PIN_CHECKER" ]]; then
+    printf 'ERROR orchestrator-model-pin cause=missing-checker path=%s\n' "$MODEL_PIN_CHECKER" >&2
+    return 78
+  fi
+  "$BUN_BIN" "$MODEL_PIN_CHECKER" "$MODEL_PIN_FILE" "$PROVIDER" "$requested" >/dev/null
 }
 
 identity_report() {
@@ -400,6 +416,11 @@ stale_singleton_recovery_proven() {
 start() {
   local singleton_guard_fd singleton_recovery_fd
   local stale_lock_key recovery_source
+  # This is deliberately the first startup assertion. It compares the tracked,
+  # Human-owned installation fact with the provider CLI request assembled by
+  # this launcher. The provider exposes no independent API for its backend's
+  # eventual model, so this proves the exec request (and no stronger claim).
+  assert_model_pin || return $?
   mkdir -p "$RUNTIME_DIR" "$(dirname "$SINGLETON_LOCK_FILE")" \
     "$(dirname "$SINGLETON_RECOVERY_LOCK_FILE")"
   umask 077

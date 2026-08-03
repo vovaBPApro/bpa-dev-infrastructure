@@ -68,9 +68,8 @@ orchestrator:
   # SUPERSEDES HR-271 item 1. He corrected the record: Codex gpt-5.6-sol is a
   # quota-exhaustion FALLBACK only, not the resting top-orchestrator provider.
   top_posture: thin                # unchanged in KIND — routing/decisions/Human contact only
-  # Pinned in source (orchestrator/launch.sh CLAUDE_MODEL) for the same reason
-  # as fallback_model below: an unpinned claude launch emits no --model and the
-  # top orchestrator silently becomes the account default.
+  # Human-owned tracked pin. orchestrator/model-pin.ts compares this value to
+  # the launcher's CLI request before any startup side effect and fails closed.
   top_model: claude-fable-5        # HUMAN RULING: instance/decisions/HR-709.md (Vova, 2026-08-01).
   # SUPERSEDES HR-269 item 1 and HR-271's "Claude reserved entirely" framing.
   # Rest on FABLE, not Sonnet, not Opus, not Codex. His words: "на fable було
@@ -81,13 +80,11 @@ orchestrator:
   # DRIFT FOUND 2026-08-01: `bash orchestrator/launch.sh model` already reported
   # claude_model=claude-fable-5 (the runtime.env pin was already correct) at the
   # moment this ruling arrived, yet the LIVE session was running claude-sonnet-5.
-  # The restart path that brought this session up did not honor the pin — a
-  # separate open defect, not resolved by this key. See workboard.
-  top_model_source: runtime.env    # host pin; orchestrator/launch.sh CLAUDE_MODEL is the fallback default
-  top_model_status: pinned         # orchestrator/model-command.test.sh locks the emitted --model;
-  # ORCH_CLAUDE_MODEL in runtime.env overrides the source default per host, and
-  # the Telegram /model command writes that same name, so an operator switch and
-  # this pin cannot disagree.
+  # Startup now refuses when its resolved CLI request differs from this pin.
+  top_model_source: instance/params.yaml
+  top_model_status: pinned         # orchestrator/model-pin.test.ts locks startup execution
+  # ORCH_CLAUDE_MODEL in runtime.env is only a requested override: the tracked
+  # pin must be changed deliberately to the same value or startup refuses.
   # Escalation tier reachable from Telegram (`/model fable`); switch up for a
   # hairy incident, back down after. Selectable set: daemon/model-registry.ts.
   # NOTE: fable is now the RESTING tier (top_model above), not escalation-only —

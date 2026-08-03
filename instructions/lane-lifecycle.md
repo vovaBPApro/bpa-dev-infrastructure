@@ -15,6 +15,7 @@ floor-line: Artifacts beat explanations — finish the file, commit, test, and r
 
 - A mission names scope, owner, acceptance rows, risk tier, evidence destination, and a durable correlation identifier before dispatch.
 - Give every lane one branch, one worktree, and one writer. Never allow two writers to edit the same tree.
+- A lane never runs `git stash`: `refs/stash` is repository-global, so sibling worktrees share it and one lane can restore another lane's files. To set work aside locally, make a scratch commit on the lane branch with `git add -A && git commit --no-verify -m "scratch: set work aside"`; restore those changes in that same worktree with `git reset --soft HEAD^`. The commit and index are worktree-local through the lane's own branch and index; remove or replace the scratch commit before reporting the lane complete.
 - Lanes commit early and often. A lane that exits with zero commits loses all work; commit the first durable slice promptly and publish it to the lane branch when the mission's transport policy permits.
 - Liveness is derived from a fresh lease, heartbeat, process probe, and durable status—not a chat claim. `orchestrator/watchdog.sh` and `orchestrator/status.sh` are the operational projections; their notifications must be deduplicated and rate-limited.
 - A terminal lane writes its report to the durable evidence path using the fixed report contract. Agent stdout is not a delivery channel and must not be the only location of a verdict.

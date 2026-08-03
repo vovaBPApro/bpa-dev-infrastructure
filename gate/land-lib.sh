@@ -269,6 +269,52 @@ land_run_declared_checks() {
   rm -f "$scripts_file"
 }
 
+# The meteorite installs this repository in a clean Ubuntu container and runs
+# every tracked test. Consequently every tracked change can affect that proof
+# except content-only documentation and retained report artifacts. New code
+# directories fail safe by default instead of requiring this list to be kept in
+# sync with the repository layout.
+land_meteorite_required() {
+  local repo="$1" branch="$2" base path
+  base=$(land_changed_base "$repo" "$branch") || return 2
+  while IFS= read -r path; do
+    case "$path" in
+      instructions/*.md|reports/*|*.md|.gitignore) ;;
+      *) return 0 ;;
+    esac
+  done < <(git -C "$repo" diff --name-only "$base...$branch")
+  return 1
+}
+
+land_run_meteorite() {
+  local repo="$1" sha="$2" report docker_bin
+  docker_bin=$(command -v docker 2>/dev/null || true)
+  if [ -z "$docker_bin" ]; then
+    echo "LAND meteorite blocker=docker-binary-unavailable" >&2
+    return 1
+  fi
+  if ! "$docker_bin" info >/dev/null 2>&1; then
+    echo "LAND meteorite blocker=docker-daemon-unavailable" >&2
+    return 1
+  fi
+  if [ ! -r "$repo/meteorite/prove-candidate.sh" ]; then
+    echo "LAND meteorite blocker=candidate-prover-unavailable" >&2
+    return 1
+  fi
+  report=$(mktemp "${TMPDIR:-/tmp}/bpa-land-meteorite.XXXXXX.md") || {
+    echo "LAND meteorite blocker=report-allocation-failed" >&2
+    return 1
+  }
+  echo "LAND meteorite status=running sha=$sha"
+  if ! METEORITE_REPORT="$report" bash "$repo/meteorite/prove-candidate.sh" --ref "$sha"; then
+    rm -f "$report"
+    echo "LAND meteorite blocker=rebuild-proof-failed" >&2
+    return 1
+  fi
+  rm -f "$report"
+  echo "LAND meteorite status=pass sha=$sha"
+}
+
 land_review_check() {
   local repo="$1" branch="$2" report="$3" policy_file="$4" skip_review="$5"
   local merge_base candidate_path policy_prefix change_status old_path new_path diff_file diff_fd

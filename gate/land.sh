@@ -372,6 +372,29 @@ fi
 merge_sha=$(git -C "$repo" rev-parse HEAD)
 land_pass merge
 
+if land_meteorite_required "$repo" "$branch"; then
+  if ! land_run_meteorite "$repo" "$merge_sha"; then
+    if ! land_force_reset "$repo" "$pre_merge_sha"; then
+      land_fail_rollback meteorite "$pre_merge_sha" "$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)"
+    fi
+    merged=false
+    merge_sha="none"
+    land_fail meteorite
+  fi
+  land_pass meteorite
+else
+  meteorite_required_status=$?
+  if [ "$meteorite_required_status" -ne 1 ]; then
+    if ! land_force_reset "$repo" "$pre_merge_sha"; then
+      land_fail_rollback meteorite-trigger "$pre_merge_sha" "$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)"
+    fi
+    merged=false
+    merge_sha="none"
+    land_fail meteorite-trigger
+  fi
+  land_skip meteorite
+fi
+
 if ! land_run_declared_checks "$repo" LAND "$baseline_test_count"; then
   if ! land_force_reset "$repo" "$pre_merge_sha"; then
     land_fail_rollback declared-checks "$pre_merge_sha" "$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)"

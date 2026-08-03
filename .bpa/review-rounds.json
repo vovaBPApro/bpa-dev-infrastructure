@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "cap": 3,
+  "noProgressLimit": 3,
+  "items": {
+    "V3-0.16": {
+      "rounds": 1,
+      "noProgress": 0,
+      "landedSha": "39a76988b6036a2ebf7e60c9ccab9d052c8a8507",
+      "park": null
+    }
+  }
+}

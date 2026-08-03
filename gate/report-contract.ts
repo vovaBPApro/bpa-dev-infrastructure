@@ -1,25 +1,25 @@
-// Shared, authoritative field-parsing for lane terminal reports.
-//
-// instance/workboard.md "Two live report contracts" documents that
-// gate/completion-guard.ts (the CLAUDE.md commit:/verify:/result:/
-// secret-scan:/remaining: contract) and orchestrator/dispatcher.ts's
-// validTerminal() (the fenced-dispatch lane:/attempt:/commit:/result:
-// contract) are two SEPARATE report shapes that were deliberately not
-// reconciled in V3-0.2 -- reconciling the shapes needs a branch field on
-// LaneRecord, which is bigger than that row.
-//
-// What CAN be shared, and must not silently diverge, is how a single
-// `label: value` line is read out of report text: anchored to the start of
-// a line, and rejected (undefined, not a guess) unless the label occurs
-// exactly once. Before this module existed, dispatcher.ts used a plain
-// `report.includes("commit: <sha>")` substring test, which a report can
-// satisfy by mentioning the right text anywhere -- inside a `blocker:`
-// sentence, a duplicate/conflicting line, anywhere -- without that text
-// being the actual, single, well-formed field line. Both parsers now import
-// this one function, so a report either contract accepts is read the same,
-// stricter way by both.
+import { resolve } from "node:path";
+
+// A `label: value` line is anchored and must occur exactly once. The
+// dispatcher delegates the complete verdict below, so adding a guard rule
+// cannot leave its synthetic-worker path behind.
 export function lineValue(contents: string, label: string): string | undefined {
   const matches = contents.match(new RegExp(`^${label}:\\s*(.*)$`, "gm"));
   if (matches?.length !== 1) return undefined;
   return matches[0].slice(label.length + 1).trim();
+}
+
+export type CompletionReportVerdict = "clean" | "NO-GO" | "invalid";
+
+/** Invoke the authoritative contract. Callers must not reproduce a subset. */
+export function completionReportVerdict(options: {
+  report: string;
+  repo: string;
+  branch: string;
+}): CompletionReportVerdict {
+  const args = [process.execPath, resolve(import.meta.dir, "completion-guard.ts"), "--report", options.report, "--repo", options.repo, "--branch", options.branch];
+  const result = Bun.spawnSync(args, { stdout: "ignore", stderr: "ignore" });
+  if (result.exitCode === 0) return "clean";
+  if (result.exitCode === 3) return "NO-GO";
+  return "invalid";
 }

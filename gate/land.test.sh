@@ -83,6 +83,34 @@ if "$land" --branch ag-s5-6-r2 --item-id V3-3.4-recut --report "$fixture_root/re
 assert_output_has "$identity_output" 'LAND review-item unknown-or-mismatched item=V3-3.4-recut branch=ag-s5-6-r2'
 assert test ! -e "$repo/.git/bpa-review-rounds.json"
 
+# Meteorite regression: clone B must reconstruct an exhausted counter from the
+# target branch even though its Git common directory has never held local state.
+make_fixture durable-review-rounds
+clone_a="$repo"
+durable_sha=$(make_lane "$clone_a" ag-durable-rounds)
+git -C "$clone_a" branch -f ag-durable-rounds "$durable_sha"
+mkdir -p "$clone_a/.bpa"
+round_state="$clone_a/.bpa/review-rounds.json"
+env -u BUN_BIN bun "$root/gate/review-rounds.ts" init --state "$round_state" --cap 3 --no-progress-limit 3 >/dev/null
+for digit in 1 2 3; do
+  env -u BUN_BIN bun "$root/gate/review-rounds.ts" attempt --state "$round_state" --item-id ag-durable-rounds >/dev/null
+  env -u BUN_BIN bun "$root/gate/review-rounds.ts" landed --state "$round_state" --item-id ag-durable-rounds --sha "$(printf '%040d' "$digit")" >/dev/null
+done
+git -C "$clone_a" add .bpa/review-rounds.json
+git -C "$clone_a" commit -m 'seed durable review rounds' >/dev/null
+git -C "$clone_a" push origin main ag-durable-rounds >/dev/null
+clone_b="$fixture_root/durable-review-rounds-clone-b"
+git clone "$bare" "$clone_b" >/dev/null
+git -C "$clone_b" config user.email land@example.test
+git -C "$clone_b" config user.name Land
+git -C "$clone_b" branch ag-durable-rounds origin/ag-durable-rounds >/dev/null
+report "$fixture_root/durable-review-rounds.md" "$durable_sha"
+durable_output="$fixture_root/durable-review-rounds.out"
+if "$land" --branch ag-durable-rounds --item-id ag-durable-rounds --report "$fixture_root/durable-review-rounds.md" --repo "$clone_b" --no-push >"$durable_output" 2>&1; then exit 1; fi
+assert_output_has "$durable_output" 'item=ag-durable-rounds cap=3 parked=cap'
+assert test -f "$clone_b/.git/bpa-review-rounds.json"
+assert grep -Fq '"rounds": 3' "$clone_b/.git/bpa-review-rounds.json"
+
 # Regression lock: the copied gate must support the orphan v3 family range,
 # while callers that do not select a family still resolve against main.
 # shellcheck source=gate/land-lib.sh

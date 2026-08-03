@@ -100,6 +100,8 @@ case "$git_common_dir" in
   /*) review_round_state="$git_common_dir/bpa-review-rounds.json" ;;
   *) review_round_state="$repo/$git_common_dir/bpa-review-rounds.json" ;;
 esac
+review_round_history_rel=".bpa/review-rounds.json"
+review_round_history="$repo/$review_round_history_rel"
 case "$git_dir" in
   /*) lock_file="$git_dir/bpa-land.lock" ;;
   *) lock_file="$repo/$git_dir/bpa-land.lock" ;;
@@ -207,8 +209,24 @@ elif [ "$item_id" != "$branch" ]; then
 fi
 land_pass review-item
 
-# A clone has no Git-common-dir state. Bootstrap it under the serialized landing
-# lock; malformed/non-regular existing state is deliberately never replaced.
+# The target branch is the durable authority. Reconstruct the writable,
+# clone-local copy from it on every attempt, so deleting .git or rebuilding the
+# host cannot reset an exhausted item. Absence is accepted only when the target
+# branch has never carried review-round history; deletion is fail-closed.
+if git -C "$repo" cat-file -e "$default_branch:$review_round_history_rel" 2>/dev/null; then
+  rm -f "$review_round_state"
+  if ! git -C "$repo" show "$default_branch:$review_round_history_rel" > "$review_round_state"; then
+    land_fail review-rounds 2
+  fi
+  chmod 600 "$review_round_state" || land_fail review-rounds 2
+elif git -C "$repo" log --format=%H --all -- "$review_round_history_rel" | grep -q .; then
+  echo "LAND review-rounds durable-history-missing path=$review_round_history_rel" >&2
+  land_fail review-rounds 2
+fi
+
+# A genuinely new repository has no durable history yet. Bootstrap it under
+# the serialized landing lock; malformed/non-regular existing state is never
+# replaced.
 if [ ! -e "$review_round_state" ]; then
   if ! "$BUN_BIN" "$script_dir/review-rounds.ts" init --state "$review_round_state" --cap 3 --no-progress-limit 3; then
     land_fail review-rounds 2
@@ -248,6 +266,11 @@ if [ -z "$report_sha" ] || [ "${report_sha,,}" != "${branch_sha,,}" ]; then
 fi
 land_pass branch-tip
 
+payload_base=$(land_changed_base "$repo" "$branch") || land_fail payload-guard 2
+if ! git -C "$repo" diff --quiet "$payload_base..$branch" -- "$review_round_history_rel"; then
+  echo "LAND step=payload-guard status=fail detail=reserved-path path=$review_round_history_rel" >&2
+  land_fail payload-guard 2
+fi
 if ! land_payload_guard "$repo" "$branch"; then
   echo "LAND verdict=aborted sha=$merge_sha" >&2
   exit 2
@@ -265,6 +288,20 @@ if ! git -C "$repo" merge --no-ff "$branch" -m "[ORCH] land lane $branch" -m "se
   land_fail merge
 fi
 merged=true
+merge_sha=$(git -C "$repo" rev-parse HEAD)
+
+# Record the successful round in tracked target-branch history. The candidate
+# SHA is used as the progress marker because the merge SHA cannot be known
+# before the state embedded in that merge is committed.
+if ! "$BUN_BIN" "$script_dir/review-rounds.ts" landed --state "$review_round_state" --item-id "$item_id" --sha "$branch_sha"; then
+  land_fail review-rounds 2
+fi
+mkdir -p "$(dirname "$review_round_history")" || land_fail review-rounds 2
+if ! install -m 600 "$review_round_state" "$review_round_history" ||
+   ! git -C "$repo" add -- "$review_round_history_rel" ||
+   ! git -C "$repo" commit --amend --no-edit >/dev/null; then
+  land_fail review-rounds 2
+fi
 merge_sha=$(git -C "$repo" rev-parse HEAD)
 land_pass merge
 
@@ -348,10 +385,6 @@ fi
 
 landing_complete=true
 if [ "$merged" != true ]; then
-  land_reap_fail
-fi
-if ! "$BUN_BIN" "$script_dir/review-rounds.ts" landed --state "$review_round_state" --item-id "$item_id" --sha "$merge_sha"; then
-  landing_complete=false
   land_reap_fail
 fi
 land_pass review-progress

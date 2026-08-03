@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
@@ -50,6 +50,13 @@ describe("durable review round enforcement", () => {
     writeFileSync(state, "{}\n");
     expect(text(run(state, "attempt"))).toContain("state-malformed");
     chmodSync(state, 0o000);
+    expect(text(run(state, "attempt"))).toContain("state-unreadable");
+
+    chmodSync(state, 0o600); rmSync(state); mkdirSync(state);
+    expect(text(run(state, "attempt"))).toContain("state-unreadable");
+    rmSync(state, { recursive: true }); symlinkSync(`${state}.target`, state);
+    expect(text(run(state, "attempt"))).toContain("state-unreadable");
+    rmSync(state); expect(Bun.spawnSync(["mkfifo", state]).exitCode).toBe(0);
     expect(text(run(state, "attempt"))).toContain("state-unreadable");
   });
 

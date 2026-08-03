@@ -132,6 +132,21 @@ row as `NO-GO` with the concrete blocker. Never substitute `gate/land.sh`'s
 later re-check for this step; they check the same contract at different times
 and both must pass.
 
+`gate/lane-exit.sh` run by hand here is advisory: nothing stops a skipped
+step. `core/mission-cli.ts lane complete` now runs this exact check itself
+and refuses to write a terminal record when it fails (instance/workboard.md
+V3-0.5) — that is the structural version of this same gate, not a second one.
+It requires the owner/token from a live `lane claim` (fenced dispatch), which
+this cold-start path never establishes (see the note at step 5): today the
+prose-driven flow this document describes has no durable, gated record of
+lane completion at all, only this manual gate step. `core/mission-cli.ts`
+also has no `lane transition` or `mission transition` action — every use of
+those two verbs below (this step and step 1, step 5) names a command that
+does not exist; that gap predates and is out of scope for V3-0.5, and is
+recorded here so the next row that touches lane/mission state tracking does
+not have to rediscover it. `mission-cli.ts status` is unaffected and always
+reflects real durable state.
+
 ## 3. Route review
 
 Classify the exact diff using `instructions/review-policy.md`; uncertainty is
@@ -216,10 +231,22 @@ git -C "$REPO" switch main
 git -C "$REPO" merge --ff-only origin/main
 MERGE_SHA="$(git -C "$REPO" rev-parse HEAD)"
 git -C "$REPO" show "$MERGE_SHA" --stat
-INFRA_STATE_DB="$REPO/runtime/state.db" bun "$REPO/core/mission-cli.ts" lane transition "$LANE_ID" succeeded
-INFRA_STATE_DB="$REPO/runtime/state.db" bun "$REPO/core/mission-cli.ts" mission transition "$MISSION_ID" succeeded
 ./orchestrator/status.sh
 ```
+
+`lane transition "$LANE_ID" succeeded` and `mission transition "$MISSION_ID"
+succeeded` were written here as the intended durable close-out step, but
+`core/mission-cli.ts` has no `transition` action for either `lane` or
+`mission` (only `create`/`claim`/`ack`/`progress`/`complete` for lanes, a
+fixed `queued` state for missions with no move out of it) — pre-existing,
+found and left open by instance/workboard.md V3-0.5, not a regression from
+this row. Recording this lane as durably `succeeded` today means `lane
+create` + `lane claim` (step 1/2, establishing the owner/token this needs)
+followed by `lane complete "$LANE_ID" "$OWNER" "$TOKEN" "$MERGE_SHA"
+"$REPORT_FILE" clean "$BRANCH"`, which is gated per the note at step 2.5 —
+but this cold-start path as written never calls `lane claim`, so there is no
+live owner/token to complete against. Until a lane/mission transition surface
+exists, closing out this way is manual and best-effort, not durable.
 
 Report the exact merge SHA, the verification command actually run at that SHA,
 and `result: clean` only when every condition in

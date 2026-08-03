@@ -1,6 +1,7 @@
 import { mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { DurableStore, FencedTransitionError, type LaneRecord, type TerminalVerdict } from "../core/schema";
+import { lineValue } from "../gate/report-contract";
 
 export interface DispatchOptions { storePath:string; runtimeDir:string; worker:string[]; leaseMs?:number; acknowledgementMs?:number; terminalMs?:number; afterSpawnBeforePersist?:(row:LaneRecord)=>void|Promise<void>; afterPersistBeforeRelease?:(row:LaneRecord)=>void|Promise<void>; afterLaunch?:(row:LaneRecord)=>void|Promise<void> }
 type Terminal={laneId:string;attempt:number;ownerToken:string;at:string;reportPath:string;sha:string;verdict:TerminalVerdict};
@@ -48,7 +49,17 @@ async function validTerminal(path:string,row:LaneRecord):Promise<Terminal|undefi
     if(resolve(t.reportPath)!==resolve(dirname(path),"report.md")||!(await exists(t.reportPath)))return;
     const git=Bun.spawnSync(["git","cat-file","-e",`${t.sha}^{commit}`]); if(git.exitCode!==0)return;
     const report=await readFile(t.reportPath,"utf8");
-    if(!report.includes(`lane: ${row.id}`)||!report.includes(`attempt: ${row.fencingToken}`)||!report.includes(`commit: ${t.sha}`)||!report.includes(`result: ${t.verdict}`))return;
+    // Deliberately uses gate/report-contract.ts's lineValue -- the same
+    // anchored, single-match parser gate/completion-guard.ts uses -- instead
+    // of a raw substring test. A plain `report.includes("commit: <sha>")|
+    // accepted the right text ANYWHERE in the file (e.g. inside a `blocker:`
+    // sentence), not only as the report's actual, singular `commit:` line.
+    // This does not make the two report contracts (lane:/attempt:/commit:/
+    // result: here vs commit:/verify:/result:/secret-scan:/remaining: in
+    // completion-guard.ts) the same shape -- see the KNOWN DIVERGENCE note
+    // below -- it only guarantees both parse whichever fields they do share
+    // the same strict way.
+    if(lineValue(report,"lane")!==row.id||lineValue(report,"attempt")!==String(row.fencingToken)||lineValue(report,"commit")!==t.sha||lineValue(report,"result")!==t.verdict)return;
     return t;
   } catch { return }
 }

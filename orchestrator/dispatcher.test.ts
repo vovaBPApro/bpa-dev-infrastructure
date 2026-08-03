@@ -26,4 +26,16 @@ describe("canonical fenced dispatch",()=>{
  test("reconciles a claimed row carrying authentic terminal evidence",async()=>{const o=await fixture();const s=new DurableStore(o.storePath),c=s.claimLane("lane-1","owner",30000),r=s.getLane("lane-1")!;s.close();const dir=resolve(o.runtimeDir,"lane-1",`attempt-${c.fencingToken}`);await Bun.$`mkdir -p ${dir}`;const sha=Bun.spawnSync(["git","rev-parse","HEAD"]).stdout.toString().trim(),report=resolve(dir,"report.md");await writeFile(report,`lane: lane-1\nattempt: 1\ncommit: ${sha}\nresult: clean\nblocker: none\n`);await writeFile(resolve(dir,"terminal.json"),JSON.stringify({laneId:"lane-1",attempt:1,ownerToken:"owner",at:new Date().toISOString(),reportPath:report,sha,verdict:"clean"}));expect(await reconcileRunning(o)).toBe(1);expect(row(o.storePath).terminalVerdict).toBe("clean")});
  test("expired owner is fenced by an identified stale-lease takeover",async()=>{const o=await fixture(1),first=new DurableStore(o.storePath,{now:()=>1000});const a=first.claimLane("lane-1","dispatcher-a",10);first.close();const second=new DurableStore(o.storePath,{now:()=>1011}),b=second.claimLane("lane-1","dispatcher-b",10);expect(b.fencingToken).toBe(a.fencingToken+1);expect(()=>second.acknowledgeLane("lane-1","dispatcher-a",a.fencingToken)).toThrow("stale or expired");second.close()});
  test("rejects synthetic SHA, foreign report, and mismatched attempt",async()=>{for(const kind of ["synthetic","foreign","attempt"]){const o=await fixture(0,[process.execPath,resolve(import.meta.dir,"../tests/fixtures/forged-worker.ts"),kind]);await dispatchOnce(o);expect(row(o.storePath).terminalVerdict).toBe("NO-GO");expect(await readFile(row(o.storePath).terminalReportPath!,"utf8")).toContain("terminal evidence invalid")}});
+ test("rejects a commit: line whose value is wrong even when the right sha is mentioned elsewhere in the report",async()=>{
+  // Regression lock for gate/report-contract.ts: before validTerminal() used
+  // its anchored lineValue() parser, a raw `report.includes("commit: <sha>")`
+  // substring test would find the sha mentioned inside an unrelated `note:`
+  // line and wrongly accept this report even though its actual `commit:`
+  // line names a different value. tests/fixtures/forged-worker.ts's
+  // "line-injection" kind constructs exactly that report.
+  const o=await fixture(0,[process.execPath,resolve(import.meta.dir,"../tests/fixtures/forged-worker.ts"),"line-injection"]);
+  await dispatchOnce(o);
+  expect(row(o.storePath).terminalVerdict).toBe("NO-GO");
+  expect(await readFile(row(o.storePath).terminalReportPath!,"utf8")).toContain("terminal evidence invalid");
+ });
 });

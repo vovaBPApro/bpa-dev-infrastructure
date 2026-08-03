@@ -29,11 +29,15 @@ cd "$repo_root"
       mv /usr/sbin/useradd.hidden /usr/sbin/useradd
     fi
     for test_user in laneproof outsider unownedhome; do
-      getent passwd "$test_user" >/dev/null 2>&1 && userdel --remove "$test_user" >/dev/null 2>&1 || true
+      getent passwd "$test_user" >/dev/null 2>&1 && /usr/sbin/userdel --force --remove "$test_user" >/dev/null 2>&1 || true
     done
     rm -rf /home/laneproof /home/outsider /home/unowned-home /var/lib/provision-test
   }
   trap cleanup EXIT
+  # A clean rebuild intentionally runs the complete suite twice (during
+  # install and again as an explicit proof). Recover test-only debris even if
+  # the prior invocation was interrupted before its EXIT trap completed.
+  cleanup
   cat >/usr/local/bin/loginctl <<"EOF"
 #!/bin/bash
 set -eu
@@ -97,4 +101,6 @@ EOF
   grep -Fq "missing required binary: useradd" /tmp/missing.out
   ! grep -Fq "command not found" /tmp/missing.out
   echo "MISSING=$(cat /tmp/missing.out)"
+cleanup
+trap - EXIT
 printf 'service-user container proof: PASS\n'

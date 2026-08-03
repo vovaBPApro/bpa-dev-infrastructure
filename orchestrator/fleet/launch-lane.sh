@@ -74,12 +74,14 @@ worktree="$lanes_dir/$name"
 pack_dir="$lanes_dir/pack-$name"
 prompt="$lanes_dir/lane-$name.prompt.md"
 log="$lanes_dir/lane-$name.log"
+report="$lanes_dir/$name.report.md"
+status="$lanes_dir/lane-$name.status"
 unit="lane-$name"
 tmp_root="${TMPDIR:-/tmp}/infra-lane-tmp-$UID"
 tmp_dir="$tmp_root/$name"
 
 mkdir -p "$lanes_dir"
-for artifact in "$worktree" "$pack_dir" "$prompt" "$log" "$tmp_dir"; do
+for artifact in "$worktree" "$pack_dir" "$prompt" "$log" "$report" "$status" "$tmp_dir"; do
   if [[ -e "$artifact" || -L "$artifact" ]]; then
     die "lane artifact already exists for $name: $artifact"
   fi
@@ -98,7 +100,7 @@ cleanup_failed_launch() {
     git -C "$repo" worktree remove --force "$worktree" >/dev/null 2>&1 || true
     git -C "$repo" branch -D "$branch" >/dev/null 2>&1 || true
   fi
-  rm -f -- "$prompt" "$log"
+  rm -f -- "$prompt" "$log" "$report" "$status"
   rm -rf -- "$pack_dir" "$tmp_dir"
 }
 trap cleanup_failed_launch EXIT
@@ -130,12 +132,41 @@ if ! systemd-run --collect --unit "$unit" \
   --property=IPAddressDeny=localhost \
   --property=IPAddressAllow=127.0.0.53 \
   --setenv="HOME=$HOME" --setenv="TMPDIR=$tmp_dir" --setenv="PATH=$unit_path" \
+  --setenv="LANE_REPORT_PATH=$report" \
   --working-directory="$worktree" \
-  /bin/bash -o pipefail -c 'prompt=$1; bun=$2; masker=$3; log=$4; shift 4; "$@" "$(cat "$prompt")" 2>&1 | "$bun" "$masker" >>"$log"' \
-  _ "$prompt" "$BUN_BIN" "$repo/daemon/mask-stream.ts" "$log" "${agent_argv[@]}" >/dev/null; then
+  /bin/bash -o pipefail -c '
+    prompt=$1; bun=$2; masker=$3; log=$4; report=$5; status=$6; gate=$7; repo=$8; branch=$9
+    shift 9
+    set +e
+    "$@" "$(cat "$prompt")" 2>&1 | "$bun" "$masker" >>"$log"
+    pipeline_status=("${PIPESTATUS[@]}")
+    agent_status=${pipeline_status[0]}
+    mask_status=${pipeline_status[1]}
+    if ((agent_status != 0)); then
+      printf "state: failed\nreason: payload-exit\nexit: %s\nreport: %s\n" "$agent_status" "$report" >"$status"
+      exit "$agent_status"
+    fi
+    if ((mask_status != 0)); then
+      printf "state: failed\nreason: log-masker-exit\nexit: %s\nreport: %s\n" "$mask_status" "$report" >"$status"
+      exit "$mask_status"
+    fi
+    # This gate runs inside callers such as gate/land.sh, which deliberately
+    # export their own trusted BUN_BIN. The nested gate must resolve its own
+    # interpreter instead of tripping the land_resolve_bun caller-override guard.
+    env -u BUN_BIN "$gate" --report "$report" --repo "$repo" --branch "$branch" >>"$log" 2>&1
+    guard_status=$?
+    if ((guard_status == 0 || guard_status == 3)); then
+      printf "state: terminal\nreason: report-valid\nexit: %s\nreport: %s\n" "$guard_status" "$report" >"$status"
+      exit 0
+    fi
+    printf "state: failed\nreason: report-invalid\nexit: %s\nreport: %s\n" "$guard_status" "$report" >"$status"
+    exit "$guard_status"
+  ' _ "$prompt" "$BUN_BIN" "$repo/daemon/mask-stream.ts" "$log" "$report" "$status" \
+  "$repo/gate/lane-exit.sh" "$repo" "$branch" "${agent_argv[@]}" >/dev/null; then
   printf 'launch-lane: unit launch failed; cleaned lane artifacts: %s\n' "$name" >&2
   exit 1
 fi
 
 launch_complete=true
-printf 'launched %s\nworktree: %s\nbranch: %s\nlog: %s\n' "$unit" "$worktree" "$branch" "$log"
+printf 'launched %s\nworktree: %s\nbranch: %s\nlog: %s\nreport: %s\nstatus: %s\n' \
+  "$unit" "$worktree" "$branch" "$log" "$report" "$status"

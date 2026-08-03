@@ -666,6 +666,97 @@ grep -Fxq preserved "$stage2_fixture/untouched-systemd/existing.service"
 echo 'PASS render_units preflight lock: a malformed later row leaves the destination untouched'
 echo 'PASS render_units: renders both inventories, reads final unterminated row, and rejects manifest deletion'
 
+printf '%s\n' '[Timer]' 'OnCalendar=hourly' > \
+  "$stage2_fixture/root/instance/units/second.timer.in"
+
+publication_snapshot() {
+  local destination="$1"
+  find "$destination" -mindepth 1 -maxdepth 1 -type f -printf '%f %m ' \
+    -exec sha256sum {} \; | LC_ALL=C sort
+}
+
+run_publication_fault_lock() {
+  local fault="$1" fixture output before after rc
+  fixture="$stage2_fixture/publication-$fault"
+  install -d -m 700 "$fixture/bin" "$fixture/systemd"
+  for unit in first.service bpa-orchestrator.service bpa-orchestrator-watchdog.service \
+    bpa-orchestrator-watchdog.timer bpa-telegram-daemon.service; do
+    printf 'prior-%s\n' "$unit" > "$fixture/systemd/$unit"
+  done
+  chmod 600 "$fixture/systemd/first.service"
+  before="$(publication_snapshot "$fixture/systemd")"
+  cat > "$fixture/bin/mv" <<EOF
+#!/usr/bin/env bash
+count_file='$fixture/mv.count'
+count=0
+[[ ! -f "\$count_file" ]] || read -r count < "\$count_file"
+((count += 1))
+printf '%s\n' "\$count" > "\$count_file"
+if [[ "\$count" == 2 ]]; then
+  if [[ '$fault' == signal ]]; then
+    kill -TERM "\$PPID"
+    sleep 1
+  else
+    exit 28
+  fi
+fi
+exec /usr/bin/mv "\$@"
+EOF
+  chmod 700 "$fixture/bin/mv"
+  set +e
+  output="$(PATH="$fixture/bin:$PATH" BOOTSTRAP_LIB_ONLY=true \
+    INSTALL_ROOT="$stage2_fixture/root" BUN_BIN="$stage2_fixture/bin/bun" \
+    SYSTEMD_SYSTEM_DIR="$fixture/systemd" EXPECTED_UNITS_FILE="$stage2_fixture/expected.tsv" \
+    INSTALLER_PATH="$INSTALLER" "$BASH_BIN" -c 'source "$INSTALLER_PATH"; render_units' 2>&1)"
+  rc=$?
+  set -e
+  [[ "$rc" -ne 0 ]]
+  grep -Fq 'verdict=rolled-back' <<<"$output"
+  after="$(publication_snapshot "$fixture/systemd")"
+  [[ "$after" == "$before" ]]
+  [[ ! -e "$fixture/systemd/second.timer" ]]
+  printf 'FAIL-BEFORE publication-%s: second publication left a mixed old/new destination set at 0a431056b6006886019f6be6e0ba9d156e2821e8\n' "$fault"
+  printf 'PASS render_units publication-%s lock: prior bytes, modes, and absences restored\n' "$fault"
+}
+
+run_publication_fault_lock failure
+run_publication_fault_lock signal
+
+# Make restoration itself fail after publication has begun. The verdict must
+# remain different from an ordinary, proven rollback.
+rollback_fixture="$stage2_fixture/rollback-failed"
+install -d -m 700 "$rollback_fixture/bin" "$rollback_fixture/systemd"
+printf '%s\n' prior > "$rollback_fixture/systemd/first.service"
+cat > "$rollback_fixture/bin/mv" <<'EOF'
+#!/usr/bin/env bash
+count_file="${ROLLBACK_FIXTURE}/mv.count"
+count=0
+[[ ! -f "$count_file" ]] || read -r count < "$count_file"
+((count += 1)); printf '%s\n' "$count" > "$count_file"
+[[ "$count" != 2 ]] || exit 28
+exec /usr/bin/mv "$@"
+EOF
+cat > "$rollback_fixture/bin/cp" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == -p && "${3:-}" == */prior/first.service ]]; then exit 31; fi
+exec /usr/bin/cp "$@"
+EOF
+chmod 700 "$rollback_fixture/bin/mv" "$rollback_fixture/bin/cp"
+set +e
+rollback_output="$(PATH="$rollback_fixture/bin:$PATH" ROLLBACK_FIXTURE="$rollback_fixture" \
+  BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$stage2_fixture/root" BUN_BIN="$stage2_fixture/bin/bun" \
+  SYSTEMD_SYSTEM_DIR="$rollback_fixture/systemd" EXPECTED_UNITS_FILE="$stage2_fixture/expected.tsv" \
+  INSTALLER_PATH="$INSTALLER" "$BASH_BIN" -c 'source "$INSTALLER_PATH"; render_units' 2>&1)"
+rollback_rc=$?
+set -e
+[[ "$rollback_rc" -eq 125 ]]
+grep -Fq 'verdict=rollback-failed' <<<"$rollback_output"
+if grep -Fq 'verdict=rolled-back' <<<"$rollback_output"; then
+  echo 'ERROR: failed restoration also claimed a proven rollback' >&2
+  exit 1
+fi
+echo 'PASS render_units rollback-failed lock: incomplete restoration is explicit and distinguishable'
+
 # ══════════════════════════════════════════════════════════════════════════
 # --verify-source
 # ══════════════════════════════════════════════════════════════════════════

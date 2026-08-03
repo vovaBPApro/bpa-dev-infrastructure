@@ -1,24 +1,21 @@
 #!/usr/bin/env bash
 # Install or refresh the BPA development infrastructure checkout as the root
-# system account -- STAGE 1 ONLY.
+# system account -- STAGE 2.
 #
 # Ported from v2-deprecated (bootstrap/install.sh, 598 lines, ten stages) for
-# workboard row S2-3 / V3-1.1. This file carries exactly five of the donor's
-# functions: ensure_prerequisites, install_bun, sync_repository,
-# render_environment, initialize_state_db. Everything else the donor did --
-# the daemon/core/gate/stand test gate, hygiene cron install, systemd unit
-# rendering, and unit activation including the watchdog arm/disarm pair -- is
-# explicitly NOT here. activate_units in particular runs
+# workboard row S3-2 / V3-1.1. Stage 2 adds hygiene-cron installation, the
+# repository's complete Bun test gate, manifest-driven unit rendering, and
+# the verify rows those stages need. Unit activation and the watchdog
+# arm/disarm pair remain explicitly out of scope. activate_units runs
 # `systemctl enable --now bpa-orchestrator.service`, which would restart the
 # live orchestrator on this host; HR-1720 defers all host deployment, and that
-# hazard is exactly what stage 1 stays clear of. Later rows add the rest.
+# hazard is exactly what this render-only stage avoids. Later rows add it.
 #
 # workspace_status (donor) is dropped outright: v3 has no workspace/ tree.
-# telegram-transport-preflight.sh is not sourced: every donor check that used
-# it (token-gated verify rows, activate_units' watchdog arm) belongs to a
-# later stage.
+# telegram-transport-preflight.sh is not sourced: its token and activation
+# checks belong to the later activation stage.
 #
-# Modes: --dry-run (print the stage-1 plan and exit) and --verify-source
+# Modes: --dry-run (print the stage-2 plan and exit) and --verify-source
 # (check only boundaries a source/container test can prove, no live host
 # required). There is no --verify yet -- the donor's --verify checks systemd
 # unit state and Docker/codex/claude/whisper tooling this row does not touch.
@@ -35,20 +32,24 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ENV_FILE="${ENV_FILE:-/root/.config/bpa/orchestrator.env}"
 BUN_BIN="${BUN_BIN:-/usr/local/bin/bun}"
+BASH_BIN="${BASH_BIN:-/usr/bin/bash}"
+SYSTEMD_SYSTEM_DIR="${SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
 RUNTIME_DIR="${RUNTIME_DIR:-$INSTALL_ROOT/runtime}"
 STATE_DB="${INFRA_STATE_DB:-$RUNTIME_DIR/state.db}"
+CRONTAB_CMD="${CRONTAB_CMD:-crontab}"
+EXPECTED_UNITS_FILE="${EXPECTED_UNITS_FILE:-$INSTALL_ROOT/instance/expected-units.tsv}"
 
 usage() {
   cat <<'EOF'
 Usage: bootstrap/install.sh [--dry-run | --verify-source]
 
-Stage 1 only: prerequisites, Bun, repository sync, the environment file, and
-the durable state database. Later rows add the daemon/core/gate/stand test
-gate, hygiene cron, systemd unit rendering and activation, and the watchdog
-arm/disarm pair -- none of that runs from this script yet.
+Stage 2: prerequisites, Bun, repository sync, environment, state database,
+hygiene cron, repository test gate, and systemd unit rendering. This stage
+does not enable, start, restart, or reload units.
 
 Environment overrides: INSTALL_ROOT, REPO_URL, REPO_BRANCH (default: main),
-BUN_VERSION, ENV_FILE, BUN_BIN, RUNTIME_DIR, INFRA_STATE_DB.
+BUN_VERSION, ENV_FILE, BUN_BIN, BASH_BIN, RUNTIME_DIR, INFRA_STATE_DB,
+CRONTAB_CMD, SYSTEMD_SYSTEM_DIR, EXPECTED_UNITS_FILE.
 --verify-source checks only the boundaries a source/container test can prove
 and reports explicit SKIPs where a live host would be required; there is no
 --verify mode in this row.
@@ -80,6 +81,9 @@ print_plan() {
   plan "repository" "clone \$INSTALL_ROOT from REPO_URL on REPO_BRANCH, or fast-forward it -- refusing if it is checked out on any other branch"
   plan "environment" "create $ENV_FILE from bootstrap/env.template if absent, reject symlinks, and enforce mode 0600"
   plan "state-db" "initialize $STATE_DB with core/mission-cli.ts status"
+  plan "hygiene" "install the tracked hygiene cron using $CRONTAB_CMD"
+  plan "test-gate" "run the repository's complete Bun test suite"
+  plan "units" "render every manifest-listed unit into $SYSTEMD_SYSTEM_DIR (render only)"
 }
 
 result=0
@@ -97,12 +101,26 @@ state_db_status() {
   INFRA_STATE_DB="$STATE_DB" "$BUN_BIN" "$INSTALL_ROOT/core/mission-cli.ts" status >/dev/null
 }
 
+hygiene_cron_status() {
+  "$CRONTAB_CMD" -l 2>/dev/null | grep -Fxq '# BEGIN bpa-dev-infrastructure hygiene'
+}
+
+rendered_units_status() {
+  local installed_root="$INSTALL_ROOT"
+  TEMPLATE_DIR="$installed_root/bootstrap/units" \
+    INSTANCE_TEMPLATE_DIR="$installed_root/instance/units" \
+    MANIFEST_FILE="$installed_root/instance/expected-units.tsv" \
+    SYSTEMD_SYSTEM_DIR="$SYSTEMD_SYSTEM_DIR" INSTALL_ROOT="$installed_root" \
+    REPO_ROOT="$installed_root" ENV_FILE="$ENV_FILE" BUN_BIN="$BUN_BIN" BASH_BIN="$BASH_BIN" \
+    "$installed_root/bootstrap/check-unit-drift.sh" >/dev/null
+}
+
 # Fail-closed by construction: every row is an explicit named check against a
 # real predicate (command presence, file mode, a real mission-cli invocation).
 # There is no directory-enumeration step here to blind-spot an absent item --
 # that failure class (a checker that only sees what a glob finds) belongs to
 # bootstrap/check-unit-drift.sh, not to this stage.
-verify_source() {
+verify() {
   printf '%-6s %-24s\n' 'STATUS' 'CHECK'
   printf '%-6s %-24s\n' '------' '------------------------'
   check "git" command -v git
@@ -115,6 +133,8 @@ verify_source() {
   check "environment file" test -f "$ENV_FILE"
   check "environment permissions" test "$(stat -c '%a' "$ENV_FILE" 2>/dev/null || true)" = 600
   check "state-db" state_db_status
+  check "hygiene-cron" hygiene_cron_status
+  check "rendered units" rendered_units_status
   return "$result"
 }
 
@@ -123,7 +143,7 @@ if "$DRY_RUN"; then
   exit 0
 fi
 if "$VERIFY_SOURCE"; then
-  verify_source
+  verify
   exit $?
 fi
 
@@ -141,13 +161,14 @@ ensure_prerequisites() {
     [tmux]=tmux
     [flock]=util-linux
     [findmnt]=util-linux
+    [envsubst]=gettext-base
+    [crontab]=cron
     # Review round 2, defect 2: dropped on the UNVERIFIED reasoning that it
     # was only needed by out-of-scope render_units/install_hygiene_cron.
     # install_bun (in scope) calls the real bun.sh/install, which hard-fails
     # with `error 'unzip is required to install bun'` and uses it to unpack
     # the release archive -- on exactly the clean-machine case this row
-    # targets ($BUN_BIN absent). envsubst/xz/cron stay dropped; they are
-    # genuinely unused by any in-scope function.
+    # targets ($BUN_BIN absent). xz stays dropped; it is unused here.
     [unzip]=unzip
   )
   for command_name in "${!packages[@]}"; do
@@ -232,12 +253,194 @@ initialize_state_db() {
   INFRA_STATE_DB="$STATE_DB" "$BUN_BIN" "$INSTALL_ROOT/core/mission-cli.ts" status
 }
 
+install_hygiene_cron() {
+  CRONTAB_CMD="$CRONTAB_CMD" "$INSTALL_ROOT/hygiene/install-cron.sh"
+}
+
+run_install_test_gate() {
+  echo 'INSTALL GATE: repository tests'
+  (cd "$INSTALL_ROOT" && env -u BUN_BIN -u TMPDIR "$BUN_BIN" test)
+  echo 'INSTALL GATE: PASS full sweep'
+}
+
+render_units() {
+  local effective_euid="${BOOTSTRAP_TEST_EUID:-$EUID}"
+  local unit source extra template_dir template staged backup_dir count=0 publication_rc=0
+  local -a units=() templates=()
+  local -A manifest_units=()
+  local -A destination_existed=()
+  ((effective_euid == 0)) || { echo 'ERROR: system unit rendering requires root' >&2; return 1; }
+  if [[ ! -f "$EXPECTED_UNITS_FILE" || ! -r "$EXPECTED_UNITS_FILE" ]]; then
+    echo "ERROR: expected-units manifest is missing or unreadable: $EXPECTED_UNITS_FILE" >&2
+    return 1
+  fi
+  command -v envsubst >/dev/null 2>&1 || { echo 'ERROR: envsubst is required to render units' >&2; return 1; }
+
+  # Preflight the complete manifest before creating the destination or writing
+  # a single unit. In particular, pin the four units independently named by
+  # the 2026-08-01 incident regression lock in check-unit-drift.test.ts: a
+  # truncated manifest must not redefine a smaller fleet as complete.
+  while IFS=$'\t' read -r unit source extra || [[ -n "${unit:-}" ]]; do
+    [[ -z "$unit" || "$unit" == \#* ]] && continue
+    if [[ -n "${extra:-}" || ( "$unit" != *.service && "$unit" != *.timer ) ]]; then
+      echo "ERROR: invalid expected-units entry: $unit" >&2
+      return 1
+    fi
+    case "$source" in
+      generic) template_dir="$INSTALL_ROOT/bootstrap/units" ;;
+      instance) template_dir="$INSTALL_ROOT/instance/units" ;;
+      *) echo "ERROR: invalid expected-units source for $unit: $source" >&2; return 1 ;;
+    esac
+    template="$template_dir/$unit.in"
+    if [[ ! -f "$template" || ! -r "$template" ]]; then
+      echo "ERROR: expected unit template is missing or unreadable: $template" >&2
+      return 1
+    fi
+    if [[ -n "${manifest_units[$unit]+x}" ]]; then
+      echo "ERROR: duplicate expected-units entry: $unit" >&2
+      return 1
+    fi
+    manifest_units["$unit"]=1
+    units+=("$unit")
+    templates+=("$template")
+    ((count += 1))
+  done < "$EXPECTED_UNITS_FILE"
+  if ((count == 0)); then
+    echo "ERROR: expected-units manifest is empty: $EXPECTED_UNITS_FILE" >&2
+    return 1
+  fi
+  for unit in bpa-orchestrator.service bpa-orchestrator-watchdog.service \
+    bpa-orchestrator-watchdog.timer bpa-telegram-daemon.service; do
+    if [[ -z "${manifest_units[$unit]+x}" ]]; then
+      echo "ERROR: required incident unit is missing from expected-units manifest: $unit" >&2
+      return 1
+    fi
+  done
+
+  # Render the whole set away from the destination. A malformed template or
+  # envsubst failure therefore cannot leave a half-rendered deployed set.
+  staged="$(mktemp -d "${TMPDIR:-/tmp}/bpa-render-units.XXXXXX")"
+  trap 'rm -rf "$staged"' RETURN
+  for ((count = 0; count < ${#units[@]}; count += 1)); do
+    INSTALL_ROOT="$INSTALL_ROOT" ENV_FILE="$ENV_FILE" BUN_BIN="$BUN_BIN" BASH_BIN="$BASH_BIN" \
+      envsubst < "${templates[$count]}" > "$staged/${units[$count]}"
+    chmod 644 "$staged/${units[$count]}"
+  done
+
+  install -d -m 755 "$SYSTEMD_SYSTEM_DIR"
+  backup_dir="$staged/prior"
+  install -d -m 700 "$backup_dir"
+  for unit in "${units[@]}"; do
+    if [[ -e "$SYSTEMD_SYSTEM_DIR/$unit" || -L "$SYSTEMD_SYSTEM_DIR/$unit" ]]; then
+      if [[ ! -f "$SYSTEMD_SYSTEM_DIR/$unit" || -L "$SYSTEMD_SYSTEM_DIR/$unit" ]]; then
+        echo "ERROR: unit destination is not a regular file: $SYSTEMD_SYSTEM_DIR/$unit" >&2
+        return 1
+      fi
+      cp -p -- "$SYSTEMD_SYSTEM_DIR/$unit" "$backup_dir/$unit"
+      destination_existed["$unit"]=1
+    else
+      destination_existed["$unit"]=0
+    fi
+  done
+
+  rollback_unit_publication() {
+    local rollback_unit rollback_failed=0 rollback_operation_pid rollback_operation_rc
+    for rollback_unit in "${units[@]}"; do
+      if [[ "${destination_existed[$rollback_unit]}" == 1 ]]; then
+        timeout --kill-after="${UNIT_ROLLBACK_KILL_AFTER_SECONDS:-1}" \
+          "${UNIT_ROLLBACK_TIMEOUT_SECONDS:-5}" \
+          env BPA_UNIT_ROLLBACK=1 \
+          cp -p -- "$backup_dir/$rollback_unit" "$SYSTEMD_SYSTEM_DIR/$rollback_unit" &
+      else
+        timeout --kill-after="${UNIT_ROLLBACK_KILL_AFTER_SECONDS:-1}" \
+          "${UNIT_ROLLBACK_TIMEOUT_SECONDS:-5}" \
+          env BPA_UNIT_ROLLBACK=1 \
+          rm -f -- "$SYSTEMD_SYSTEM_DIR/$rollback_unit" &
+      fi
+      rollback_operation_pid=$!
+      while :; do
+        if wait "$rollback_operation_pid"; then
+          rollback_operation_rc=0
+          break
+        else
+          rollback_operation_rc=$?
+        fi
+        # A trapped operator signal interrupts wait without ending its child.
+        # Keep supervising until timeout has reaped the operation.
+        if kill -0 "$rollback_operation_pid" 2>/dev/null; then
+          continue
+        fi
+        break
+      done
+      if ((rollback_operation_rc != 0)); then
+        rollback_failed=1
+      fi
+    done
+    if ((rollback_failed != 0)); then
+      echo 'verdict=rollback-failed: unit publication prior state could not be restored' >&2
+      return 1
+    fi
+    echo 'verdict=rolled-back: unit publication prior state restored' >&2
+  }
+
+  unit_rollback_signal() {
+    echo "ERROR: termination requested by $1 while bounded unit rollback is in progress" >&2
+  }
+
+  unit_publication_signal() {
+    local signal_name="$1" signal_rc="$2"
+    # Rollback is the terminal state transition. Record further termination
+    # requests while the individually bounded restore operations finish and
+    # emit their single truthful verdict.
+    trap 'unit_rollback_signal HUP' HUP
+    trap 'unit_rollback_signal INT' INT
+    trap 'unit_rollback_signal TERM' TERM
+    if ! rollback_unit_publication; then
+      rm -rf "$staged"
+      trap - RETURN
+      trap - HUP INT TERM
+      return 125
+    fi
+    rm -rf "$staged"
+    trap - RETURN
+    echo "ERROR: unit publication interrupted by $signal_name" >&2
+    trap - HUP INT TERM
+    return "$signal_rc"
+  }
+
+  trap 'unit_publication_signal HUP 129; return $?' HUP
+  trap 'unit_publication_signal INT 130; return $?' INT
+  trap 'unit_publication_signal TERM 143; return $?' TERM
+  for unit in "${units[@]}"; do
+    if ! mv -f "$staged/$unit" "$SYSTEMD_SYSTEM_DIR/$unit"; then
+      publication_rc=$?
+      trap 'unit_rollback_signal HUP' HUP
+      trap 'unit_rollback_signal INT' INT
+      trap 'unit_rollback_signal TERM' TERM
+      # `!` normalizes `$?`; preserve a stable non-zero publication verdict.
+      ((publication_rc != 0)) || publication_rc=1
+      if ! rollback_unit_publication; then
+        trap - HUP INT TERM
+        return 125
+      fi
+      trap - HUP INT TERM
+      return "$publication_rc"
+    fi
+  done
+  trap - HUP INT TERM
+  rm -rf "$staged"
+  trap - RETURN
+}
+
 if [[ "${BOOTSTRAP_LIB_ONLY:-false}" != true ]]; then
   ensure_prerequisites
   install_bun
   sync_repository
   render_environment
   initialize_state_db
-  echo "Bootstrap stage 1 completed: prerequisites, Bun, repository, environment file, and state database."
-  echo "Remaining before a full install: hygiene cron, the daemon/core/gate/stand test gate, systemd unit rendering and activation, and the watchdog arm/disarm pair (later rows)."
+  install_hygiene_cron
+  run_install_test_gate
+  render_units
+  echo "Bootstrap stage 2 completed: prerequisites, Bun, repository, environment, state database, hygiene cron, test gate, and unit rendering."
+  echo "Remaining before a full install: unit activation and the watchdog arm/disarm pair (later rows)."
 fi

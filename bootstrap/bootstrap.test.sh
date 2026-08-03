@@ -5,7 +5,7 @@
 # bash from its own inherited environment, not in this shell -- that is the
 # whole point of INSTALLER_PATH="$INSTALLER" ... bash -c '...INSTALLER_PATH...'.
 #
-# Stub-fixture tests for bootstrap/install.sh STAGE 1 (S2-3 / V3-1.1). No
+# Stub-fixture tests for bootstrap/install.sh STAGE 2 (S3-2 / V3-1.1). No
 # container, no Docker, no network, no writes outside this script's own
 # fixtures: every prerequisite/bun/git/apt call below is a recorded stub, and
 # INSTALL_ROOT/ENV_FILE/STATE_DB are always fixture paths under mktemp.
@@ -44,7 +44,7 @@ trap 'rm -rf "$FIXTURE_ROOT"' EXIT
 # `dirname`. First match wins, mirroring ordinary PATH precedence.
 CORE_PATH="$FIXTURE_ROOT/core-utils"
 mkdir -p "$CORE_PATH"
-EXCLUDED_TOOLS=(git curl tmux flock findmnt unzip apt-get sudo)
+EXCLUDED_TOOLS=(git curl tmux flock findmnt envsubst crontab unzip apt-get sudo)
 is_excluded_tool() {
   local candidate="$1" excluded
   for excluded in "${EXCLUDED_TOOLS[@]}"; do
@@ -70,7 +70,7 @@ grep -Fxq 'INSTALL_ROOT="${INSTALL_ROOT:-/root/bpa-dev-infrastructure}"' "$INSTA
 # document why they were left out), so the scan first drops comment-only
 # lines and checks only what is left -- code, not prose about code.
 installer_code_only="$(grep -v '^[[:space:]]*#' "$INSTALLER")"
-for absent in workspace_status run_install_test_gate render_units activate_units \
+for absent in workspace_status activate_units \
   '--verify)' '--arm-watchdog' '--disarm-watchdog' '--no-cron'; do
   if grep -Fq -- "$absent" <<<"$installer_code_only"; then
     echo "ERROR: out-of-scope donor surface present in install.sh CODE: $absent" >&2
@@ -81,17 +81,18 @@ echo 'PASS static shape (INSTALL_ROOT default present, out-of-scope surface abse
 
 # ── --dry-run / --help / argument validation ─────────────────────────────
 dry_run="$($INSTALLER --dry-run)"
-for expected in 'PLAN apt' 'PLAN bun' 'PLAN repository' 'PLAN environment' 'PLAN state-db'; do
+for expected in 'PLAN apt' 'PLAN bun' 'PLAN repository' 'PLAN environment' 'PLAN state-db' \
+  'PLAN hygiene' 'PLAN test-gate' 'PLAN units'; do
   grep -Fq "$expected" <<<"$dry_run"
 done
 # Trimmed-scope proof: the donor's later-stage plan rows must NOT appear.
-for dropped in 'PLAN workspace' 'PLAN hygiene' 'PLAN test-gate' 'PLAN units' 'PLAN activate'; do
+for dropped in 'PLAN workspace' 'PLAN activate'; do
   if grep -Fq "$dropped" <<<"$dry_run"; then
     echo "ERROR: --dry-run printed an out-of-scope plan row: $dropped" >&2
     exit 1
   fi
 done
-echo 'PASS --dry-run plan (stage-1 rows present, later-stage rows absent)'
+echo 'PASS --dry-run plan (stage-2 rows present, activation absent)'
 
 "$INSTALLER" --help >/dev/null
 "$INSTALLER" -h >/dev/null
@@ -115,14 +116,14 @@ echo 'PASS argument validation (--help, unknown flag, --verify, combined flags)'
 prereq_fixture="$FIXTURE_ROOT/prereq"
 install -d -m 700 "$prereq_fixture/bin-complete" "$prereq_fixture/bin-missing-flock" \
   "$prereq_fixture/bin-missing-flock-no-root" "$prereq_fixture/bin-missing-unzip"
-for tool in git curl tmux flock findmnt unzip; do
+for tool in git curl tmux flock findmnt envsubst crontab unzip; do
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$prereq_fixture/bin-complete/$tool"
 done
-for tool in git curl tmux findmnt unzip; do
+for tool in git curl tmux findmnt envsubst crontab unzip; do
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$prereq_fixture/bin-missing-flock/$tool"
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$prereq_fixture/bin-missing-flock-no-root/$tool"
 done
-for tool in git curl tmux flock findmnt; do
+for tool in git curl tmux flock findmnt envsubst crontab; do
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$prereq_fixture/bin-missing-unzip/$tool"
 done
 chmod 700 "$prereq_fixture"/bin-complete/* "$prereq_fixture"/bin-missing-flock/* \
@@ -551,11 +552,284 @@ printf '%s\n' 'FAIL-BEFORE initialize_state_db: no such function exists before t
 echo 'PASS initialize_state_db: second (idempotent) call preserves prior real state, does not wipe the database'
 
 # ══════════════════════════════════════════════════════════════════════════
+# stage 2: hygiene cron, repository gate, and manifest-driven unit rendering
+# ══════════════════════════════════════════════════════════════════════════
+stage2_fixture="$FIXTURE_ROOT/stage2"
+install -d -m 700 "$stage2_fixture/root/hygiene" "$stage2_fixture/bin" \
+  "$stage2_fixture/root/bootstrap/units" "$stage2_fixture/root/instance/units" \
+  "$stage2_fixture/systemd"
+cron_calls="$stage2_fixture/cron.calls"
+cat > "$stage2_fixture/root/hygiene/install-cron.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$CRONTAB_CMD" > "$CRON_CALLS"
+EOF
+chmod 700 "$stage2_fixture/root/hygiene/install-cron.sh"
+BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$stage2_fixture/root" CRONTAB_CMD=fixture-crontab \
+  CRON_CALLS="$cron_calls" INSTALLER_PATH="$INSTALLER" "$BASH_BIN" -c \
+  'source "$INSTALLER_PATH"; install_hygiene_cron'
+grep -Fxq fixture-crontab "$cron_calls"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 9' > "$stage2_fixture/root/hygiene/install-cron.sh"
+chmod 700 "$stage2_fixture/root/hygiene/install-cron.sh"
+if BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$stage2_fixture/root" INSTALLER_PATH="$INSTALLER" \
+  "$BASH_BIN" -c 'source "$INSTALLER_PATH"; install_hygiene_cron'; then
+  echo 'ERROR: install_hygiene_cron accepted a failed cron installer' >&2
+  exit 1
+fi
+echo 'PASS install_hygiene_cron: invokes tracked installer and propagates failure'
+
+cat > "$stage2_fixture/bin/bun" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$stage2_fixture/bun.calls"
+printf '%s\n' "\${TMPDIR-unset}" >> "$stage2_fixture/bun.tmpdir"
+exit "\${BUN_STUB_EXIT:-0}"
+EOF
+chmod 700 "$stage2_fixture/bin/bun"
+BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$stage2_fixture/root" BUN_BIN="$stage2_fixture/bin/bun" \
+  INSTALLER_PATH="$INSTALLER" "$BASH_BIN" -c 'source "$INSTALLER_PATH"; run_install_test_gate'
+grep -Fxq test "$stage2_fixture/bun.calls"
+grep -Fxq unset "$stage2_fixture/bun.tmpdir"
+if BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$stage2_fixture/root" BUN_BIN="$stage2_fixture/bin/bun" \
+  BUN_STUB_EXIT=7 INSTALLER_PATH="$INSTALLER" "$BASH_BIN" -c \
+  'source "$INSTALLER_PATH"; run_install_test_gate' >/dev/null 2>&1; then
+  echo 'ERROR: run_install_test_gate accepted a failed repository suite' >&2
+  exit 1
+fi
+echo 'PASS run_install_test_gate: runs complete repository test command and propagates failure'
+
+printf '%s\t%s\n' \
+  first.service generic \
+  second.timer instance \
+  bpa-orchestrator.service generic \
+  bpa-orchestrator-watchdog.service generic \
+  bpa-orchestrator-watchdog.timer generic > "$stage2_fixture/expected.tsv"
+printf '%s\t%s' bpa-telegram-daemon.service generic >> "$stage2_fixture/expected.tsv"
+printf '%s\n' '[Service]' 'ExecStart=${BUN_BIN} ${INSTALL_ROOT}/first.ts' > \
+  "$stage2_fixture/root/bootstrap/units/first.service.in"
+printf '%s\n' '[Timer]' 'OnCalendar=hourly' > "$stage2_fixture/root/instance/units/second.timer.in"
+for unit in bpa-orchestrator.service bpa-orchestrator-watchdog.service \
+  bpa-orchestrator-watchdog.timer bpa-telegram-daemon.service; do
+  printf '%s\n' '[Unit]' "Description=$unit" > \
+    "$stage2_fixture/root/bootstrap/units/$unit.in"
+done
+BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$stage2_fixture/root" BUN_BIN="$stage2_fixture/bin/bun" \
+  SYSTEMD_SYSTEM_DIR="$stage2_fixture/systemd" EXPECTED_UNITS_FILE="$stage2_fixture/expected.tsv" \
+  INSTALLER_PATH="$INSTALLER" "$BASH_BIN" -c 'source "$INSTALLER_PATH"; render_units'
+grep -Fq "ExecStart=$stage2_fixture/bin/bun $stage2_fixture/root/first.ts" \
+  "$stage2_fixture/systemd/first.service"
+[[ "$(stat -c '%a' "$stage2_fixture/systemd/second.timer")" == 644 ]]
+if rg -n 'systemctl' "$stage2_fixture" >/dev/null; then
+  echo 'ERROR: render_units invoked or emitted systemctl' >&2
+  exit 1
+fi
+rm "$stage2_fixture/root/instance/units/second.timer.in"
+if BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$stage2_fixture/root" BUN_BIN="$stage2_fixture/bin/bun" \
+  SYSTEMD_SYSTEM_DIR="$stage2_fixture/systemd" EXPECTED_UNITS_FILE="$stage2_fixture/expected.tsv" \
+  INSTALLER_PATH="$INSTALLER" "$BASH_BIN" -c 'source "$INSTALLER_PATH"; render_units' >/dev/null 2>&1; then
+  echo 'ERROR: render_units accepted a manifest-listed missing template' >&2
+  exit 1
+fi
+printf '%s\t%s\n' \
+  bpa-orchestrator.service generic \
+  bpa-orchestrator-watchdog.service generic \
+  bpa-orchestrator-watchdog.timer generic > "$stage2_fixture/truncated.tsv"
+if BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$stage2_fixture/root" BUN_BIN="$stage2_fixture/bin/bun" \
+  SYSTEMD_SYSTEM_DIR="$stage2_fixture/truncated-systemd" \
+  EXPECTED_UNITS_FILE="$stage2_fixture/truncated.tsv" \
+  INSTALLER_PATH="$INSTALLER" "$BASH_BIN" -c 'source "$INSTALLER_PATH"; render_units' >/dev/null 2>&1; then
+  echo 'ERROR: render_units accepted a manifest missing a required incident unit' >&2
+  exit 1
+fi
+[[ ! -e "$stage2_fixture/truncated-systemd" ]]
+echo 'PASS render_units manifest truncation lock: required incident row absence fails before destination creation'
+
+install -d -m 755 "$stage2_fixture/untouched-systemd"
+printf '%s\n' preserved > "$stage2_fixture/untouched-systemd/existing.service"
+printf '%s\t%s\n' \
+  bpa-orchestrator.service generic \
+  bpa-orchestrator-watchdog.service generic \
+  bpa-orchestrator-watchdog.timer generic \
+  bpa-telegram-daemon.service generic \
+  malformed.service missing-source > "$stage2_fixture/malformed-later.tsv"
+if BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$stage2_fixture/root" BUN_BIN="$stage2_fixture/bin/bun" \
+  SYSTEMD_SYSTEM_DIR="$stage2_fixture/untouched-systemd" \
+  EXPECTED_UNITS_FILE="$stage2_fixture/malformed-later.tsv" \
+  INSTALLER_PATH="$INSTALLER" "$BASH_BIN" -c 'source "$INSTALLER_PATH"; render_units' >/dev/null 2>&1; then
+  echo 'ERROR: render_units accepted a malformed later manifest row' >&2
+  exit 1
+fi
+if [[ "$(find "$stage2_fixture/untouched-systemd" -mindepth 1 -maxdepth 1 -printf '%f\n')" != existing.service ]]; then
+  echo 'ERROR: render_units changed the destination before rejecting a malformed later row' >&2
+  find "$stage2_fixture/untouched-systemd" -mindepth 1 -maxdepth 1 -printf 'AFTER_FAILURE_PRESENT=%f\n' >&2
+  exit 1
+fi
+grep -Fxq preserved "$stage2_fixture/untouched-systemd/existing.service"
+echo 'PASS render_units preflight lock: a malformed later row leaves the destination untouched'
+echo 'PASS render_units: renders both inventories, reads final unterminated row, and rejects manifest deletion'
+
+printf '%s\n' '[Timer]' 'OnCalendar=hourly' > \
+  "$stage2_fixture/root/instance/units/second.timer.in"
+
+publication_snapshot() {
+  local destination="$1"
+  find "$destination" -mindepth 1 -maxdepth 1 -type f -printf '%f %m ' \
+    -exec sha256sum {} \; | LC_ALL=C sort
+}
+
+run_publication_fault_lock() {
+  local fault="$1" fixture output before after rc
+  fixture="$stage2_fixture/publication-$fault"
+  install -d -m 700 "$fixture/bin" "$fixture/systemd"
+  for unit in first.service bpa-orchestrator.service bpa-orchestrator-watchdog.service \
+    bpa-orchestrator-watchdog.timer bpa-telegram-daemon.service; do
+    printf 'prior-%s\n' "$unit" > "$fixture/systemd/$unit"
+  done
+  chmod 600 "$fixture/systemd/first.service"
+  before="$(publication_snapshot "$fixture/systemd")"
+  cat > "$fixture/bin/mv" <<EOF
+#!/usr/bin/env bash
+count_file='$fixture/mv.count'
+count=0
+[[ ! -f "\$count_file" ]] || read -r count < "\$count_file"
+((count += 1))
+printf '%s\n' "\$count" > "\$count_file"
+if [[ "\$count" == 2 ]]; then
+  if [[ '$fault' == signal || '$fault' == double-signal ]]; then
+    kill -TERM "\$PPID"
+    sleep 1
+  else
+    exit 28
+  fi
+fi
+exec /usr/bin/mv "\$@"
+EOF
+  chmod 700 "$fixture/bin/mv"
+  if [[ "$fault" == double-signal ]]; then
+    cat > "$fixture/bin/cp" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == -p && "${2:-}" == -- && "${3:-}" == */prior/first.service ]]; then
+  kill -TERM "$INSTALLER_TEST_PID"
+  sleep 1
+fi
+exec /usr/bin/cp "$@"
+EOF
+    chmod 700 "$fixture/bin/cp"
+  fi
+  set +e
+  output="$(PATH="$fixture/bin:$PATH" BOOTSTRAP_LIB_ONLY=true \
+    INSTALL_ROOT="$stage2_fixture/root" BUN_BIN="$stage2_fixture/bin/bun" \
+    SYSTEMD_SYSTEM_DIR="$fixture/systemd" EXPECTED_UNITS_FILE="$stage2_fixture/expected.tsv" \
+    INSTALLER_PATH="$INSTALLER" "$BASH_BIN" -c \
+    'export INSTALLER_TEST_PID=$BASHPID; source "$INSTALLER_PATH"; render_units' 2>&1)"
+  rc=$?
+  set -e
+  [[ "$rc" -ne 0 ]]
+  grep -Fq 'verdict=rolled-back' <<<"$output"
+  if [[ "$fault" == double-signal ]]; then
+    verdict_count="$(grep -Ec 'verdict=(rolled-back|rollback-failed)' <<<"$output")"
+    [[ "$verdict_count" -eq 1 ]]
+  fi
+  after="$(publication_snapshot "$fixture/systemd")"
+  [[ "$after" == "$before" ]]
+  [[ ! -e "$fixture/systemd/second.timer" ]]
+  printf 'FAIL-BEFORE publication-%s: second publication left a mixed old/new destination set at 0a431056b6006886019f6be6e0ba9d156e2821e8\n' "$fault"
+  printf 'PASS render_units publication-%s lock: prior bytes, modes, and absences restored\n' "$fault"
+}
+
+run_publication_fault_lock failure
+run_publication_fault_lock signal
+run_publication_fault_lock double-signal
+
+# A rollback child that never returns must be killed by the rollback deadline.
+# Publication failure and signal rollback share rollback_unit_publication, so
+# this locks the bound on the ordinary failure path as well as the handler path.
+stuck_fixture="$stage2_fixture/rollback-stuck"
+install -d -m 700 "$stuck_fixture/bin" "$stuck_fixture/systemd"
+printf '%s\n' prior > "$stuck_fixture/systemd/first.service"
+cat > "$stuck_fixture/bin/mv" <<'EOF'
+#!/usr/bin/env bash
+count_file="${STUCK_FIXTURE}/mv.count"
+count=0
+[[ ! -f "$count_file" ]] || read -r count < "$count_file"
+((count += 1)); printf '%s\n' "$count" > "$count_file"
+[[ "$count" != 2 ]] || exit 28
+exec /usr/bin/mv "$@"
+EOF
+cat > "$stuck_fixture/bin/cp" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${BPA_UNIT_ROLLBACK:-}" == 1 ]]; then
+  while :; do sleep 1; done
+fi
+exec /usr/bin/cp "$@"
+EOF
+chmod 700 "$stuck_fixture/bin/mv" "$stuck_fixture/bin/cp"
+set +e
+stuck_output="$(timeout 5 env PATH="$stuck_fixture/bin:$PATH" STUCK_FIXTURE="$stuck_fixture" \
+  UNIT_ROLLBACK_TIMEOUT_SECONDS=0.2 UNIT_ROLLBACK_KILL_AFTER_SECONDS=0.2 \
+  BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$stage2_fixture/root" BUN_BIN="$stage2_fixture/bin/bun" \
+  SYSTEMD_SYSTEM_DIR="$stuck_fixture/systemd" EXPECTED_UNITS_FILE="$stage2_fixture/expected.tsv" \
+  INSTALLER_PATH="$INSTALLER" "$BASH_BIN" -c 'source "$INSTALLER_PATH"; render_units' 2>&1)"
+stuck_rc=$?
+set -e
+[[ "$stuck_rc" -eq 125 ]]
+[[ "$(grep -Ec 'verdict=(rolled-back|rollback-failed)' <<<"$stuck_output")" -eq 1 ]]
+grep -Fq 'verdict=rollback-failed' <<<"$stuck_output"
+if grep -Fq 'verdict=rolled-back' <<<"$stuck_output"; then
+  echo 'ERROR: timed-out restoration claimed a proven rollback' >&2
+  exit 1
+fi
+if grep -Fxq prior "$stuck_fixture/systemd/first.service"; then
+  echo 'ERROR: stuck restoration fixture unexpectedly completed restoration' >&2
+  exit 1
+fi
+echo 'PASS render_units rollback-timeout lock: stuck restoration terminates with one truthful failed verdict'
+
+# Make restoration itself fail after publication has begun. The verdict must
+# remain different from an ordinary, proven rollback.
+rollback_fixture="$stage2_fixture/rollback-failed"
+install -d -m 700 "$rollback_fixture/bin" "$rollback_fixture/systemd"
+printf '%s\n' prior > "$rollback_fixture/systemd/first.service"
+cat > "$rollback_fixture/bin/mv" <<'EOF'
+#!/usr/bin/env bash
+count_file="${ROLLBACK_FIXTURE}/mv.count"
+count=0
+[[ ! -f "$count_file" ]] || read -r count < "$count_file"
+((count += 1)); printf '%s\n' "$count" > "$count_file"
+[[ "$count" != 2 ]] || exit 28
+exec /usr/bin/mv "$@"
+EOF
+cat > "$rollback_fixture/bin/cp" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == -p && "${3:-}" == */prior/first.service ]]; then exit 31; fi
+exec /usr/bin/cp "$@"
+EOF
+chmod 700 "$rollback_fixture/bin/mv" "$rollback_fixture/bin/cp"
+set +e
+rollback_output="$(PATH="$rollback_fixture/bin:$PATH" ROLLBACK_FIXTURE="$rollback_fixture" \
+  BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$stage2_fixture/root" BUN_BIN="$stage2_fixture/bin/bun" \
+  SYSTEMD_SYSTEM_DIR="$rollback_fixture/systemd" EXPECTED_UNITS_FILE="$stage2_fixture/expected.tsv" \
+  INSTALLER_PATH="$INSTALLER" "$BASH_BIN" -c 'source "$INSTALLER_PATH"; render_units' 2>&1)"
+rollback_rc=$?
+set -e
+[[ "$rollback_rc" -eq 125 ]]
+grep -Fq 'verdict=rollback-failed' <<<"$rollback_output"
+if grep -Fq 'verdict=rolled-back' <<<"$rollback_output"; then
+  echo 'ERROR: failed restoration also claimed a proven rollback' >&2
+  exit 1
+fi
+echo 'PASS render_units rollback-failed lock: incomplete restoration is explicit and distinguishable'
+
+# ══════════════════════════════════════════════════════════════════════════
 # --verify-source
 # ══════════════════════════════════════════════════════════════════════════
 verify_fixture="$FIXTURE_ROOT/verify"
-install -d -m 700 "$verify_fixture/root/.git" "$verify_fixture/root/core" "$verify_fixture/bin"
+install -d -m 700 "$verify_fixture/root/.git" "$verify_fixture/root/core" \
+  "$verify_fixture/root/bootstrap" "$verify_fixture/bin" "$verify_fixture/systemd"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/bin/bun"
+printf '%s\n' '#!/usr/bin/env bash' \
+  'if [[ "${1:-}" == -l ]]; then echo "# BEGIN bpa-dev-infrastructure hygiene"; fi' \
+  'exit 0' > "$verify_fixture/bin/crontab"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/root/bootstrap/check-unit-drift.sh"
+chmod 700 "$verify_fixture/root/bootstrap/check-unit-drift.sh"
 for tool in git curl tmux flock findmnt; do
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/bin/$tool"
 done
@@ -563,12 +837,15 @@ chmod 700 "$verify_fixture/bin"/*
 install -m 600 /dev/null "$verify_fixture/root/.env"
 
 good_output="$(PATH="$verify_fixture/bin:$CORE_PATH" INSTALL_ROOT="$verify_fixture/root" \
-  ENV_FILE="$verify_fixture/root/.env" BUN_BIN="$verify_fixture/bin/bun" "$INSTALLER" --verify-source)"
+  ENV_FILE="$verify_fixture/root/.env" BUN_BIN="$verify_fixture/bin/bun" \
+  CRONTAB_CMD="$verify_fixture/bin/crontab" SYSTEMD_SYSTEM_DIR="$verify_fixture/systemd" \
+  "$INSTALLER" --verify-source)"
 for expected in 'PASS git' 'PASS curl' 'PASS tmux' 'PASS flock' 'PASS findmnt' 'PASS bun' \
-  'PASS repository' 'PASS environment file' 'PASS environment permissions' 'PASS state-db'; do
+  'PASS repository' 'PASS environment file' 'PASS environment permissions' 'PASS state-db' \
+  'PASS hygiene-cron' 'PASS rendered units'; do
   grep -Fq "$expected" <<<"$good_output"
 done
-echo 'PASS --verify-source: every stage-1 boundary PASSes against a satisfied fixture'
+echo 'PASS --verify-source: every stage-2 boundary PASSes against a satisfied fixture'
 
 # Fail-closed proof: a single broken boundary (wrong .env mode) must flip the
 # overall exit code, not just print one FAIL line lost among PASSes.
@@ -636,4 +913,4 @@ else
   echo 'SKIP shellcheck: not present on this host'
 fi
 
-echo 'PASS bootstrap stage 1: dry-run, argument validation, all five in-scope functions, --verify-source, secret scan'
+echo 'PASS bootstrap stage 2: dry-run, all eight in-scope functions, failure locks, --verify-source, secret scan'

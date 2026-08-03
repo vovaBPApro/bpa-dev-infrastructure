@@ -20,12 +20,10 @@ const runnableShellTests = [
   "gate/land-rollback.test.sh",
   "orchestrator/watchdog-supervision.test.sh",
   "orchestrator/fleet/launch-lane.test.sh",
+  "orchestrator/watchdog.test.sh",
 ] as const;
 
-const excludedShellTests = {
-  "orchestrator/watchdog.test.sh":
-    "exit 1: mission-cli status exposes snake_case missions, omits lane updatedAt and leases, so watchdog cannot measure mission pressure",
-} as const;
+const excludedShellTests = {} as const;
 
 const allShellTests = [...runnableShellTests, ...Object.keys(excludedShellTests)];
 
@@ -60,7 +58,7 @@ for (const relativePath of runnableShellTests) {
 }
 
 test("excluded shell tests are named and reasoned", () => {
-  expect(Object.keys(excludedShellTests)).toEqual(["orchestrator/watchdog.test.sh"]);
+  expect(Object.keys(excludedShellTests)).toEqual([]);
   for (const reason of Object.values(excludedShellTests)) {
     expect(reason.trim().length).toBeGreaterThan(0);
   }

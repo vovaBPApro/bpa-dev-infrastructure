@@ -14,6 +14,19 @@ export type LaneRecord = CreateLaneInput & {
   leaseDeadlineAt: number | null; retriesUsed: number; acknowledgementAt: number | null;
   semanticProgressAt: number | null; semanticEvidencePath: string | null;
   terminalSha: string | null; terminalReportPath: string | null; terminalVerdict: TerminalVerdict | null;
+  createdAt: number; updatedAt: number;
+};
+
+export type MissionRecord = {
+  id: string; correlationId: string; acceptanceId: string; state: string; createdAt: number; updatedAt: number;
+};
+
+export type ManagerRecord = {
+  id: string; missionId: string; parentId: string; depth: number; state: string; createdAt: number; updatedAt: number;
+};
+
+export type LeaseRecord = {
+  key: string; owner: string; fencingToken: number; expiresAt: number;
 };
 
 export type OutboxRecord = {
@@ -128,11 +141,21 @@ export class DurableStore {
   }
 
   getLane(id: string): LaneRecord | undefined { return this.readLane(id); }
-  reconstruct(): { missions: unknown[]; managers: unknown[]; lanes: LaneRecord[]; outbox: OutboxRecord[] } {
+  reconstruct(): { missions: MissionRecord[]; managers: ManagerRecord[]; lanes: LaneRecord[]; leases: LeaseRecord[]; outbox: OutboxRecord[] } {
+    const missions = (this.db.query("SELECT * FROM missions ORDER BY id").all() as any[]).map(r => ({
+      id:r.id, correlationId:r.correlation_id, acceptanceId:r.acceptance_id, state:r.state, createdAt:r.created_at, updatedAt:r.updated_at,
+    }));
+    const managers = (this.db.query("SELECT * FROM managers ORDER BY id").all() as any[]).map(r => ({
+      id:r.id, missionId:r.mission_id, parentId:r.parent_id, depth:r.depth, state:r.state, createdAt:r.created_at, updatedAt:r.updated_at,
+    }));
+    const lanes = (this.db.query("SELECT id FROM lanes ORDER BY id").all() as { id: string }[]).map(({ id }) => this.mustLane(id));
     return {
-      missions: this.db.query("SELECT * FROM missions ORDER BY id").all(),
-      managers: this.db.query("SELECT * FROM managers ORDER BY id").all(),
-      lanes: (this.db.query("SELECT id FROM lanes ORDER BY id").all() as { id: string }[]).map(({ id }) => this.mustLane(id)),
+      missions,
+      managers,
+      lanes,
+      leases: lanes.filter(lane => lane.leaseOwner !== null && lane.leaseDeadlineAt !== null && lane.leaseDeadlineAt > this.now()).map(lane => ({
+        key:lane.id, owner:lane.leaseOwner!, fencingToken:lane.fencingToken, expiresAt:lane.leaseDeadlineAt!,
+      })),
       outbox: this.outbox(),
     };
   }
@@ -153,7 +176,7 @@ export class DurableStore {
   }
   private readLane(id: string): LaneRecord | undefined {
     const r = this.db.query("SELECT * FROM lanes WHERE id=?").get(id) as any;
-    return r ? { id:r.id, missionId:r.mission_id, managerId:r.manager_id, parentId:r.parent_id, depth:r.depth, state:r.state, generation:r.generation, leaseOwner:r.lease_owner, fencingToken:r.fencing_token, leaseDeadlineAt:r.lease_deadline_at, retriesUsed:r.retries_used, retryBudget:r.retry_budget, acceptanceId:r.acceptance_id, acknowledgementAt:r.acknowledgement_at, semanticProgressAt:r.semantic_progress_at, semanticEvidencePath:r.semantic_evidence_path, terminalSha:r.terminal_sha, terminalReportPath:r.terminal_report_path, terminalVerdict:r.terminal_verdict } : undefined;
+    return r ? { id:r.id, missionId:r.mission_id, managerId:r.manager_id, parentId:r.parent_id, depth:r.depth, state:r.state, generation:r.generation, leaseOwner:r.lease_owner, fencingToken:r.fencing_token, leaseDeadlineAt:r.lease_deadline_at, retriesUsed:r.retries_used, retryBudget:r.retry_budget, acceptanceId:r.acceptance_id, acknowledgementAt:r.acknowledgement_at, semanticProgressAt:r.semantic_progress_at, semanticEvidencePath:r.semantic_evidence_path, terminalSha:r.terminal_sha, terminalReportPath:r.terminal_report_path, terminalVerdict:r.terminal_verdict, createdAt:r.created_at, updatedAt:r.updated_at } : undefined;
   }
   private mustLane(id: string): LaneRecord { const lane = this.readLane(id); if (!lane) throw new SchemaError(`unknown lane: ${id}`); return lane; }
   private outbox(): OutboxRecord[] { return (this.db.query("SELECT * FROM outbox ORDER BY created_at, id").all() as any[]).map(r => ({ id:r.id, channel:r.channel, dedupeKey:r.dedupe_key, payload:JSON.parse(r.payload_json), deliveryState:r.delivery_state, attempts:r.attempts, lastError:r.last_error, createdAt:r.created_at, deliveredAt:r.delivered_at })); }

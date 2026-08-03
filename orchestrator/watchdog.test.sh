@@ -63,7 +63,7 @@ seed_running() {
 }
 
 run_watchdog() {
-  local db="$1" runtime="$2" outbox="$3" now="$4"
+  local db="$1" runtime="$2" outbox="$3" now="$4" cli="${5:-$MISSION_CLI}"
   mkdir -p "$runtime"
   # ORCH_DONE_SENTINEL and ORCH_DAEMON_HEALTH_URL are NOT covered by
   # ORCH_RUNTIME_DIR: the rest sentinel lives under the daemon's state dir, and
@@ -72,6 +72,7 @@ run_watchdog() {
   env PATH="$SHIM:$PATH" ORCH_CONFIG_FILE="$SCRATCH/no-config" ORCH_STATE_DB="$db" \
     ORCH_RUNTIME_DIR="$runtime" ORCH_WATCHDOG_LOG="$runtime/watchdog.log" \
     ORCH_DONE_SENTINEL="$SCRATCH/no-done-sentinel" ORCH_DAEMON_HEALTH_URL="" \
+    ORCH_MISSION_CLI="$cli" \
     NUDGE_OUTBOX_FILE="$outbox" ORCH_INSTALL_ROOT="$SCRATCH" DISK_ALERT_PCT=99 \
     FLEET_IDLE_NUDGE_MS=1000 FLEET_NUDGE_REPEAT_MS=3600000 ORCH_WATCHDOG_NOW_MS="$now" \
     "$SCRIPT_DIR/watchdog.sh"
@@ -110,5 +111,29 @@ progress_updated="$(INFRA_STATE_DB="$PROGRESS_DB" bun -e \
      db.query("SELECT updated_at FROM lanes").get().updated_at));')"
 run_watchdog "$PROGRESS_DB" "$SCRATCH/progress-runtime" "$PROGRESS_OUTBOX" "$(( progress_updated + 100 ))"
 not_exists "$PROGRESS_OUTBOX"
+
+# The malformed snapshot starts as genuine mission-cli output, then removes
+# one required field at the transport boundary. The watchdog must make the
+# unmeasured subject visible instead of letting undefined become NaN/quiet.
+MALFORMED_CLI="$SHIM/mission-cli-missing-updated-at.ts"
+cat > "$MALFORMED_CLI" <<'EOF'
+const args = Bun.argv.slice(2);
+const result = Bun.spawnSync([process.env.BUN_REAL!, process.env.MISSION_CLI_REAL!, ...args], {
+  env: process.env, stdout: "pipe", stderr: "inherit",
+});
+if (result.exitCode !== 0) process.exit(result.exitCode ?? 1);
+if (args.length === 1 && args[0] === "status") {
+  const status = JSON.parse(result.stdout.toString());
+  delete status.lanes[0].updatedAt;
+  console.log(JSON.stringify(status));
+} else {
+  process.stdout.write(result.stdout);
+}
+EOF
+MALFORMED_RUNTIME="$SCRATCH/malformed-runtime"
+export BUN_REAL="$(command -v bun)" MISSION_CLI_REAL="$MISSION_CLI"
+run_watchdog "$STALLED_DB" "$MALFORMED_RUNTIME" "$SCRATCH/malformed.outbox" "$(( stalled_updated + 10000 ))" "$MALFORMED_CLI"
+contains 'WATCHDOG NO-GO reason=mission-pressure-status-contract-invalid' "$MALFORMED_RUNTIME/watchdog.log"
+not_exists "$SCRATCH/malformed.outbox"
 
 printf 'watchdog mission progress tests: PASS\n'

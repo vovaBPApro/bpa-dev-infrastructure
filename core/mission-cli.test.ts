@@ -63,8 +63,10 @@ test("restart reconstruction exposes the full executable v3 contract", async () 
   expect(completed).toMatchObject({exitCode:0});
   expect(completed.stdout).toContain("guard=pass");
   const restarted=await invoke(database,"status"); const snapshot=JSON.parse(restarted.stdout);
-  expect(snapshot.missions[0]).toMatchObject({id:mission,correlation_id:"corr-1",acceptance_id:"mission-accept"});
-  expect(snapshot.managers[0]).toMatchObject({id:"manager-1",mission_id:mission,parent_id:mission,depth:1});
+  expect(snapshot.missions[0]).toMatchObject({id:mission,correlationId:"corr-1",acceptanceId:"mission-accept",createdAt:1000,updatedAt:1000});
+  expect(snapshot.lanes[0]).toMatchObject({id:"lane-1",createdAt:1000,updatedAt:1000});
+  expect(snapshot.leases).toEqual([]);
+  expect(snapshot.managers[0]).toMatchObject({id:"manager-1",missionId:mission,parentId:mission,depth:1,createdAt:1000,updatedAt:1000});
   expect(snapshot.lanes[0]).toMatchObject({id:"lane-1",managerId:"manager-1",parentId:"manager-1",depth:2,generation:1,acceptanceId:"lane-accept",acknowledgementAt:1000,semanticEvidencePath:"/evidence/progress.json",terminalSha:sha,terminalReportPath:reportPath,terminalVerdict:"clean"});
   expect(snapshot.outbox[0]).toMatchObject({id:"msg-1",dedupeKey:"corr-1:terminal",deliveryState:"pending",payload:{kind:"terminal"}});
 });

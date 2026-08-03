@@ -23,14 +23,18 @@ EXCEPTIONS="${LEDGER_EXCEPTIONS:-instance/decisions/ported-exceptions.txt}"
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root" || exit 2
 
-if ! git rev-parse --verify --quiet "$DONOR" >/dev/null; then
+if git rev-parse --verify --quiet "$DONOR" >/dev/null; then
+  donor_resolved="$DONOR"
+elif git rev-parse --verify --quiet "origin/$DONOR" >/dev/null; then
+  donor_resolved="origin/$DONOR"
+else
   # A missing donor ref must not silently pass. If the donor line is gone the check
   # can no longer prove anything, and proving nothing is not the same as being clean.
   printf 'LEDGER-DRIFT donor-ref-missing ref=%s (cannot verify; refusing to pass)\n' "$DONOR" >&2
   exit 2
 fi
 
-donor_list=$(git ls-tree "$DONOR" --name-only "$LEDGER_DIR/" | sed 's|.*/||' | grep -E '^HR-.*\.md$' | sort)
+donor_list=$(git ls-tree "$donor_resolved" --name-only "$LEDGER_DIR/" | sed 's|.*/||' | grep -E '^HR-.*\.md$' | sort)
 here_list=$(git ls-tree HEAD --name-only "$LEDGER_DIR/" | sed 's|.*/||' | grep -E '^HR-.*\.md$' | sort)
 
 missing=$(comm -23 <(printf '%s\n' "$donor_list") <(printf '%s\n' "$here_list"))

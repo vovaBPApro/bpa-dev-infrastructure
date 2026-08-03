@@ -58,7 +58,12 @@ const state = load(path);
 const itemId = arg("--item-id");
 if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(itemId)) die("invalid-item-id");
 const item = state.items[itemId] ?? { rounds: 0, noProgress: 0, landedSha: null, park: null };
-if (command === "attempt") {
+if (command === "round") {
+  console.log(item.rounds);
+} else if (command === "check") {
+  if (item.park) die(`item=${itemId} parked=${item.park}`);
+  console.log(`REVIEW_ROUNDS status=admissible item=${itemId} round=${item.rounds}`);
+} else if (command === "attempt") {
   if (item.park) die(`item=${itemId} parked=${item.park}`);
   if (item.rounds >= state.cap) { item.park = "cap"; state.items[itemId] = item; save(path, state); die(`item=${itemId} cap=${state.cap} parked=cap`); }
   item.rounds += 1;
@@ -66,7 +71,7 @@ if (command === "attempt") {
   if (item.noProgress >= state.noProgressLimit) item.park = "no-progress";
   state.items[itemId] = item;
   save(path, state);
-  if (item.park) die(`item=${itemId} consecutive_no_progress=${item.noProgress} parked=no-progress`);
+  if (item.park && !Bun.argv.includes("--defer-park-exit")) die(`item=${itemId} consecutive_no_progress=${item.noProgress} parked=no-progress`);
   console.log(`REVIEW_ROUNDS status=pass item=${itemId} round=${item.rounds} no_progress=${item.noProgress}`);
 } else if (command === "landed") {
   const sha = arg("--sha").toLowerCase();

@@ -64,10 +64,12 @@ session-independence requirement, or an explicit approval boundary.
 The landing gate checks the caller's item against the tracked instance review-item
 registry on the target branch. That registry maps a durable mission/acceptance id
 to a stable branch root; disposable `-rN` recuts therefore share one counter and
-unknown ids fail instead of minting state. It records every reviewed landing
-attempt in the Git common directory, so restarting the orchestrator does not reset
-either measure. A fresh clone initializes absent state automatically under the
-landing lock; existing malformed or unsafe state still fails closed.
+unknown ids fail instead of minting state. The gate records every reviewed landing
+attempt in an origin-visible, non-branch Git ref before continuing the landing.
+The target-branch JSON and Git-common-dir copy are reconstructable caches over
+those refs, so restarting the orchestrator, deleting the cache, or making a fresh
+clone does not reset either measure. Existing malformed or unsafe state still
+fails closed.
 
 An item receives at most three review rounds. A fourth is refused and parked as
 `cap`. There is no lane-callable reset or override. At the cap, unresolved

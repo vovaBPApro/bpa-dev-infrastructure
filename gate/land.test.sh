@@ -111,6 +111,41 @@ assert_output_has "$durable_output" 'item=ag-durable-rounds cap=3 parked=cap'
 assert test -f "$clone_b/.git/bpa-review-rounds.json"
 assert grep -Fq '"rounds": 3' "$clone_b/.git/bpa-review-rounds.json"
 
+# Original regression: Clone A counts reviewed attempts which fail after the
+# count and rolls main back. Clone B must recover those attempts from origin,
+# even though neither the merge nor Clone A's Git-common-dir cache survives.
+make_fixture failed-review-attempts
+clone_a="$repo"
+git -C "$clone_a" checkout -b ag-failed-attempts >/dev/null
+printf 'import { test, expect } from "bun:test"; test("candidate fails", () => expect(true).toBe(false));\n' > "$clone_a/base.test.ts"
+git -C "$clone_a" commit -am failed-candidate >/dev/null
+failed_sha=$(git -C "$clone_a" rev-parse HEAD)
+git -C "$clone_a" checkout main >/dev/null
+git -C "$clone_a" push origin ag-failed-attempts >/dev/null
+report "$fixture_root/failed-review-attempts.md" "$failed_sha"
+for attempt in 1 2; do
+  failed_output="$fixture_root/failed-review-attempts-$attempt.out"
+  if "$land" --branch ag-failed-attempts --item-id ag-failed-attempts --report "$fixture_root/failed-review-attempts.md" --repo "$clone_a" --no-push >"$failed_output" 2>&1; then exit 1; fi
+  assert_output_has "$failed_output" 'LAND step=review-rounds status=pass'
+  assert_output_has "$failed_output" 'LAND step=declared-checks status=fail'
+  assert test "$(git -C "$clone_a" rev-parse main)" = "$(git -C "$clone_a" rev-parse origin/main)"
+done
+# The third reviewed attempt is durably recorded before no-progress parks it.
+if "$land" --branch ag-failed-attempts --item-id ag-failed-attempts --report "$fixture_root/failed-review-attempts.md" --repo "$clone_a" --no-push >"$fixture_root/failed-review-attempts-3.out" 2>&1; then exit 1; fi
+assert_output_has "$fixture_root/failed-review-attempts-3.out" 'parked=no-progress'
+
+clone_b="$fixture_root/failed-review-attempts-clone-b"
+git clone "$bare" "$clone_b" >/dev/null
+git -C "$clone_b" config user.email land@example.test
+git -C "$clone_b" config user.name Land
+git -C "$clone_b" branch ag-failed-attempts origin/ag-failed-attempts >/dev/null
+if "$land" --branch ag-failed-attempts --item-id ag-failed-attempts --report "$fixture_root/failed-review-attempts.md" --repo "$clone_b" --no-push >"$fixture_root/failed-review-attempts-clone-b.out" 2>&1; then exit 1; fi
+assert_output_has "$fixture_root/failed-review-attempts-clone-b.out" 'parked=no-progress'
+assert grep -Fq '"rounds": 3' "$clone_b/.git/bpa-review-rounds.json"
+rm "$clone_b/.git/bpa-review-rounds.json"
+if "$land" --branch ag-failed-attempts --item-id ag-failed-attempts --report "$fixture_root/failed-review-attempts.md" --repo "$clone_b" --no-push >"$fixture_root/failed-review-attempts-cache-deleted.out" 2>&1; then exit 1; fi
+assert_output_has "$fixture_root/failed-review-attempts-cache-deleted.out" 'parked=no-progress'
+
 # Regression lock: the copied gate must support the orphan v3 family range,
 # while callers that do not select a family still resolve against main.
 # shellcheck source=gate/land-lib.sh
@@ -701,9 +736,9 @@ report "$fixture_root/push-noop-report.md" "$push_noop_sha"
 push_noop_before=$(git --git-dir="$fixture_root/push-noop-origin.git" rev-parse main)
 install_push_noop_wrapper "$fixture_root/push-noop-bin"
 push_noop_output="$fixture_root/push-noop-output.txt"
-if PATH="$fixture_root/push-noop-bin:$PATH" "$land" --branch ag-push-noop --report "$fixture_root/push-noop-report.md" --repo "$fixture_root/push-noop-repo" >"$push_noop_output" 2>&1; then exit 1; fi
-assert_output_has "$push_noop_output" "LAND push remote-mismatch target=main found=$push_noop_before expected="
-assert_output_has "$push_noop_output" 'LAND step=push status=fail'
+if PATH="$fixture_root/push-noop-bin:$PATH" "$land" --branch ag-push-noop --item-id ag-push-noop --report "$fixture_root/push-noop-report.md" --repo "$fixture_root/push-noop-repo" >"$push_noop_output" 2>&1; then exit 1; fi
+assert_output_has "$push_noop_output" 'LAND review-rounds attempt-persist-mismatch'
+assert_output_has "$push_noop_output" 'LAND step=review-rounds status=fail'
 assert_output_lacks "$push_noop_output" 'LAND verdict=landed'
 
 make_fixture push-wrong-remote
@@ -713,7 +748,7 @@ push_wrong_before=$(git --git-dir="$fixture_root/push-wrong-remote-origin.git" r
 printf '#!/usr/bin/env bash\ngit update-ref refs/heads/main %s\n' "$push_wrong_before" > "$fixture_root/push-wrong-remote-origin.git/hooks/post-receive"
 chmod +x "$fixture_root/push-wrong-remote-origin.git/hooks/post-receive"
 push_wrong_output="$fixture_root/push-wrong-remote-output.txt"
-if "$land" --branch ag-push-wrong-remote --report "$fixture_root/push-wrong-remote-report.md" --repo "$fixture_root/push-wrong-remote-repo" >"$push_wrong_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-push-wrong-remote --item-id ag-push-wrong-remote --report "$fixture_root/push-wrong-remote-report.md" --repo "$fixture_root/push-wrong-remote-repo" >"$push_wrong_output" 2>&1; then exit 1; fi
 assert_output_has "$push_wrong_output" "LAND push remote-mismatch target=main found=$push_wrong_before expected="
 assert_output_has "$push_wrong_output" 'LAND step=push status=fail'
 assert_output_lacks "$push_wrong_output" 'LAND verdict=landed'
@@ -822,8 +857,8 @@ printf '#!/usr/bin/env bash\nexit 1\n' > "$fixture_root/push-rollback-origin.git
 chmod +x "$fixture_root/push-rollback-origin.git/hooks/pre-receive"
 push_rollback_output="$fixture_root/push-rollback-output.txt"
 if "$land" --branch ag-push-rollback --item-id ag-push-rollback --report "$fixture_root/push-rollback-report.md" --repo "$fixture_root/push-rollback-repo" >"$push_rollback_output" 2>&1; then exit 1; fi
-assert_output_has "$push_rollback_output" 'LAND step=push status=fail'
-assert_output_has "$push_rollback_output" 'main reset to origin/main'
+assert_output_has "$push_rollback_output" 'LAND review-rounds attempt-persist-failed'
+assert_output_has "$push_rollback_output" 'LAND step=review-rounds status=fail'
 assert test "$(git -C "$fixture_root/push-rollback-repo" rev-parse main)" = "$(git -C "$fixture_root/push-rollback-repo" rev-parse origin/main)"
 assert git -C "$fixture_root/push-rollback-repo" show-ref --verify --quiet refs/heads/ag-push-rollback
 

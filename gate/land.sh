@@ -102,6 +102,7 @@ case "$git_common_dir" in
 esac
 review_round_history_rel=".bpa/review-rounds.json"
 review_round_history="$repo/$review_round_history_rel"
+review_attempt_namespace="refs/bpa-review-attempts"
 case "$git_dir" in
   /*) lock_file="$git_dir/bpa-land.lock" ;;
   *) lock_file="$repo/$git_dir/bpa-land.lock" ;;
@@ -213,7 +214,9 @@ land_pass review-item
 # clone-local copy from it on every attempt, so deleting .git or rebuilding the
 # host cannot reset an exhausted item. Absence is accepted only when the target
 # branch has never carried review-round history; deletion is fail-closed.
+review_history_present=false
 if git -C "$repo" cat-file -e "$default_branch:$review_round_history_rel" 2>/dev/null; then
+  review_history_present=true
   rm -f "$review_round_state"
   if ! git -C "$repo" show "$default_branch:$review_round_history_rel" > "$review_round_state"; then
     land_fail review-rounds 2
@@ -233,6 +236,38 @@ if [ ! -e "$review_round_state" ]; then
   fi
 fi
 
+# Attempt refs are the origin-visible source of truth for reviewed attempts
+# which did not land. The target-branch JSON is only a reconstructable cache:
+# replay every later ref in strict sequence after a clone or host rebuild.
+item_key=$(printf '%s' "$item_id" | git -C "$repo" hash-object --stdin) || land_fail review-rounds 2
+attempt_prefix="$review_attempt_namespace/$item_key"
+attempt_refs=$(git -C "$repo" ls-remote --refs origin "$attempt_prefix/*") || land_fail review-rounds 2
+if [ "$review_history_present" = false ] && [ -n "$attempt_refs" ]; then
+  rm -f "$review_round_state"
+  if ! "$BUN_BIN" "$script_dir/review-rounds.ts" init --state "$review_round_state" --cap 3 --no-progress-limit 3 >/dev/null; then
+    land_fail review-rounds 2
+  fi
+fi
+rounds=$("$BUN_BIN" "$script_dir/review-rounds.ts" round --state "$review_round_state" --item-id "$item_id") || land_fail review-rounds 2
+while IFS=$'\t' read -r attempt_sha attempt_ref; do
+  [ -n "$attempt_ref" ] || continue
+  attempt_leaf=${attempt_ref#"$attempt_prefix/"}
+  if [[ ! "$attempt_leaf" =~ ^([1-9][0-9]*)-([0-9a-f]{40})$ ]] || [ "$attempt_sha" != "${BASH_REMATCH[2]}" ]; then
+    echo "LAND review-rounds malformed-attempt-ref ref=$attempt_ref" >&2
+    land_fail review-rounds 2
+  fi
+  attempt_round=${BASH_REMATCH[1]}
+  if [ "$attempt_round" -le "$rounds" ]; then continue; fi
+  if [ "$attempt_round" -ne $((rounds + 1)) ]; then
+    echo "LAND review-rounds nonsequential-attempt-ref expected=$((rounds + 1)) found=$attempt_round" >&2
+    land_fail review-rounds 2
+  fi
+  if ! "$BUN_BIN" "$script_dir/review-rounds.ts" attempt --defer-park-exit --state "$review_round_state" --item-id "$item_id" >/dev/null; then
+    land_fail review-rounds 2
+  fi
+  rounds=$attempt_round
+done <<< "$attempt_refs"
+
 export LAND_DEFAULT_BRANCH="$default_branch"
 guard_args=("$script_dir/completion-guard.ts" --report "$report" --repo "$repo" --branch "$branch")
 if [ "$run_verify" = true ]; then guard_args+=(--defer-verify); fi
@@ -247,16 +282,34 @@ review_verdict="$LAND_REVIEW_VERDICT"
 land_pass review
 if [ "$skip_review" = true ]; then echo "LAND review=SKIPPED reason=$skip_review_reason"; fi
 
+# Never publish a candidate object into the durable attempt namespace before
+# the canonical signature scan has accepted it.
+if ! land_secret_scan "$repo" "$branch"; then land_fail secret-scan 2; fi
+land_pass secret-scan
+
 # The item identity is supplied by durable mission/acceptance identity, never
 # inferred from the disposable branch name. The repository-wide landing lock
 # also serializes this read-modify-write with every other landing attempt.
-if ! "$BUN_BIN" "$script_dir/review-rounds.ts" attempt --state "$review_round_state" --item-id "$item_id"; then
+if ! "$BUN_BIN" "$script_dir/review-rounds.ts" attempt --defer-park-exit --state "$review_round_state" --item-id "$item_id"; then
+  land_fail review-rounds 2
+fi
+rounds=$((rounds + 1))
+branch_sha=$(git -C "$repo" rev-parse --verify "${branch}^{commit}") || land_fail branch-tip 2
+attempt_ref="$attempt_prefix/$rounds-$branch_sha"
+if ! git -C "$repo" push origin "$branch_sha:$attempt_ref" >/dev/null; then
+  echo "LAND review-rounds attempt-persist-failed ref=$attempt_ref" >&2
+  land_fail review-rounds 2
+fi
+persisted_attempt_sha=$(git -C "$repo" ls-remote --refs origin "$attempt_ref" 2>/dev/null | awk 'NR == 1 { print $1 }')
+remote_target_sha=$(git -C "$repo" ls-remote --refs origin "refs/heads/$default_branch" 2>/dev/null | awk 'NR == 1 { print $1 }')
+if [ "$persisted_attempt_sha" != "$branch_sha" ] || [ "$remote_target_sha" != "$pre_merge_sha" ]; then
+  echo "LAND review-rounds attempt-persist-mismatch ref=$attempt_ref found=${persisted_attempt_sha:-missing} target=${remote_target_sha:-missing} expected-target=$pre_merge_sha" >&2
+  land_fail review-rounds 2
+fi
+if ! "$BUN_BIN" "$script_dir/review-rounds.ts" check --state "$review_round_state" --item-id "$item_id" >/dev/null; then
   land_fail review-rounds 2
 fi
 land_pass review-rounds
-
-if ! land_secret_scan "$repo" "$branch"; then land_fail secret-scan 2; fi
-land_pass secret-scan
 
 report_sha=$(sed -n 's/^commit:[[:space:]]*\([0-9a-fA-F]\{40\}\).*/\1/p' "$report" | head -n 1)
 branch_sha=$(git -C "$repo" rev-parse --verify "${branch}^{commit}") || land_fail branch-tip 2

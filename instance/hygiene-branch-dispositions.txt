@@ -1,0 +1,10 @@
+# Explicit branch dispositions for hygiene/reap.sh: `<branch> <reason>` per
+# line, `#` comments and blank lines ignored. Same convention as
+# instance/decisions/ported-exceptions.txt.
+#
+# A branch that is not provably merged is never deleted by hygiene/reap.sh
+# unless it has an entry here with a non-empty reason. Absence of an entry is
+# report-only, forever -- it is never a timeout that eventually deletes the
+# branch on its own. See hygiene/reap.sh and instance/workboard.md V3-1.4.
+#
+# No dispositions recorded yet.

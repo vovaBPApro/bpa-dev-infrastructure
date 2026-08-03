@@ -1,0 +1,17 @@
+# Branch names hygiene/reap.sh refuses to delete unconditionally, regardless
+# of merge status. Read by hygiene/reap.sh's `load_protected` (one name per
+# line, `#` comments and blank lines ignored). The mechanism (hygiene/reap.sh)
+# is generic; this file is the this-installation fact it needs, per
+# CLAUDE.md Mission ("that is what instance/ exists to absorb").
+#
+# The default branch itself (--main, default "main") is always protected in
+# code and does not need an entry here.
+
+# The v2 line: read-only donor, retained for parity checks and the one copy
+# of pre-v3 mechanisms not yet ported (instance/workboard.md Phase 1).
+v2-deprecated
+
+# The v3 orphan-history root. Not otherwise reachable from `main` by
+# merge-base, so it would never be caught by the ancestor check anyway, but
+# an explicit refusal here means that stays true even if that ever changes.
+v3

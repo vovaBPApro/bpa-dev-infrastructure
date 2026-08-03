@@ -28,6 +28,38 @@ const excludedShellTests = {} as const;
 
 const allShellTests = [...runnableShellTests, ...Object.keys(excludedShellTests)];
 
+test("shell fixtures cannot claim host-global refs, locks, or ports", () => {
+  for (const relativePath of runnableShellTests) {
+    const source = readFileSync(join(repoRoot, relativePath), "utf8");
+
+    // A fixture may manipulate refs only inside a repository rooted in its
+    // private temporary directory. The fleet launcher used to point --repo at
+    // the shared checkout and race on refs/heads/ag-fleet-launch-proof.
+    for (const match of source.matchAll(/--repo\s+["']?\$([A-Z][A-Z0-9_]*)["']?/g)) {
+      const variable = match[1];
+      const assignment = source.match(
+        new RegExp(`^${variable}=[^\\n]+$`, "m"),
+      )?.[0];
+      expect(
+        assignment,
+        `${relativePath} must derive launcher repository ${variable} from private SCRATCH`,
+      ).toContain("$SCRATCH");
+    }
+
+    // Lock files must be derived from private fixture state, never a fixed
+    // host path. TMPDIR itself is caller-controlled and therefore not private.
+    expect(source, `${relativePath} contains a fixed host-global lock path`).not.toMatch(
+      /(?:^|[="' ])(?:\/tmp|\/run|\/var\/lock|\$\{?TMPDIR\}?)[^\n"']*\.(?:lock|lck)(?:["' ]|$)/m,
+    );
+
+    // Reject literal listening/published ports. Ephemeral allocation (port 0)
+    // or a port recorded below a private fixture root remains allowed.
+    expect(source, `${relativePath} claims a fixed TCP port`).not.toMatch(
+      /\b(?:listen|--listen|-p|--publish)\b[^\n]*(?:[1-9][0-9]{2,4})\b/,
+    );
+  }
+});
+
 test("the independently pinned shell-test inventory still exists", () => {
   expect(allShellTests).toHaveLength(11);
   for (const relativePath of allShellTests) {

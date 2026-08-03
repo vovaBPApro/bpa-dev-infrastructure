@@ -2,8 +2,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+SOURCE_REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SCRATCH="$(mktemp -d)"
+chmod 700 "$SCRATCH"
+REPO_DIR="$SCRATCH/repo"
 cleanup() {
   for lane in proof race retry valid invalid crashed; do
     git -C "$REPO_DIR" worktree remove --force "$SCRATCH/lanes/$lane" >/dev/null 2>&1 || true
@@ -13,6 +15,11 @@ cleanup() {
 }
 trap cleanup EXIT
 mkdir -p "$SCRATCH/bin" "$SCRATCH/lanes"
+
+# launch-lane creates and removes Git refs as part of its contract. Keep those
+# refs in a disposable repository: even unique-looking branch names are not a
+# safe namespace when two copies of this test run at once.
+git clone --quiet --local --no-hardlinks "$SOURCE_REPO" "$REPO_DIR"
 
 cat >"$SCRATCH/task.md" <<'EOF'
 # Dispatch proof

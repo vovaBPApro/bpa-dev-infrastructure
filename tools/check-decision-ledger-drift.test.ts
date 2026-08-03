@@ -1,5 +1,7 @@
 import { test, expect } from "bun:test";
 import { spawnSync } from "child_process";
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 
 // This test IS the executor for tools/check-decision-ledger-drift.sh.
@@ -41,4 +43,40 @@ test("an unverifiable donor ref fails closed instead of passing", () => {
   const result = runCheck({ LEDGER_DONOR_REF: "no-such-ref-should-not-exist" });
   expect(result.status).toBe(2);
   expect(result.stderr).toContain("donor-ref-missing");
+});
+
+test("a donor available only as an origin remote-tracking ref is verified", () => {
+  const tempRepo = mkdtempSync(join(tmpdir(), "ledger-drift-remote-only-"));
+  const runGit = (...args: string[]) =>
+    spawnSync("git", args, { cwd: tempRepo, encoding: "utf8" });
+
+  try {
+    expect(runGit("init", "-b", "main").status).toBe(0);
+    expect(runGit("config", "user.name", "Ledger Drift Test").status).toBe(0);
+    expect(runGit("config", "user.email", "ledger-drift@example.invalid").status).toBe(0);
+
+    mkdirSync(join(tempRepo, "instance", "decisions"), { recursive: true });
+    writeFileSync(join(tempRepo, "instance", "decisions", "HR-remote.md"), "remote donor record\n");
+    expect(runGit("add", ".").status).toBe(0);
+    expect(runGit("commit", "-m", "seed ledger").status).toBe(0);
+
+    const donorSha = runGit("rev-parse", "HEAD").stdout.trim();
+    expect(runGit("update-ref", "refs/remotes/origin/ledger-donor", donorSha).status).toBe(0);
+    expect(runGit("show-ref", "--verify", "--quiet", "refs/heads/ledger-donor").status).toBe(1);
+
+    mkdirSync(join(tempRepo, "tools"));
+    cpSync(script, join(tempRepo, "tools", "check-decision-ledger-drift.sh"));
+
+    const result = spawnSync("bash", [join(tempRepo, "tools", "check-decision-ledger-drift.sh")], {
+      cwd: tempRepo,
+      encoding: "utf8",
+      env: { ...process.env, LEDGER_DONOR_REF: "ledger-donor" },
+    });
+
+    expect(`${result.stdout}${result.stderr}`).not.toContain("donor-ref-missing");
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("undispositioned-missing=0");
+  } finally {
+    rmSync(tempRepo, { recursive: true, force: true });
+  }
 });

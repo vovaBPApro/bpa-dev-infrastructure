@@ -84,7 +84,8 @@ orchestrator:
   top_model_source: instance/params.yaml
   top_model_status: pinned         # orchestrator/model-pin.test.ts locks startup execution
   # ORCH_CLAUDE_MODEL in runtime.env is only a requested override: the tracked
-  # pin must be changed deliberately to the same value or startup refuses.
+  # pin must be changed by a reviewed Human-authorized commit to the same value
+  # or startup and Telegram /model refuse visibly.
   # Escalation tier reachable from Telegram (`/model fable`); switch up for a
   # hairy incident, back down after. Selectable set: daemon/model-registry.ts.
   # NOTE: fable is now the RESTING tier (top_model above), not escalation-only —
@@ -92,7 +93,7 @@ orchestrator:
   # label, not a claim about posture); do not read it as contradicting top_model.
   escalation_model: claude-fable-5 # instance/handoff-oldorch-2026-07-30.md §1; verified runnable 2026-07-30
   lean_model: claude-sonnet-5      # ibid (thin/lean top); verified runnable 2026-07-30
-  model_switch: telegram-/model    # daemon/server.ts handleModelCommand; relaunch-scoped, persisted to runtime.env
+  model_switch: reviewed-pin       # /model reports/refuses drift; tracked Human-owned pin changes through review
   manager_provider: codex          # ibid — Codex managers between orchestrator and workers
   coder_provider: codex            # ibid — Codex coders below the managers
   # Fallback/alternate top orchestrator (instructions/orchestrator-fallback.md,

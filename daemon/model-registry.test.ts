@@ -2,7 +2,9 @@ import { expect, test } from 'bun:test';
 import {
   MODEL_CATALOG,
   PINNABLE_ENV_KEYS,
+  decideModelSelection,
   formatModelReport,
+  formatModelPinRefusal,
   formatModelSelection,
   formatUnknownModel,
   parseLauncherModelState,
@@ -255,6 +257,27 @@ test('every selection reply names the persistence file semantics', () => {
       previousModel: null,
     });
     expect(msg).toContain(choice.model);
-    expect(msg).toMatch(/runtime\.env|переживе|persist/i);
+    expect(msg).toMatch(/instance\/params\.yaml|Human-owned/i);
   }
+});
+
+test('a conflicting choice fails loudly and names the actionable pin path', () => {
+  const msg = formatModelPinRefusal(resolveModelChoice('sonnet')!);
+  expect(msg).toContain('NO-GO');
+  expect(msg).toContain('claude-sonnet-5');
+  expect(msg).toContain('instance/params.yaml');
+  expect(msg).not.toMatch(/✅|закріплено/i);
+});
+
+test('/model round trip refuses a choice the next launch would reject', () => {
+  const choice = resolveModelChoice('sonnet')!;
+  const decision = decideModelSelection(choice, 'claude-fable-5');
+  expect(decision.allowed).toBe(false);
+  if (!decision.allowed) {
+    expect(decision.message).toContain('NO-GO');
+    expect(decision.message).toContain('нічого не змінено');
+  }
+  expect(decideModelSelection(resolveModelChoice('fable')!, 'claude-fable-5')).toEqual({
+    allowed: true,
+  });
 });

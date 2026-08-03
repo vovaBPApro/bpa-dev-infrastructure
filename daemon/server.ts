@@ -80,12 +80,12 @@ import { readActiveMission, resolveStateDbPath } from './mission-source';
 import { drainOutbox, resolveOrchestratorLauncher } from './control';
 import {
   MODEL_CATALOG,
+  decideModelSelection,
   formatModelReport,
   formatModelSelection,
   formatUnknownModel,
   parseLauncherModelState,
   resolveModelChoice,
-  upsertEnvAssignment,
 } from './model-registry';
 import { appendInboxLine } from './inbox-mirror';
 import { readRestartContext } from './restart-context';
@@ -2268,33 +2268,13 @@ async function handleModelCommand(
   const previousModel =
     choice.provider === 'codex' ? state.codexModel : state.claudeModel;
 
-  let existing = '';
-  try {
-    existing = readFileSync(state.configFile, 'utf8');
-  } catch {
-    // runtime.env is gitignored host state and legitimately absent on a fresh
-    // box; the first pin creates it.
-  }
-
-  let next: string;
-  try {
-    next = upsertEnvAssignment(existing, choice.envKey, choice.model);
-  } catch (err) {
-    await bot.api.sendMessage(chat_id, `❌ ${(err as Error).message}`);
-    return;
-  }
-
-  try {
-    // Atomic: launch.sh may source this file at any moment, and a half-written
-    // runtime.env is a broken launch, not a partial one.
-    const tmp = `${state.configFile}.model-${randomBytes(6).toString('hex')}`;
-    writeFileSync(tmp, next, { mode: 0o600 });
-    renameSync(tmp, state.configFile);
-  } catch (err) {
-    await bot.api.sendMessage(
-      chat_id,
-      `❌ Не вдалося записати ${state.configFile}: ${(err as Error).message}`,
-    );
+  // runtime.env is orchestrator-writable state and therefore cannot authorize
+  // a change to the Human-owned tracked pin. A matching choice is an honest
+  // no-op; a different choice must fail visibly instead of claiming a change
+  // that launch.sh will refuse.
+  const decision = decideModelSelection(choice, previousModel);
+  if (!decision.allowed) {
+    await sendLong(chat_id, decision.message);
     return;
   }
 

@@ -19,17 +19,16 @@
 //    allowlist below is the whole write surface, and it is enforced in the
 //    upsert rather than at the call site.
 //
-// 2. The switch is RELAUNCH-SCOPED, and every reply says so. The model is an
-//    argv element of a running CLI process (`claude --model …`); nothing can
-//    change it in place. Silently doing nothing until an unrelated restart
-//    would be worse than no command, so each reply names the exact next step
-//    (`/restart` or `/start_<provider>`) and what is still running until then.
+// 2. The tracked pin is HUMAN-OWNED. `/model` may report it and accept an
+//    already-matching no-op, but it visibly refuses every different choice.
+//    runtime.env cannot authorize a pin change because the orchestrator can
+//    write that file itself.
 
 export type ModelProvider = 'claude' | 'codex';
 
 /**
- * The ONLY environment keys `/model` may write into runtime.env. Provider-
- * scoped by construction: see invariant 1 above.
+ * Provider-scoped keys accepted by the legacy env upsert utility. The current
+ * `/model` handler does not write them; tracked pin changes require review.
  */
 export const PINNABLE_ENV_KEYS = [
   'ORCH_CLAUDE_MODEL',
@@ -233,7 +232,7 @@ export function formatModelReport(args: {
           `${liveProvider === 'codex' ? state.claudeModel : state.codexModel}`,
       );
     }
-    lines.push(`Пін-файл: ${state.configFile}`);
+    lines.push(`Runtime request config: ${state.configFile}`);
   }
 
   lines.push('', 'Доступні:', catalogLines(), '', RELAUNCH_NOTE);
@@ -250,6 +249,25 @@ export function formatUnknownModel(raw: string): string {
   ].join('\n');
 }
 
+/** A catalog choice that conflicts with the Human-owned tracked pin. */
+export function formatModelPinRefusal(choice: ModelChoice): string {
+  return [
+    `❌ NO-GO: ${choice.model} не встановлено; нічого не змінено.`,
+    'Наступний старт приймає лише Human-owned pin з instance/params.yaml; ' +
+      'daemon не має права змінювати tracked pin.',
+    'Зміни orchestrator.top_model через окремий reviewed commit, тоді повтори /model.',
+  ].join('\n');
+}
+
+export function decideModelSelection(
+  choice: ModelChoice,
+  currentPinnedRequest: string,
+): { allowed: true } | { allowed: false; message: string } {
+  return currentPinnedRequest === choice.model
+    ? { allowed: true }
+    : { allowed: false, message: formatModelPinRefusal(choice) };
+}
+
 /** `/model <valid>`: what was pinned, what is still running, what applies it. */
 export function formatModelSelection(args: {
   choice: ModelChoice;
@@ -259,9 +277,8 @@ export function formatModelSelection(args: {
 }): string {
   const { choice, liveProvider, sessionAlive, previousModel } = args;
   const lines: string[] = [
-    `✅ Закріплено: ${choice.provider} — ${choice.model}`,
-    `Записано як ${choice.envKey} у orchestrator/runtime.env — пін переживе ` +
-      'рестарт демона й оркестратора.',
+    `✅ Уже закріплено: ${choice.provider} — ${choice.model}`,
+    'Human-owned pin у instance/params.yaml уже збігається; нічого не змінено.',
     '',
   ];
 

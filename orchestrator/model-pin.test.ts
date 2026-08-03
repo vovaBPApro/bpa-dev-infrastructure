@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -18,7 +18,14 @@ function params(model = "claude-fable-5") {
 function run(contents: string | null, requested = "claude-fable-5", mode = 0o600) {
   const dir = mkdtempSync(join(tmpdir(), "model-pin-"));
   dirs.push(dir);
-  const pin = join(dir, "params.yaml");
+  const fixtureOrchestrator = join(dir, "orchestrator");
+  const fixtureInstance = join(dir, "instance");
+  mkdirSync(fixtureOrchestrator);
+  mkdirSync(fixtureInstance);
+  for (const name of ["launch.sh", "model-pin.ts", "lib.sh", "proc-identity.sh"]) {
+    copyFileSync(join(root, "orchestrator", name), join(fixtureOrchestrator, name));
+  }
+  const pin = join(fixtureInstance, "params.yaml");
   if (contents !== null) {
     writeFileSync(pin, contents, { mode });
     chmodSync(pin, mode);
@@ -26,13 +33,12 @@ function run(contents: string | null, requested = "claude-fable-5", mode = 0o600
   const marker = join(dir, "preflight-reached");
   const preflight = join(dir, "preflight.sh");
   writeFileSync(preflight, `#!/bin/sh\ntouch '${marker}'\nexit 42\n`, { mode: 0o700 });
-  const proc = Bun.spawnSync(["bash", launch, "start"], {
+  const proc = Bun.spawnSync(["bash", join(fixtureOrchestrator, "launch.sh"), "start"], {
     cwd: root,
     env: {
       ...process.env,
       ORCH_PROVIDER: "claude",
       ORCH_CLAUDE_MODEL: requested,
-      ORCH_MODEL_PIN_FILE: pin,
       ORCH_AUTH_PREFLIGHT: preflight,
       ORCH_RUNTIME_DIR: join(dir, "runtime"),
       ORCH_SINGLETON_LOCK_FILE: join(dir, "singleton.lock"),
@@ -41,6 +47,35 @@ function run(contents: string | null, requested = "claude-fable-5", mode = 0o600
   });
   return { exitCode: proc.exitCode, output: proc.stderr.toString(), marker: Bun.file(marker) };
 }
+
+test("runtime environment cannot replace the checker or tracked pin", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "model-pin-bypass-"));
+  dirs.push(dir);
+  const fakeChecker = join(dir, "accept.ts");
+  const fakePin = join(dir, "params.yaml");
+  writeFileSync(fakeChecker, "process.exit(0);\n");
+  writeFileSync(fakePin, params("claude-sonnet-5"));
+  const result = run(params(), "claude-sonnet-5");
+  // The exact reviewer bypass inputs are ignored; the repository checker and
+  // repository-relative pin still reject before preflight.
+  const bypass = Bun.spawnSync(["bash", launch, "start"], {
+    cwd: root,
+    env: {
+      ...process.env,
+      ORCH_PROVIDER: "claude",
+      ORCH_CLAUDE_MODEL: "claude-sonnet-5",
+      ORCH_MODEL_PIN_CHECKER: fakeChecker,
+      ORCH_MODEL_PIN_FILE: fakePin,
+      ORCH_AUTH_PREFLIGHT: "/bin/false",
+      ORCH_RUNTIME_DIR: join(dir, "runtime"),
+      ORCH_SINGLETON_LOCK_FILE: join(dir, "singleton.lock"),
+      ORCH_WORK_DIR: root,
+    },
+  });
+  expect(result.exitCode).toBe(78);
+  expect(bypass.exitCode).toBe(78);
+  expect(bypass.stderr.toString()).toContain("cause=mismatch");
+});
 
 test("executor refuses a mismatched tracked pin before startup", async () => {
   const result = run(params(), "claude-sonnet-5");
@@ -67,4 +102,12 @@ test.each([
   expect(result.exitCode).toBe(78);
   expect(result.output).toContain(cause);
   expect(await result.marker.exists()).toBe(false);
+});
+
+test("malformed request is refused without reflecting its value", () => {
+  const requested = "sensitive-fixture-value;token=fixture-secret";
+  const result = run(params(), requested);
+  expect(result.exitCode).toBe(78);
+  expect(result.output).toContain("cause=malformed-request");
+  expect(result.output).not.toContain(requested);
 });

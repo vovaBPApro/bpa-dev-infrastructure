@@ -49,6 +49,11 @@ if (!pinnedProvider || !pinnedModel || pinnedProvider !== provider || !/^[a-z0-9
   refuse(`cause=malformed path=${paramsPath} detail=${modelKey}`);
 }
 if (!requested) refuse(`cause=empty provider=${provider} pinned=${pinnedModel}`);
+if (!/^[a-z0-9][a-z0-9._-]*$/.test(requested)) {
+  // The request comes from sourced runtime state. Never reflect an untrusted
+  // value: it may be a token accidentally written into the model variable.
+  refuse(`cause=malformed-request provider=${provider}`);
+}
 if (requested !== pinnedModel) {
   refuse(`cause=mismatch provider=${provider} pinned=${pinnedModel} live-request=${requested}`);
 }

@@ -3,7 +3,7 @@
 # CLI lifecycle independently of the Telegram daemon and needs no user D-Bus.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${ORCH_CONFIG_FILE:-$SCRIPT_DIR/runtime.env}"
 if [[ -f "$CONFIG_FILE" ]]; then
   # shellcheck disable=SC1090
@@ -21,9 +21,12 @@ PROVIDER="${ORCH_PROVIDER:-codex}"
 MODEL="${ORCH_MODEL:-}"
 LOCK_FILE="${ORCH_LOCK_FILE:-$RUNTIME_DIR/launch.lock}"
 AUTH_PREFLIGHT="${ORCH_AUTH_PREFLIGHT:-$SCRIPT_DIR/preflight-cli-auth.sh}"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-MODEL_PIN_FILE="${ORCH_MODEL_PIN_FILE:-$REPO_DIR/instance/params.yaml}"
-MODEL_PIN_CHECKER="${ORCH_MODEL_PIN_CHECKER:-$SCRIPT_DIR/model-pin.ts}"
+readonly REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# Trust roots, not runtime configuration. runtime.env is writable orchestrator
+# state, so allowing it to choose either of these made the process choose its
+# own invigilator. The Human-owned pin and its checker are repository facts.
+readonly MODEL_PIN_FILE="$REPO_DIR/instance/params.yaml"
+readonly MODEL_PIN_CHECKER="$SCRIPT_DIR/model-pin.ts"
 SINGLETON_LOCK_FILE="${ORCH_SINGLETON_LOCK_FILE:-$REPO_DIR/runtime/orchestrator.singleton.lock}"
 SINGLETON_RECOVERY_LOCK_FILE="${ORCH_SINGLETON_RECOVERY_LOCK_FILE:-$SINGLETON_LOCK_FILE.recovery}"
 SINGLETON_OWNER_FILE="${ORCH_SINGLETON_OWNER_FILE:-$SINGLETON_LOCK_FILE.owner}"

@@ -26,6 +26,14 @@ assert_output_has() {
   assert grep -Fq "$expected" "$output"
 }
 
+install_push_noop_wrapper() {
+  wrapper_dir="$1"
+  real_git=$(command -v git)
+  mkdir -p "$wrapper_dir"
+  printf '#!/usr/bin/env bash\nif [ "$1" = "-C" ] && [ "$3" = "push" ]; then exit 0; fi\nexec %q "$@"\n' "$real_git" > "$wrapper_dir/git"
+  chmod +x "$wrapper_dir/git"
+}
+
 make_fixture() {
   name="$1"
   bare="$fixture_root/$name-origin.git"
@@ -638,6 +646,32 @@ if "$land" --branch ag-reap-fail --report "$fixture_root/reap-fail-report.md" --
 assert_output_has "$reap_fail_output" 'LAND verdict=landed-reap-failed sha='
 assert_not grep -Fq 'LAND verdict=aborted' "$reap_fail_output"
 assert test "$(git --git-dir="$fixture_root/reap-fail-origin.git" rev-parse main)" = "$(git -C "$fixture_root/reap-fail-repo" rev-parse HEAD)"
+
+# V3-0.18 regression locks: push exit status is not landing evidence. A push
+# that performs no update, and a server that moves the accepted ref elsewhere,
+# must both be refused based on the ref observed through ls-remote.
+make_fixture push-noop
+push_noop_sha=$(make_lane "$fixture_root/push-noop-repo" ag-push-noop)
+report "$fixture_root/push-noop-report.md" "$push_noop_sha"
+push_noop_before=$(git --git-dir="$fixture_root/push-noop-origin.git" rev-parse main)
+install_push_noop_wrapper "$fixture_root/push-noop-bin"
+push_noop_output="$fixture_root/push-noop-output.txt"
+if PATH="$fixture_root/push-noop-bin:$PATH" "$land" --branch ag-push-noop --report "$fixture_root/push-noop-report.md" --repo "$fixture_root/push-noop-repo" >"$push_noop_output" 2>&1; then exit 1; fi
+assert_output_has "$push_noop_output" "LAND push remote-mismatch target=main found=$push_noop_before expected="
+assert_output_has "$push_noop_output" 'LAND step=push status=fail'
+assert_output_lacks "$push_noop_output" 'LAND verdict=landed'
+
+make_fixture push-wrong-remote
+push_wrong_sha=$(make_lane "$fixture_root/push-wrong-remote-repo" ag-push-wrong-remote)
+report "$fixture_root/push-wrong-remote-report.md" "$push_wrong_sha"
+push_wrong_before=$(git --git-dir="$fixture_root/push-wrong-remote-origin.git" rev-parse main)
+printf '#!/usr/bin/env bash\ngit update-ref refs/heads/main %s\n' "$push_wrong_before" > "$fixture_root/push-wrong-remote-origin.git/hooks/post-receive"
+chmod +x "$fixture_root/push-wrong-remote-origin.git/hooks/post-receive"
+push_wrong_output="$fixture_root/push-wrong-remote-output.txt"
+if "$land" --branch ag-push-wrong-remote --report "$fixture_root/push-wrong-remote-report.md" --repo "$fixture_root/push-wrong-remote-repo" >"$push_wrong_output" 2>&1; then exit 1; fi
+assert_output_has "$push_wrong_output" "LAND push remote-mismatch target=main found=$push_wrong_before expected="
+assert_output_has "$push_wrong_output" 'LAND step=push status=fail'
+assert_output_lacks "$push_wrong_output" 'LAND verdict=landed'
 
 make_fixture no-push
 no_push_sha=$(make_lane "$fixture_root/no-push-repo" ag-no-push)

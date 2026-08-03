@@ -283,6 +283,21 @@ if [ "$no_push" = false ]; then
     echo "LAND push failure: main reset to origin/main" >&2
     land_fail push
   fi
+  remote_sha=$(git -C "$repo" ls-remote --refs origin "refs/heads/$default_branch" 2>/dev/null | awk 'NR == 1 { print $1 }')
+  if [ "$remote_sha" != "$merge_sha" ]; then
+    echo "LAND push remote-mismatch target=$default_branch found=${remote_sha:-missing} expected=$merge_sha" >&2
+    if git -C "$repo" fetch origin >/dev/null 2>&1; then
+      rollback_sha=$(git -C "$repo" rev-parse "origin/$default_branch")
+    else
+      rollback_sha="$pre_merge_sha"
+    fi
+    if ! land_force_reset "$repo" "$rollback_sha"; then
+      land_fail_rollback push "$rollback_sha" "$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)"
+    fi
+    merged=false
+    merge_sha="none"
+    land_fail push
+  fi
   pushed=true
   land_pass push
 else

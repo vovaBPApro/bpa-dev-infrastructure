@@ -15,3 +15,10 @@ v2-deprecated
 # merge-base, so it would never be caught by the ancestor check anyway, but
 # an explicit refusal here means that stays true even if that ever changes.
 v3
+
+# Parked work retained under HR-1726's three-round exit. Unmerged by design:
+# the branch IS the evidence and the starting point for the recut, so an
+# ancestor check would happily delete it. Remove this entry only when the row
+# is recut and landed, or when the park record is deliberately abandoned.
+# Park record: instance/parked/V3-1.1-stage2-2026-08-03.md
+ag-s3-2-r3

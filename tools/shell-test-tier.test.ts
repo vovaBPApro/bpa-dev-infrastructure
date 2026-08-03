@@ -12,6 +12,7 @@ const repoRoot = join(import.meta.dir, "..");
 
 const runnableShellTests = [
   "bootstrap/bootstrap.test.sh",
+  "bootstrap/provision-service-user.test.sh",
   "gate/land.test.sh",
   "gate/land-target-branch.test.sh",
   "gate/lane-exit.test.sh",
@@ -20,6 +21,7 @@ const runnableShellTests = [
   "gate/land-rollback.test.sh",
   "orchestrator/watchdog-supervision.test.sh",
   "orchestrator/fleet/launch-lane.test.sh",
+  "orchestrator/fleet/network-boundary-probe.test.sh",
   "orchestrator/watchdog.test.sh",
 ] as const;
 
@@ -28,7 +30,7 @@ const excludedShellTests = {} as const;
 const allShellTests = [...runnableShellTests, ...Object.keys(excludedShellTests)];
 
 test("the independently pinned shell-test inventory still exists", () => {
-  expect(allShellTests).toHaveLength(10);
+  expect(allShellTests).toHaveLength(12);
   for (const relativePath of allShellTests) {
     expect(existsSync(join(repoRoot, relativePath)), `${relativePath} is missing`).toBe(true);
   }

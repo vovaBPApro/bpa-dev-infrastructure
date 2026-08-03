@@ -1,0 +1,26 @@
+# Referenced-path exemptions for bootstrap/check-unit-drift.sh's REFERENCED-PATH
+# check. Format: unit<TAB>relpath<TAB>evidence. Keyed on the EXACT unit+path
+# pair, never on the unit alone -- a whole-unit exemption would silently
+# license any future dangling reference added to that template under the
+# original, unrelated justification (round-2 review defect 2, proven in
+# check-unit-drift.test.ts: appending an unrelated ExecStartPost path to an
+# already-exempted unit must NOT ride in on its pre-existing evidence).
+# Absence with no entry here is a failure (Hard Floor 7) -- a path only lands
+# here with a named reason, not by default.
+#
+# Ported unit templates point at scripts from v2-deprecated's layout. Some
+# name mechanisms not yet built on v3 (tracked as their own workboard rows);
+# others name a specific product's deployment paths, which HR-309 already
+# rules belongs under instance/, not the generic mechanism directory -- see
+# instance/units/ and instance/expected-units.tsv for that move. Both classes
+# are real gaps, not silently patched over.
+bpa-full-suite.service	/orchestrator/full-suite.sh	orchestrator/full-suite.sh not yet built on v3; no workboard row yet, tracked as Phase 1 follow-on to V3-1.2
+orch-morning-report.service	/orchestrator/morning.sh	orchestrator/morning.sh not yet built on v3; no workboard row yet, tracked as Phase 1 follow-on to V3-1.2
+bpa-meteorite.service	/meteorite/run.sh	meteorite/run.sh not yet built on v3; tracked at instance/workboard.md row V3-1.5
+bpa-deploy-drift-guard.service	/bootstrap/check-deployed-drift.sh	bootstrap/check-deployed-drift.sh not yet built on v3; tracked at instance/workboard.md row V3-1.1 (out of scope for V3-1.2 by explicit mission boundary)
+agentic-bpa-db-grants.service	/database/access.declaration.json	product-specific database/ target not ported to v3; unit moved to instance/units/ per HR-309, awaiting a product repo boundary decision
+agentic-bpa-db-grants.service	/database/check-access.ts	product-specific database/ target not ported to v3; unit moved to instance/units/ per HR-309, awaiting a product repo boundary decision
+agentic-bpa-staleness.service	/deploy/check-live-stand-staleness.sh	product-specific deploy/ target not ported to v3; unit moved to instance/units/ per HR-309, awaiting a product repo boundary decision
+agentic-bpa-staleness.service	/instance/live-stands/agentic-bpa.env	product-specific live-stand env not ported to v3; unit moved to instance/units/ per HR-309, awaiting a product repo boundary decision
+agentic-bpa-stand-verifier.service	/instance/live-stands/agentic-bpa-verifier.env	product-specific live-stand env not ported to v3; unit moved to instance/units/ per HR-309, awaiting a product repo boundary decision
+agentic-bpa-stand-verifier.service	/database/bootstrap-stand-verifier.sh	product-specific database/ target not ported to v3; unit moved to instance/units/ per HR-309, awaiting a product repo boundary decision

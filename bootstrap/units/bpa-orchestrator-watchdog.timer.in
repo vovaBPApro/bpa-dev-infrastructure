@@ -1,0 +1,11 @@
+[Unit]
+Description=Run BPA orchestrator watchdog periodically
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=${ORCH_WATCHDOG_INTERVAL}s
+Unit=bpa-orchestrator-watchdog.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

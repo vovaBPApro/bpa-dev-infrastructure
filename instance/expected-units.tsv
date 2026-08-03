@@ -1,0 +1,30 @@
+# Independent manifest of every systemd unit v3 requires a template for.
+# Format: unit<TAB>source, where source is "generic" (bootstrap/units/) or
+# "instance" (instance/units/, this installation's product-specific units --
+# HR-309: a product name must not be hard-coded into the generic mechanism).
+#
+# This file exists because a loop over bootstrap/units/*.in can only ever
+# validate templates that happen to be there -- it has no opinion on a
+# template that used to exist and silently isn't anymore. That is the
+# 2026-08-01 incident (a canonical unit vanished and nothing noticed for two
+# days) moved one layer up, from host to repository. Every entry here MUST
+# have a matching <unit>.in file in its named source directory, checked by
+# bootstrap/check-unit-drift.sh independently of what that directory happens
+# to list. Absence is drift: named, non-zero exit (Hard Floor 7).
+bpa-orchestrator.service	generic
+bpa-orchestrator-watchdog.service	generic
+bpa-orchestrator-watchdog.timer	generic
+bpa-telegram-daemon.service	generic
+bpa-full-suite.service	generic
+bpa-full-suite.timer	generic
+bpa-meteorite.service	generic
+bpa-meteorite.timer	generic
+bpa-deploy-drift-guard.service	generic
+bpa-deploy-drift-guard.timer	generic
+orch-morning-report.service	generic
+orch-morning-report.timer	generic
+agentic-bpa-db-grants.service	instance
+agentic-bpa-db-grants.timer	instance
+agentic-bpa-staleness.service	instance
+agentic-bpa-staleness.timer	instance
+agentic-bpa-stand-verifier.service	instance

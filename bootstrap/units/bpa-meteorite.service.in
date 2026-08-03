@@ -1,0 +1,11 @@
+[Unit]
+Description=Rebuild the product from Git in a disposable environment
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=${INSTALL_ROOT}
+Environment=METEORITE_REPORT=/var/lib/bpa-orchestrator/evidence/meteorite-latest.md
+ExecStart=${BASH_BIN} ${INSTALL_ROOT}/meteorite/run.sh
+

@@ -361,15 +361,21 @@ render_units() {
 
   unit_publication_signal() {
     local signal_name="$1" signal_rc="$2"
-    trap - HUP INT TERM
+    # Rollback is the terminal state transition. Ignore further termination
+    # requests until it has emitted exactly one durable verdict; resetting to
+    # the default disposition here lets a second signal interrupt restoration
+    # and leave a silent, mixed unit set.
+    trap '' HUP INT TERM
     if ! rollback_unit_publication; then
       rm -rf "$staged"
       trap - RETURN
+      trap - HUP INT TERM
       return 125
     fi
     rm -rf "$staged"
     trap - RETURN
     echo "ERROR: unit publication interrupted by $signal_name" >&2
+    trap - HUP INT TERM
     return "$signal_rc"
   }
 
@@ -379,12 +385,14 @@ render_units() {
   for unit in "${units[@]}"; do
     if ! mv -f "$staged/$unit" "$SYSTEMD_SYSTEM_DIR/$unit"; then
       publication_rc=$?
-      trap - HUP INT TERM
+      trap '' HUP INT TERM
       # `!` normalizes `$?`; preserve a stable non-zero publication verdict.
       ((publication_rc != 0)) || publication_rc=1
       if ! rollback_unit_publication; then
+        trap - HUP INT TERM
         return 125
       fi
+      trap - HUP INT TERM
       return "$publication_rc"
     fi
   done

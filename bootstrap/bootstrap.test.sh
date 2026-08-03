@@ -693,7 +693,7 @@ count=0
 ((count += 1))
 printf '%s\n' "\$count" > "\$count_file"
 if [[ "\$count" == 2 ]]; then
-  if [[ '$fault' == signal ]]; then
+  if [[ '$fault' == signal || '$fault' == double-signal ]]; then
     kill -TERM "\$PPID"
     sleep 1
   else
@@ -703,6 +703,17 @@ fi
 exec /usr/bin/mv "\$@"
 EOF
   chmod 700 "$fixture/bin/mv"
+  if [[ "$fault" == double-signal ]]; then
+    cat > "$fixture/bin/cp" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == -p && "${2:-}" == -- && "${3:-}" == */prior/first.service ]]; then
+  kill -TERM "$PPID"
+  sleep 1
+fi
+exec /usr/bin/cp "$@"
+EOF
+    chmod 700 "$fixture/bin/cp"
+  fi
   set +e
   output="$(PATH="$fixture/bin:$PATH" BOOTSTRAP_LIB_ONLY=true \
     INSTALL_ROOT="$stage2_fixture/root" BUN_BIN="$stage2_fixture/bin/bun" \
@@ -712,6 +723,10 @@ EOF
   set -e
   [[ "$rc" -ne 0 ]]
   grep -Fq 'verdict=rolled-back' <<<"$output"
+  if [[ "$fault" == double-signal ]]; then
+    verdict_count="$(grep -Ec 'verdict=(rolled-back|rollback-failed)' <<<"$output")"
+    [[ "$verdict_count" -eq 1 ]]
+  fi
   after="$(publication_snapshot "$fixture/systemd")"
   [[ "$after" == "$before" ]]
   [[ ! -e "$fixture/systemd/second.timer" ]]
@@ -721,6 +736,7 @@ EOF
 
 run_publication_fault_lock failure
 run_publication_fault_lock signal
+run_publication_fault_lock double-signal
 
 # Make restoration itself fail after publication has begun. The verdict must
 # remain different from an ordinary, proven rollback.

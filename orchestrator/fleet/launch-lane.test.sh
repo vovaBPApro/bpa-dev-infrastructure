@@ -66,7 +66,7 @@ EOF
 cat >"$SCRATCH/bin/systemd-run" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ -n "${MOCK_SYSTEMD_FAIL:-}" ]]; then exit 1; fi
+if [[ -n "\${MOCK_SYSTEMD_FAIL:-}" ]]; then exit 1; fi
 printf '%s\n' "\$@" >'$SCRATCH/systemd.args'
 while ((\$#)); do
   case "\$1" in
@@ -79,7 +79,8 @@ while ((\$#)); do
   esac
 done
 printf proof >proof.txt
-exec "\$@"
+"\$@" || true
+exit 0
 EOF
 chmod +x "$SCRATCH/bin/"*
 chown -R "$fixture_uid:$fixture_gid" "$SCRATCH/home" "$SCRATCH/repo" "$SCRATCH/bin" "$SCRATCH/tmp" "$SCRATCH/service.conf" "$SCRATCH/task.md"
@@ -111,17 +112,106 @@ if grep -Fq '1234567890abcdef' "$SCRATCH/home/lanes/lane-proof.log"; then
   printf 'lane log retained secret\n' >&2; exit 1
 fi
 
-# Fail-closed preflights occur before reservations or worktrees.
+# Fail-closed privilege preflights occur before reservations or worktrees.
+assert_no_lane_artifacts() {
+  local lane=$1 artifact
+  for artifact in "$SCRATCH/home/lanes/$lane" "$SCRATCH/home/lanes/pack-$lane" \
+    "$SCRATCH/home/lanes/lane-$lane.prompt.md" "$SCRATCH/home/lanes/lane-$lane.log" \
+    "$SCRATCH/home/lanes/$lane.report.md" "$SCRATCH/home/lanes/lane-$lane.status" \
+    "$SCRATCH/tmp/infra-lane-tmp-$fixture_uid/$lane"; do
+    test ! -e "$artifact" && test ! -L "$artifact"
+  done
+}
+
 sed 's/LANE_SERVICE_USER=.*/LANE_SERVICE_USER=definitely-absent/' "$SCRATCH/service.conf" >"$SCRATCH/absent.conf"
 if LANE_SERVICE_CONFIG="$SCRATCH/absent.conf" "$fixture_launcher" --name absent --role coder --task-file "$SCRATCH/task.md" 2>"$SCRATCH/absent.err"; then exit 1; fi
 grep -Fq 'service user is absent: definitely-absent' "$SCRATCH/absent.err"
+assert_no_lane_artifacts absent
 
 rm -f "$SCRATCH/home/.codex/auth.json"
 if PATH="$SCRATCH/bin:$PATH" LANE_SERVICE_CONFIG="$SCRATCH/service.conf" "$fixture_launcher" --name nocreds --role coder --task-file "$SCRATCH/task.md" 2>"$SCRATCH/creds.err"; then exit 1; fi
 grep -Fq 'provider credentials are missing:' "$SCRATCH/creds.err"
+assert_no_lane_artifacts nocreds
 printf '{}\n' >"$SCRATCH/home/.codex/auth.json"; chmod 0600 "$SCRATCH/home/.codex/auth.json"; chown "$fixture_uid:$fixture_gid" "$SCRATCH/home/.codex/auth.json"
+
+chown 0:0 "$SCRATCH/home/.codex/auth.json"
+if PATH="$SCRATCH/bin:$PATH" LANE_SERVICE_CONFIG="$SCRATCH/service.conf" "$fixture_launcher" --name bad-owner --role coder --task-file "$SCRATCH/task.md" 2>"$SCRATCH/bad-owner.err"; then exit 1; fi
+grep -Fq 'provider credentials have wrong owner:' "$SCRATCH/bad-owner.err"
+assert_no_lane_artifacts bad-owner
+chown "$fixture_uid:$fixture_gid" "$SCRATCH/home/.codex/auth.json"
+
+chmod 0640 "$SCRATCH/home/.codex/auth.json"
+if PATH="$SCRATCH/bin:$PATH" LANE_SERVICE_CONFIG="$SCRATCH/service.conf" "$fixture_launcher" --name bad-mode --role coder --task-file "$SCRATCH/task.md" 2>"$SCRATCH/bad-mode.err"; then exit 1; fi
+grep -Fq 'provider credentials must have mode 0600:' "$SCRATCH/bad-mode.err"
+assert_no_lane_artifacts bad-mode
+chmod 0600 "$SCRATCH/home/.codex/auth.json"
+
+mkdir "$SCRATCH/uid-mismatch-bin"
+cat >"$SCRATCH/uid-mismatch-bin/id" <<EOF
+#!/bin/sh
+if [ "\$1" = -u ] && [ "\${2:-}" = "$fixture_user" ]; then printf '1000\n'; else exec /usr/bin/id "\$@"; fi
+EOF
+cat >"$SCRATCH/uid-mismatch-bin/stat" <<'EOF'
+#!/bin/sh
+if [ "$1" = -c ] && [ "$2" = %u ]; then printf '1000\n'; else exec /usr/bin/stat "$@"; fi
+EOF
+chmod +x "$SCRATCH/uid-mismatch-bin/"*
+if setpriv --reuid="$fixture_uid" --regid="$fixture_gid" --init-groups \
+  env PATH="$SCRATCH/uid-mismatch-bin:$SCRATCH/bin:$PATH" LANE_SERVICE_CONFIG="$SCRATCH/service.conf" \
+  "$fixture_launcher" --name uid-mismatch --role coder --task-file "$SCRATCH/task.md" \
+  2>"$SCRATCH/uid-mismatch.err"; then exit 1; fi
+grep -Fq "launcher uid does not match service user: $fixture_user" "$SCRATCH/uid-mismatch.err"
+assert_no_lane_artifacts uid-mismatch
+
+mkdir "$SCRATCH/failed-setpriv-bin"
+cat >"$SCRATCH/failed-setpriv-bin/setpriv" <<'EOF'
+#!/bin/sh
+exit 91
+EOF
+chmod +x "$SCRATCH/failed-setpriv-bin/setpriv"
+if PATH="$SCRATCH/failed-setpriv-bin:$SCRATCH/bin:$PATH" LANE_SERVICE_CONFIG="$SCRATCH/service.conf" \
+  "$fixture_launcher" --name failed-setpriv --role coder --task-file "$SCRATCH/task.md" \
+  2>"$SCRATCH/failed-setpriv.err"; then exit 1; fi
+assert_no_lane_artifacts failed-setpriv
+
 if PATH="$SCRATCH/bin:$PATH" LINGER_OFF=1 LANE_SERVICE_CONFIG="$SCRATCH/service.conf" "$fixture_launcher" --name nolinger --role coder --task-file "$SCRATCH/task.md" 2>"$SCRATCH/linger.err"; then exit 1; fi
 grep -Fq 'linger is off for service user:' "$SCRATCH/linger.err"
+assert_no_lane_artifacts nolinger
+
+# The unit wrapper, not the payload, decides terminal state from the declared report.
+cat >"$SCRATCH/bin/report-agent" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+mode=$1
+if [[ "$mode" == crash ]]; then exit 17; fi
+if [[ "$mode" == silent ]]; then exit 0; fi
+sha=$(git rev-parse HEAD)
+{
+  printf 'commit: %s fixture\n' "$sha"
+  printf 'verify: true\nresult: clean\nsecret-scan: clean\nremaining: none\n'
+  if [[ "$mode" == invalid ]]; then printf 'review: claimed\n'; fi
+} >"$LANE_REPORT_PATH"
+EOF
+chmod +x "$SCRATCH/bin/report-agent"
+for mode in silent valid invalid crash; do
+  lane="outcome-$mode"
+  printf '%s\n%s\n' "$SCRATCH/bin/report-agent" "$mode" >"$SCRATCH/$mode.conf"
+  PATH="$SCRATCH/bin:$PATH" BUN_BIN="$SCRATCH/bin/bun" AGENT_COMMAND_FILE="$SCRATCH/$mode.conf" \
+    TMPDIR="$SCRATCH/tmp" "$fixture_launcher" --name "$lane" --role coder \
+    --task-file "$SCRATCH/task.md" --repo "$SCRATCH/repo" --lanes-dir "$SCRATCH/home/lanes" \
+    --base HEAD --branch "ag-fleet-launch-$lane" --service-config "$SCRATCH/service.conf" \
+    >"$SCRATCH/$mode.out"
+done
+grep -Fxq 'state: failed' "$SCRATCH/home/lanes/lane-outcome-silent.status"
+grep -Fxq 'reason: report-invalid' "$SCRATCH/home/lanes/lane-outcome-silent.status"
+grep -Fxq 'state: terminal' "$SCRATCH/home/lanes/lane-outcome-valid.status"
+grep -Fxq 'reason: report-valid' "$SCRATCH/home/lanes/lane-outcome-valid.status"
+grep -Fxq 'state: failed' "$SCRATCH/home/lanes/lane-outcome-invalid.status"
+grep -Fxq 'reason: report-invalid' "$SCRATCH/home/lanes/lane-outcome-invalid.status"
+grep -Fq 'missing file=' "$SCRATCH/home/lanes/lane-outcome-invalid.log"
+grep -Fxq 'state: failed' "$SCRATCH/home/lanes/lane-outcome-crash.status"
+grep -Fxq 'reason: payload-exit' "$SCRATCH/home/lanes/lane-outcome-crash.status"
+grep -Fxq 'exit: 17' "$SCRATCH/home/lanes/lane-outcome-crash.status"
 
 mkdir "$SCRATCH/command-dir"
 : >"$SCRATCH/empty.conf"

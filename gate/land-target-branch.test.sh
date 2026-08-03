@@ -85,7 +85,7 @@ main_before=$(git -C "$fixture_root/target-good-repo" rev-parse main)
 git -C "$fixture_root/target-good-repo" checkout v3 >/dev/null
 report "$fixture_root/target-good-report.md" "$target_good_sha"
 target_good_output="$fixture_root/target-good-output.txt"
-"$land" --branch ag-target-good --report "$fixture_root/target-good-report.md" --repo "$fixture_root/target-good-repo" --target-branch v3 --no-push >"$target_good_output" 2>&1
+"$land" --branch ag-target-good --item-id ag-target-good --report "$fixture_root/target-good-report.md" --repo "$fixture_root/target-good-repo" --target-branch v3 --no-push >"$target_good_output" 2>&1
 target_good_status=$?
 assert test "$target_good_status" -eq 0
 assert_output_has "$target_good_output" 'LAND verdict=landed sha='
@@ -105,7 +105,7 @@ git -C "$fixture_root/omitted-flag-repo" checkout v3 >/dev/null
 main_before=$(git -C "$fixture_root/omitted-flag-repo" rev-parse main)
 report "$fixture_root/omitted-flag-report.md" "$omitted_sha"
 omitted_output="$fixture_root/omitted-flag-output.txt"
-"$land" --branch ag-omitted-flag --report "$fixture_root/omitted-flag-report.md" --repo "$fixture_root/omitted-flag-repo" --no-push >"$omitted_output" 2>&1
+"$land" --branch ag-omitted-flag --item-id ag-omitted-flag --report "$fixture_root/omitted-flag-report.md" --repo "$fixture_root/omitted-flag-repo" --no-push >"$omitted_output" 2>&1
 omitted_status=$?
 assert test "$omitted_status" -eq 2
 assert_output_has "$omitted_output" 'LAND default-branch expected=main current=v3'
@@ -117,7 +117,7 @@ make_fixture omitted-flag-main
 omitted_main_sha=$(make_lane "$fixture_root/omitted-flag-main-repo" ag-omitted-flag-main main)
 report "$fixture_root/omitted-flag-main-report.md" "$omitted_main_sha"
 omitted_main_output="$fixture_root/omitted-flag-main-output.txt"
-"$land" --branch ag-omitted-flag-main --report "$fixture_root/omitted-flag-main-report.md" --repo "$fixture_root/omitted-flag-main-repo" --no-push >"$omitted_main_output" 2>&1
+"$land" --branch ag-omitted-flag-main --item-id ag-omitted-flag-main --report "$fixture_root/omitted-flag-main-report.md" --repo "$fixture_root/omitted-flag-main-repo" --no-push >"$omitted_main_output" 2>&1
 omitted_main_status=$?
 assert test "$omitted_main_status" -eq 0
 assert_output_has "$omitted_main_output" 'LAND verdict=landed sha='
@@ -132,7 +132,7 @@ main_before=$(git -C "$fixture_root/target-same-as-branch-repo" rev-parse main)
 git -C "$fixture_root/target-same-as-branch-repo" checkout v3 >/dev/null
 report "$fixture_root/target-same-as-branch-report.md" "$same_sha"
 same_output="$fixture_root/target-same-as-branch-output.txt"
-"$land" --branch ag-target-same-as-branch --report "$fixture_root/target-same-as-branch-report.md" --repo "$fixture_root/target-same-as-branch-repo" --target-branch ag-target-same-as-branch --no-push >"$same_output" 2>&1
+"$land" --branch ag-target-same-as-branch --item-id ag-target-same-as-branch --report "$fixture_root/target-same-as-branch-report.md" --repo "$fixture_root/target-same-as-branch-repo" --target-branch ag-target-same-as-branch --no-push >"$same_output" 2>&1
 same_status=$?
 assert test "$same_status" -eq 2
 assert_output_has "$same_output" 'LAND target-branch same-as-candidate target=ag-target-same-as-branch branch=ag-target-same-as-branch'
@@ -145,7 +145,7 @@ missing_local_sha=$(make_lane "$fixture_root/target-missing-local-repo" ag-targe
 main_before=$(git -C "$fixture_root/target-missing-local-repo" rev-parse main)
 report "$fixture_root/target-missing-local-report.md" "$missing_local_sha"
 missing_local_output="$fixture_root/target-missing-local-output.txt"
-"$land" --branch ag-target-missing-local --report "$fixture_root/target-missing-local-report.md" --repo "$fixture_root/target-missing-local-repo" --target-branch does-not-exist-anywhere --no-push >"$missing_local_output" 2>&1
+"$land" --branch ag-target-missing-local --item-id ag-target-missing-local --report "$fixture_root/target-missing-local-report.md" --repo "$fixture_root/target-missing-local-repo" --target-branch does-not-exist-anywhere --no-push >"$missing_local_output" 2>&1
 missing_local_status=$?
 assert test "$missing_local_status" -eq 2
 assert_output_has "$missing_local_output" 'LAND target-branch missing-local target=does-not-exist-anywhere'
@@ -159,7 +159,7 @@ git -C "$fixture_root/target-missing-origin-repo" branch local-only-branch main 
 main_before=$(git -C "$fixture_root/target-missing-origin-repo" rev-parse main)
 report "$fixture_root/target-missing-origin-report.md" "$missing_origin_sha"
 missing_origin_output="$fixture_root/target-missing-origin-output.txt"
-"$land" --branch ag-target-missing-origin --report "$fixture_root/target-missing-origin-report.md" --repo "$fixture_root/target-missing-origin-repo" --target-branch local-only-branch --no-push >"$missing_origin_output" 2>&1
+"$land" --branch ag-target-missing-origin --item-id ag-target-missing-origin --report "$fixture_root/target-missing-origin-report.md" --repo "$fixture_root/target-missing-origin-repo" --target-branch local-only-branch --no-push >"$missing_origin_output" 2>&1
 missing_origin_status=$?
 assert test "$missing_origin_status" -eq 2
 assert_output_has "$missing_origin_output" 'LAND target-branch missing-origin target=local-only-branch'
@@ -174,7 +174,7 @@ git -C "$fixture_root/target-wrong-checkout-repo" checkout main >/dev/null
 main_before=$(git -C "$fixture_root/target-wrong-checkout-repo" rev-parse main)
 report "$fixture_root/target-wrong-checkout-report.md" "$wrong_checkout_sha"
 wrong_checkout_output="$fixture_root/target-wrong-checkout-output.txt"
-"$land" --branch ag-target-wrong-checkout --report "$fixture_root/target-wrong-checkout-report.md" --repo "$fixture_root/target-wrong-checkout-repo" --target-branch v3 --no-push >"$wrong_checkout_output" 2>&1
+"$land" --branch ag-target-wrong-checkout --item-id ag-target-wrong-checkout --report "$fixture_root/target-wrong-checkout-report.md" --repo "$fixture_root/target-wrong-checkout-repo" --target-branch v3 --no-push >"$wrong_checkout_output" 2>&1
 wrong_checkout_status=$?
 assert test "$wrong_checkout_status" -eq 2
 assert_output_has "$wrong_checkout_output" 'LAND default-branch expected=v3 current=main'
@@ -200,7 +200,7 @@ main_before=$(git -C "$fixture_root/target-stale-repo" rev-parse main)
 git -C "$fixture_root/target-stale-repo" checkout v3 >/dev/null
 report "$fixture_root/target-stale-report.md" "$stale_sha"
 stale_output="$fixture_root/target-stale-output.txt"
-"$land" --branch ag-target-stale --report "$fixture_root/target-stale-report.md" --repo "$fixture_root/target-stale-repo" --target-branch v3 --no-push >"$stale_output" 2>&1
+"$land" --branch ag-target-stale --item-id ag-target-stale --report "$fixture_root/target-stale-report.md" --repo "$fixture_root/target-stale-repo" --target-branch v3 --no-push >"$stale_output" 2>&1
 stale_status=$?
 assert test "$stale_status" -eq 2
 assert_output_has "$stale_output" 'LAND step=freshness status=fail'

@@ -4,11 +4,12 @@ set -u
 set -o pipefail
 
 usage() {
-  echo "usage: gate/land.sh --branch <ag-name> --report <file> --repo <path> [--worktree <path>] [--no-push] [--run-verify] [--skip-review <reason>] [--target-branch <name>]" >&2
+  echo "usage: gate/land.sh --branch <ag-name> --item-id <mission/acceptance-id> --report <file> --repo <path> [--worktree <path>] [--no-push] [--run-verify] [--skip-review <reason>] [--target-branch <name>]" >&2
   exit 2
 }
 
 branch=""
+item_id=""
 report=""
 repo=""
 worktree=""
@@ -26,10 +27,11 @@ pre_merge_sha=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --branch|--report|--repo|--worktree|--target-branch)
+    --branch|--item-id|--report|--repo|--worktree|--target-branch)
       if [ "$#" -lt 2 ] || [ -z "$2" ]; then usage; fi
       case "$1" in
         --branch) branch="$2" ;;
+        --item-id) item_id="$2" ;;
         --report) report="$2" ;;
         --repo) repo="$2" ;;
         --worktree) worktree="$2" ;;
@@ -49,7 +51,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-if [ -z "$branch" ] || [ -z "$report" ] || [ -z "$repo" ]; then usage; fi
+if [ -z "$branch" ] || [ -z "$item_id" ] || [ -z "$report" ] || [ -z "$repo" ]; then usage; fi
 if [ "$skip_review" = true ] && [[ -z "${skip_review_reason//[[:space:]]/}" ]]; then usage; fi
 
 land_pass() { echo "LAND step=$1 status=pass"; }
@@ -93,6 +95,15 @@ if ! git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 
 git_dir=$(git -C "$repo" rev-parse --git-dir) || land_fail repo 2
+git_common_dir=$(git -C "$repo" rev-parse --git-common-dir) || land_fail repo 2
+case "$git_common_dir" in
+  /*) review_round_state="$git_common_dir/bpa-review-rounds.json" ;;
+  *) review_round_state="$repo/$git_common_dir/bpa-review-rounds.json" ;;
+esac
+review_round_history_rel=".bpa/review-rounds.json"
+review_round_history="$repo/$review_round_history_rel"
+review_attempt_namespace="refs/bpa-review-attempts"
+review_attempt_mirror_namespace="refs/bpa-review-attempt-mirrors"
 case "$git_dir" in
   /*) lock_file="$git_dir/bpa-land.lock" ;;
   *) lock_file="$repo/$git_dir/bpa-land.lock" ;;
@@ -181,6 +192,94 @@ fi
 pre_merge_sha=$(git -C "$repo" rev-parse "$default_branch")
 land_pass freshness
 
+# Bind caller input to tracked authority on the target branch. Instance repos
+# register a stable branch root for each work item; disposable -rN recuts map
+# back to that root. Minimal fixture/product repos without the registry retain
+# the strict legacy invariant that the item id must equal the branch name.
+registry=$(git -C "$repo" show "$default_branch:instance/review-items.tsv" 2>/dev/null || true)
+if [ -n "$registry" ]; then
+  canonical_branch=$(printf '%s\n' "$branch" | sed -E 's/-r[0-9]+$//')
+  registered_branch=$(printf '%s\n' "$registry" | awk -F '\t' -v id="$item_id" '$1 == id { print $2 }')
+  registry_matches=$(printf '%s\n' "$registry" | awk -F '\t' -v id="$item_id" '$1 == id { count++ } END { print count+0 }')
+  if [ "$registry_matches" -ne 1 ] || [ "$registered_branch" != "$canonical_branch" ]; then
+    echo "LAND review-item unknown-or-mismatched item=$item_id branch=$branch" >&2
+    land_fail review-item 2
+  fi
+elif [ "$item_id" != "$branch" ]; then
+  echo "LAND review-item unregistered item=$item_id branch=$branch" >&2
+  land_fail review-item 2
+fi
+land_pass review-item
+
+# The target branch is the durable authority. Reconstruct the writable,
+# clone-local copy from it on every attempt, so deleting .git or rebuilding the
+# host cannot reset an exhausted item. Absence is accepted only when the target
+# branch has never carried review-round history; deletion is fail-closed.
+review_history_present=false
+if git -C "$repo" cat-file -e "$default_branch:$review_round_history_rel" 2>/dev/null; then
+  review_history_present=true
+  rm -f "$review_round_state"
+  if ! git -C "$repo" show "$default_branch:$review_round_history_rel" > "$review_round_state"; then
+    land_fail review-rounds 2
+  fi
+  chmod 600 "$review_round_state" || land_fail review-rounds 2
+elif git -C "$repo" log --format=%H --all -- "$review_round_history_rel" | grep -q .; then
+  echo "LAND review-rounds durable-history-missing path=$review_round_history_rel" >&2
+  land_fail review-rounds 2
+fi
+
+# A genuinely new repository has no durable history yet. Bootstrap it under
+# the serialized landing lock; malformed/non-regular existing state is never
+# replaced.
+if [ ! -e "$review_round_state" ]; then
+  if ! "$BUN_BIN" "$script_dir/review-rounds.ts" init --state "$review_round_state" --cap 3 --no-progress-limit 3; then
+    land_fail review-rounds 2
+  fi
+fi
+
+# Attempt refs are the origin-visible source of truth for reviewed attempts
+# which did not land. The target-branch JSON is only a reconstructable cache:
+# replay every later ref in strict sequence after a clone or host rebuild.
+item_key=$(printf '%s' "$item_id" | git -C "$repo" hash-object --stdin) || land_fail review-rounds 2
+attempt_prefix="$review_attempt_namespace/$item_key"
+attempt_mirror_prefix="$review_attempt_mirror_namespace/$item_key"
+attempt_refs=$(git -C "$repo" ls-remote --refs origin "$attempt_prefix/*") || land_fail review-rounds 2
+attempt_mirror_refs=$(git -C "$repo" ls-remote --refs origin "$attempt_mirror_prefix/*") || land_fail review-rounds 2
+# The mirror is deliberately a separate remote namespace. A lane can mutate
+# either namespace today, but a forged or suppressed record in only one is
+# detectable. Coordinated root mutation of both is outside this mechanism's
+# authority and is documented as such in review-policy.
+normalized_attempt_refs=$(printf '%s\n' "$attempt_refs" | sed "s#refs/bpa-review-attempts/#refs/bpa-review-attempt-mirrors/#")
+if [ "$normalized_attempt_refs" != "$attempt_mirror_refs" ]; then
+  echo "LAND review-rounds attempt-mirror-mismatch item=$item_id" >&2
+  land_fail review-rounds 2
+fi
+if [ "$review_history_present" = false ] && [ -n "$attempt_refs" ]; then
+  rm -f "$review_round_state"
+  if ! "$BUN_BIN" "$script_dir/review-rounds.ts" init --state "$review_round_state" --cap 3 --no-progress-limit 3 >/dev/null; then
+    land_fail review-rounds 2
+  fi
+fi
+rounds=$("$BUN_BIN" "$script_dir/review-rounds.ts" round --state "$review_round_state" --item-id "$item_id") || land_fail review-rounds 2
+while IFS=$'\t' read -r attempt_sha attempt_ref; do
+  [ -n "$attempt_ref" ] || continue
+  attempt_leaf=${attempt_ref#"$attempt_prefix/"}
+  if [[ ! "$attempt_leaf" =~ ^([1-9][0-9]*)-([0-9a-f]{40})$ ]] || [ "$attempt_sha" != "${BASH_REMATCH[2]}" ]; then
+    echo "LAND review-rounds malformed-attempt-ref ref=$attempt_ref" >&2
+    land_fail review-rounds 2
+  fi
+  attempt_round=${BASH_REMATCH[1]}
+  if [ "$attempt_round" -le "$rounds" ]; then continue; fi
+  if [ "$attempt_round" -ne $((rounds + 1)) ]; then
+    echo "LAND review-rounds nonsequential-attempt-ref expected=$((rounds + 1)) found=$attempt_round" >&2
+    land_fail review-rounds 2
+  fi
+  if ! "$BUN_BIN" "$script_dir/review-rounds.ts" attempt --defer-park-exit --state "$review_round_state" --item-id "$item_id" >/dev/null; then
+    land_fail review-rounds 2
+  fi
+  rounds=$attempt_round
+done <<< "$attempt_refs"
+
 export LAND_DEFAULT_BRANCH="$default_branch"
 guard_args=("$script_dir/completion-guard.ts" --report "$report" --repo "$repo" --branch "$branch")
 if [ "$run_verify" = true ]; then guard_args+=(--defer-verify); fi
@@ -195,8 +294,36 @@ review_verdict="$LAND_REVIEW_VERDICT"
 land_pass review
 if [ "$skip_review" = true ]; then echo "LAND review=SKIPPED reason=$skip_review_reason"; fi
 
+# Never publish a candidate object into the durable attempt namespace before
+# the canonical signature scan has accepted it.
 if ! land_secret_scan "$repo" "$branch"; then land_fail secret-scan 2; fi
 land_pass secret-scan
+
+# The item identity is supplied by durable mission/acceptance identity, never
+# inferred from the disposable branch name. The repository-wide landing lock
+# also serializes this read-modify-write with every other landing attempt.
+if ! "$BUN_BIN" "$script_dir/review-rounds.ts" attempt --defer-park-exit --state "$review_round_state" --item-id "$item_id"; then
+  land_fail review-rounds 2
+fi
+rounds=$((rounds + 1))
+branch_sha=$(git -C "$repo" rev-parse --verify "${branch}^{commit}") || land_fail branch-tip 2
+attempt_ref="$attempt_prefix/$rounds-$branch_sha"
+attempt_mirror_ref="$attempt_mirror_prefix/$rounds-$branch_sha"
+if ! git -C "$repo" push --atomic origin "$branch_sha:$attempt_ref" "$branch_sha:$attempt_mirror_ref" >/dev/null; then
+  echo "LAND review-rounds attempt-persist-failed ref=$attempt_ref" >&2
+  land_fail review-rounds 2
+fi
+persisted_attempt_sha=$(git -C "$repo" ls-remote --refs origin "$attempt_ref" 2>/dev/null | awk 'NR == 1 { print $1 }')
+persisted_attempt_mirror_sha=$(git -C "$repo" ls-remote --refs origin "$attempt_mirror_ref" 2>/dev/null | awk 'NR == 1 { print $1 }')
+remote_target_sha=$(git -C "$repo" ls-remote --refs origin "refs/heads/$default_branch" 2>/dev/null | awk 'NR == 1 { print $1 }')
+if [ "$persisted_attempt_sha" != "$branch_sha" ] || [ "$persisted_attempt_mirror_sha" != "$branch_sha" ] || [ "$remote_target_sha" != "$pre_merge_sha" ]; then
+  echo "LAND review-rounds attempt-persist-mismatch ref=$attempt_ref found=${persisted_attempt_sha:-missing} target=${remote_target_sha:-missing} expected-target=$pre_merge_sha" >&2
+  land_fail review-rounds 2
+fi
+if ! "$BUN_BIN" "$script_dir/review-rounds.ts" check --state "$review_round_state" --item-id "$item_id" >/dev/null; then
+  land_fail review-rounds 2
+fi
+land_pass review-rounds
 
 report_sha=$(sed -n 's/^commit:[[:space:]]*\([0-9a-fA-F]\{40\}\).*/\1/p' "$report" | head -n 1)
 branch_sha=$(git -C "$repo" rev-parse --verify "${branch}^{commit}") || land_fail branch-tip 2
@@ -206,6 +333,11 @@ if [ -z "$report_sha" ] || [ "${report_sha,,}" != "${branch_sha,,}" ]; then
 fi
 land_pass branch-tip
 
+payload_base=$(land_changed_base "$repo" "$branch") || land_fail payload-guard 2
+if ! git -C "$repo" diff --quiet "$payload_base..$branch" -- "$review_round_history_rel"; then
+  echo "LAND step=payload-guard status=fail detail=reserved-path path=$review_round_history_rel" >&2
+  land_fail payload-guard 2
+fi
 if ! land_payload_guard "$repo" "$branch"; then
   echo "LAND verdict=aborted sha=$merge_sha" >&2
   exit 2
@@ -223,6 +355,20 @@ if ! git -C "$repo" merge --no-ff "$branch" -m "[ORCH] land lane $branch" -m "se
   land_fail merge
 fi
 merged=true
+merge_sha=$(git -C "$repo" rev-parse HEAD)
+
+# Record the successful round in tracked target-branch history. The candidate
+# SHA is used as the progress marker because the merge SHA cannot be known
+# before the state embedded in that merge is committed.
+if ! "$BUN_BIN" "$script_dir/review-rounds.ts" landed --state "$review_round_state" --item-id "$item_id" --sha "$branch_sha"; then
+  land_fail review-rounds 2
+fi
+mkdir -p "$(dirname "$review_round_history")" || land_fail review-rounds 2
+if ! install -m 600 "$review_round_state" "$review_round_history" ||
+   ! git -C "$repo" add -- "$review_round_history_rel" ||
+   ! git -C "$repo" commit --amend --no-edit >/dev/null; then
+  land_fail review-rounds 2
+fi
 merge_sha=$(git -C "$repo" rev-parse HEAD)
 land_pass merge
 
@@ -308,6 +454,7 @@ landing_complete=true
 if [ "$merged" != true ]; then
   land_reap_fail
 fi
+land_pass review-progress
 if ! land_assert_reap_safe "$repo" "$branch" "$merge_sha" LAND; then
   land_reap_fail
 fi

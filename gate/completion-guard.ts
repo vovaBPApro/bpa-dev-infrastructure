@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { lineValue } from "./report-contract";
 
 type Options = {
   report?: string;
@@ -82,12 +83,6 @@ function parseArgs(args: string[]): Options {
   }
   if (!options.report || !options.repo) usage();
   return options;
-}
-
-function lineValue(contents: string, label: string): string | undefined {
-  const matches = contents.match(new RegExp(`^${label}:\\s*(.*)$`, "gm"));
-  if (matches?.length !== 1) return undefined;
-  return matches[0].slice(label.length + 1).trim();
 }
 
 function hasUnstructuredCountClaim(contents: string): boolean {

@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from 'fs';
+import { readdirSync, readFileSync, statSync, type Dirent } from 'fs';
 import { join } from 'path';
 
 export type QuotaWindow =
@@ -14,6 +14,15 @@ type RateLimitWindow = {
   observedAt: number;
   usedPercent: number;
 };
+
+export type VendorQuotaFs = {
+  readdirSync: (path: string, options: { withFileTypes: true }) => Pick<Dirent, 'name' | 'isDirectory' | 'isFile'>[];
+  readFileSync: (path: string, encoding: 'utf8') => string;
+  statSync: (path: string) => { mtimeMs: number };
+};
+
+const defaultFs: VendorQuotaFs = { readdirSync, readFileSync, statSync };
+const MAX_STATUS_LINE_LENGTH = 600;
 
 const unknown = (reason: string): QuotaWindow => ({ state: 'unknown', reason });
 
@@ -38,7 +47,11 @@ export function parseCodexQuotaJsonl(contents: readonly string[]): VendorQuota['
             const window = value as Record<string, unknown>;
             if (
               typeof window.window_minutes !== 'number' ||
-              typeof window.used_percent !== 'number'
+              !Number.isFinite(window.window_minutes) ||
+              typeof window.used_percent !== 'number' ||
+              !Number.isFinite(window.used_percent) ||
+              window.used_percent < 0 ||
+              window.used_percent > 100
             ) continue;
             const previous = latestByMinutes.get(window.window_minutes);
             if (!previous || observedAt > previous.observedAt) {
@@ -79,20 +92,26 @@ export function parseCodexQuotaJsonl(contents: readonly string[]): VendorQuota['
   };
 }
 
-function collectRecentJsonl(root: string, cutoff: number, out: string[], depth = 0): void {
+function collectRecentJsonl(
+  root: string,
+  cutoff: number,
+  out: string[],
+  fs: VendorQuotaFs,
+  depth = 0,
+): void {
   if (depth > 6) return;
   let entries;
   try {
-    entries = readdirSync(root, { withFileTypes: true });
+    entries = fs.readdirSync(root, { withFileTypes: true });
   } catch {
     return;
   }
   for (const entry of entries) {
     const path = join(root, entry.name);
-    if (entry.isDirectory()) collectRecentJsonl(path, cutoff, out, depth + 1);
+    if (entry.isDirectory()) collectRecentJsonl(path, cutoff, out, fs, depth + 1);
     else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
       try {
-        if (statSync(path).mtimeMs >= cutoff) out.push(readFileSync(path, 'utf8'));
+        if (fs.statSync(path).mtimeMs >= cutoff) out.push(fs.readFileSync(path, 'utf8'));
       } catch {
         // The CLI may rotate a session while /status reads it.
       }
@@ -100,9 +119,18 @@ function collectRecentJsonl(root: string, cutoff: number, out: string[], depth =
   }
 }
 
-export function readVendorQuota(home: string, now = Date.now()): VendorQuota {
+export function readVendorQuota(
+  home: string,
+  now = Date.now(),
+  fs: VendorQuotaFs = defaultFs,
+): VendorQuota {
   const codexJsonl: string[] = [];
-  collectRecentJsonl(join(home, '.codex', 'sessions'), now - 14 * 24 * 60 * 60 * 1000, codexJsonl);
+  collectRecentJsonl(
+    join(home, '.codex', 'sessions'),
+    now - 14 * 24 * 60 * 60 * 1000,
+    codexJsonl,
+    fs,
+  );
   return {
     codex: parseCodexQuotaJsonl(codexJsonl),
     claude: {
@@ -113,15 +141,24 @@ export function readVendorQuota(home: string, now = Date.now()): VendorQuota {
 }
 
 function formatWindow(window: QuotaWindow): string {
-  return window.state === 'known' ? `${window.usedPercent}%` : `невідомо (${window.reason})`;
+  return window.state === 'known' && Number.isFinite(window.usedPercent) && window.usedPercent >= 0 && window.usedPercent <= 100
+    ? `${window.usedPercent}%`
+    : window.state === 'unknown'
+      ? `невідомо (${window.reason})`
+      : 'невідомо (недійсне значення)';
 }
 
 function formatAge(observedAt: number | null, now: number): string {
   if (observedAt === null) return '';
-  const minutes = Math.max(0, Math.floor((now - observedAt) / 60_000));
+  if (!Number.isFinite(observedAt) || observedAt > now) return ', час спостереження недійсний';
+  const minutes = Math.floor((now - observedAt) / 60_000);
   return `, вік ${minutes < 60 ? `${minutes}хв` : `${Math.floor(minutes / 60)}г`}`;
 }
 
 export function formatVendorQuota(quota: VendorQuota, now = Date.now()): string {
-  return `Квота: Codex 5h ${formatWindow(quota.codex.fiveHour)}, 7d ${formatWindow(quota.codex.sevenDay)}${formatAge(quota.codex.observedAt, now)}; Claude невідомо (${quota.claude.reason})`;
+  const detailed = `Квота: Codex 5h ${formatWindow(quota.codex.fiveHour)}, 7d ${formatWindow(quota.codex.sevenDay)}${formatAge(quota.codex.observedAt, now)}; Claude невідомо (${quota.claude.reason})`;
+  if (detailed.length <= MAX_STATUS_LINE_LENGTH) return detailed;
+  // Reasons are optional context. Omit all of them atomically instead of
+  // truncating a sentence and changing its meaning in the operator message.
+  return `Квота: Codex 5h ${quota.codex.fiveHour.state === 'known' ? formatWindow(quota.codex.fiveHour) : 'невідомо'}, 7d ${quota.codex.sevenDay.state === 'known' ? formatWindow(quota.codex.sevenDay) : 'невідомо'}${formatAge(quota.codex.observedAt, now)}; Claude невідомо`;
 }

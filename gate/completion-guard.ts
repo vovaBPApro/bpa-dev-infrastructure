@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { lineValue } from "./report-contract";
 
 type Options = {
@@ -140,6 +140,46 @@ const reportPath = resolve(options.report!);
 const repoPath = resolve(options.repo!);
 let report: Report | undefined;
 
+function checkClaimedReview(contents: string, commit: string | undefined): void {
+  const hasReviewField = /^review:/m.test(contents);
+  if (!hasReviewField) return;
+  const review = lineValue(contents, "review");
+  if (review === undefined || !review) {
+    fail("review-field", "must-occur-once-and-be-nonempty");
+    return;
+  }
+  if (!options.branch) {
+    fail("review-artifact", "branch-required-to-resolve-artifact");
+    return;
+  }
+  const artifactPath = join(dirname(reportPath), `${options.branch}.review.md`);
+  if (!existsSync(artifactPath)) {
+    fail("review-artifact", `missing file=${artifactPath}`);
+    return;
+  }
+  try {
+    if (!lstatSync(artifactPath).isFile()) {
+      fail("review-artifact", `unreadable-or-non-regular file=${artifactPath}`);
+      return;
+    }
+    const artifact = readFileSync(artifactPath, "utf8");
+    const verdict = lineValue(artifact, "verdict");
+    const reviewedSha = lineValue(artifact, "reviewed-sha");
+    const expectedSha = commit?.split(/\s+/, 1)[0];
+    if (verdict !== "ACCEPT") {
+      fail("review-artifact", `verdict-must-be-ACCEPT file=${artifactPath}`);
+    } else if (!reviewedSha || !/^[0-9a-f]{40}$/i.test(reviewedSha)) {
+      fail("review-artifact", `malformed-reviewed-sha file=${artifactPath}`);
+    } else if (!expectedSha || reviewedSha.toLowerCase() !== expectedSha.toLowerCase()) {
+      fail("review-artifact", `reviewed-sha-mismatch expected=${expectedSha ?? "missing"} actual=${reviewedSha} file=${artifactPath}`);
+    } else {
+      pass("review-artifact", artifactPath);
+    }
+  } catch {
+    fail("review-artifact", `unreadable-or-non-regular file=${artifactPath}`);
+  }
+}
+
 if (!existsSync(reportPath)) {
   fail("report-file", "missing");
 } else {
@@ -153,6 +193,7 @@ if (!existsSync(reportPath)) {
     const result = lineValue(contents, "result");
     const secretScan = lineValue(contents, "secret-scan");
     const remaining = lineValue(contents, "remaining");
+    checkClaimedReview(contents, commit);
     if ([commit, verify, result, secretScan, remaining].some((value) => value === undefined)) {
       fail("report-shape", "required final-report lines missing or duplicated");
     } else if (hasUnstructuredCountClaim(contents)) {

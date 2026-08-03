@@ -43,6 +43,12 @@ function valid(sha: string, result = "clean", verify = "true"): string {
   return `commit: ${sha} fixture\nverify: ${verify}\nresult: ${result}\nsecret-scan: clean\nremaining: none\n`;
 }
 
+function reviewArtifact(directory: string, branch: string, sha: string): string {
+  const path = join(directory, `${branch}.review.md`);
+  writeFileSync(path, `verdict: ACCEPT\nreviewed-sha: ${sha}\n`);
+  return path;
+}
+
 afterEach(() => {
   while (temporaryDirectories.length) rmSync(temporaryDirectories.pop()!, { recursive: true, force: true });
 });
@@ -59,6 +65,43 @@ describe("completion guard", () => {
   test("passes a valid report", () => {
     const item = fixture();
     const result = run(report(item.directory, valid(item.sha)), item.repo, ["--branch", "master"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("GUARD verdict=pass");
+  });
+
+  test("rejects today's invented completed-review claim when its artifact is absent", () => {
+    const item = fixture();
+    const body = valid(item.sha).replace(
+      "remaining: none",
+      "review: independent Tier-A ACCEPT at 651355b03ff2e211df877697377dbe0aa33e2433;\n27 focused tests pass, 0 fail; no false-green or regression findings.\nremaining: none",
+    );
+    const result = run(report(item.directory, body), item.repo, ["--branch", "master"]);
+    expect(result.status).toBe(2);
+    expect(result.stdout).toContain(`FAIL review-artifact missing file=${join(item.directory, "master.review.md")}`);
+  });
+
+  test("accepts a review claim backed by an ACCEPT artifact for the branch tip", () => {
+    const item = fixture();
+    reviewArtifact(item.directory, "master", item.sha);
+    const body = valid(item.sha).replace("remaining: none", "review: independent Tier-A ACCEPT\nremaining: none");
+    const result = run(report(item.directory, body), item.repo, ["--branch", "master"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("PASS review-artifact");
+  });
+
+  test("rejects a review artifact naming a different SHA", () => {
+    const item = fixture();
+    reviewArtifact(item.directory, "master", "a".repeat(40));
+    const body = valid(item.sha).replace("remaining: none", "review: independent Tier-A ACCEPT\nremaining: none");
+    const result = run(report(item.directory, body), item.repo, ["--branch", "master"]);
+    expect(result.status).toBe(2);
+    expect(result.stdout).toContain(`FAIL review-artifact reviewed-sha-mismatch expected=${item.sha} actual=${"a".repeat(40)}`);
+  });
+
+  test("allows an honest pending review in remaining without a review field", () => {
+    const item = fixture();
+    const body = valid(item.sha).replace("remaining: none", "remaining: Tier-A review pending");
+    const result = run(report(item.directory, body), item.repo, ["--branch", "master"]);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("GUARD verdict=pass");
   });

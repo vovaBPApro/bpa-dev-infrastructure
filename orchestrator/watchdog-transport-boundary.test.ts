@@ -1,12 +1,8 @@
 #!/usr/bin/env bun
-// DEFECT EXCLUDED: unchanged upstream failure documented in
-// reports/v3-review-2-2026-08-02.md §3. Reproduce at the source pin with:
-// git worktree add --detach /tmp/review-new-pin 5f41a5cad59b764fa4c692ec7f33e3a4c978e559 &&
-// (cd /tmp/review-new-pin && bun test orchestrator/watchdog-transport-boundary.test.ts)
-// Expected defect signature: timeout waiting for successful send; methods=
 // Deployed watchdog-alert lock: spawn daemon/server.ts and use Telegram HTTP.
 // Importing drainOutbox here would reduce this to the rejected library boundary.
 import { existsSync } from 'node:fs';
+import { test } from 'bun:test';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -17,6 +13,7 @@ if (!existsSync(daemonServer) || !existsSync(daemonTestEnv)) {
   console.log('SKIP: watchdog transport boundary requires daemon/server.ts and daemon/test-env.ts from v3-telegram; integrator must remove this guard after Telegram lands');
   process.exit(0);
 }
+test('daemon drains watchdog outbox through Telegram HTTP and retries safely', async () => {
 const { isolatedTestEnv } = await import(daemonTestEnv);
 const scratch = await mkdtemp(join(tmpdir(), 'watchdog-transport-'));
 const state = join(scratch, 'state');
@@ -24,28 +21,26 @@ const outbox = join(scratch, 'nudges.outbox');
 const chatId = '771337';
 const alert = 'ALERT orchestrator-recovery-failed session=orchestrator consecutive=3';
 let daemon: ReturnType<typeof Bun.spawn> | undefined;
-let mode: 'success' | 'reject' = 'success';
-const attempts: string[] = [];
-const methods: string[] = [];
+const recordFile = join(scratch, 'telegram-requests.jsonl');
+const modeFile = join(scratch, 'telegram-mode');
+let fixture: ReturnType<typeof Bun.spawn> | undefined;
 const reservation = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => new Response() });
 const daemonPort = reservation.port;
 reservation.stop(true);
-const telegram = Bun.serve({
-  hostname: '127.0.0.1',
-  port: 0,
-  async fetch(request) {
-    const path = new URL(request.url).pathname;
-    methods.push(path);
-    if (path.endsWith('/getMe')) return Response.json({ ok: true, result: { id: 123456, is_bot: true, first_name: 'fixture', username: 'fixture_bot' } });
-    if (path.endsWith('/getUpdates')) return Response.json({ ok: true, result: [] });
-    if (path.endsWith('/sendMessage')) {
-      const body = await request.json() as { chat_id?: string | number; text?: string };
-      attempts.push(`${body.chat_id}:${body.text}`);
-      if (mode === 'reject') return Response.json({ ok: false, error_code: 503, description: 'fixture reject' }, { status: 503 });
-      return Response.json({ ok: true, result: { message_id: attempts.length, date: 0, chat: { id: Number(chatId), type: 'private' }, text: body.text } });
-    }
-    return Response.json({ ok: true, result: true });
-  },
+await writeFile(modeFile, 'success');
+fixture = Bun.spawn(['bun', join(import.meta.dir, 'watchdog-telegram-http.fixture.ts'), recordFile, modeFile], { stdout: 'pipe', stderr: 'inherit' });
+const reader = fixture.stdout.getReader();
+const first = await reader.read();
+const telegramPort = Number(new TextDecoder().decode(first.value).trim());
+reader.releaseLock();
+if (!Number.isSafeInteger(telegramPort)) throw new Error('Telegram fixture did not report its port');
+// Some hardened hosts drop loopback packets. Select a private local interface
+// mechanically so the fixture remains host-agnostic and never leaves the host.
+const addressProbe = Bun.spawnSync(['ip', '-4', '-o', 'addr', 'show', 'scope', 'global'], { stdout: 'pipe' }).stdout.toString();
+const telegramHost = process.env.ORCH_TEST_HTTP_HOST ?? addressProbe.match(/\binet ((?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)[^/]+)/)?.[1] ?? '127.0.0.1';
+const requestRows = async () => (await readFile(recordFile, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).flatMap((line) => {
+  try { return [JSON.parse(line) as { path: string; body: { chat_id?: string | number; text?: string } }]; }
+  catch { return []; } // the fixture may be between append syscalls
 });
 const contents = async () => {
   try { return await readFile(outbox, 'utf8'); } catch { return ''; }
@@ -56,7 +51,7 @@ async function waitFor(predicate: () => boolean | Promise<boolean>, label: strin
     if (await predicate()) return;
     await Bun.sleep(25);
   }
-  throw new Error(`timeout waiting for ${label}; methods=${methods.join(',')}`);
+  throw new Error(`timeout waiting for ${label}; requests=${JSON.stringify(await requestRows())}`);
 }
 
 try {
@@ -76,7 +71,7 @@ try {
     env: isolatedTestEnv({
       PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: scratch,
       NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost',
-      TELEGRAM_API_ROOT: `http://127.0.0.1:${telegram.port}`,
+      TELEGRAM_API_ROOT: `http://${telegramHost}:${telegramPort}`,
       TELEGRAM_BOT_TOKEN: '123456:transport-boundary-fixture',
       TELEGRAM_STATE_DIR: state, TELEGRAM_DAEMON_PORT: String(daemonPort),
       TELEGRAM_ACCESS_MODE: 'static', TELEGRAM_BOUND_CHAT_ID: chatId,
@@ -91,26 +86,30 @@ try {
   await Bun.sleep(200);
   if (daemon.exitCode !== null) throw new Error(`daemon exited during startup: ${daemon.exitCode}`);
 
-  await waitFor(() => attempts.includes(`${chatId}:${alert}`), 'successful send');
+  await waitFor(async () => (await requestRows()).some((row) => row.path.endsWith('/sendMessage') && `${row.body.chat_id}:${row.body.text}` === `${chatId}:${alert}`), 'successful send');
   await waitFor(async () => (await contents()) === '', 'success acknowledgement');
 
   const retryAlert = `${alert} retry-boundary`;
-  mode = 'reject';
-  const before = attempts.length;
+  await writeFile(modeFile, 'reject');
+  const before = (await requestRows()).filter((row) => row.path.endsWith('/sendMessage')).length;
   await writeFile(outbox, `${retryAlert}\n`);
-  await waitFor(() => attempts.length > before, 'rejected send');
+  await waitFor(async () => (await requestRows()).filter((row) => row.path.endsWith('/sendMessage')).length > before, 'rejected send');
   await Bun.sleep(120);
   if ((await contents()).trim() !== retryAlert) throw new Error('rejected send was falsely acknowledged');
-  mode = 'success';
+  await writeFile(modeFile, 'success');
   await waitFor(async () => (await contents()) === '', 'retry after recovery');
-  const retries = attempts.filter((entry) => entry === `${chatId}:${retryAlert}`).length;
+  const rows = await requestRows();
+  const retries = rows.filter((row) => row.path.endsWith('/sendMessage') && `${row.body.chat_id}:${row.body.text}` === `${chatId}:${retryAlert}`).length;
   if (retries < 2 || retries > 6) throw new Error(`retry attempts were not bounded: ${retries}`);
+  const observed = rows.find((row) => row.path.endsWith('/sendMessage') && row.body.text === alert);
+  console.log(`watchdog transport request: ${JSON.stringify(observed)}`);
   console.log('watchdog transport boundary: PASS');
 } finally {
   if (daemon?.exitCode === null) {
     daemon.kill('SIGTERM');
     await daemon.exited;
   }
-  telegram.stop(true);
+  if (fixture?.exitCode === null) fixture.kill('SIGTERM');
   await rm(scratch, { recursive: true, force: true });
 }
+});

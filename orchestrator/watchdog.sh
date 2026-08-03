@@ -603,9 +603,10 @@ check_disk_pressure() {
 }
 
 check_mission_pressure() {
-  local status_output now measured fleet_line running_lanes notify_below
+  local status_output now measured fleet_line running_lanes notify_below params_mode
   state_available || { log "SKIP reason=mission-pressure-state-db-absent path=$STATE_DB"; return; }
-  if [[ ! -r "$INSTANCE_PARAMS_FILE" ]]; then
+  params_mode="$(stat -c '%a' "$INSTANCE_PARAMS_FILE" 2>/dev/null || true)"
+  if [[ ! -f "$INSTANCE_PARAMS_FILE" || ! -r "$INSTANCE_PARAMS_FILE" || ! "$params_mode" =~ ^[0-7]{3,4}$ ]] || (( (8#$params_mode & 8#444) == 0 )); then
     log "WATCHDOG NO-GO reason=fleet-config-unreadable path=$INSTANCE_PARAMS_FILE"
     return 1
   fi

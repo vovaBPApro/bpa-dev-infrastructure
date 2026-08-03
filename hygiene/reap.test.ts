@@ -1,6 +1,6 @@
 import { test, expect, afterEach } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -158,6 +158,135 @@ test("--protect adds a caller-supplied name to the refusal list", () => {
   expect(apply.status).toBe(0);
   expect(apply.stdout).toContain("protected branch, refusing: merged");
   expect(sh("git show-ref --verify --quiet refs/heads/merged && echo present", repo).trim()).toBe("present");
+});
+
+// --- protected-branches list: fail closed, not fail open -------------------
+//
+// Round-2 review defect (fixed here): `load_protected` originally only
+// skipped loading the list when it happened to be readable
+// (`if [[ -r "$list_path" ]]; then ... fi`), with no `else`. A missing,
+// unreadable, or wrongly-resolved list therefore silently degraded to "the
+// only protected branch is main" -- losing v2-deprecated and v3 without a
+// word. The reviewer reproduced this directly: against the code committed at
+// 2f29677, seeding a merged, worktree-free branch named `v3` and pointing the
+// protect-list lookup at a path that does not exist made `--apply` delete
+// `v3`. (v3 and v2-deprecated are this repository's only copies of the
+// current line and the entire host rebuild path -- deleting either is the
+// worst outcome this tool can produce.) `load_protected` now requires the
+// list to resolve to a readable *regular file* and `die`s otherwise, with no
+// bypass flag.
+
+function currentUid(): number {
+  return typeof process.getuid === "function" ? process.getuid() : 1000;
+}
+
+// A copy of reap.sh + its gate/land-lib.sh dependency under a world-readable,
+// world-executable tree, so a de-privileged child process (see below) can
+// actually open and run them. The real checkout lives under /root, which a
+// non-root user cannot traverse at all.
+function worldReadableToolroot(): string {
+  const root = fixtureDir();
+  mkdirSync(join(root, "hygiene"));
+  mkdirSync(join(root, "gate"));
+  sh(`cp ${JSON.stringify(reap)} ${JSON.stringify(join(root, "hygiene", "reap.sh"))}`, root);
+  sh(
+    `cp ${JSON.stringify(join(repoRoot, "gate", "land-lib.sh"))} ${JSON.stringify(join(root, "gate", "land-lib.sh"))}`,
+    root,
+  );
+  sh(`chmod -R a+rX ${JSON.stringify(root)}`, root);
+  sh(`chmod a+x ${JSON.stringify(join(root, "hygiene", "reap.sh"))}`, root);
+  return root;
+}
+
+test("branches refuses to run at all when the protected-branches list cannot be found (fail closed, not fail open)", () => {
+  const { repo } = buildFixture();
+  sh("git branch v3", repo); // the reviewer's exact repro branch name: merged, no worktree
+  const missingDir = mkdtempSync(join(tmpdir(), "hygiene-missing-"));
+  cleanup.push(missingDir);
+  const missing = join(missingDir, "does-not-exist.txt");
+
+  const result = run(["branches", "--repo", repo, "--protected-file", missing, "--apply"]);
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toContain("protected-branches list is not a readable regular file");
+  expect(result.stderr).toContain(missing);
+  expect(sh("git show-ref --verify --quiet refs/heads/v3 && echo present", repo).trim()).toBe("present");
+});
+
+test("branches refuses to run at all when the protected-branches list exists but is not readable (fail closed, not fail open)", () => {
+  if (currentUid() === 0 && !existsSync("/usr/bin/setpriv")) {
+    throw new Error(
+      "setpriv is required to prove fail-closed behavior for an unreadable file while running as root " +
+        "(root bypasses chmod 000 via DAC override, so a plain chmod-000 test would pass even if the " +
+        "readability check were deleted entirely -- that would be exactly the fake-green test Hard Floor 7 forbids)",
+    );
+  }
+
+  const { dir, repo } = buildFixture();
+  sh("git branch v3", repo);
+  chmodSync(dir, 0o755);
+  sh(`chmod -R a+rX ${JSON.stringify(repo)}`, dir);
+
+  const unreadable = join(dir, "unreadable.txt");
+  writeFileSync(unreadable, "v3\n");
+  chmodSync(unreadable, 0o000); // stays root-owned, permission bits genuinely deny non-root
+
+  let result: ReturnType<typeof spawnSync>;
+  if (currentUid() === 0) {
+    // Prove the refusal as a genuinely unprivileged reader, not as root
+    // (which can read a chmod-000 file regardless). This is the closest
+    // faithful reproduction of the reviewer's "chmod 000" request that is
+    // actually meaningful in a root-run environment.
+    const toolroot = worldReadableToolroot();
+    const nobodyHome = join(dir, "nobody-home");
+    mkdirSync(nobodyHome);
+    chmodSync(nobodyHome, 0o777);
+    const gitconfig = join(nobodyHome, ".gitconfig");
+    writeFileSync(gitconfig, "[safe]\n\tdirectory = *\n");
+    chmodSync(gitconfig, 0o644); // writeFileSync respects umask; nobody must be able to read this
+    result = spawnSync(
+      "setpriv",
+      [
+        "--reuid=65534",
+        "--regid=65534",
+        "--clear-groups",
+        "bash",
+        join(toolroot, "hygiene", "reap.sh"),
+        "branches",
+        "--repo",
+        repo,
+        "--protected-file",
+        unreadable,
+        "--apply",
+      ],
+      { cwd: "/tmp", encoding: "utf8", env: { ...process.env, HOME: nobodyHome } },
+    );
+  } else {
+    result = spawnSync("bash", [reap, "branches", "--repo", repo, "--protected-file", unreadable, "--apply"], {
+      encoding: "utf8",
+    });
+  }
+
+  expect(result.status).not.toBe(0);
+  expect(`${result.stdout}${result.stderr}`).toContain("protected-branches list is not a readable regular file");
+  expect(sh("git show-ref --verify --quiet refs/heads/v3 && echo present", repo).trim()).toBe("present");
+});
+
+test("branches refuses to run at all when the protected-branches path is a directory, not a file", () => {
+  // `[[ -r somedir ]]` is true (directories are "readable"), so a bare `-r`
+  // check alone would not catch this. `read ... < dir` fails with EISDIR
+  // *inside* the while loop, which does not trip `set -e` -- a while
+  // condition's exit status is exempt -- so the loop would silently behave
+  // like an empty file. Same fail-open outcome, different trigger. The fix
+  // requires a regular file (`-f`), which also rejects this.
+  const { dir, repo } = buildFixture();
+  sh("git branch v3", repo);
+  const asDir = join(dir, "protected-is-a-dir");
+  mkdirSync(asDir);
+
+  const result = run(["branches", "--repo", repo, "--protected-file", asDir, "--apply"]);
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toContain("protected-branches list is not a readable regular file");
+  expect(sh("git show-ref --verify --quiet refs/heads/v3 && echo present", repo).trim()).toBe("present");
 });
 
 test("an explicit disposition deletes an otherwise-unmerged branch; no disposition never does", () => {

@@ -45,6 +45,7 @@ Options:
   --protect NAME        Additional protected branch name; repeatable
   --stale-days DAYS     Report unmerged branches older than DAYS (default: 30)
   --dispositions PATH   Override the branch-disposition exceptions file
+  --protected-file PATH Override the protected-branches list file
   --apply               Perform the narrowly defined mutations
   -h, --help            Show this help without changing anything
 
@@ -52,6 +53,11 @@ All commands are dry-run by default. A branch is deleted under --apply only
 when it is not protected, not held by any worktree, and either provably
 carried by the main branch (land_assert_reap_safe) or explicitly dispositioned.
 Everything else is report-only, unconditionally.
+
+The protected-branches list (default: instance/hygiene-protected-branches.txt)
+must be readable, even if empty of names beyond comments: `branches` refuses
+to run at all if it cannot be read. An unreadable protect list is never
+treated as an empty one -- see load_protected in this script.
 EOF
 }
 
@@ -67,6 +73,7 @@ main_branch="main"
 stale_days=30
 apply=false
 dispositions_path=""
+protected_path=""
 extra_protect=()
 while (($#)); do
   case "$1" in
@@ -75,6 +82,7 @@ while (($#)); do
     --protect) extra_protect+=("${2:?--protect requires a branch name}"); shift 2 ;;
     --stale-days) stale_days="${2:?--stale-days requires a number}"; shift 2 ;;
     --dispositions) dispositions_path="${2:?--dispositions requires a path}"; shift 2 ;;
+    --protected-file) protected_path="${2:?--protected-file requires a path}"; shift 2 ;;
     --apply) apply=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
@@ -96,20 +104,37 @@ git_repo() {
 # non-comment, non-blank line of instance/hygiene-protected-branches.txt (this
 # script's own repo, not necessarily --repo -- the list is a fact about this
 # installation, not about whatever fixture is being swept).
+#
+# FAIL CLOSED, deliberately: an unreadable protect list is never treated as an
+# empty one. "I could not read the protect list" and "the protect list is
+# empty" are different facts, and collapsing them silently is the single
+# worst failure mode this script has -- in this repository it is the
+# difference between refusing to run and deleting `v2-deprecated` or `v3`,
+# the only copies of the host rebuild path and the current line. There is
+# deliberately no bypass flag: if a caller genuinely has nothing to protect,
+# the fix is an explicit, present, empty (comments-only) file at the resolved
+# path, not a missing one.
 declare -A protected_set=()
 load_protected() {
   protected_set["$main_branch"]=1
   local name
   for name in "${extra_protect[@]}"; do protected_set["$name"]=1; done
-  local list_path="${PROTECT_BRANCHES_FILE:-$own_root/instance/hygiene-protected-branches.txt}"
-  if [[ -r "$list_path" ]]; then
-    while IFS= read -r name; do
-      name="${name%%#*}"
-      name="${name#"${name%%[![:space:]]*}"}"
-      name="${name%"${name##*[![:space:]]}"}"
-      [[ -n "$name" ]] && protected_set["$name"]=1
-    done < "$list_path"
+  local list_path="${protected_path:-${PROTECT_BRANCHES_FILE:-$own_root/instance/hygiene-protected-branches.txt}}"
+  # Require a regular, readable file -- not just `-r`. A directory at this
+  # path is also "-r" true (root can list it) but `read ... < "$list_path"`
+  # fails with EISDIR *inside* the while loop, which does not trip `set -e`
+  # (a while-condition's exit status is exempt), so the loop would silently
+  # behave exactly like an empty file: the same fail-open outcome as an
+  # unreadable path, one step removed. Reject it here instead.
+  if [[ ! -f "$list_path" || ! -r "$list_path" ]]; then
+    die "protected-branches list is not a readable regular file: $list_path -- refusing to reap with an unverifiable protect list (this is not the same as an empty list; create the file, even comments-only, or pass --protected-file explicitly)"
   fi
+  while IFS= read -r name; do
+    name="${name%%#*}"
+    name="${name#"${name%%[![:space:]]*}"}"
+    name="${name%"${name##*[![:space:]]}"}"
+    [[ -n "$name" ]] && protected_set["$name"]=1
+  done < "$list_path"
 }
 is_protected() { [[ -n "${protected_set["$1"]:-}" ]]; }
 
@@ -162,6 +187,11 @@ reap_branches() {
       say "held by live worktree, refusing: $branch (worktree: $worktree)"
       continue
     fi
+    # Coupling: this is the same land_assert_reap_safe gate/land.sh:270 calls
+    # right after a landing merges its one lane branch. A future change to
+    # that function changes this script's merge-safety judgment too, in both
+    # directions -- see the matching note at its definition in
+    # gate/land-lib.sh.
     if safety_out="$(land_assert_reap_safe "$repo" "$branch" "$main_sha" HYGIENE 2>&1)"; then
       say "$safety_out"
       say "merged branch: $branch"

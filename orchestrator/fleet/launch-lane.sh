@@ -22,6 +22,7 @@ Options:
   --base REF           Worktree start ref (default: origin/main)
   --branch BRANCH      Lane branch (default: ag-NAME)
   --agent-command FILE One-argv-entry-per-line command file
+                       (blank lines and # comments in column 1 are ignored)
                        (default: AGENT_COMMAND_FILE or instance/lane-agent-command.conf)
 EOF
 }
@@ -78,8 +79,29 @@ tmp_root="${TMPDIR:-/tmp}/infra-lane-tmp-$UID"
 tmp_dir="$tmp_root/$name"
 
 mkdir -p "$lanes_dir"
-[[ ! -e "$worktree" && ! -e "$pack_dir" && ! -e "$prompt" && ! -e "$log" && ! -e "$tmp_dir" ]] || \
-  die "lane artifacts already exist for $name"
+for artifact in "$worktree" "$pack_dir" "$prompt" "$log" "$tmp_dir"; do
+  if [[ -e "$artifact" || -L "$artifact" ]]; then
+    die "lane artifact already exists for $name: $artifact"
+  fi
+done
+
+# The pack directory is both the first artifact and the per-name reservation.
+# mkdir is the single atomic winner decision; it also rejects dangling links.
+if ! mkdir "$pack_dir"; then
+  die "lane artifact already exists for $name: $pack_dir"
+fi
+launch_complete=false
+worktree_created=false
+cleanup_failed_launch() {
+  "$launch_complete" && return
+  if "$worktree_created"; then
+    git -C "$repo" worktree remove --force "$worktree" >/dev/null 2>&1 || true
+    git -C "$repo" branch -D "$branch" >/dev/null 2>&1 || true
+  fi
+  rm -f -- "$prompt" "$log"
+  rm -rf -- "$pack_dir" "$tmp_dir"
+}
+trap cleanup_failed_launch EXIT
 
 "$BUN_BIN" "$repo/tools/instructions/compose.ts" --role "$role" --repo "$repo" --out "$pack_dir" >/dev/null
 {
@@ -94,6 +116,7 @@ mkdir -p "$lanes_dir"
 BUN_BIN="$BUN_BIN" bash "$repo/orchestrator/dispatch-lane.sh" "$prompt" >/dev/null
 
 git -C "$repo" worktree add -b "$branch" "$worktree" "$base" -q
+worktree_created=true
 mkdir -p "$tmp_root" "$tmp_dir"
 chmod 0711 "$tmp_root"
 chmod 0700 "$tmp_dir"
@@ -110,8 +133,9 @@ if ! systemd-run --collect --unit "$unit" \
   --working-directory="$worktree" \
   /bin/bash -o pipefail -c 'prompt=$1; bun=$2; masker=$3; log=$4; shift 4; "$@" "$(cat "$prompt")" 2>&1 | "$bun" "$masker" >>"$log"' \
   _ "$prompt" "$BUN_BIN" "$repo/daemon/mask-stream.ts" "$log" "${agent_argv[@]}" >/dev/null; then
-  printf 'launch-lane: unit launch failed; retained worktree for diagnosis: %s\n' "$worktree" >&2
+  printf 'launch-lane: unit launch failed; cleaned lane artifacts: %s\n' "$name" >&2
   exit 1
 fi
 
+launch_complete=true
 printf 'launched %s\nworktree: %s\nbranch: %s\nlog: %s\n' "$unit" "$worktree" "$branch" "$log"

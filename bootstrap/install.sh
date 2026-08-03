@@ -49,6 +49,7 @@ does not enable, start, restart, or reload units.
 
 Environment overrides: INSTALL_ROOT, REPO_URL, REPO_BRANCH (default: main),
 BUN_VERSION, ENV_FILE, BUN_BIN, BASH_BIN, RUNTIME_DIR, INFRA_STATE_DB,
+TEST_GATE_ORIGIN_URL,
 CRONTAB_CMD, SYSTEMD_SYSTEM_DIR, EXPECTED_UNITS_FILE.
 --verify-source checks only the boundaries a source/container test can prove
 and reports explicit SKIPs where a live host would be required; there is no
@@ -259,7 +260,14 @@ install_hygiene_cron() {
 
 run_install_test_gate() {
   echo 'INSTALL GATE: repository tests'
-  (cd "$INSTALL_ROOT" && env -u BUN_BIN -u TMPDIR "$BUN_BIN" test)
+  # A clean rebuild may clone through a local transport while tests exercise
+  # tracked-remote policy. Pin the canonical test subject explicitly, then keep
+  # installer configuration from leaking into repository test fixtures.
+  if [[ -n "${TEST_GATE_ORIGIN_URL:-}" ]]; then
+    git -C "$INSTALL_ROOT" remote set-url origin "$TEST_GATE_ORIGIN_URL"
+  fi
+  (cd "$INSTALL_ROOT" && env -u BUN_BIN -u TMPDIR -u INSTALL_ROOT -u REPO_URL \
+    -u REPO_BRANCH -u TEST_GATE_ORIGIN_URL "$BUN_BIN" test)
   echo 'INSTALL GATE: PASS full sweep'
 }
 

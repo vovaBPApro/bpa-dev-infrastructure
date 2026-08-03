@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -48,6 +48,29 @@ esac
 }
 
 describe("meteorite runner", () => {
+  test("the default report stays outside the checkout and the run names its path", async () => {
+    const root = await mkdtemp(join(tmpdir(), "meteorite-clean-tree-test-"));
+    roots.push(root);
+    const checkout = join(root, "checkout");
+    const stateHome = join(root, "state");
+    await Bun.$`mkdir -p ${join(checkout, "meteorite")}`;
+    await cp(runner, join(checkout, "meteorite", "run.sh"));
+    await Bun.$`git -C ${checkout} init -q`;
+    await Bun.$`git -C ${checkout} add meteorite/run.sh`;
+    await Bun.$`git -C ${checkout} -c user.name=test -c user.email=test@example.invalid commit -qm baseline`;
+
+    const f = await fixture();
+    const env = { ...f.env, XDG_STATE_HOME: stateHome };
+    delete env.METEORITE_REPORT;
+    const localRunner = join(checkout, "meteorite", "run.sh");
+    const run = Bun.spawnSync(["bash", localRunner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env });
+    expect(run.exitCode).toBe(0);
+    const report = join(stateHome, "bpa-dev-infrastructure", "evidence", "meteorite-latest.md");
+    expect(await Bun.file(report).exists()).toBe(true);
+    expect(run.stdout.toString()).toContain(`[meteorite] report: ${report}`);
+    expect(Bun.spawnSync(["git", "-C", checkout, "status", "--porcelain"]).stdout.toString()).toBe("");
+  });
+
   test("every publisher-supplied test prerequisite is validated by environment name before Docker starts", async () => {
     const source = await readFile(runner, "utf8");
     const prerequisiteCommand = source.match(/"test-prerequisites\|([^\n]+)"/)?.[1] ?? "";

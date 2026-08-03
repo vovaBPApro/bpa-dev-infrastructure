@@ -51,6 +51,7 @@ make_fixture() {
   printf 'import { test, expect } from "bun:test"; test("fixture", () => expect(true).toBe(true));\n' > "$repo/base.test.ts"
   mkdir -p "$repo/meteorite"
   cat > "$repo/meteorite/prove-candidate.sh" <<'EOF'
+# BEGIN TRUSTED TEST PROVER
 #!/usr/bin/env bash
 sha="$2"
 cat > "$METEORITE_REPORT" <<REPORT
@@ -71,6 +72,7 @@ cat > "$METEORITE_REPORT" <<REPORT
 - full-test-suite: PASS
 - unit-drift: PASS
 REPORT
+# END TRUSTED TEST PROVER
 EOF
   chmod +x "$repo/meteorite/prove-candidate.sh"
   git -C "$repo" add base.txt base.test.ts meteorite/prove-candidate.sh

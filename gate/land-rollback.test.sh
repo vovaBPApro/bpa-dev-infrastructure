@@ -30,6 +30,10 @@ land="$root/gate/land.sh"
 # privilege fixture does, so chmod on the named fixture can establish the
 # whole traversal precondition instead of being defeated by an ancestor.
 fixture_root=$(env -u TMPDIR -u TMP -u TEMP mktemp -d)
+mkdir -p "$fixture_root/fake-bin"
+printf '#!/usr/bin/env bash\ntest "$1" = info\n' > "$fixture_root/fake-bin/docker"
+chmod +x "$fixture_root/fake-bin/docker"
+export PATH="$fixture_root/fake-bin:$PATH"
 cleanup() {
   # Some fixtures below chattr +i a file to make a rollback genuinely
   # unrecoverable; clear that before the trap tries to rm -rf the fixture.
@@ -74,7 +78,10 @@ make_fixture() {
   git -C "$repo" config user.name Land
   printf 'base\n' > "$repo/base.txt"
   printf 'import { test, expect } from "bun:test"; test("fixture", () => expect(true).toBe(true));\n' > "$repo/base.test.ts"
-  git -C "$repo" add base.txt base.test.ts
+  mkdir -p "$repo/meteorite"
+  sed -n '/^# BEGIN TRUSTED TEST PROVER$/,/^# END TRUSTED TEST PROVER$/p' "$root/gate/land.test.sh" | sed '1d;$d' > "$repo/meteorite/prove-candidate.sh"
+  chmod +x "$repo/meteorite/prove-candidate.sh"
+  git -C "$repo" add base.txt base.test.ts meteorite/prove-candidate.sh
   git -C "$repo" commit -m base >/dev/null
   git -C "$repo" push -u origin main >/dev/null
   printf 'ref: refs/heads/main\n' > "$bare/HEAD"

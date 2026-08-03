@@ -22,3 +22,8 @@ v3
 # is recut and landed, or when the park record is deliberately abandoned.
 # Park record: instance/parked/V3-1.1-stage2-2026-08-03.md
 ag-s3-2-r3
+
+# Parked work retained under HR-1726's three-round exit — the v3 meteorite
+# runner. Unmerged by design; the branch is the evidence and the recut base.
+# Park record: instance/parked/V3-1.5-meteorite-2026-08-03.md
+ag-s3-1-r3

@@ -60,6 +60,10 @@ assert_output_lacks() {
   assert_not grep -Fq "$2" "$1"
 }
 
+capability_forced_missing() {
+  [[ ",${INFRA_TEST_FORCE_MISSING_CAPABILITIES:-}," == *",$1,"* ]]
+}
+
 make_fixture() {
   name="$1"
   bare="$fixture_root/$name-origin.git"
@@ -151,7 +155,7 @@ assert test -z "$(git -C "$fixture_root/stale-lock-declared-repo" status --porce
 # else, never "verdict=aborted".
 immutable_probe="$fixture_root/immutable-probe"
 touch "$immutable_probe"
-if chattr +i "$immutable_probe" 2>/dev/null; then
+if ! capability_forced_missing immutable-file && chattr +i "$immutable_probe" 2>/dev/null; then
   chattr -i "$immutable_probe"
   make_fixture unrecoverable-lock
   unrecoverable_sha=$(make_lane "$fixture_root/unrecoverable-lock-repo" ag-unrecoverable-lock)
@@ -166,7 +170,7 @@ if chattr +i "$immutable_probe" 2>/dev/null; then
   assert_output_lacks "$unrecoverable_out" 'LAND verdict=aborted'
   chattr -i "$fixture_root/unrecoverable-lock-repo/.git/index.lock" 2>/dev/null || true
 else
-  echo 'unrecoverable-lock: EXCLUDED capability=immutable-file (fixture filesystem rejects chattr +i)'
+  echo 'land-rollback: EXCLUDED case=unrecoverable-lock capability=immutable-file'
 fi
 
 # --- 4. Defect 1 (review round 2): a live lock must never be deleted ------
@@ -184,7 +188,7 @@ exec {proc_lock_probe_fd}>"$proc_lock_probe"
 flock "$proc_lock_probe_fd"
 proc_lock_probe_inode="$(stat -Lc '%i' "$proc_lock_probe")"
 proc_locks_visible=false
-if awk -v inode="$proc_lock_probe_inode" '
+if ! capability_forced_missing proc-lock-observability && awk -v inode="$proc_lock_probe_inode" '
   $2 == "FLOCK" { split($6, key, ":"); if (key[3] == inode) found = 1 }
   END { exit(found ? 0 : 1) }
 ' /proc/locks; then
@@ -210,7 +214,7 @@ if "$proc_locks_visible"; then
   # from under the live holder to force a false recovery.
   assert_not test "$(git -C "$fixture_root/live-lock-repo" rev-parse main)" = "$live_lock_before"
 else
-  echo 'live-lock: EXCLUDED capability=proc-lock-observability (/proc/locks does not expose this process namespace flock)'
+  echo 'land-rollback: EXCLUDED case=live-lock capability=proc-lock-observability'
 fi
 
 # --- 5. Defect 2 (review round 2): HEAD-only verification misses a dirty --
@@ -261,7 +265,7 @@ assert test -n "$(git -C "$fixture_root/dirty-tree-repo" status --porcelain)"
 # the live lock and returned success (exit 0). The fix must refuse, leave
 # the lock in place, and return failure.
 if ! "$proc_locks_visible"; then
-  echo 'uid-fd-visibility: EXCLUDED capability=proc-lock-observability (/proc/locks does not expose this process namespace flock)'
+  echo 'land-rollback: EXCLUDED case=uid-fd-visibility capability=proc-lock-observability'
 elif ! command -v setpriv >/dev/null 2>&1 || ! id nobody >/dev/null 2>&1; then
   echo 'uid-fd-visibility: SKIPPED (setpriv or the nobody user is unavailable in this environment)'
 else
@@ -364,8 +368,8 @@ fi
 # unrelated uid (daemon, uid 1) that the scan must skip rather than choke on.
 # This is the same real land_lock_is_stale as fixture 6, exercised under the
 # opposite condition: nothing plausible holds the lock, so it must clear.
-if ! unshare --pid --mount-proc --fork true >/dev/null 2>&1; then
-  echo 'uid-dead-code: EXCLUDED capability=pid-mount-namespace (unshare --pid --mount-proc is not permitted)'
+if capability_forced_missing pid-mount-namespace || ! unshare --pid --mount-proc --fork true >/dev/null 2>&1; then
+  echo 'land-rollback: EXCLUDED case=uid-dead-code capability=pid-mount-namespace'
 elif ! command -v setpriv >/dev/null 2>&1 || ! id nobody >/dev/null 2>&1; then
   echo 'uid-dead-code: SKIPPED (unshare, setpriv, or the nobody user is unavailable in this environment)'
 else

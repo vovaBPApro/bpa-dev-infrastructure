@@ -17,6 +17,10 @@ cleanup() {
 trap cleanup EXIT
 mkdir -p "$SHIM" "$SCRATCH/home"
 
+capability_forced_missing() {
+  [[ ",${INFRA_TEST_FORCE_MISSING_CAPABILITIES:-}," == *",$1,"* ]]
+}
+
 # The recovery half of this regression lock derives the kernel lock owner from
 # /proc/locks. Some container runtimes expose an empty /proc/locks even for a
 # flock acquired inside that same PID namespace. In that environment the
@@ -27,15 +31,48 @@ proc_lock_probe="$SCRATCH/proc-lock-probe"
 exec {proc_lock_probe_fd}>"$proc_lock_probe"
 flock "$proc_lock_probe_fd"
 proc_lock_probe_inode="$(stat -Lc '%i' "$proc_lock_probe")"
-if ! awk -v inode="$proc_lock_probe_inode" '
+proc_locks_visible=true
+if capability_forced_missing proc-lock-observability || ! awk -v inode="$proc_lock_probe_inode" '
   $2 == "FLOCK" { split($6, key, ":"); if (key[3] == inode) found = 1 }
   END { exit(found ? 0 : 1) }
 ' /proc/locks; then
-  printf '%s\n' \
-    'singleton-failclosed: EXCLUDED capability=proc-lock-observability (/proc/locks does not expose this process namespace flock)'
-  exit 0
+  proc_locks_visible=false
 fi
 exec {proc_lock_probe_fd}>&-
+
+# These singleton primitives do not depend on /proc/locks visibility. Keep
+# them live even where recovery ownership cannot be measured.
+primitive_lock="$SCRATCH/primitive-singleton.lock"
+exec {primitive_lock_fd}>"$primitive_lock"
+flock "$primitive_lock_fd"
+primitive_inode="$(stat -Lc '%d:%i' "$primitive_lock")"
+if flock -n "$primitive_lock" true; then
+  printf '%s\n' 'FAIL: a second singleton primitive acquired the held lock' >&2
+  exit 1
+fi
+[[ "$(stat -Lc '%d:%i' "$primitive_lock")" == "$primitive_inode" ]] || {
+  printf '%s\n' 'FAIL: lock contention rotated the singleton inode' >&2
+  exit 1
+}
+exec {primitive_lock_fd}>&-
+printf '%s\n' 'singleton-failclosed: RAN case=lock-contention-refusal'
+exec {primitive_reacquire_fd}>"$primitive_lock"
+flock -n "$primitive_reacquire_fd" || {
+  printf '%s\n' 'FAIL: released singleton primitive could not be reacquired' >&2
+  exit 1
+}
+[[ "$(stat -Lc '%d:%i' "$primitive_lock")" == "$primitive_inode" ]] || {
+  printf '%s\n' 'FAIL: singleton reacquisition rotated the lock inode' >&2
+  exit 1
+}
+exec {primitive_reacquire_fd}>&-
+printf '%s\n' 'singleton-failclosed: RAN case=released-lock-reacquisition'
+
+if ! "$proc_locks_visible"; then
+  printf '%s\n' 'singleton-failclosed: EXCLUDED case=stale-ofd-recovery capability=proc-lock-observability'
+  printf 'singleton fail-closed tests: PASS\n'
+  exit 0
+fi
 
 cat > "$SHIM/tmux" <<'EOF'
 #!/usr/bin/env bash
@@ -106,6 +143,7 @@ fi
   fail 'cross-session singleton refusal executed a second provider'
 kill -0 "$first_provider_pid" 2>/dev/null ||
   fail 'cross-session singleton refusal killed the live provider'
+printf '%s\n' 'singleton-failclosed: RAN case=cross-session-refusal'
 
 tmux -L "$TMUX_SOCKET" kill-session -t singleton-first
 for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -145,6 +183,7 @@ grep -q '^ERROR orchestrator-singleton-held .*recovery=unproven' <<<"$unknown_ou
 : > "$unknown_release"
 wait "$unknown_holder_pid" 2>/dev/null || true
 unknown_holder_pid=""
+printf '%s\n' 'singleton-failclosed: RAN case=unknown-holder-refusal'
 
 # Reproduce the exact inherited-OFD failure. The original lock owner forks a
 # long-lived survivor, then exits. /proc/locks retains that dead original PID;

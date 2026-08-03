@@ -80,6 +80,7 @@ write_report() {
     printf -- '- unit activation — bootstrap stage 1 renders or activates no systemd units.\n'
     printf -- '- watchdog arm — bootstrap stage 1 has no watchdog arm/disarm boundary.\n'
     printf -- '- Telegram transport — no credential is supplied and no authenticated transport is started.\n'
+    printf -- '- shell capability exclusions — the cases pinned in `instance/expected-shell-capability-exclusions.tsv` remain unproven when their named kernel capability is absent.\n'
   } > "$tmp"
   mv "$tmp" "$report"
 }
@@ -190,7 +191,7 @@ commands=(
   "bootstrap-dry-run|cd /work/source && bash bootstrap/install.sh --dry-run"
   "bootstrap-install|cd /work/source && INSTALL_ROOT=/work/install REPO_URL=/work/source REPO_BRANCH=meteorite-target ENV_FILE=/work/config/orchestrator.env BUN_BIN=/root/.bun/bin/bun RUNTIME_DIR=/work/runtime INFRA_STATE_DB=/work/runtime/state.db bash bootstrap/install.sh"
   "bootstrap-verify-source|cd /work/source && INSTALL_ROOT=/work/install ENV_FILE=/work/config/orchestrator.env BUN_BIN=/root/.bun/bin/bun RUNTIME_DIR=/work/runtime INFRA_STATE_DB=/work/runtime/state.db bash bootstrap/install.sh --verify-source"
-  "test-prerequisites|test -n '$donor_sha' && test -n '$donor_ref' && ln -sfn /root/.bun/bin/bun /usr/local/bin/bun && git -C /work/install fetch '$repo_url' '$donor_ref':refs/remotes/origin/v2-deprecated && test \"\$(git -C /work/install rev-parse refs/remotes/origin/v2-deprecated)\" = '$donor_sha'"
+  "test-prerequisites|test -n '$donor_sha' && test -n '$donor_ref' && ln -sfn /root/.bun/bin/bun /usr/local/bin/bun && git -C /work/install remote set-url origin '$repo_url' && git -C /work/install fetch origin '$donor_ref':refs/remotes/origin/v2-deprecated && test \"\$(git -C /work/install rev-parse refs/remotes/origin/v2-deprecated)\" = '$donor_sha'"
   "full-test-suite|cd /work/install && PATH=/root/.bun/bin:\$PATH /root/.bun/bin/bun test"
   "unit-drift|install -d /work/rendered-units && for template in /work/install/bootstrap/units/*.in /work/install/instance/units/*.in; do test -f \"\$template\" || continue; INSTALL_ROOT=/root/bpa-dev-infrastructure ENV_FILE=/root/.config/bpa/orchestrator.env BUN_BIN=/usr/local/bin/bun BASH_BIN=/usr/bin/bash FULL_SUITE_ON_CALENDAR='*-*-* 03:30:00' ORCH_WATCHDOG_INTERVAL=60 envsubst < \"\$template\" > \"/work/rendered-units/\$(basename \"\${template%.in}\")\"; done && cd /work/install && SYSTEMD_SYSTEM_DIR=/work/rendered-units bash bootstrap/check-unit-drift.sh"
 )

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "child_process";
-import { existsSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 
 // This file is the landing-gate executor for the shell-test tier. The gate's
@@ -63,3 +63,38 @@ test("excluded shell tests are named and reasoned", () => {
     expect(reason.trim().length).toBeGreaterThan(0);
   }
 });
+
+test(
+  "runtime capability exclusions exactly match the independently pinned inventory",
+  () => {
+    const inventory = readFileSync(
+      join(repoRoot, "instance/expected-shell-capability-exclusions.tsv"),
+      "utf8",
+    )
+      .split("\n")
+      .filter((line) => line && !line.startsWith("#"))
+      .map((line) => line.split("\t"))
+      .map(([file, caseName, capability]) => `${file}\t${caseName}\t${capability}`)
+      .sort();
+    const byFile = new Map<string, string[]>();
+    for (const row of inventory) {
+      const [file] = row.split("\t");
+      byFile.set(file, [...(byFile.get(file) ?? []), row]);
+    }
+    const observed: string[] = [];
+    for (const [file] of byFile) {
+      const env = { ...process.env };
+      delete env.BUN_BIN;
+      env.INFRA_TEST_FORCE_MISSING_CAPABILITIES =
+        "immutable-file,proc-lock-observability,pid-mount-namespace";
+      const result = spawnSync("bash", [file], { cwd: repoRoot, encoding: "utf8", env });
+      expect(result.status, `${file}: ${result.stdout}${result.stderr}`).toBe(0);
+      for (const line of result.stdout.split("\n")) {
+        const match = line.match(/EXCLUDED case=([^ ]+) capability=([^ ]+)$/);
+        if (match) observed.push(`${file}\t${match[1]}\t${match[2]}`);
+      }
+    }
+    expect(observed.sort()).toEqual(inventory);
+  },
+  120_000,
+);

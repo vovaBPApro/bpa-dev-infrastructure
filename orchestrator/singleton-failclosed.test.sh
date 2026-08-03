@@ -17,6 +17,26 @@ cleanup() {
 trap cleanup EXIT
 mkdir -p "$SHIM" "$SCRATCH/home"
 
+# The recovery half of this regression lock derives the kernel lock owner from
+# /proc/locks. Some container runtimes expose an empty /proc/locks even for a
+# flock acquired inside that same PID namespace. In that environment the
+# subject is genuinely unmeasurable: launch.sh itself must fail closed, and the
+# test must report a named exclusion rather than turn the missing observation
+# boundary into a pass or an incidental failure later in the fixture.
+proc_lock_probe="$SCRATCH/proc-lock-probe"
+exec {proc_lock_probe_fd}>"$proc_lock_probe"
+flock "$proc_lock_probe_fd"
+proc_lock_probe_inode="$(stat -Lc '%i' "$proc_lock_probe")"
+if ! awk -v inode="$proc_lock_probe_inode" '
+  $2 == "FLOCK" { split($6, key, ":"); if (key[3] == inode) found = 1 }
+  END { exit(found ? 0 : 1) }
+' /proc/locks; then
+  printf '%s\n' \
+    'singleton-failclosed: EXCLUDED capability=proc-lock-observability (/proc/locks does not expose this process namespace flock)'
+  exit 0
+fi
+exec {proc_lock_probe_fd}>&-
+
 cat > "$SHIM/tmux" <<'EOF'
 #!/usr/bin/env bash
 exec /usr/bin/tmux -L "${ORCH_TEST_TMUX_SOCKET:?}" "$@"

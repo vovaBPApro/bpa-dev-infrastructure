@@ -149,18 +149,25 @@ assert test -z "$(git -C "$fixture_root/stale-lock-declared-repo" status --porce
 # the fix must handle honestly: report contract says "aborted" means the ref
 # did not move, so when the gate cannot prove that, it must say something
 # else, never "verdict=aborted".
-make_fixture unrecoverable-lock
-unrecoverable_sha=$(make_lane "$fixture_root/unrecoverable-lock-repo" ag-unrecoverable-lock)
-unrecoverable_before=$(git -C "$fixture_root/unrecoverable-lock-repo" rev-parse main)
-report "$fixture_root/unrecoverable-lock-report.md" "$unrecoverable_sha" 'touch .git/index.lock; chattr +i .git/index.lock; exit 1'
-unrecoverable_out="$fixture_root/unrecoverable-lock-out.txt"
-if "$land" --branch ag-unrecoverable-lock --report "$fixture_root/unrecoverable-lock-report.md" --repo "$fixture_root/unrecoverable-lock-repo" --run-verify --no-push >"$unrecoverable_out" 2>&1; then
-  echo 'unrecoverable-lock: gate reported success despite an unrecoverable rollback' >&2
-  exit 1
+immutable_probe="$fixture_root/immutable-probe"
+touch "$immutable_probe"
+if chattr +i "$immutable_probe" 2>/dev/null; then
+  chattr -i "$immutable_probe"
+  make_fixture unrecoverable-lock
+  unrecoverable_sha=$(make_lane "$fixture_root/unrecoverable-lock-repo" ag-unrecoverable-lock)
+  unrecoverable_before=$(git -C "$fixture_root/unrecoverable-lock-repo" rev-parse main)
+  report "$fixture_root/unrecoverable-lock-report.md" "$unrecoverable_sha" 'touch .git/index.lock; chattr +i .git/index.lock; exit 1'
+  unrecoverable_out="$fixture_root/unrecoverable-lock-out.txt"
+  if "$land" --branch ag-unrecoverable-lock --report "$fixture_root/unrecoverable-lock-report.md" --repo "$fixture_root/unrecoverable-lock-repo" --run-verify --no-push >"$unrecoverable_out" 2>&1; then
+    echo 'unrecoverable-lock: gate reported success despite an unrecoverable rollback' >&2
+    exit 1
+  fi
+  assert_output_has "$unrecoverable_out" 'LAND verdict=rollback-failed'
+  assert_output_lacks "$unrecoverable_out" 'LAND verdict=aborted'
+  chattr -i "$fixture_root/unrecoverable-lock-repo/.git/index.lock" 2>/dev/null || true
+else
+  echo 'unrecoverable-lock: EXCLUDED capability=immutable-file (fixture filesystem rejects chattr +i)'
 fi
-assert_output_has "$unrecoverable_out" 'LAND verdict=rollback-failed'
-assert_output_lacks "$unrecoverable_out" 'LAND verdict=aborted'
-chattr -i "$fixture_root/unrecoverable-lock-repo/.git/index.lock" 2>/dev/null || true
 
 # --- 4. Defect 1 (review round 2): a live lock must never be deleted ------
 # The verify: command's own child is still alive and holds an open fd on
@@ -172,22 +179,39 @@ chattr -i "$fixture_root/unrecoverable-lock-repo/.git/index.lock" 2>/dev/null ||
 # land_force_reset must find it live via /proc, refuse to delete it, and
 # report `verdict=rollback-failed` -- never a false `verdict=aborted` -- while
 # leaving main exactly where the (necessarily failed) reset left it.
-make_fixture live-lock
-live_lock_sha=$(make_lane "$fixture_root/live-lock-repo" ag-live-lock)
-live_lock_before=$(git -C "$fixture_root/live-lock-repo" rev-parse main)
-live_lock_cmd='setsid sh -c "exec 8>.git/index.lock; sleep 20" </dev/null >/dev/null 2>&1 & sleep 0.3; exit 1'
-report "$fixture_root/live-lock-report.md" "$live_lock_sha" "$live_lock_cmd"
-live_lock_out="$fixture_root/live-lock-out.txt"
-if "$land" --branch ag-live-lock --report "$fixture_root/live-lock-report.md" --repo "$fixture_root/live-lock-repo" --run-verify --no-push >"$live_lock_out" 2>&1; then
-  echo 'live-lock: gate reported success while a live process held the lock' >&2
-  exit 1
+proc_lock_probe="$fixture_root/proc-lock-probe"
+exec {proc_lock_probe_fd}>"$proc_lock_probe"
+flock "$proc_lock_probe_fd"
+proc_lock_probe_inode="$(stat -Lc '%i' "$proc_lock_probe")"
+proc_locks_visible=false
+if awk -v inode="$proc_lock_probe_inode" '
+  $2 == "FLOCK" { split($6, key, ":"); if (key[3] == inode) found = 1 }
+  END { exit(found ? 0 : 1) }
+' /proc/locks; then
+  proc_locks_visible=true
 fi
-assert_output_has "$live_lock_out" 'LAND verdict=rollback-failed'
-assert_output_lacks "$live_lock_out" 'LAND verdict=aborted'
-# The lock was genuinely live, so recovery was genuinely impossible: main
-# must still show the (unrecovered) advance, proving nothing was deleted out
-# from under the live holder to force a false recovery.
-assert_not test "$(git -C "$fixture_root/live-lock-repo" rev-parse main)" = "$live_lock_before"
+exec {proc_lock_probe_fd}>&-
+
+if "$proc_locks_visible"; then
+  make_fixture live-lock
+  live_lock_sha=$(make_lane "$fixture_root/live-lock-repo" ag-live-lock)
+  live_lock_before=$(git -C "$fixture_root/live-lock-repo" rev-parse main)
+  live_lock_cmd='setsid sh -c "exec 8>.git/index.lock; sleep 20" </dev/null >/dev/null 2>&1 & sleep 0.3; exit 1'
+  report "$fixture_root/live-lock-report.md" "$live_lock_sha" "$live_lock_cmd"
+  live_lock_out="$fixture_root/live-lock-out.txt"
+  if "$land" --branch ag-live-lock --report "$fixture_root/live-lock-report.md" --repo "$fixture_root/live-lock-repo" --run-verify --no-push >"$live_lock_out" 2>&1; then
+    echo 'live-lock: gate reported success while a live process held the lock' >&2
+    exit 1
+  fi
+  assert_output_has "$live_lock_out" 'LAND verdict=rollback-failed'
+  assert_output_lacks "$live_lock_out" 'LAND verdict=aborted'
+  # The lock was genuinely live, so recovery was genuinely impossible: main
+  # must still show the (unrecovered) advance, proving nothing was deleted out
+  # from under the live holder to force a false recovery.
+  assert_not test "$(git -C "$fixture_root/live-lock-repo" rev-parse main)" = "$live_lock_before"
+else
+  echo 'live-lock: EXCLUDED capability=proc-lock-observability (/proc/locks does not expose this process namespace flock)'
+fi
 
 # --- 5. Defect 2 (review round 2): HEAD-only verification misses a dirty --
 #        tree left behind by a reset that otherwise fully succeeded.
@@ -236,7 +260,9 @@ assert test -n "$(git -C "$fixture_root/dirty-tree-repo" status --porcelain)"
 # scanner cannot inspect. Confirmed against the pre-fix function: it deleted
 # the live lock and returned success (exit 0). The fix must refuse, leave
 # the lock in place, and return failure.
-if ! command -v setpriv >/dev/null 2>&1 || ! id nobody >/dev/null 2>&1; then
+if ! "$proc_locks_visible"; then
+  echo 'uid-fd-visibility: EXCLUDED capability=proc-lock-observability (/proc/locks does not expose this process namespace flock)'
+elif ! command -v setpriv >/dev/null 2>&1 || ! id nobody >/dev/null 2>&1; then
   echo 'uid-fd-visibility: SKIPPED (setpriv or the nobody user is unavailable in this environment)'
 else
   # Lives under $fixture_root (not a separate mktemp -d) so the trap-driven
@@ -338,7 +364,9 @@ fi
 # unrelated uid (daemon, uid 1) that the scan must skip rather than choke on.
 # This is the same real land_lock_is_stale as fixture 6, exercised under the
 # opposite condition: nothing plausible holds the lock, so it must clear.
-if ! command -v unshare >/dev/null 2>&1 || ! command -v setpriv >/dev/null 2>&1 || ! id nobody >/dev/null 2>&1; then
+if ! unshare --pid --mount-proc --fork true >/dev/null 2>&1; then
+  echo 'uid-dead-code: EXCLUDED capability=pid-mount-namespace (unshare --pid --mount-proc is not permitted)'
+elif ! command -v setpriv >/dev/null 2>&1 || ! id nobody >/dev/null 2>&1; then
   echo 'uid-dead-code: SKIPPED (unshare, setpriv, or the nobody user is unavailable in this environment)'
 else
   deadcode_fixture="$fixture_root/deadcode-fixture"

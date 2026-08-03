@@ -150,7 +150,10 @@ if ! systemd-run --collect --unit "$unit" \
       printf "state: failed\nreason: log-masker-exit\nexit: %s\nreport: %s\n" "$mask_status" "$report" >"$status"
       exit "$mask_status"
     fi
-    "$gate" --report "$report" --repo "$repo" --branch "$branch" >>"$log" 2>&1
+    # This gate runs inside callers such as gate/land.sh, which deliberately
+    # export their own trusted BUN_BIN. The nested gate must resolve its own
+    # interpreter instead of tripping the land_resolve_bun caller-override guard.
+    env -u BUN_BIN "$gate" --report "$report" --repo "$repo" --branch "$branch" >>"$log" 2>&1
     guard_status=$?
     if ((guard_status == 0 || guard_status == 3)); then
       printf "state: terminal\nreason: report-valid\nexit: %s\nreport: %s\n" "$guard_status" "$report" >"$status"

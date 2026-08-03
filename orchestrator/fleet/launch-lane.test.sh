@@ -102,7 +102,9 @@ chmod +x "$SCRATCH/bin/report-agent"
 for mode in valid invalid crash; do
   lane="${mode/crash/crashed}"
   printf '%s\n%s\n' "$SCRATCH/bin/report-agent" "$mode" >"$SCRATCH/$mode.conf"
-  PATH="$SCRATCH/bin:$PATH" AGENT_COMMAND_FILE="$SCRATCH/$mode.conf" \
+  # A real landing exports BUN_BIN before this fixture runs. Keep it set here
+  # to lock the nested-gate boundary: lane-exit must still execute the guard.
+  PATH="$SCRATCH/bin:$PATH" BUN_BIN="$(command -v bun)" AGENT_COMMAND_FILE="$SCRATCH/$mode.conf" \
     MOCK_SYSTEMD_ARGS="$SCRATCH/$mode.systemd.args" TMPDIR="$SCRATCH/tmp-parent" \
     "$SCRIPT_DIR/launch-lane.sh" --name "$lane" --role coder --task-file "$SCRATCH/task.md" \
     --repo "$REPO_DIR" --lanes-dir "$SCRATCH/lanes" --base HEAD --branch "ag-fleet-launch-$lane" \

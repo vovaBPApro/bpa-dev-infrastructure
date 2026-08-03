@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { lineValue } from "./report-contract";
 
 type Options = {
@@ -140,6 +140,73 @@ const reportPath = resolve(options.report!);
 const repoPath = resolve(options.repo!);
 let report: Report | undefined;
 
+function reviewFieldValues(contents: string): { values: string[]; unterminatedFence: boolean } {
+  const values: string[] = [];
+  let fence: { marker: "`" | "~"; length: number } | undefined;
+
+  for (const line of contents.split(/\r?\n/)) {
+    if (fence) {
+      const closing = line.match(/^\s{0,3}(`+|~+)\s*$/);
+      if (closing && closing[1][0] === fence.marker && closing[1].length >= fence.length) fence = undefined;
+      continue;
+    }
+
+    const opening = line.match(/^\s{0,3}(`{3,}|~{3,})(?:[^\r\n]*)$/);
+    if (opening) {
+      fence = { marker: opening[1][0] as "`" | "~", length: opening[1].length };
+      continue;
+    }
+
+    const field = line.match(/^\s*review\s*:\s*(.*)$/i);
+    if (field) values.push(field[1].trim());
+  }
+
+  return { values, unterminatedFence: fence !== undefined };
+}
+
+function checkClaimedReview(contents: string, commit: string | undefined): void {
+  const { values: reviewFields, unterminatedFence } = reviewFieldValues(contents);
+  if (unterminatedFence) {
+    fail("review-field", "unterminated-fenced-block");
+    return;
+  }
+  if (reviewFields.length === 0) return;
+  if (reviewFields.length !== 1 || !reviewFields[0]) {
+    fail("review-field", "must-occur-once-and-be-nonempty");
+    return;
+  }
+  if (!options.branch) {
+    fail("review-artifact", "branch-required-to-resolve-artifact");
+    return;
+  }
+  const artifactPath = join(dirname(reportPath), `${options.branch}.review.md`);
+  if (!existsSync(artifactPath)) {
+    fail("review-artifact", `missing file=${artifactPath}`);
+    return;
+  }
+  try {
+    if (!lstatSync(artifactPath).isFile()) {
+      fail("review-artifact", `unreadable-or-non-regular file=${artifactPath}`);
+      return;
+    }
+    const artifact = readFileSync(artifactPath, "utf8");
+    const verdict = lineValue(artifact, "verdict");
+    const reviewedSha = lineValue(artifact, "reviewed-sha");
+    const expectedSha = commit?.split(/\s+/, 1)[0];
+    if (verdict !== "ACCEPT") {
+      fail("review-artifact", `verdict-must-be-ACCEPT file=${artifactPath}`);
+    } else if (!reviewedSha || !/^[0-9a-f]{40}$/i.test(reviewedSha)) {
+      fail("review-artifact", `malformed-reviewed-sha file=${artifactPath}`);
+    } else if (!expectedSha || reviewedSha.toLowerCase() !== expectedSha.toLowerCase()) {
+      fail("review-artifact", `reviewed-sha-mismatch expected=${expectedSha ?? "missing"} actual=${reviewedSha} file=${artifactPath}`);
+    } else {
+      pass("review-artifact", artifactPath);
+    }
+  } catch {
+    fail("review-artifact", `unreadable-or-non-regular file=${artifactPath}`);
+  }
+}
+
 if (!existsSync(reportPath)) {
   fail("report-file", "missing");
 } else {
@@ -153,6 +220,7 @@ if (!existsSync(reportPath)) {
     const result = lineValue(contents, "result");
     const secretScan = lineValue(contents, "secret-scan");
     const remaining = lineValue(contents, "remaining");
+    checkClaimedReview(contents, commit);
     if ([commit, verify, result, secretScan, remaining].some((value) => value === undefined)) {
       fail("report-shape", "required final-report lines missing or duplicated");
     } else if (hasUnstructuredCountClaim(contents)) {

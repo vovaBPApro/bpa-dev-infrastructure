@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { spawnSync } from "child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync } from "fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, readdirSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -32,6 +32,31 @@ const repoRoot = join(import.meta.dir, "..");
 const script = join(repoRoot, "bootstrap", "check-unit-drift.sh");
 const genericTemplateDir = join(repoRoot, "bootstrap", "units");
 const instanceTemplateDir = join(repoRoot, "instance", "units");
+
+const incidentRequiredUnits = [
+  "bpa-orchestrator.service",
+  "bpa-orchestrator-watchdog.service",
+  "bpa-orchestrator-watchdog.timer",
+  "bpa-telegram-daemon.service",
+] as const;
+
+test("the 2026-08-01 incident units are independently pinned in the manifest and template tree", () => {
+  const manifest = readFileSync(join(repoRoot, "instance", "expected-units.tsv"), "utf8");
+  const manifestUnits = new Set(
+    manifest
+      .split("\n")
+      .filter((line) => line && !line.startsWith("#"))
+      .map((line) => line.split("\t", 1)[0]),
+  );
+
+  // This named list is deliberately independent of both the manifest and
+  // directory enumeration. A coupled deletion from those two places must
+  // still fail here.
+  for (const unit of incidentRequiredUnits) {
+    expect(manifestUnits.has(unit), `${unit} must remain in expected-units.tsv`).toBe(true);
+    expect(existsSync(join(genericTemplateDir, `${unit}.in`)), `${unit}.in must remain in bootstrap/units`).toBe(true);
+  }
+});
 
 const RENDER_ENV = {
   INSTALL_ROOT: "/root/bpa-dev-infrastructure",

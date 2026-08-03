@@ -44,12 +44,19 @@ const cases = [
   { name: "real missing required fields", kind: "real", expected: "invalid", make: (f: ReturnType<typeof fixture>) => writeFileSync(f.report, `commit: ${f.sha}\nresult: clean\n`) },
   { name: "real forged commit substring", kind: "real", expected: "invalid", make: (f: ReturnType<typeof fixture>) => writeFileSync(f.report, body("0".repeat(40), `note: commit: ${f.sha}\n`)) },
   { name: "real Review case evasion", kind: "real", expected: "invalid", make: (f: ReturnType<typeof fixture>) => writeFileSync(f.report, body(f.sha, "Review: ACCEPT\n")) },
-  { name: "real spaced review evasion", kind: "real", expected: "invalid", make: (f: ReturnType<typeof fixture>) => writeFileSync(f.report, body(f.sha, " review : ACCEPT\n")) },
+  { name: "real leading-space review evasion", kind: "real", expected: "invalid", make: (f: ReturnType<typeof fixture>) => writeFileSync(f.report, body(f.sha, " review: ACCEPT\n")) },
+  { name: "real pre-colon-space review evasion", kind: "real", expected: "invalid", make: (f: ReturnType<typeof fixture>) => writeFileSync(f.report, body(f.sha, "review : ACCEPT\n")) },
   { name: "real unterminated backtick fence", kind: "real", expected: "invalid", make: (f: ReturnType<typeof fixture>) => writeFileSync(f.report, `${body(f.sha)}\`\`\`text\nreview: ACCEPT`) },
   { name: "real shorter closing fence", kind: "real", expected: "invalid", make: (f: ReturnType<typeof fixture>) => writeFileSync(f.report, `${body(f.sha)}\`\`\`\`\nexample\n\`\`\`\nreview: ACCEPT`) },
   { name: "real unterminated tilde fence", kind: "real", expected: "invalid", make: (f: ReturnType<typeof fixture>) => writeFileSync(f.report, `${body(f.sha)}~~~markdown\nreview: ACCEPT`) },
   { name: "constructed intermediate SHA", kind: "constructed", expected: "invalid", make: (f: ReturnType<typeof fixture>) => { const old=f.sha; writeFileSync(join(f.repo,"later"),"two\n"); git(f.repo,"add","later"); git(f.repo,"commit","-m","later"); writeFileSync(f.report,body(old)); } },
-  { name: "real report committed into branch", kind: "real", expected: "invalid", make: (f: ReturnType<typeof fixture>) => { writeFileSync(join(f.repo,"report.md"),body(f.sha)); git(f.repo,"add","report.md"); git(f.repo,"commit","-m","report"); writeFileSync(f.report,body(f.sha)); } },
+  { name: "real report committed into branch", kind: "real", expected: "invalid", make: (f: ReturnType<typeof fixture>) => {
+    f.report = join(f.repo, "report.md");
+    writeFileSync(f.report, body(f.sha)); git(f.repo, "add", "report.md"); git(f.repo, "commit", "-m", "report");
+    // A report cannot carry the commit that contains it. Rewriting it to name
+    // the new tip only makes the tracked worktree dirty, which is also invalid.
+    writeFileSync(f.report, body(git(f.repo, "rev-parse", "HEAD")));
+  } },
 ] as const;
 
 describe("one terminal report contract", () => {

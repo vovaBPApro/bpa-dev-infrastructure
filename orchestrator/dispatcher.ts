@@ -32,16 +32,8 @@ async function validTerminal(path:string,row:LaneRecord,repoDir:string,branch:st
     if(typeof t!=="object"||t.laneId!==row.id||t.attempt!==row.fencingToken||t.ownerToken!==row.leaseOwner||!/^\d{4}-\d\d-\d\dT/.test(t.at)||!(["clean","NO-GO"] as unknown[]).includes(t.verdict))return;
     if(resolve(t.reportPath)!==resolve(dirname(path),"report.md")||!(await exists(t.reportPath)))return;
     const report=await readFile(t.reportPath,"utf8");
-    // Deliberately uses gate/report-contract.ts's lineValue -- the same
-    // anchored, single-match parser gate/completion-guard.ts uses -- instead
-    // of a raw substring test. A plain `report.includes("commit: <sha>")|
-    // accepted the right text ANYWHERE in the file (e.g. inside a `blocker:`
-    // sentence), not only as the report's actual, singular `commit:` line.
-    // This does not make the two report contracts (lane:/attempt:/commit:/
-    // result: here vs commit:/verify:/result:/secret-scan:/remaining: in
-    // completion-guard.ts) the same shape -- see the KNOWN DIVERGENCE note
-    // below -- it only guarantees both parse whichever fields they do share
-    // the same strict way.
+    // Keep envelope identity checks here; all report parsing and policy belong
+    // to the canonical completion guard invoked by dispatcherReportVerdict().
     const reportedSha=report.match(/^commit:\s*([0-9a-f]{40})(?:\s|$)/m)?.[1];
     if(reportedSha!==t.sha||dispatcherReportVerdict(t.reportPath,repoDir,branch)!==t.verdict)return;
     return t;

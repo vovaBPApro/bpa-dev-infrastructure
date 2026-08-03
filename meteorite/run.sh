@@ -5,7 +5,7 @@
 # container, clones the public repository without mounting or copying host
 # files, runs bootstrap, and executes the complete source suite. It is NOT in
 # the default `bun test` sweep. Run it explicitly with:
-#   bun run test:meteorite
+#   bun run test:meteorite -- --ref "$(git rev-parse HEAD)"
 # Changes to this file, bootstrap/install.sh, bootstrap/check-unit-drift.sh, or
 # the rebuild contract require that command as landing evidence.
 set -euo pipefail
@@ -24,11 +24,13 @@ stages=()
 
 usage() {
   cat <<'EOF'
-Usage: meteorite/run.sh [--ref <git-ref>] [--repo-url <url>]
+Usage: meteorite/run.sh --ref <40-character-commit-sha> [--repo-url <url>]
 
-The default ref is the current origin/main SHA. The default URL is the tracked
-origin remote; public GitHub SSH syntax is converted to its credential-free
-HTTPS equivalent. Environment: METEORITE_REPORT, METEORITE_IMAGE,
+The ref is mandatory: this runner never guesses which candidate is under test.
+The default URL is the tracked origin remote; public GitHub SSH syntax is
+converted to its credential-free HTTPS equivalent. The requested commit must
+be fetchable from that source. A local-only commit therefore fails closed; it
+is not remote-clone evidence. Environment: METEORITE_REPORT, METEORITE_IMAGE,
 METEORITE_REPO_URL, METEORITE_KEEP.
 EOF
 }
@@ -58,6 +60,8 @@ write_report() {
   tmp="$(mktemp "$dir/.meteorite-latest.XXXXXX")" || return 1
   {
     printf '# Infrastructure meteorite report\n\n'
+    printf -- '- source: `%s`\n' "${repo_url:-UNMEASURED}"
+    printf -- '- requested SHA: `%s`\n' "${ref:-UNMEASURED}"
     printf -- '- tested SHA: `%s`\n' "$tested_sha"
     printf -- '- container image: `%s`\n' "$image"
     printf -- '- result: %s\n' "$result"
@@ -106,10 +110,8 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 if [[ -z "$ref" ]]; then
-  ref="$(git -C "$repo_root" rev-parse origin/main 2>/dev/null)" || {
-    fail "ref-resolution" "cannot resolve origin/main" || true
-    exit 1
-  }
+  fail "ref-validation" "an explicit 40-character commit SHA is required" || true
+  exit 2
 fi
 if [[ -z "$repo_url" ]]; then
   repo_url="$(git -C "$repo_root" remote get-url origin 2>/dev/null)" || {
@@ -121,8 +123,8 @@ case "$repo_url" in
   git@github.com:*) repo_url="https://github.com/${repo_url#git@github.com:}" ;;
   ssh://git@github.com/*) repo_url="https://github.com/${repo_url#ssh://git@github.com/}" ;;
 esac
-if [[ ! "$ref" =~ ^[A-Za-z0-9._/@:+-]+$ ]]; then
-  fail "argument-validation" "ref contains unsupported characters" || true
+if [[ ! "$ref" =~ ^[0-9a-fA-F]{40}$ ]]; then
+  fail "ref-validation" "ref must be a 40-character commit SHA" || true
   exit 2
 fi
 if [[ ! "$repo_url" =~ ^[A-Za-z0-9._~:/@%+=,-]+$ ]]; then
@@ -140,6 +142,12 @@ run_exec_stage() {
         fail "sha-verification" "source checkout SHA could not be measured"
         return 1
       }
+      if [[ "${tested_sha,,}" != "${ref,,}" ]]; then
+        fail "sha-verification" "checked-out SHA $tested_sha differs from requested SHA $ref"
+        return 1
+      fi
+      tested_sha="${tested_sha,,}"
+      record "sha-verification" "PASS"
     fi
     return 0
   fi
@@ -182,7 +190,6 @@ if [[ "$installed_sha" != "$tested_sha" ]]; then
   fail "sha-verification" "installed SHA $installed_sha differs from fetched SHA $tested_sha" || true
   exit 1
 fi
-record "sha-verification" "PASS"
 result="clean"
 blocker="none"
 printf '[meteorite] clean: %s\n' "$tested_sha"

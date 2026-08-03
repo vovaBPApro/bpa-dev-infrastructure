@@ -707,7 +707,7 @@ EOF
     cat > "$fixture/bin/cp" <<'EOF'
 #!/usr/bin/env bash
 if [[ "${1:-}" == -p && "${2:-}" == -- && "${3:-}" == */prior/first.service ]]; then
-  kill -TERM "$PPID"
+  kill -TERM "$INSTALLER_TEST_PID"
   sleep 1
 fi
 exec /usr/bin/cp "$@"
@@ -718,7 +718,8 @@ EOF
   output="$(PATH="$fixture/bin:$PATH" BOOTSTRAP_LIB_ONLY=true \
     INSTALL_ROOT="$stage2_fixture/root" BUN_BIN="$stage2_fixture/bin/bun" \
     SYSTEMD_SYSTEM_DIR="$fixture/systemd" EXPECTED_UNITS_FILE="$stage2_fixture/expected.tsv" \
-    INSTALLER_PATH="$INSTALLER" "$BASH_BIN" -c 'source "$INSTALLER_PATH"; render_units' 2>&1)"
+    INSTALLER_PATH="$INSTALLER" "$BASH_BIN" -c \
+    'export INSTALLER_TEST_PID=$BASHPID; source "$INSTALLER_PATH"; render_units' 2>&1)"
   rc=$?
   set -e
   [[ "$rc" -ne 0 ]]
@@ -737,6 +738,50 @@ EOF
 run_publication_fault_lock failure
 run_publication_fault_lock signal
 run_publication_fault_lock double-signal
+
+# A rollback child that never returns must be killed by the rollback deadline.
+# Publication failure and signal rollback share rollback_unit_publication, so
+# this locks the bound on the ordinary failure path as well as the handler path.
+stuck_fixture="$stage2_fixture/rollback-stuck"
+install -d -m 700 "$stuck_fixture/bin" "$stuck_fixture/systemd"
+printf '%s\n' prior > "$stuck_fixture/systemd/first.service"
+cat > "$stuck_fixture/bin/mv" <<'EOF'
+#!/usr/bin/env bash
+count_file="${STUCK_FIXTURE}/mv.count"
+count=0
+[[ ! -f "$count_file" ]] || read -r count < "$count_file"
+((count += 1)); printf '%s\n' "$count" > "$count_file"
+[[ "$count" != 2 ]] || exit 28
+exec /usr/bin/mv "$@"
+EOF
+cat > "$stuck_fixture/bin/cp" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${BPA_UNIT_ROLLBACK:-}" == 1 ]]; then
+  while :; do sleep 1; done
+fi
+exec /usr/bin/cp "$@"
+EOF
+chmod 700 "$stuck_fixture/bin/mv" "$stuck_fixture/bin/cp"
+set +e
+stuck_output="$(timeout 5 env PATH="$stuck_fixture/bin:$PATH" STUCK_FIXTURE="$stuck_fixture" \
+  UNIT_ROLLBACK_TIMEOUT_SECONDS=0.2 UNIT_ROLLBACK_KILL_AFTER_SECONDS=0.2 \
+  BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$stage2_fixture/root" BUN_BIN="$stage2_fixture/bin/bun" \
+  SYSTEMD_SYSTEM_DIR="$stuck_fixture/systemd" EXPECTED_UNITS_FILE="$stage2_fixture/expected.tsv" \
+  INSTALLER_PATH="$INSTALLER" "$BASH_BIN" -c 'source "$INSTALLER_PATH"; render_units' 2>&1)"
+stuck_rc=$?
+set -e
+[[ "$stuck_rc" -eq 125 ]]
+[[ "$(grep -Ec 'verdict=(rolled-back|rollback-failed)' <<<"$stuck_output")" -eq 1 ]]
+grep -Fq 'verdict=rollback-failed' <<<"$stuck_output"
+if grep -Fq 'verdict=rolled-back' <<<"$stuck_output"; then
+  echo 'ERROR: timed-out restoration claimed a proven rollback' >&2
+  exit 1
+fi
+if grep -Fxq prior "$stuck_fixture/systemd/first.service"; then
+  echo 'ERROR: stuck restoration fixture unexpectedly completed restoration' >&2
+  exit 1
+fi
+echo 'PASS render_units rollback-timeout lock: stuck restoration terminates with one truthful failed verdict'
 
 # Make restoration itself fail after publication has begun. The verdict must
 # remain different from an ordinary, proven rollback.

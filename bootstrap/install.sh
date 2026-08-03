@@ -344,12 +344,36 @@ render_units() {
   done
 
   rollback_unit_publication() {
-    local rollback_unit rollback_failed=0
+    local rollback_unit rollback_failed=0 rollback_operation_pid rollback_operation_rc
     for rollback_unit in "${units[@]}"; do
       if [[ "${destination_existed[$rollback_unit]}" == 1 ]]; then
-        cp -p -- "$backup_dir/$rollback_unit" "$SYSTEMD_SYSTEM_DIR/$rollback_unit" || rollback_failed=1
+        timeout --kill-after="${UNIT_ROLLBACK_KILL_AFTER_SECONDS:-1}" \
+          "${UNIT_ROLLBACK_TIMEOUT_SECONDS:-5}" \
+          env BPA_UNIT_ROLLBACK=1 \
+          cp -p -- "$backup_dir/$rollback_unit" "$SYSTEMD_SYSTEM_DIR/$rollback_unit" &
       else
-        rm -f -- "$SYSTEMD_SYSTEM_DIR/$rollback_unit" || rollback_failed=1
+        timeout --kill-after="${UNIT_ROLLBACK_KILL_AFTER_SECONDS:-1}" \
+          "${UNIT_ROLLBACK_TIMEOUT_SECONDS:-5}" \
+          env BPA_UNIT_ROLLBACK=1 \
+          rm -f -- "$SYSTEMD_SYSTEM_DIR/$rollback_unit" &
+      fi
+      rollback_operation_pid=$!
+      while :; do
+        if wait "$rollback_operation_pid"; then
+          rollback_operation_rc=0
+          break
+        else
+          rollback_operation_rc=$?
+        fi
+        # A trapped operator signal interrupts wait without ending its child.
+        # Keep supervising until timeout has reaped the operation.
+        if kill -0 "$rollback_operation_pid" 2>/dev/null; then
+          continue
+        fi
+        break
+      done
+      if ((rollback_operation_rc != 0)); then
+        rollback_failed=1
       fi
     done
     if ((rollback_failed != 0)); then
@@ -359,13 +383,18 @@ render_units() {
     echo 'verdict=rolled-back: unit publication prior state restored' >&2
   }
 
+  unit_rollback_signal() {
+    echo "ERROR: termination requested by $1 while bounded unit rollback is in progress" >&2
+  }
+
   unit_publication_signal() {
     local signal_name="$1" signal_rc="$2"
-    # Rollback is the terminal state transition. Ignore further termination
-    # requests until it has emitted exactly one durable verdict; resetting to
-    # the default disposition here lets a second signal interrupt restoration
-    # and leave a silent, mixed unit set.
-    trap '' HUP INT TERM
+    # Rollback is the terminal state transition. Record further termination
+    # requests while the individually bounded restore operations finish and
+    # emit their single truthful verdict.
+    trap 'unit_rollback_signal HUP' HUP
+    trap 'unit_rollback_signal INT' INT
+    trap 'unit_rollback_signal TERM' TERM
     if ! rollback_unit_publication; then
       rm -rf "$staged"
       trap - RETURN
@@ -385,7 +414,9 @@ render_units() {
   for unit in "${units[@]}"; do
     if ! mv -f "$staged/$unit" "$SYSTEMD_SYSTEM_DIR/$unit"; then
       publication_rc=$?
-      trap '' HUP INT TERM
+      trap 'unit_rollback_signal HUP' HUP
+      trap 'unit_rollback_signal INT' INT
+      trap 'unit_rollback_signal TERM' TERM
       # `!` normalizes `$?`; preserve a stable non-zero publication verdict.
       ((publication_rc != 0)) || publication_rc=1
       if ! rollback_unit_publication; then

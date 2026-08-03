@@ -77,8 +77,8 @@ import {
   sanitizeChatRegion,
 } from './reliability';
 import {
-  composeDecisionRequest,
-  resolveDecisionResponse,
+  handleDecisionCallback,
+  handleDecisionRequest,
 } from './decision-request';
 import { readActiveMission, resolveStateDbPath } from './mission-source';
 import { drainOutbox, resolveOrchestratorLauncher } from './control';
@@ -1186,59 +1186,40 @@ function createMcpServer(): Server {
             value: string;
           }>;
           const explanations = args.explanations as string[];
-          if (
-            !text ||
-            !decision_id ||
-            !Array.isArray(options) ||
-            options.length === 0
-          ) {
+          if (!text || !Array.isArray(options) || options.length === 0) {
             throw new Error('text, decision_id, and options[] required');
           }
           if (options.length > 8) throw new Error('max 8 options per decision');
-          const composed = composeDecisionRequest({
+          const sid = shortId();
+          const access = loadAccess();
+          const handled = await handleDecisionRequest({
+            decisionId: decision_id,
             text,
             options,
             explanations,
-          });
-          const sid = shortId();
-          const access = loadAccess();
-          const keyboard = new InlineKeyboard();
-          composed.options.forEach((opt, i) => {
-            if (i > 0 && i % 2 === 0) keyboard.row();
-            keyboard.text(opt.label, `dec:${sid}:${i}`);
-          });
-          // Save before sending so callbacks can find it
-          const sent_message_ids: number[] = [];
-          const successfulChats: string[] = [];
-          for (const chat_id of access.allowFrom) {
-            try {
-              // BR-43 round 5 (2026-05-01 user feedback "Не було нотифікації"):
-              // explicit disable_notification: false to make ping intent
-              // unambiguous. Default behavior was relying on Telegram's
-              // "no flag = ping" which may have been overridden by user's
-              // chat mute or DnD; making it explicit ensures the bot's
-              // intent is loud at the API level.
-              const sent = await bot.api.sendMessage(chat_id, composed.body, {
+            sid,
+            chatIds: access.allowFrom,
+            pending: pendingDecisions,
+            sendMessage: async (chat_id, body, buttons) => {
+              const keyboard = new InlineKeyboard();
+              buttons.forEach((button, i) => {
+                if (i > 0 && i % 2 === 0) keyboard.row();
+                keyboard.text(button.label, button.callbackData);
+              });
+              return bot.api.sendMessage(chat_id, body, {
                 reply_markup: keyboard,
                 disable_notification: false,
               });
-              pendingDecisions.set(sid, {
-                chat_id,
-                options: composed.options,
-                decision_id,
-                message_id: sent.message_id,
-              });
-              sent_message_ids.push(sent.message_id);
-              successfulChats.push(chat_id);
-            } catch (err) {
+            },
+            onSendError: (chat_id, err) => {
               process.stderr.write(
                 `${LOG_PREFIX} request_decision to ${chat_id} failed: ${err}\n`,
               );
-            }
-          }
+            },
+          });
           // Outbound watchdog: clear pending only for chats that actually
           // received the decision (Codex R2 #1 — partial-failure safety).
-          markRepliedMany(successfulChats);
+          markRepliedMany(handled.sentChatIds);
 
           return {
             content: [
@@ -3278,24 +3259,27 @@ bot.on('callback_query:data', async (ctx) => {
         .catch(() => {});
       return;
     }
-    const option = pending.options[idx];
-    if (!option) {
+    let resolved;
+    try {
+      resolved = handleDecisionCallback(pendingDecisions, sid, idx);
+    } catch (error) {
       await ctx
-        .answerCallbackQuery({ text: 'Invalid option.' })
+        .answerCallbackQuery({
+          text:
+            error instanceof Error && error.message.includes('expired')
+              ? 'Decision expired or already answered.'
+              : 'Invalid option.',
+        })
         .catch(() => {});
       return;
     }
+    const { option, pending, content } = resolved;
     // Forward to Claude as a regular channel message — easier to react to
     // from the orchestrator session than a custom notification kind.
     // BR-39 (2026-04-30): if activeServer.notification() rejects (stale/zombie
     // transport), buffer for next reconnect — matches deliverOrBuffer
     // semantics; otherwise the decision is lost irreversibly because we
     // delete pendingDecisions[sid] below.
-    const { content } = resolveDecisionResponse(
-      pending.decision_id,
-      pending.options,
-      idx,
-    );
     const meta: Record<string, string> = {
       chat_id: pending.chat_id,
       user: ctx.from.username ?? String(ctx.from.id),
@@ -3354,7 +3338,6 @@ bot.on('callback_query:data', async (ctx) => {
       });
     }
 
-    pendingDecisions.delete(sid);
     await ctx.answerCallbackQuery({ text: option.label }).catch(() => {});
     const msg = ctx.callbackQuery.message;
     if (msg && 'text' in msg && msg.text) {

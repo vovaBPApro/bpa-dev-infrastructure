@@ -23,6 +23,13 @@ v3
 # Park record: instance/parked/V3-1.1-stage2-2026-08-03.md
 ag-s3-2-r3
 
+# V3-1.9 round 3 — the branch that carries the correct single-service-user model.
+# PARKED at the HR-1726 cap: the remaining blocker is operator provisioning of the
+# service account and its credentials, not more code. This branch IS the evidence
+# and the starting point for the recut. Park record:
+# instance/parked/V3-1.9-nonroot-lanes-2026-08-03.md
+ag-s5-1
+
 # Round 2 of V3-1.9 (non-root lanes), reported NO-GO and not landed. Retained
 # because round 3 rebuilds on a different model (the single-service-user shape
 # in instance/v3-nonroot-lane-model-2026-08-03.md) and this branch is the only

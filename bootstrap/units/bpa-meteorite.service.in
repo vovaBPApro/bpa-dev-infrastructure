@@ -7,5 +7,8 @@ Wants=network-online.target
 Type=oneshot
 WorkingDirectory=${INSTALL_ROOT}
 Environment=METEORITE_REPORT=/var/lib/bpa-orchestrator/evidence/meteorite-latest.md
+# This is the independent runtime caller for the deploy-drift guard.  It is
+# scheduled by bpa-meteorite.timer, not bpa-deploy-drift-guard.timer, so the
+# guard service/timer can be wholly absent and this check still reports them.
+ExecStartPre=${INSTALL_ROOT}/bootstrap/check-deployed-drift.sh
 ExecStart=${BASH_BIN} ${INSTALL_ROOT}/meteorite/run.sh
-

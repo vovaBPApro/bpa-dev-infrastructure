@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CHECK="$ROOT/bootstrap/check-deployed-drift.sh"
+INDEPENDENT_CALLER="$ROOT/bootstrap/units/bpa-meteorite.service.in"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin"
@@ -26,6 +27,12 @@ run_check() {
 
 run_check | grep -q 'DEPLOY-DRIFT CLEAN'
 
+# Pin the runtime call edge outside the guard's own service and timer.  The
+# meteorite service is scheduled independently and runs this probe before its
+# rebuild.  A direct fixture invocation alone is not evidence of that edge.
+grep -Fq 'ExecStartPre=${INSTALL_ROOT}/bootstrap/check-deployed-drift.sh' "$INDEPENDENT_CALLER"
+grep -Fq 'ExecStart=${BASH_BIN} ${INSTALL_ROOT}/meteorite/run.sh' "$INDEPENDENT_CALLER"
+
 # Removing a deployed unit is surfaced by the file-drift boundary.
 if UNIT_CHECK_EXIT=1 run_check >"$TMP/out" 2>"$TMP/err"; then
   echo 'FAIL: missing deployed unit was accepted' >&2; exit 1
@@ -33,13 +40,14 @@ fi
 grep -q 'deployed unit files differ from the independent manifest' "$TMP/err"
 printf 'container-fixture missing-unit: %s\n' "$(<"$TMP/err")"
 
-# The independent caller catches removal of the guard's own arming.
+# Execute the probe as bpa-meteorite.service's pinned ExecStartPre would.  The
+# guard's own service and timer are deliberately not involved in this call.
 if TIMER_ENABLED_EXIT=1 TIMER_ACTIVE_EXIT=1 run_check >"$TMP/out" 2>"$TMP/err"; then
   echo 'FAIL: unarmed drift guard was accepted' >&2; exit 1
 fi
 grep -q 'guard arming absent: bpa-deploy-drift-guard.timer is not enabled' "$TMP/err"
 grep -q 'guard arming absent: bpa-deploy-drift-guard.timer is not active' "$TMP/err"
-printf 'container-fixture removed-arming: %s\n' "$(tr '\n' ' ' <"$TMP/err")"
+printf 'independent-caller=bpa-meteorite.service/ExecStartPre removed-arming: %s\n' "$(tr '\n' ' ' <"$TMP/err")"
 
 # Delete the guard from both simulated host state and the manifest. The fixed
 # code anchor must still name it, rather than accepting two coupled deletions.
@@ -62,4 +70,4 @@ if SYSTEMD_PROBE_EXIT=124 run_check >"$TMP/out" 2>"$TMP/err"; then
 fi
 grep -q 'systemd unreachable or timed out' "$TMP/err"
 
-printf 'deployed drift, independent arming, coupled-deletion, and fail-closed locks: PASS\n'
+printf 'deployed drift, meteorite caller, independent arming, coupled-deletion, and fail-closed locks: PASS\n'

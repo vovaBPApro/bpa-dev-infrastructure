@@ -74,7 +74,12 @@ lane_uid="$(id -u "$lane_user" 2>/dev/null || true)"
 [[ -n "$lane_uid" && "$lane_uid" != 0 ]] || die "lane user is missing or privileged: $lane_user"
 getent group "$lane_group" >/dev/null || die "lane group is missing: $lane_group"
 [[ -d "$lane_home" ]] || die "lane home is missing: $lane_home"
+((EUID == 0)) || die 'lane launcher requires root to establish the requested uid and ownership'
 lanes_dir="${lanes_dir:-$configured_lanes_dir}"
+[[ -d "$lanes_dir" ]] || die "lanes root is missing: $lanes_dir"
+command -v setpriv >/dev/null || die 'setpriv is unavailable; cannot verify lane privilege boundary'
+setpriv --reuid="$lane_user" --regid="$lane_group" --clear-groups -- \
+  test -x "$lanes_dir" || die "lanes root is not traversable by lane user: $lanes_dir"
 agent_command_file="${agent_command_file:-$repo/instance/lane-agent-command.conf}"
 [[ -f "$agent_command_file" && -r "$agent_command_file" ]] || die "agent command file missing or unreadable: $agent_command_file"
 [[ -x "$BUN_BIN" ]] || die 'Bun is unavailable; install it with bootstrap/install.sh or set BUN_BIN'
@@ -102,7 +107,6 @@ unit="lane-$name"
 tmp_root="$lanes_dir/tmp"
 tmp_dir="$tmp_root/$name"
 
-mkdir -p "$lanes_dir"
 for artifact in "$worktree" "$pack_dir" "$prompt" "$log" "$tmp_dir"; do
   if [[ -e "$artifact" || -L "$artifact" ]]; then
     die "lane artifact already exists for $name: $artifact"
@@ -128,6 +132,9 @@ cleanup_failed_launch() {
 trap cleanup_failed_launch EXIT
 
 "$BUN_BIN" "$repo/tools/instructions/compose.ts" --role "$role" --repo "$repo" --out "$pack_dir" >/dev/null
+mkdir -p "$pack_dir/runtime/daemon" "$pack_dir/runtime/gate"
+cp "$repo/daemon/mask-stream.ts" "$repo/daemon/secret-masker.ts" "$pack_dir/runtime/daemon/"
+cp "$repo/gate/land-lib.sh" "$pack_dir/runtime/gate/land-lib.sh"
 {
   cat "$pack_dir/preamble.md"
   printf '\n---\n\n'
@@ -141,10 +148,29 @@ BUN_BIN="$BUN_BIN" bash "$repo/orchestrator/dispatch-lane.sh" "$prompt" >/dev/nu
 
 git -C "$repo" worktree add -b "$branch" "$worktree" "$base" -q
 worktree_created=true
+worktree_git_dir="$(git -C "$worktree" rev-parse --absolute-git-dir)"
+common_git_dir="$(git -C "$worktree" rev-parse --path-format=absolute --git-common-dir)"
 mkdir -p "$tmp_root" "$tmp_dir"
 chmod 0700 "$tmp_root"
 chmod 0700 "$tmp_dir"
 chown -R "$lane_user:$lane_group" "$worktree" "$pack_dir" "$prompt" "$tmp_root"
+# A linked worktree keeps its index and HEAD below the common repository. The
+# lane owns only its administrative directory. Git object storage and refs are
+# deliberately group-shared: all lanes use one mutually trusted uid/group, so
+# this boundary protects the parent checkout files, not sibling Git metadata.
+chown -R "$lane_user:$lane_group" "$worktree_git_dir"
+for shared_git_dir in "$common_git_dir/objects" "$common_git_dir/refs"; do
+  if [[ -d "$shared_git_dir" ]]; then
+    chgrp -R "$lane_group" "$shared_git_dir"
+    find "$shared_git_dir" -type d -exec chmod g+rws {} +
+    find "$shared_git_dir" -type f -exec chmod g+r {} +
+  fi
+done
+if [[ -d "$common_git_dir/logs" ]]; then
+  chgrp -R "$lane_group" "$common_git_dir/logs"
+  find "$common_git_dir/logs" -type d -exec chmod g+rws {} +
+  find "$common_git_dir/logs" -type f -exec chmod g+rw {} +
+fi
 touch "$log"
 chown "$lane_user:$lane_group" "$log"
 chmod 0600 "$prompt" "$log"
@@ -162,7 +188,7 @@ if ! systemd-run --collect --unit "$unit" --uid="$lane_user" --gid="$lane_group"
   --setenv="GIT_CONFIG_VALUE_0=$worktree" \
   --working-directory="$worktree" \
   /bin/bash -o pipefail -c 'prompt=$1; bun=$2; masker=$3; log=$4; shift 4; "$@" "$(cat "$prompt")" 2>&1 | "$bun" "$masker" >>"$log"' \
-  _ "$prompt" "$BUN_BIN" "$repo/daemon/mask-stream.ts" "$log" "${agent_argv[@]}" >/dev/null; then
+  _ "$prompt" "$BUN_BIN" "$pack_dir/runtime/daemon/mask-stream.ts" "$log" "${agent_argv[@]}" >/dev/null; then
   printf 'launch-lane: unit launch failed; cleaned lane artifacts: %s\n' "$name" >&2
   exit 1
 fi

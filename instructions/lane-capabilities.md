@@ -34,3 +34,15 @@ cleanly. It must never stall waiting for interactive recovery.
 This contract specializes the fail-closed policy in
 `instructions/tool-permissions.md`. Its emitted evidence follows
 `instructions/verification-and-locks.md`.
+
+## Filesystem trust boundary
+
+The current generic runtime uses one configured lane uid and group. Lanes are
+therefore mutually trusted at the Unix filesystem and shared-Git-metadata
+boundary: they can read or modify sibling lane artifacts and the common object,
+ref, and reflog stores needed to commit from linked worktrees. This is not
+inter-lane confinement. The enforced boundary is between that unprivileged
+identity and root/the parent checkout; a lane may own its worktree and linked
+worktree administration, but the launcher must not transfer ownership of the
+parent checkout. Deployments requiring mutually untrusted lanes need distinct
+uids or stronger isolation and are unsupported until that mechanism is added.

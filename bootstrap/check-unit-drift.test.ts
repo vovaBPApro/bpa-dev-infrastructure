@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { spawnSync } from "child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, cpSync, readdirSync } from "fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -14,10 +14,24 @@ import { join } from "path";
 // candidate (gate/land-lib.sh globs every tracked *.test.ts), the same wiring
 // tools/check-decision-ledger-drift.test.ts uses for the ledger-drift check.
 // A checker nobody runs is the same defect class as the unarmed watchdog.
+//
+// Round-2 review (967b846) returned REJECT with three defects, fixed here:
+//   1. DISQUALIFYING: a loop over *.in can only validate templates that
+//      exist -- deleting bpa-orchestrator-watchdog.service.in from the tree
+//      produced exit=0 with no mention of the watchdog anywhere. Fixed with
+//      an independent manifest, instance/expected-units.tsv.
+//   2. Referenced-path exemptions were keyed on unit name alone, so
+//      appending an unrelated ExecStartPost path to an already-exempted unit
+//      rode in silently under the old, unrelated evidence. Fixed by keying
+//      exemptions on unit+path together.
+//   3. agentic-bpa-* units hard-coded a product name into generic
+//      bootstrap/units/ -- a Mission/HR-309 violation. Moved to
+//      instance/units/; the manifest and both checker passes follow them.
 
 const repoRoot = join(import.meta.dir, "..");
 const script = join(repoRoot, "bootstrap", "check-unit-drift.sh");
-const realTemplateDir = join(repoRoot, "bootstrap", "units");
+const genericTemplateDir = join(repoRoot, "bootstrap", "units");
+const instanceTemplateDir = join(repoRoot, "instance", "units");
 
 const RENDER_ENV = {
   INSTALL_ROOT: "/root/bpa-dev-infrastructure",
@@ -38,20 +52,39 @@ function runCheck(env: Record<string, string> = {}) {
   });
 }
 
-// Render every real tracked template into a scratch "deployed" directory
-// using the same envsubst variables bootstrap/install.sh would use, so a
-// standalone test can assert both a genuinely clean deployment and a
-// genuinely broken one without ever touching the real host's
-// /etc/systemd/system or requiring a container.
-function renderAllTemplates(destDir: string) {
-  for (const entry of readdirSync(realTemplateDir)) {
+function renderDir(srcDir: string, destDir: string) {
+  for (const entry of readdirSync(srcDir)) {
     if (!entry.endsWith(".in")) continue;
     const unit = entry.slice(0, -3);
-    const result = spawnSync("bash", ["-c", `envsubst < "$1" > "$2"`, "_", join(realTemplateDir, entry), join(destDir, unit)], {
+    const result = spawnSync("bash", ["-c", `envsubst < "$1" > "$2"`, "_", join(srcDir, entry), join(destDir, unit)], {
       env: { ...process.env, ...RENDER_ENV },
     });
     if (result.status !== 0) {
       throw new Error(`failed to render ${entry}: ${result.stderr}`);
+    }
+  }
+}
+
+// Render every real tracked template (generic + instance-scoped) into a
+// scratch "deployed" directory using the same envsubst variables
+// bootstrap/install.sh would use, so a standalone test can assert both a
+// genuinely clean deployment and a genuinely broken one without ever
+// touching the real host's /etc/systemd/system or requiring a container.
+function renderAllTemplates(destDir: string) {
+  renderDir(genericTemplateDir, destDir);
+  renderDir(instanceTemplateDir, destDir);
+}
+
+function copyTemplateTree(destDir: string, skip: string[] = []) {
+  for (const [srcDir, sub] of [
+    [genericTemplateDir, "units"],
+    [instanceTemplateDir, "instance-units"],
+  ] as const) {
+    const out = join(destDir, sub);
+    mkdirSync(out, { recursive: true });
+    for (const entry of readdirSync(srcDir)) {
+      if (!entry.endsWith(".in") || skip.includes(entry)) continue;
+      writeFileSync(join(out, entry), spawnSync("cat", [join(srcDir, entry)], { encoding: "utf8" }).stdout);
     }
   }
 }
@@ -62,6 +95,7 @@ test("a fully and correctly deployed fleet matches every template and exits 0", 
     renderAllTemplates(deployedDir);
     const result = runCheck({ SYSTEMD_SYSTEM_DIR: deployedDir, ...RENDER_ENV });
     expect(`${result.stdout}${result.stderr}`).not.toContain("DRIFT");
+    expect(`${result.stdout}${result.stderr}`).not.toContain("MANIFEST-MISSING");
     expect(result.status).toBe(0);
     // The three units the incident named -- orchestrator, its watchdog, and
     // the telegram daemon that must be up before either -- are proven to
@@ -69,6 +103,8 @@ test("a fully and correctly deployed fleet matches every template and exits 0", 
     expect(result.stdout).toContain("MATCH bpa-orchestrator.service");
     expect(result.stdout).toContain("MATCH bpa-orchestrator-watchdog.service");
     expect(result.stdout).toContain("MATCH bpa-telegram-daemon.service");
+    // The instance-scoped units are checked too, from their new home.
+    expect(result.stdout).toContain("MATCH agentic-bpa-db-grants.service");
   } finally {
     rmSync(deployedDir, { recursive: true, force: true });
   }
@@ -78,7 +114,6 @@ test("BEFORE/AFTER: a missing deployed unit is reported and the checker exits no
   const deployedDir = mkdtempSync(join(tmpdir(), "bpa-unit-drift-missing-"));
   try {
     renderAllTemplates(deployedDir);
-    // BEFORE: fully deployed, must be clean.
     const before = runCheck({ SYSTEMD_SYSTEM_DIR: deployedDir, ...RENDER_ENV });
     expect(before.status).toBe(0);
     // AFTER: delete exactly the unit the 2026-08-03 incident named as the
@@ -98,8 +133,6 @@ test("BEFORE/AFTER: a deployed unit that no longer matches its template is repor
     renderAllTemplates(deployedDir);
     const before = runCheck({ SYSTEMD_SYSTEM_DIR: deployedDir, ...RENDER_ENV });
     expect(before.status).toBe(0);
-    // Simulate hand-edited drift: someone changed the deployed unit file
-    // directly on the host instead of through the tracked template.
     writeFileSync(join(deployedDir, "bpa-telegram-daemon.service"), "[Unit]\nDescription=hand-edited on the host, diverged from git\n");
     const after = runCheck({ SYSTEMD_SYSTEM_DIR: deployedDir, ...RENDER_ENV });
     expect(after.stderr).toContain("DRIFT bpa-telegram-daemon.service: deployed unit differs from rendered template");
@@ -109,24 +142,93 @@ test("BEFORE/AFTER: a deployed unit that no longer matches its template is repor
   }
 });
 
-test("BEFORE/AFTER: an absent template directory fails closed (exit 2) instead of reporting clean", () => {
-  const deployedDir = mkdtempSync(join(tmpdir(), "bpa-unit-drift-anydeploy-"));
-  const emptyTemplates = mkdtempSync(join(tmpdir(), "bpa-unit-drift-empty-templates-"));
+test("DISQUALIFYING DEFECT (round 2, fixed): a template deleted from the tree is caught even though the directory listing alone would say nothing", () => {
+  // This is the exact reproduction the reviewer ran against 967b846: delete
+  // bpa-orchestrator-watchdog.service.in and .timer.in from the tree, leave
+  // an otherwise fully matching deployment, and check whether the absence is
+  // reported. On 967b846 this returned exit=0 with zero mention of the
+  // watchdog anywhere -- a loop over *.in cannot see what used to be there.
+  const deployedDir = mkdtempSync(join(tmpdir(), "bpa-unit-drift-vanished-template-deploy-"));
+  const scratchTemplates = mkdtempSync(join(tmpdir(), "bpa-unit-drift-vanished-template-tree-"));
   try {
-    renderAllTemplates(deployedDir);
-    // BEFORE: the real template set against this same deployment is clean.
-    const before = runCheck({ SYSTEMD_SYSTEM_DIR: deployedDir, ...RENDER_ENV });
-    expect(before.status).toBe(0);
-    // AFTER: point at a template directory with nothing in it -- the
-    // manifest of what SHOULD be deployed is unreadable/absent. Hard Floor 7:
-    // an unmeasured subject must never look like a pass.
-    const after = runCheck({ TEMPLATE_DIR: emptyTemplates, SYSTEMD_SYSTEM_DIR: deployedDir, ...RENDER_ENV });
-    expect(after.status).toBe(2);
-    expect(after.status).not.toBe(0);
-    expect(after.stderr).toContain("no unit templates found");
+    renderAllTemplates(deployedDir); // fully healthy deployment, watchdog included
+    copyTemplateTree(scratchTemplates, ["bpa-orchestrator-watchdog.service.in", "bpa-orchestrator-watchdog.timer.in"]);
+    const result = runCheck({
+      TEMPLATE_DIR: join(scratchTemplates, "units"),
+      INSTANCE_TEMPLATE_DIR: join(scratchTemplates, "instance-units"),
+      SYSTEMD_SYSTEM_DIR: deployedDir,
+      ...RENDER_ENV,
+    });
+    expect(result.stderr).toContain("MANIFEST-MISSING bpa-orchestrator-watchdog.service");
+    expect(result.stderr).toContain("MANIFEST-MISSING bpa-orchestrator-watchdog.timer");
+    expect(result.status).not.toBe(0);
   } finally {
     rmSync(deployedDir, { recursive: true, force: true });
-    rmSync(emptyTemplates, { recursive: true, force: true });
+    rmSync(scratchTemplates, { recursive: true, force: true });
+  }
+});
+
+test("BEFORE/AFTER: an absent expected-units manifest fails closed (exit 2) instead of reporting clean", () => {
+  const deployedDir = mkdtempSync(join(tmpdir(), "bpa-unit-drift-manifest-absent-"));
+  try {
+    renderAllTemplates(deployedDir);
+    const before = runCheck({ SYSTEMD_SYSTEM_DIR: deployedDir, ...RENDER_ENV });
+    expect(before.status).toBe(0);
+    const after = runCheck({ SYSTEMD_SYSTEM_DIR: deployedDir, MANIFEST_FILE: join(deployedDir, "no-such-manifest.tsv"), ...RENDER_ENV });
+    expect(after.status).toBe(2);
+    expect(after.status).not.toBe(0);
+    expect(after.stderr).toContain("expected-units manifest missing");
+  } finally {
+    rmSync(deployedDir, { recursive: true, force: true });
+  }
+});
+
+test("BEFORE/AFTER: an unreadable (directory) expected-units manifest fails closed instead of reporting no requirements", () => {
+  // A directory in place of the manifest reproduces the exact defect class
+  // an independent reviewer found elsewhere in this repository on
+  // 2026-08-03: a check that reported clean because it could not read its
+  // own input file. `-r` alone would not catch this (root can list a
+  // directory), so the guard also requires `-f`.
+  const deployedDir = mkdtempSync(join(tmpdir(), "bpa-unit-drift-manifest-dir-"));
+  const manifestAsDir = mkdtempSync(join(tmpdir(), "bpa-unit-drift-manifest-is-dir-"));
+  try {
+    renderAllTemplates(deployedDir);
+    const before = runCheck({ SYSTEMD_SYSTEM_DIR: deployedDir, ...RENDER_ENV });
+    expect(before.status).toBe(0);
+    const after = runCheck({ SYSTEMD_SYSTEM_DIR: deployedDir, MANIFEST_FILE: manifestAsDir, ...RENDER_ENV });
+    expect(after.status).toBe(2);
+    expect(after.stderr).toContain("expected-units manifest unreadable");
+  } finally {
+    rmSync(deployedDir, { recursive: true, force: true });
+    rmSync(manifestAsDir, { recursive: true, force: true });
+  }
+});
+
+test("an empty expected-units manifest fails closed rather than trivially passing", () => {
+  const deployedDir = mkdtempSync(join(tmpdir(), "bpa-unit-drift-manifest-empty-"));
+  try {
+    renderAllTemplates(deployedDir);
+    const emptyManifest = join(deployedDir, "empty-manifest.tsv");
+    writeFileSync(emptyManifest, "# nothing but comments\n");
+    const result = runCheck({ SYSTEMD_SYSTEM_DIR: deployedDir, MANIFEST_FILE: emptyManifest, ...RENDER_ENV });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("expected-units manifest empty");
+  } finally {
+    rmSync(deployedDir, { recursive: true, force: true });
+  }
+});
+
+test("a malformed expected-units entry (bad source) fails closed rather than being silently skipped", () => {
+  const deployedDir = mkdtempSync(join(tmpdir(), "bpa-unit-drift-manifest-malformed-"));
+  try {
+    renderAllTemplates(deployedDir);
+    const badManifest = join(deployedDir, "bad-manifest.tsv");
+    writeFileSync(badManifest, "bpa-orchestrator.service\tsomewhere-else\n");
+    const result = runCheck({ SYSTEMD_SYSTEM_DIR: deployedDir, MANIFEST_FILE: badManifest, ...RENDER_ENV });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("invalid expected-units entry");
+  } finally {
+    rmSync(deployedDir, { recursive: true, force: true });
   }
 });
 
@@ -143,11 +245,19 @@ test("BEFORE/AFTER: a template referencing a path this repo does not have is cau
     // references (e.g. bpa-meteorite.service.in pointing at meteorite/run.sh,
     // which does not exist on v3) -- ExecStart names a repository file that
     // is not tracked here.
+    const manifest = join(badTemplates, "manifest.tsv");
+    writeFileSync(manifest, "fake-unit.service\tgeneric\n");
     writeFileSync(
       join(badTemplates, "fake-unit.service.in"),
       "[Unit]\nDescription=synthetic drift fixture\n\n[Service]\nType=oneshot\nExecStart=${INSTALL_ROOT}/definitely/not/a/real/path.sh\n",
     );
-    const after = runCheck({ TEMPLATE_DIR: badTemplates, SYSTEMD_SYSTEM_DIR: emptyDeployed, ...RENDER_ENV });
+    const after = runCheck({
+      TEMPLATE_DIR: badTemplates,
+      INSTANCE_TEMPLATE_DIR: join(badTemplates, "empty-instance"),
+      SYSTEMD_SYSTEM_DIR: emptyDeployed,
+      MANIFEST_FILE: manifest,
+      ...RENDER_ENV,
+    });
     expect(after.stderr).toContain("PATH-MISSING fake-unit.service: /definitely/not/a/real/path.sh does not exist");
     expect(after.status).not.toBe(0);
   } finally {
@@ -156,34 +266,52 @@ test("BEFORE/AFTER: a template referencing a path this repo does not have is cau
   }
 });
 
-test("a referenced path can be exempted, and the exemption's evidence is echoed for audit", () => {
-  const badTemplates = mkdtempSync(join(tmpdir(), "bpa-unit-drift-exempt-template-"));
-  const emptyDeployed = mkdtempSync(join(tmpdir(), "bpa-unit-drift-exempt-deploy-"));
-  const exemptionsFile = join(badTemplates, "path-exemptions.tsv");
+test("DEFECT 2 (round 2, fixed): a whole-unit exemption must not cover a NEW, unrelated dangling path added later", () => {
+  // The reviewer's exact attack against 967b846: append
+  // ExecStartPost=${INSTALL_ROOT}/totally/unrelated/malicious-or-typo/path.sh
+  // to agentic-bpa-db-grants.service.in, already exempted (at the time) for
+  // its database/ references, and watch the new path get PATH-EXEMPT for
+  // free under the old, unrelated evidence.
+  const templates = mkdtempSync(join(tmpdir(), "bpa-unit-drift-keyed-exempt-"));
+  const emptyDeployed = mkdtempSync(join(tmpdir(), "bpa-unit-drift-keyed-deploy-"));
   try {
+    const manifest = join(templates, "manifest.tsv");
+    writeFileSync(manifest, "fake-unit.service\tgeneric\n");
     writeFileSync(
-      join(badTemplates, "fake-unit.service.in"),
-      "[Unit]\nDescription=synthetic drift fixture\n\n[Service]\nType=oneshot\nExecStart=${INSTALL_ROOT}/definitely/not/a/real/path.sh\n",
+      join(templates, "fake-unit.service.in"),
+      [
+        "[Unit]",
+        "Description=synthetic exemption fixture",
+        "",
+        "[Service]",
+        "Type=oneshot",
+        "ExecStart=${INSTALL_ROOT}/known/pending/path.sh",
+        "ExecStartPost=${INSTALL_ROOT}/totally/unrelated/malicious-or-typo/path.sh",
+        "",
+      ].join("\n"),
     );
-    // No exemption: fails.
-    const unexempted = runCheck({ TEMPLATE_DIR: badTemplates, SYSTEMD_SYSTEM_DIR: emptyDeployed, PATH_EXEMPTIONS_FILE: exemptionsFile, ...RENDER_ENV });
-    expect(unexempted.stderr).toContain("PATH-MISSING");
-    // With a disposition and evidence, the same gap is visible but no longer fatal to the path check.
-    writeFileSync(exemptionsFile, "fake-unit.service\ttest fixture, deliberately never built\n");
-    const exempted = runCheck({ TEMPLATE_DIR: badTemplates, SYSTEMD_SYSTEM_DIR: emptyDeployed, PATH_EXEMPTIONS_FILE: exemptionsFile, ...RENDER_ENV });
-    expect(exempted.stdout).toContain("PATH-EXEMPT fake-unit.service: /definitely/not/a/real/path.sh not in repo (test fixture, deliberately never built)");
+    const exemptions = join(templates, "path-exemptions.tsv");
+    // Only the KNOWN, pre-existing path is exempted -- unit+path, not unit alone.
+    writeFileSync(exemptions, "fake-unit.service\t/known/pending/path.sh\tpre-existing, deliberately not yet built\n");
+    const result = runCheck({
+      TEMPLATE_DIR: templates,
+      INSTANCE_TEMPLATE_DIR: join(templates, "empty-instance"),
+      SYSTEMD_SYSTEM_DIR: emptyDeployed,
+      MANIFEST_FILE: manifest,
+      PATH_EXEMPTIONS_FILE: exemptions,
+      ...RENDER_ENV,
+    });
+    expect(result.stdout).toContain("PATH-EXEMPT fake-unit.service: /known/pending/path.sh not in repo (pre-existing, deliberately not yet built)");
+    // The new, unrelated path must NOT inherit that exemption.
+    expect(result.stderr).toContain("PATH-MISSING fake-unit.service: /totally/unrelated/malicious-or-typo/path.sh does not exist");
+    expect(result.status).not.toBe(0);
   } finally {
-    rmSync(badTemplates, { recursive: true, force: true });
+    rmSync(templates, { recursive: true, force: true });
     rmSync(emptyDeployed, { recursive: true, force: true });
   }
 });
 
 test("BEFORE/AFTER: an unreadable deployed-unit exemptions file fails closed instead of reporting no exemptions", () => {
-  // A directory in place of the exemptions file reproduces the exact defect
-  // class an independent reviewer found elsewhere in this repository on
-  // 2026-08-03: a check that reported clean because it could not read its
-  // own input file. `-r` alone would not catch this (root can list a
-  // directory), so the guard also requires `-f`.
   const deployedDir = mkdtempSync(join(tmpdir(), "bpa-unit-drift-exempt-file-"));
   const brokenExemptions = mkdtempSync(join(tmpdir(), "bpa-unit-drift-broken-exemptions-"));
   try {
@@ -204,13 +332,17 @@ test("BEFORE/AFTER: an unreadable path exemptions file fails closed instead of r
   const emptyDeployed = mkdtempSync(join(tmpdir(), "bpa-unit-drift-path-exempt-deploy-"));
   const brokenExemptions = mkdtempSync(join(tmpdir(), "bpa-unit-drift-path-broken-exemptions-"));
   try {
+    const manifest = join(badTemplates, "manifest.tsv");
+    writeFileSync(manifest, "fake-unit.service\tgeneric\n");
     writeFileSync(
       join(badTemplates, "fake-unit.service.in"),
       "[Unit]\nDescription=synthetic drift fixture\n\n[Service]\nType=oneshot\nExecStart=${INSTALL_ROOT}/definitely/not/a/real/path.sh\n",
     );
     const before = runCheck({
       TEMPLATE_DIR: badTemplates,
+      INSTANCE_TEMPLATE_DIR: join(badTemplates, "empty-instance"),
       SYSTEMD_SYSTEM_DIR: emptyDeployed,
+      MANIFEST_FILE: manifest,
       PATH_EXEMPTIONS_FILE: join(brokenExemptions, "missing.tsv"),
       ...RENDER_ENV,
     });
@@ -218,7 +350,9 @@ test("BEFORE/AFTER: an unreadable path exemptions file fails closed instead of r
     expect(before.stderr).not.toContain("path-exemptions unreadable");
     const after = runCheck({
       TEMPLATE_DIR: badTemplates,
+      INSTANCE_TEMPLATE_DIR: join(badTemplates, "empty-instance"),
       SYSTEMD_SYSTEM_DIR: emptyDeployed,
+      MANIFEST_FILE: manifest,
       PATH_EXEMPTIONS_FILE: brokenExemptions,
       ...RENDER_ENV,
     });
@@ -245,19 +379,77 @@ test("a malformed exemption entry (missing evidence) fails closed rather than be
   }
 });
 
+test("a TSV whose final line lacks a trailing newline is still honored, not dropped", () => {
+  // `while read` alone silently drops a final line with no trailing
+  // newline -- fails closed today only by accident (a dropped exemption is
+  // MORE strict), but is one edit away from being a hole in the other
+  // direction (a dropped manifest requirement). All three TSV readers in
+  // the script use `read ... || [[ -n "$var" ]]` specifically to avoid this.
+  const templates = mkdtempSync(join(tmpdir(), "bpa-unit-drift-no-trailing-nl-"));
+  const emptyDeployed = mkdtempSync(join(tmpdir(), "bpa-unit-drift-no-trailing-nl-deploy-"));
+  try {
+    const manifest = join(templates, "manifest.tsv");
+    // No trailing newline after the last (only) entry.
+    writeFileSync(manifest, "fake-unit.service\tgeneric");
+    writeFileSync(
+      join(templates, "fake-unit.service.in"),
+      "[Unit]\nDescription=synthetic fixture\n\n[Service]\nType=oneshot\nExecStart=${INSTALL_ROOT}/known/pending/path.sh\n",
+    );
+    const exemptions = join(templates, "path-exemptions.tsv");
+    // No trailing newline here either.
+    writeFileSync(exemptions, "fake-unit.service\t/known/pending/path.sh\tdeliberately pending, no trailing newline in this file");
+    const result = runCheck({
+      TEMPLATE_DIR: templates,
+      INSTANCE_TEMPLATE_DIR: join(templates, "empty-instance"),
+      SYSTEMD_SYSTEM_DIR: emptyDeployed,
+      MANIFEST_FILE: manifest,
+      PATH_EXEMPTIONS_FILE: exemptions,
+      ...RENDER_ENV,
+    });
+    // If the last line had been dropped: the manifest would fail to find any
+    // requirement for fake-unit.service (MANIFEST-MISSING would be absent
+    // entirely because the loop body never ran), and separately the path
+    // exemption would not apply (PATH-MISSING instead of PATH-EXEMPT).
+    expect(result.stderr).not.toContain("MANIFEST-MISSING");
+    expect(result.stdout).toContain(
+      "PATH-EXEMPT fake-unit.service: /known/pending/path.sh not in repo (deliberately pending, no trailing newline in this file)",
+    );
+  } finally {
+    rmSync(templates, { recursive: true, force: true });
+    rmSync(emptyDeployed, { recursive: true, force: true });
+  }
+});
+
 test("every tracked template renders cleanly with envsubst (no undefined-variable garbage)", () => {
   const scratch = mkdtempSync(join(tmpdir(), "bpa-unit-drift-render-check-"));
   try {
     renderAllTemplates(scratch);
-    for (const entry of readdirSync(realTemplateDir)) {
-      if (!entry.endsWith(".in")) continue;
-      const rendered = spawnSync("cat", [join(scratch, entry.slice(0, -3))], { encoding: "utf8" }).stdout;
-      // A template referencing a variable envsubst was not told about would
-      // still "succeed" but leave the raw ${VAR} token in the output --
-      // that is itself a form of drift the deployed unit would carry.
-      expect(rendered).not.toMatch(/\$\{[A-Z_]+\}/);
+    for (const dir of [genericTemplateDir, instanceTemplateDir]) {
+      for (const entry of readdirSync(dir)) {
+        if (!entry.endsWith(".in")) continue;
+        const rendered = spawnSync("cat", [join(scratch, entry.slice(0, -3))], { encoding: "utf8" }).stdout;
+        // A template referencing a variable envsubst was not told about
+        // would still "succeed" but leave the raw ${VAR} token in the
+        // output -- that is itself a form of drift the deployed unit would
+        // carry.
+        expect(rendered).not.toMatch(/\$\{[A-Z_]+\}/);
+      }
     }
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
+});
+
+test("the generic template directory carries no product-hardcoded unit (HR-309)", () => {
+  // Round-2 review defect 3: agentic-bpa-* units hard-coded a product name
+  // into the generic bootstrap/units/ mechanism directory. CLAUDE.md's
+  // Mission and HR-309 rule that a defect; they now live under
+  // instance/units/ instead. This test pins the boundary so it cannot
+  // silently regress.
+  const genericEntries = readdirSync(genericTemplateDir);
+  for (const entry of genericEntries) {
+    expect(entry.startsWith("agentic-bpa-")).toBe(false);
+  }
+  const instanceEntries = readdirSync(instanceTemplateDir);
+  expect(instanceEntries.filter((e) => e.startsWith("agentic-bpa-")).length).toBe(5);
 });

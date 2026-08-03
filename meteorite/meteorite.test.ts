@@ -3,14 +3,14 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
-const runner = resolve(import.meta.dir, "run.sh");
+const runner = process.env.METEORITE_TEST_RUNNER ?? resolve(import.meta.dir, "run.sh");
 const roots: string[] = [];
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-async function fixture(failStage = "") {
+async function fixture(failStage = "", checkedOutSha = "") {
   const root = await mkdtemp(join(tmpdir(), "meteorite-test-"));
   roots.push(root);
   const bin = join(root, "bin");
@@ -40,12 +40,24 @@ esac
     METEORITE_REPORT: report,
     DOCKER_TRACE: trace,
     FAIL_STAGE: failStage,
-    EXPECTED_SHA: sha,
+    EXPECTED_SHA: checkedOutSha || sha,
   };
   return { env, report, trace, sha };
 }
 
 describe("meteorite runner", () => {
+  test("a bare run fails closed instead of selecting origin/main", async () => {
+    const f = await fixture();
+    const run = Bun.spawnSync(["bash", runner], { env: f.env });
+    expect(run.exitCode).not.toBe(0);
+    const report = await readFile(f.report, "utf8");
+    expect(report).toContain("result: NO-GO");
+    expect(report).toContain("ref-validation: NO-GO");
+    expect(report).toContain("requested SHA: `UNMEASURED`");
+    expect(report).not.toContain("result: clean");
+    expect(await Bun.file(f.trace).exists()).toBe(false);
+  });
+
   test("rejects an option with a missing value before starting Docker", async () => {
     const f = await fixture();
     const run = Bun.spawnSync(["bash", runner, "--ref"], { env: f.env });
@@ -60,6 +72,9 @@ describe("meteorite runner", () => {
     expect(run.exitCode).toBe(0);
     const report = await readFile(f.report, "utf8");
     expect(report).toContain(`tested SHA: \`${f.sha}\``);
+    expect(report).toContain(`requested SHA: \`${f.sha}\``);
+    expect(report).toContain("source: `https://example.invalid/infra.git`");
+    expect(report).toContain("sha-verification: PASS");
     expect(report).toContain("container image: `ubuntu:24.04`");
     expect(report).toContain("result: clean");
     expect(report).toContain("bootstrap-dry-run: PASS");
@@ -70,6 +85,18 @@ describe("meteorite runner", () => {
     expect(report).toContain("watchdog arm —");
     expect(report).toContain("Telegram transport —");
     expect(await readFile(f.trace, "utf8")).toContain("stop -t 5 container-id");
+  });
+
+  test("a checkout at a different SHA is NO-GO and names both SHAs", async () => {
+    const otherSha = "fedcba9876543210fedcba9876543210fedcba98";
+    const f = await fixture("", otherSha);
+    const run = Bun.spawnSync(["bash", runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    expect(run.exitCode).not.toBe(0);
+    const report = await readFile(f.report, "utf8");
+    expect(report).toContain("result: NO-GO");
+    expect(report).toContain("sha-verification: NO-GO");
+    expect(report).toContain(`checked-out SHA ${otherSha} differs from requested SHA ${f.sha}`);
+    expect(report).not.toContain("bootstrap-dry-run: PASS");
   });
 
   test("a failed stage exits non-zero, reports NO-GO and names its blocker", async () => {

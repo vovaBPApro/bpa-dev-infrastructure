@@ -28,6 +28,7 @@
 - [restart-recovery.md](restart-recovery.md) — Reconstruct mission and lane state from durable records; never trust chat memory, process lists, or stale heartbeats.
 - [review-policy.md](review-policy.md) — Review is a risk and evidence gate: check the SHA, changed paths, acceptance evidence, and rollback posture.
 - [roles.md](roles.md) — Orchestrator, coder, reviewer, and risk-routing duties.
+- [single-service-user.md](single-service-user.md) — The control plane and its lanes share one lingering non-root service identity.
 - [stands-and-scenarios.md](stands-and-scenarios.md) — A stand is disposable, named, isolated, and resource-bounded, owning its Compose project, ports, state, and teardown.
 - [tool-permissions.md](tool-permissions.md) — Maintain a versioned, fail-closed permission surface; committed policy stays portable and free of secrets.
 - [ui-quality.md](ui-quality.md) — Route every UI change and review through the design-quality system and its anti-pattern detector before acceptance.

@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Lane-exit gate: the exit-side mirror of orchestrator/dispatch-lane.sh.
+#
+# dispatch-lane.sh refuses to LAUNCH a lane whose prompt lacks the compose.ts
+# pack marker. This script refuses to let a lane, or the orchestrator
+# collecting its report, treat a lane as FINISHED while its terminal report
+# is not contract-valid per gate/completion-guard.ts.
+#
+# Why this exists (instance/workboard.md V3-0.2, instance/decisions and the
+# 2026-08-03 measurement): gate/completion-guard.ts previously ran ONLY from
+# gate/land.sh, i.e. at landing time -- sessions or days after the lane that
+# could have fixed its own report is gone. Of 1314 unmerged branches measured
+# that day, exactly 6 satisfied the landing gate's own precondition (report
+# `commit:` equal to the branch tip). This script moves the same check to the
+# moment a lane declares itself done, so a bad report is caught while the
+# lane (or the orchestrator right after it) can still fix it.
+#
+# This is a thin, honest forwarding wrapper: it does not weaken or duplicate
+# completion-guard.ts's checks, it only resolves a trusted `bun` the same way
+# gate/land.sh does (land_resolve_bun) and forwards the exit code unchanged:
+#   0  report is contract-valid and clean               -> lane may end
+#   2  contract violation (missing report, wrong shape,  -> lane is NOT done;
+#      commit != branch tip, ...)                           fix and rerun
+#   3  report is contract-valid and honestly NO-GO       -> lane may end
+#      (a legitimate parked row per Hard Rule 13, not a violation)
+#
+# Usage: gate/lane-exit.sh --report <file> --repo <path> --branch <branch>
+set -u
+set -o pipefail
+
+usage() {
+  echo "usage: gate/lane-exit.sh --report <file> --repo <path> --branch <branch>" >&2
+  exit 2
+}
+
+report=""
+repo=""
+branch=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --report|--repo|--branch)
+      if [ "$#" -lt 2 ] || [ -z "$2" ]; then usage; fi
+      case "$1" in
+        --report) report="$2" ;;
+        --repo) repo="$2" ;;
+        --branch) branch="$2" ;;
+      esac
+      shift 2
+      ;;
+    -h|--help) usage ;;
+    *) usage ;;
+  esac
+done
+
+if [ -z "$report" ] || [ -z "$repo" ] || [ -z "$branch" ]; then usage; fi
+
+script_dir=$(CDPATH='' cd "$(dirname "$0")" && pwd)
+# shellcheck source=gate/land-lib.sh
+# shellcheck disable=SC1091
+source "$script_dir/land-lib.sh"
+if ! land_resolve_bun; then
+  echo "LANE-EXIT verdict=blocked step=preflight" >&2
+  exit 2
+fi
+
+"$BUN_BIN" "$script_dir/completion-guard.ts" --report "$report" --repo "$repo" --branch "$branch"
+status=$?
+
+if [ "$status" -eq 0 ] || [ "$status" -eq 3 ]; then
+  echo "LANE-EXIT verdict=clear report=$report branch=$branch exit=$status"
+  exit "$status"
+fi
+
+echo "LANE-EXIT verdict=blocked report=$report branch=$branch exit=$status" >&2
+exit "$status"

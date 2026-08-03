@@ -21,6 +21,27 @@ export async function durableJson(path:string,value:unknown){
 async function procIdentity(pid:number){try{const raw=await readFile(`/proc/${pid}/stat`,"utf8"),end=raw.lastIndexOf(") ");if(end<0)return;const startTime=raw.slice(end+2).trim().split(/\s+/)[19],cmdline=(await readFile(`/proc/${pid}/cmdline`)).toString().split("\0").filter(Boolean);return /^\d+$/.test(startTime)?{startTime,cmdline}:undefined}catch{return}}
 async function authenticIntent(path:string,row:LaneRecord){try{const i=JSON.parse(await readFile(path,"utf8")) as Intent;if(!(["identified","persisted"] as unknown[]).includes(i.phase)||i.laneId!==row.id||i.attempt!==row.fencingToken||i.ownerToken!==row.leaseOwner||!i.pid||!i.startTime||!Array.isArray(i.commandIdentity))return;const live=await procIdentity(i.pid);if(!live||live.startTime!==i.startTime||JSON.stringify(live.cmdline)!==JSON.stringify(i.commandIdentity)||!live.cmdline.some(x=>x.endsWith("dispatch-wrapper.ts"))||!live.cmdline.includes(path))return;return i}catch{return}}
 async function terminateIntent(i:Intent){if(!i.pid)return;const live=await procIdentity(i.pid);if(!live||live.startTime!==i.startTime)return;try{process.kill(i.pid,"SIGTERM");for(let n=0;n<50;n++){if(!(await procIdentity(i.pid)))return;await sleep(10)}const again=await procIdentity(i.pid);if(again?.startTime===i.startTime)process.kill(i.pid,"SIGKILL")}catch(e){if((e as NodeJS.ErrnoException).code!=="ESRCH")throw e}}
+// KNOWN DIVERGENCE (instance/workboard.md V3-0.2, flagged and left OPEN by
+// design, not by oversight): this is a SECOND, separate terminal-report
+// contract from gate/completion-guard.ts's (`commit:`/`verify:`/`result:`/
+// `secret-scan:`/`remaining:`, the CLAUDE.md contract, git-branch-aware, now
+// also gated at lane-exit time via gate/lane-exit.sh). This one checks
+// `lane:`/`attempt:`/`commit:`/`result:` plus laneId/fencingToken/ownerToken
+// -- fields that authenticate a report against THIS dispatch attempt for the
+// fenced retry protocol below, a concern gate/completion-guard.ts has no
+// notion of. It is also branch-agnostic: LaneRecord carries no branch field,
+// so it cannot check `commit:` against a branch tip the way completion-guard
+// does, and is exercised today only by the synthetic workers under
+// tests/fixtures/*.ts, not by real AI coder-lane dispatch (orchestrator/
+// dispatch-lane.sh: "the repo has no lane launcher yet").
+// The two contracts were NOT reconciled in V3-0.2: doing so needs a branch
+// field on LaneRecord/DurableStore (a schema change) plus updates to every
+// worker fixture, which is bigger than that row. gate/completion-guard.ts is
+// authoritative for real, git-branch-centered coder-lane reports (the live
+// path per instructions/orchestrator-cold-start.md); this function remains
+// authoritative only for the low-level fenced-dispatch attempt protocol until
+// that protocol is wired to real lanes, at which point it must adopt (or
+// delegate to) the same contract instead of carrying a second one.
 async function validTerminal(path:string,row:LaneRecord):Promise<Terminal|undefined>{
   try { const t=JSON.parse(await readFile(path,"utf8")) as Terminal;
     if(typeof t!=="object"||t.laneId!==row.id||t.attempt!==row.fencingToken||t.ownerToken!==row.leaseOwner||!/^\d{4}-\d\d-\d\dT/.test(t.at)||!(["clean","NO-GO"] as unknown[]).includes(t.verdict))return;

@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly product meteorite rebuild
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+RandomizedDelaySec=20m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+

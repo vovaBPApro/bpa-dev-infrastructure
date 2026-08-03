@@ -1,0 +1,19 @@
+# Referenced-path exemptions for bootstrap/check-unit-drift.sh's REFERENCED-PATH
+# check. One line per unit whose template names an ${INSTALL_ROOT}-anchored path
+# this repository does not yet carry. Format: unit<TAB>evidence. Absence with no
+# entry here is a failure (Hard Floor 7) -- a unit only lands here with a named
+# reason, not by default.
+#
+# Ported unit templates point at scripts from v2-deprecated's layout. Some name
+# mechanisms not yet built on v3 (tracked as their own workboard rows); others
+# name a specific product's deployment paths, which is itself an open question
+# under HR-309 (GENERIC: "anything that hard-codes this product ... is a
+# defect -- that is what instance/ exists to absorb"). Both classes are real
+# gaps, not silently patched over -- see instance/workboard.md and HR-309.
+bpa-full-suite.service	orchestrator/full-suite.sh not yet built on v3; no workboard row yet, tracked as Phase 1 follow-on to V3-1.2
+orch-morning-report.service	orchestrator/morning.sh not yet built on v3; no workboard row yet, tracked as Phase 1 follow-on to V3-1.2
+bpa-meteorite.service	meteorite/run.sh not yet built on v3; tracked at instance/workboard.md row V3-1.5
+bpa-deploy-drift-guard.service	bootstrap/check-deployed-drift.sh not yet built on v3; tracked at instance/workboard.md row V3-1.1 (out of scope for V3-1.2 by explicit mission boundary)
+agentic-bpa-db-grants.service	product-specific database/ target not ported to v3; HR-309 open question whether a product-named unit belongs in generic bootstrap/units/ at all, or under instance/ once a product repo exists
+agentic-bpa-staleness.service	product-specific deploy/ and instance/live-stands/ targets not ported to v3; HR-309 open question whether a product-named unit belongs in generic bootstrap/units/ at all, or under instance/ once a product repo exists
+agentic-bpa-stand-verifier.service	product-specific database/ target not ported to v3; HR-309 open question whether a product-named unit belongs in generic bootstrap/units/ at all, or under instance/ once a product repo exists

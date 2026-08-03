@@ -1,0 +1,13 @@
+[Unit]
+Description=Bootstrap the passwordless read-only stand verification identity
+After=postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=oneshot
+Environment=STAND_VERIFY_CONFIG=${INSTALL_ROOT}/instance/live-stands/agentic-bpa-verifier.env
+ExecStart=${BASH_BIN} ${INSTALL_ROOT}/database/bootstrap-stand-verifier.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

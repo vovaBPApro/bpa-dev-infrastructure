@@ -157,4 +157,53 @@ assert_output_has "$unrecoverable_out" 'LAND verdict=rollback-failed'
 assert_output_lacks "$unrecoverable_out" 'LAND verdict=aborted'
 chattr -i "$fixture_root/unrecoverable-lock-repo/.git/index.lock" 2>/dev/null || true
 
+# --- 4. Defect 1 (review round 2): a live lock must never be deleted ------
+# The verify: command's own child is still alive and holds an open fd on
+# .git/index.lock when land.sh reaches rollback -- the "still running" half
+# of the mechanism this file's own comments name as the root cause, and the
+# one case an unconditional `rm -f` cannot tell apart from genuine debris.
+# setsid detaches the lock-holder into its own session so it survives past
+# the verify: command's own exit, the way an orphaned real git child would.
+# land_force_reset must find it live via /proc, refuse to delete it, and
+# report `verdict=rollback-failed` -- never a false `verdict=aborted` -- while
+# leaving main exactly where the (necessarily failed) reset left it.
+make_fixture live-lock
+live_lock_sha=$(make_lane "$fixture_root/live-lock-repo" ag-live-lock)
+live_lock_before=$(git -C "$fixture_root/live-lock-repo" rev-parse main)
+live_lock_cmd='setsid sh -c "exec 8>.git/index.lock; sleep 20" </dev/null >/dev/null 2>&1 & sleep 0.3; exit 1'
+report "$fixture_root/live-lock-report.md" "$live_lock_sha" "$live_lock_cmd"
+live_lock_out="$fixture_root/live-lock-out.txt"
+if "$land" --branch ag-live-lock --report "$fixture_root/live-lock-report.md" --repo "$fixture_root/live-lock-repo" --run-verify --no-push >"$live_lock_out" 2>&1; then
+  echo 'live-lock: gate reported success while a live process held the lock' >&2
+  exit 1
+fi
+assert_output_has "$live_lock_out" 'LAND verdict=rollback-failed'
+assert_output_lacks "$live_lock_out" 'LAND verdict=aborted'
+# The lock was genuinely live, so recovery was genuinely impossible: main
+# must still show the (unrecovered) advance, proving nothing was deleted out
+# from under the live holder to force a false recovery.
+assert_not test "$(git -C "$fixture_root/live-lock-repo" rev-parse main)" = "$live_lock_before"
+
+# --- 5. Defect 2 (review round 2): HEAD-only verification misses a dirty --
+#        tree left behind by a reset that otherwise fully succeeded.
+# No lock is involved here: `git reset --hard` runs clean on the first try
+# and HEAD lands exactly on the pre-merge commit -- but reset --hard never
+# removes untracked debris, and the failing verify: command left an untracked
+# file behind. HEAD-equality alone would call this a clean rollback; it is
+# not, and the observed production defect's own symptom ("git status showed
+# staged deletions") was exactly this axis, not ref position.
+make_fixture dirty-tree
+dirty_sha=$(make_lane "$fixture_root/dirty-tree-repo" ag-dirty-tree)
+dirty_before=$(git -C "$fixture_root/dirty-tree-repo" rev-parse main)
+report "$fixture_root/dirty-tree-report.md" "$dirty_sha" 'echo leftover > untracked-debris.txt; exit 1'
+dirty_out="$fixture_root/dirty-tree-out.txt"
+if "$land" --branch ag-dirty-tree --report "$fixture_root/dirty-tree-report.md" --repo "$fixture_root/dirty-tree-repo" --run-verify --no-push >"$dirty_out" 2>&1; then
+  echo 'dirty-tree: gate reported success while an untracked file survived rollback' >&2
+  exit 1
+fi
+assert_output_has "$dirty_out" 'LAND verdict=rollback-failed'
+assert_output_lacks "$dirty_out" 'LAND verdict=aborted'
+assert test "$(git -C "$fixture_root/dirty-tree-repo" rev-parse main)" = "$dirty_before"
+assert test -n "$(git -C "$fixture_root/dirty-tree-repo" status --porcelain)"
+
 echo 'land rollback tests: pass'

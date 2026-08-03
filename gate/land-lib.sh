@@ -15,32 +15,67 @@ land_changed_base() {
   git -C "$repo" rev-list --max-parents=0 --reverse "$branch" | head -n 1
 }
 
+# A lock file is "stale" only when no live process holds an OPEN FILE
+# DESCRIPTOR on it, matched by resolved path (not name, so a deleted and
+# recreated file at the same path is never conflated with the file a live
+# process actually has open) by scanning every /proc/<pid>/fd entry on the
+# host. This is the check that closes the TOCTOU a plain unconditional
+# `rm -f` had: a coder-authored `verify:` command can spawn a git subprocess
+# that is killed OR still running when the gate reads the command's exit
+# status. If it is still running and later writes into the index, deleting
+# its lock out from under it would let it clobber the checkout again after
+# land_force_reset has already verified it clean.
+#
+# Fail-closed: if liveness cannot be determined at all (e.g. /proc is
+# unavailable on this host), the lock is NOT considered stale -- land_force_reset
+# must then fail through to the caller's land_fail_rollback rather than guess.
+land_lock_is_stale() {
+  local lock_file="$1" real fd_link fd_target
+  [ -e "$lock_file" ] || return 0
+  [ -d /proc ] || return 1
+  real=$(readlink -f -- "$lock_file" 2>/dev/null) || return 1
+  [ -n "$real" ] || return 1
+  for fd_link in /proc/[0-9]*/fd/*; do
+    [ -e "$fd_link" ] || continue
+    fd_target=$(readlink -f -- "$fd_link" 2>/dev/null) || continue
+    if [ "$fd_target" = "$real" ]; then
+      return 1
+    fi
+  done
+  return 0
+}
+
 # Hard-reset $repo's checked-out branch to $target and PROVE it landed there
-# before returning success. `git reset --hard` can fail without `set -e`
-# noticing (this repo's scripts intentionally don't set -e), and a plain
-# `git reset --hard ORIG_HEAD >/dev/null` swallows that failure completely --
-# the caller prints "reset to ORIG_HEAD" and reports an aborted landing while
-# the ref sits wherever the merge left it. Observed cause: a coder-authored
-# `verify:` command (or a declared package.json script) that spawns a git
-# process which is killed or still running when the gate reads its exit
-# status leaves a stale $GIT_DIR/index.lock behind, and every subsequent
-# `git reset --hard` in that worktree fails the same way.
+# -- both the ref position AND a clean tree -- before returning success.
+# `git reset --hard` can fail without `set -e` noticing (this repo's scripts
+# intentionally don't set -e), and a plain `git reset --hard ORIG_HEAD
+# >/dev/null` swallowed that failure completely: the caller printed "reset to
+# ORIG_HEAD" and reported an aborted landing while the ref sat wherever the
+# merge left it. Observed cause: a coder-authored `verify:` command (or a
+# declared package.json script) that spawns a git process which is killed or
+# still running when the gate reads its exit status leaves a stale
+# $GIT_DIR/index.lock behind, and every subsequent `git reset --hard` in that
+# worktree fails the same way.
 #
 # land.sh holds an exclusive flock on this repo's own bpa-land.lock for its
 # entire runtime (see the `exec 9>"$lock_file"` / `flock -n 9` pair near the
 # top of gate/land.sh), so no *other* land.sh invocation can be concurrently
-# mutating this checkout. A leftover index.lock at rollback time can
-# therefore only be debris from something already dead. Clearing it is
-# confined to this recovery path -- it is never used to make forward
-# progress, only to let a hard reset that the gate itself needs finish.
+# mutating this checkout -- that hazard is closed structurally. What is NOT
+# closed structurally is a lock some other live process (e.g. the verify
+# command's own still-running child) legitimately holds; land_lock_is_stale
+# is what tells the two apart, and a live lock is left untouched rather than
+# deleted.
 #
 # Returns 0 only when $repo's HEAD is verified to equal the resolved commit
-# for $target afterward. A caller that gets a non-zero return MUST NOT report
-# a plain "aborted" verdict: the target ref may still be wherever the failed
-# operation left it, and the report contract requires "aborted" to mean the
-# ref did not move.
+# for $target AND `git status --porcelain` is empty afterward -- ref position
+# alone is not proof of a restored tree; reset --hard never removes untracked
+# debris a failed verify/declared-check left behind, and a live writer could
+# still leave the index dirty even after HEAD looks right. A caller that gets
+# a non-zero return MUST NOT report a plain "aborted" verdict: local state may
+# not have been restored, and the report contract requires "aborted" to mean
+# the ref did not move and the tree is clean.
 land_force_reset() {
-  local repo="$1" target="$2" git_dir lock_file target_sha actual_sha
+  local repo="$1" target="$2" git_dir lock_file target_sha actual_sha status_output
   git_dir=$(git -C "$repo" rev-parse --git-dir 2>/dev/null) || return 1
   case "$git_dir" in
     /*) lock_file="$git_dir/index.lock" ;;
@@ -48,11 +83,15 @@ land_force_reset() {
   esac
   target_sha=$(git -C "$repo" rev-parse --verify -q "${target}^{commit}" 2>/dev/null) || return 1
   if ! git -C "$repo" reset --hard "$target_sha" >/dev/null 2>&1; then
-    rm -f "$lock_file" 2>/dev/null || true
-    git -C "$repo" reset --hard "$target_sha" >/dev/null 2>&1 || true
+    if land_lock_is_stale "$lock_file"; then
+      rm -f "$lock_file" 2>/dev/null || true
+      git -C "$repo" reset --hard "$target_sha" >/dev/null 2>&1 || true
+    fi
   fi
   actual_sha=$(git -C "$repo" rev-parse -q --verify HEAD 2>/dev/null) || return 1
-  [ "$actual_sha" = "$target_sha" ]
+  [ "$actual_sha" = "$target_sha" ] || return 1
+  status_output=$(git -C "$repo" status --porcelain 2>/dev/null) || return 1
+  [ -z "$status_output" ]
 }
 
 land_resolve_bun() {

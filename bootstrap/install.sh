@@ -265,14 +265,20 @@ run_install_test_gate() {
 
 render_units() {
   local effective_euid="${BOOTSTRAP_TEST_EUID:-$EUID}"
-  local unit source extra template_dir template destination count=0
+  local unit source extra template_dir template staged count=0
+  local -a units=() templates=()
+  local -A manifest_units=()
   ((effective_euid == 0)) || { echo 'ERROR: system unit rendering requires root' >&2; return 1; }
   if [[ ! -f "$EXPECTED_UNITS_FILE" || ! -r "$EXPECTED_UNITS_FILE" ]]; then
     echo "ERROR: expected-units manifest is missing or unreadable: $EXPECTED_UNITS_FILE" >&2
     return 1
   fi
   command -v envsubst >/dev/null 2>&1 || { echo 'ERROR: envsubst is required to render units' >&2; return 1; }
-  install -d -m 755 "$SYSTEMD_SYSTEM_DIR"
+
+  # Preflight the complete manifest before creating the destination or writing
+  # a single unit. In particular, pin the four units independently named by
+  # the 2026-08-01 incident regression lock in check-unit-drift.test.ts: a
+  # truncated manifest must not redefine a smaller fleet as complete.
   while IFS=$'\t' read -r unit source extra || [[ -n "${unit:-}" ]]; do
     [[ -z "$unit" || "$unit" == \#* ]] && continue
     if [[ -n "${extra:-}" || ( "$unit" != *.service && "$unit" != *.timer ) ]]; then
@@ -289,16 +295,43 @@ render_units() {
       echo "ERROR: expected unit template is missing or unreadable: $template" >&2
       return 1
     fi
-    destination="$SYSTEMD_SYSTEM_DIR/$unit"
-    INSTALL_ROOT="$INSTALL_ROOT" ENV_FILE="$ENV_FILE" BUN_BIN="$BUN_BIN" BASH_BIN="$BASH_BIN" \
-      envsubst < "$template" > "$destination"
-    chmod 644 "$destination"
+    if [[ -n "${manifest_units[$unit]+x}" ]]; then
+      echo "ERROR: duplicate expected-units entry: $unit" >&2
+      return 1
+    fi
+    manifest_units["$unit"]=1
+    units+=("$unit")
+    templates+=("$template")
     ((count += 1))
   done < "$EXPECTED_UNITS_FILE"
   if ((count == 0)); then
     echo "ERROR: expected-units manifest is empty: $EXPECTED_UNITS_FILE" >&2
     return 1
   fi
+  for unit in bpa-orchestrator.service bpa-orchestrator-watchdog.service \
+    bpa-orchestrator-watchdog.timer bpa-telegram-daemon.service; do
+    if [[ -z "${manifest_units[$unit]+x}" ]]; then
+      echo "ERROR: required incident unit is missing from expected-units manifest: $unit" >&2
+      return 1
+    fi
+  done
+
+  # Render the whole set away from the destination. A malformed template or
+  # envsubst failure therefore cannot leave a half-rendered deployed set.
+  staged="$(mktemp -d "${TMPDIR:-/tmp}/bpa-render-units.XXXXXX")"
+  trap 'rm -rf "$staged"' RETURN
+  for ((count = 0; count < ${#units[@]}; count += 1)); do
+    INSTALL_ROOT="$INSTALL_ROOT" ENV_FILE="$ENV_FILE" BUN_BIN="$BUN_BIN" BASH_BIN="$BASH_BIN" \
+      envsubst < "${templates[$count]}" > "$staged/${units[$count]}"
+    chmod 644 "$staged/${units[$count]}"
+  done
+
+  install -d -m 755 "$SYSTEMD_SYSTEM_DIR"
+  for unit in "${units[@]}"; do
+    mv -f "$staged/$unit" "$SYSTEMD_SYSTEM_DIR/$unit"
+  done
+  rm -rf "$staged"
+  trap - RETURN
 }
 
 if [[ "${BOOTSTRAP_LIB_ONLY:-false}" != true ]]; then

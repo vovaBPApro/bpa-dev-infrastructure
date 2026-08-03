@@ -110,6 +110,28 @@ state changes:
 INFRA_STATE_DB="$REPO/runtime/state.db" bun "$REPO/core/mission-cli.ts" lane transition "$LANE_ID" running
 ```
 
+## 2.5. Gate the lane's own terminal report before treating it as done
+
+Do this the moment the coder lane reports itself finished, BEFORE routing to
+review or landing — not only inside `gate/land.sh` at landing time. Landing
+can be sessions or days after the lane session that could still fix its own
+report is gone; this step catches the same defect while the lane is still
+recoverable.
+
+```sh
+"$REPO/gate/lane-exit.sh" --report "$REPORT_FILE" --repo "$REPO" --branch "$BRANCH"
+```
+
+Exit codes match `gate/completion-guard.ts`: `0` (contract-valid, clean) or
+`3` (contract-valid, honest `NO-GO`) both mean the lane's report is real and
+the lane may be treated as finished — route a `NO-GO` to a visible parked row
+per Hard Rule 13. `2` is a contract violation (missing report, wrong shape, or
+`commit:` not equal to `$BRANCH`'s tip) — do not route to review or land; send
+the lane back to fix its report or commit, or if the lane is gone, treat the
+row as `NO-GO` with the concrete blocker. Never substitute `gate/land.sh`'s
+later re-check for this step; they check the same contract at different times
+and both must pass.
+
 ## 3. Route review
 
 Classify the exact diff using `instructions/review-policy.md`; uncertainty is

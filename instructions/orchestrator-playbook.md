@@ -20,6 +20,10 @@ not author runtime code, tests, plans, migrations, or reviews.
    dedicated lane rather than guessing.
 3. On every lane event, read its terminal evidence, confirm repository state,
    classify risk, and update the one mission rollup before further dispatch.
+   Gate the report with `gate/lane-exit.sh` the moment the lane reports itself
+   done (`orchestrator-cold-start.md` §2.5) — a contract violation there means
+   the lane is not finished, not merely unreviewed; do not wait for
+   `gate/land.sh`'s later re-check to discover it.
 4. Require exact SHAs, relevant command results, review evidence, and runtime
    or rollback proof where applicable. Missing or stale evidence is `NO-GO`.
 5. Land only through `gate/land.sh` after required review. Serialize the

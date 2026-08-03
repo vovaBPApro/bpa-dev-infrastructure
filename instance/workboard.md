@@ -26,7 +26,7 @@ human nursing it.
 | id | row | acceptance | state |
 |---|---|---|---|
 | V3-0.1 | Port `gate/land.sh --target-branch` from the abandoned line. Without it landing is only possible onto the repository default branch. | `env -u BUN_BIN bash gate/land-target-branch.test.sh; echo $?` → 0 | **done** — landed `f331295`, `verdict=landed review=accepted`. See "Nested gate invocations" below: the apparent flakiness was the verify command, not the change. |
-| V3-0.2 | Lane terminal reports: enforce the corrected convention. The report is an external file naming the branch tip; a report committed into its own branch can never match the tip (proven, see `report-pinning-convention`). Wire `gate/completion-guard.ts` at lane exit, not only at land time. | a dispatched lane cannot end while `bun gate/completion-guard.ts --report <path> --repo . --branch <tip>` exits non-zero | not started |
+| V3-0.2 | Lane terminal reports: enforce the corrected convention. The report is an external file naming the branch tip; a report committed into its own branch can never match the tip (proven, see `report-pinning-convention`). Wire `gate/completion-guard.ts` at lane exit, not only at land time. | a dispatched lane cannot end while `bun gate/completion-guard.ts --report <path> --repo . --branch <tip>` exits non-zero | **partial** — `gate/lane-exit.sh` wraps `gate/completion-guard.ts` and is taught in `instructions/lane-lifecycle.md` (coder baseline, self-check) and `instructions/orchestrator-cold-start.md` §2.5 (orchestrator, right after the lane reports done). See "Two live report contracts" below: `orchestrator/dispatcher.ts`'s separate inline check was left un-reconciled, on purpose, and is documented as remaining work. |
 | V3-0.3 | Landing gate rollback defect: an aborted landing left local `main` advanced to the merged commit with a dirty tree. Origin was never touched, so the push boundary held, but the local ref moved after `verdict=aborted`. | a test that aborts a landing at post-merge-verify and asserts `git rev-parse <target>` is unchanged | not started |
 | V3-0.4 | Ledger drift check — **done**, landed 2687420 + 76c5363. | `bun test tools/check-decision-ledger-drift.test.ts` → 2 pass | **done** |
 
@@ -83,6 +83,48 @@ Only after Phases 0–2 hold.
 | V3-4.3 | Host cutover — the operator's "почищу сервак і з нуля почнемо". | his explicit go, after 4.1 and 4.2 |
 
 ---
+
+## Two live report contracts — read before touching lane completion again
+
+V3-0.2 set out to wire `gate/completion-guard.ts` at lane-exit time (done: see
+`gate/lane-exit.sh`, `instructions/lane-lifecycle.md`,
+`instructions/orchestrator-cold-start.md` §2.5). Investigating the wiring found
+a second, pre-existing, un-related terminal-report contract that the row as
+briefed would have left silently untouched:
+
+1. `gate/completion-guard.ts` — the CLAUDE.md contract: `commit:` / `verify:` /
+   `result:` / `secret-scan:` / `remaining:`, git-branch-aware (checks
+   `commit:` against a branch tip). Used by `gate/land.sh` at landing time, and
+   now also by `gate/lane-exit.sh` at lane-exit time. **This is the
+   authoritative contract for real, git-branch-centered coder-lane reports** —
+   the path documented in `instructions/orchestrator-cold-start.md` and the one
+   every dispatched coder lane is taught.
+2. `orchestrator/dispatcher.ts:validTerminal()` — a separate, older, lower-level
+   contract: `lane:` / `attempt:` / `commit:` / `result:` plus
+   laneId/fencingToken/ownerToken authentication, checked inline (no
+   subprocess, no completion-guard.ts). It has no branch concept at all —
+   `LaneRecord` carries no branch field — so it cannot check tip-pinning. It
+   guards `core/DurableStore`'s fenced dispatch/retry state machine
+   (`dispatchOnce`/`reconcileRunning`), exercised today only by the synthetic
+   workers under `tests/fixtures/*.ts` (`noop-worker.ts`, `gated-worker.ts`,
+   `forged-worker.ts`, `never-exit-worker.ts`). It is NOT the path real AI
+   coder lanes go through — `orchestrator/dispatch-lane.sh` says outright "the
+   repo has no lane launcher yet" — so this contract has no live coder lane to
+   diverge from today, but it is real, tested, merged code, and it disagrees
+   with contract 1 in both field names and in whether tip-pinning is checked
+   at all.
+
+These were deliberately NOT reconciled in V3-0.2 — full reconciliation needs a
+branch field on `LaneRecord`/`DurableStore` (a schema change touching
+`core/schema.ts`, `core/mission-cli.ts`, and every dispatcher test fixture),
+which is bigger than this row. `orchestrator/dispatcher.ts` carries a comment
+at `validTerminal()` pointing back here. Remaining work, next row: either (a)
+add branch-awareness to `LaneRecord` and make `validTerminal()` delegate to
+`gate/completion-guard.ts` for report-shape and tip-pinning, keeping only the
+attempt-fencing fields as dispatcher-specific, or (b) if `dispatcher.ts`'s
+fenced primitive is retired before it is ever wired to real lanes, delete
+`validTerminal()`'s bespoke contract instead of reconciling it. Do not treat
+V3-0.2 as fully closing "one report contract" until one of those happens.
 
 ## Nested gate invocations — a property to know before writing a `verify:`
 

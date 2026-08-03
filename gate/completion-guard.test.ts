@@ -63,6 +63,23 @@ describe("completion guard", () => {
     expect(result.stdout).toContain("GUARD verdict=pass");
   });
 
+  test("rejects a lane with no report file at all", () => {
+    const item = fixture();
+    const result = run(join(item.directory, "does-not-exist.md"), item.repo, ["--branch", "master"]);
+    expect(result.status).toBe(2);
+    expect(result.stdout).toContain("FAIL report-file missing");
+  });
+
+  test("rejects a report committed into its own branch (impossible-to-satisfy convention)", () => {
+    const item = fixture();
+    const inTreeReport = join(item.repo, "report.md");
+    writeFileSync(inTreeReport, valid(item.sha));
+    command("git add report.md && git commit -m report", item.repo);
+    const result = run(inTreeReport, item.repo, ["--branch", "master"]);
+    expect(result.status).toBe(2);
+    expect(result.stdout).toContain("FAIL branch-tip");
+  });
+
   test("rejects a missing SHA line", () => {
     const item = fixture();
     const result = run(report(item.directory, "verify: true\nresult: clean\nsecret-scan: clean\nremaining: none\n"), item.repo);

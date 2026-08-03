@@ -13,6 +13,22 @@ cleanup() {
 }
 trap cleanup EXIT
 mkdir -p "$SCRATCH/bin" "$SCRATCH/lanes"
+mkdir -p "$SCRATCH/home/.codex"
+printf '{}\n' >"$SCRATCH/home/.codex/auth.json"
+chmod 0600 "$SCRATCH/home/.codex/auth.json"
+cat >"$SCRATCH/service.conf" <<EOF
+LANE_SERVICE_USER=$(id -un)
+LANE_SERVICE_HOME=$SCRATCH/home
+LANE_PROVIDER=codex
+EOF
+cat >"$SCRATCH/bin/network-probe" <<'EOF'
+#!/usr/bin/env bash
+[[ -z "${MOCK_NETWORK_PROBE_FAIL:-}" ]]
+EOF
+chmod +x "$SCRATCH/bin/network-probe"
+export LANE_SERVICE_CONFIG="$SCRATCH/service.conf"
+export LANE_NETWORK_PROBE="$SCRATCH/bin/network-probe"
+export HOME="$SCRATCH/home"
 
 cat >"$SCRATCH/task.md" <<'EOF'
 # Dispatch proof
@@ -35,6 +51,10 @@ cat >"$SCRATCH/bin/systemctl" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
+cat >"$SCRATCH/bin/loginctl" <<'EOF'
+#!/usr/bin/env bash
+printf 'yes\n'
+EOF
 cat >"$SCRATCH/bin/systemd-run" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -44,7 +64,7 @@ fi
 printf '%s\n' "$@" >"$MOCK_SYSTEMD_ARGS"
 while (($#)); do
   case "$1" in
-    --collect) shift ;;
+    --user|--collect) shift ;;
     --unit) shift 2 ;;
     --setenv=*) export "${1#--setenv=}"; shift ;;
     --working-directory=*) cd "${1#--working-directory=}"; shift ;;
@@ -56,6 +76,23 @@ done
 exit 0
 EOF
 chmod +x "$SCRATCH/bin/"*
+
+# Capability refusal precedes every named lane artifact.
+if PATH="$SCRATCH/bin:$PATH" MOCK_NETWORK_PROBE_FAIL=1 \
+  AGENT_COMMAND_FILE="$SCRATCH/agent.conf" TMPDIR="$SCRATCH/tmp-parent" \
+  "$SCRIPT_DIR/launch-lane.sh" --name no-boundary --role coder --task-file "$SCRATCH/task.md" \
+  --repo "$REPO_DIR" --lanes-dir "$SCRATCH/lanes" --base HEAD \
+  >"$SCRATCH/no-boundary.output" 2>"$SCRATCH/no-boundary.error"; then
+  printf 'launcher accepted a failed network capability probe\n' >&2
+  exit 1
+fi
+grep -Fq 'lane network capability probe failed' "$SCRATCH/no-boundary.error"
+for artifact in "$SCRATCH/lanes/no-boundary" "$SCRATCH/lanes/pack-no-boundary" \
+  "$SCRATCH/lanes/lane-no-boundary.prompt.md" "$SCRATCH/lanes/lane-no-boundary.log" \
+  "$SCRATCH/lanes/no-boundary.report.md" "$SCRATCH/lanes/lane-no-boundary.status" \
+  "$SCRATCH/tmp-parent/infra-lane-tmp-$UID/no-boundary"; do
+  [[ ! -e "$artifact" && ! -L "$artifact" ]]
+done
 
 PATH="$SCRATCH/bin:$PATH" AGENT_COMMAND_FILE="$SCRATCH/agent.conf" \
   MOCK_SYSTEMD_ARGS="$SCRATCH/systemd.args" MOCK_AGENT_ARGS="$SCRATCH/agent.args" \

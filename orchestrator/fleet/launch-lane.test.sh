@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SCRATCH="$(mktemp -d)"
 cleanup() {
-  for lane in proof race retry; do
+  for lane in proof race retry valid invalid crashed; do
     git -C "$REPO_DIR" worktree remove --force "$SCRATCH/lanes/$lane" >/dev/null 2>&1 || true
     git -C "$REPO_DIR" branch -D "ag-fleet-launch-$lane" >/dev/null 2>&1 || true
   done
@@ -52,7 +52,8 @@ while (($#)); do
     *) break ;;
   esac
 done
-exec "$@"
+"$@" || true
+exit 0
 EOF
 chmod +x "$SCRATCH/bin/"*
 
@@ -71,6 +72,7 @@ git -C "$SCRATCH/lanes/proof" symbolic-ref --short HEAD | grep -Fxq ag-fleet-lau
 grep -Fxq -- '--property=IPAddressDeny=localhost' "$SCRATCH/systemd.args"
 grep -Fq 'daemon/mask-stream.ts' "$SCRATCH/systemd.args"
 grep -Fq "TMPDIR=$SCRATCH/tmp-parent/infra-lane-tmp-$UID/proof" "$SCRATCH/systemd.args"
+grep -Fq "LANE_REPORT_PATH=$SCRATCH/lanes/proof.report.md" "$SCRATCH/systemd.args"
 test -f "$SCRATCH/agent.executed"
 grep -Fxq 'run-lane' "$SCRATCH/agent.args"
 grep -Fxq -- '--custom-safety-mode' "$SCRATCH/agent.args"
@@ -79,6 +81,41 @@ if grep -Fq '1234567890abcdef' "$SCRATCH/lanes/lane-proof.log"; then
   exit 1
 fi
 grep -Fq 'API_KEY=' "$SCRATCH/lanes/lane-proof.log"
+grep -Fxq 'state: failed' "$SCRATCH/lanes/lane-proof.status"
+grep -Fxq 'reason: report-invalid' "$SCRATCH/lanes/lane-proof.status"
+grep -Fxq "report: $SCRATCH/lanes/proof.report.md" "$SCRATCH/lanes/lane-proof.status"
+
+# The unit wrapper, not the payload, decides terminal state from the declared report.
+cat >"$SCRATCH/bin/report-agent" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+mode=$1
+if [[ "$mode" == crash ]]; then exit 17; fi
+sha=$(git rev-parse HEAD)
+{
+  printf 'commit: %s fixture\n' "$sha"
+  printf 'verify: true\nresult: clean\nsecret-scan: clean\nremaining: none\n'
+  if [[ "$mode" == invalid ]]; then printf 'review: claimed\n'; fi
+} >"$LANE_REPORT_PATH"
+EOF
+chmod +x "$SCRATCH/bin/report-agent"
+for mode in valid invalid crash; do
+  lane="${mode/crash/crashed}"
+  printf '%s\n%s\n' "$SCRATCH/bin/report-agent" "$mode" >"$SCRATCH/$mode.conf"
+  PATH="$SCRATCH/bin:$PATH" AGENT_COMMAND_FILE="$SCRATCH/$mode.conf" \
+    MOCK_SYSTEMD_ARGS="$SCRATCH/$mode.systemd.args" TMPDIR="$SCRATCH/tmp-parent" \
+    "$SCRIPT_DIR/launch-lane.sh" --name "$lane" --role coder --task-file "$SCRATCH/task.md" \
+    --repo "$REPO_DIR" --lanes-dir "$SCRATCH/lanes" --base HEAD --branch "ag-fleet-launch-$lane" \
+    >"$SCRATCH/$mode.output"
+done
+grep -Fxq 'state: terminal' "$SCRATCH/lanes/lane-valid.status" || { cat "$SCRATCH/lanes/lane-valid.status" "$SCRATCH/lanes/lane-valid.log" >&2; exit 1; }
+grep -Fxq 'reason: report-valid' "$SCRATCH/lanes/lane-valid.status"
+grep -Fxq 'state: failed' "$SCRATCH/lanes/lane-invalid.status"
+grep -Fxq 'reason: report-invalid' "$SCRATCH/lanes/lane-invalid.status"
+grep -Fq 'missing file=' "$SCRATCH/lanes/lane-invalid.log"
+grep -Fxq 'state: failed' "$SCRATCH/lanes/lane-crashed.status"
+grep -Fxq 'reason: payload-exit' "$SCRATCH/lanes/lane-crashed.status"
+grep -Fxq 'exit: 17' "$SCRATCH/lanes/lane-crashed.status"
 
 # Existing-name lock: the launcher must refuse before composition or unit use.
 rm -f "$SCRATCH/systemd.args" "$SCRATCH/agent.executed"
@@ -127,13 +164,15 @@ test -f "$SCRATCH/lanes/lane-race.prompt.md"
 [[ "$(find "$SCRATCH" -name 'race-*.agent.executed' -type f | wc -l)" -eq 1 ]]
 
 # Every artifact location rejects dangling symlinks as an existing claim.
-for artifact_kind in worktree pack prompt log tmp; do
+for artifact_kind in worktree pack prompt log report status tmp; do
   lane="dangling-$artifact_kind"
   case "$artifact_kind" in
     worktree) artifact="$SCRATCH/lanes/$lane" ;;
     pack) artifact="$SCRATCH/lanes/pack-$lane" ;;
     prompt) artifact="$SCRATCH/lanes/lane-$lane.prompt.md" ;;
     log) artifact="$SCRATCH/lanes/lane-$lane.log" ;;
+    report) artifact="$SCRATCH/lanes/$lane.report.md" ;;
+    status) artifact="$SCRATCH/lanes/lane-$lane.status" ;;
     tmp) artifact="$SCRATCH/tmp-parent/infra-lane-tmp-$UID/$lane" ;;
   esac
   mkdir -p "$(dirname "$artifact")"
@@ -163,6 +202,8 @@ grep -Fq 'unit launch failed; cleaned lane artifacts: retry' "$SCRATCH/retry-fai
 test ! -e "$SCRATCH/lanes/retry"
 test ! -e "$SCRATCH/lanes/pack-retry"
 test ! -e "$SCRATCH/lanes/lane-retry.prompt.md"
+test ! -e "$SCRATCH/lanes/retry.report.md"
+test ! -e "$SCRATCH/lanes/lane-retry.status"
 test ! -e "$SCRATCH/tmp-parent/infra-lane-tmp-$UID/retry"
 PATH="$SCRATCH/bin:$PATH" AGENT_COMMAND_FILE="$SCRATCH/agent.conf" \
   MOCK_SYSTEMD_ARGS="$SCRATCH/retry.systemd.args" MOCK_AGENT_ARGS="$SCRATCH/retry.agent.args" \

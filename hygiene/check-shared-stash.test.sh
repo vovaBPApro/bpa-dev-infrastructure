@@ -3,7 +3,7 @@
 set -euo pipefail
 
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-checker="$root/hygiene/check-shared-stash.sh"
+checker="${CHECK_SHARED_STASH_CHECKER:-$root/hygiene/check-shared-stash.sh}"
 fixture_root=$(mktemp -d)
 trap 'rm -rf "$fixture_root"' EXIT
 

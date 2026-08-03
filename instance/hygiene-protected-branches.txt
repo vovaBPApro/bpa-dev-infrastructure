@@ -23,6 +23,13 @@ v3
 # Park record: instance/parked/V3-1.1-stage2-2026-08-03.md
 ag-s3-2-r3
 
+# Round 2 of V3-1.9 (non-root lanes), reported NO-GO and not landed. Retained
+# because round 3 rebuilds on a different model (the single-service-user shape
+# in instance/v3-nonroot-lane-model-2026-08-03.md) and this branch is the only
+# copy of what round 2 established under the old one. Remove this entry when
+# V3-1.9 lands or parks with its own record.
+ag-s4-5-r2
+
 # ag-s3-1-r3 was retained here while V3-1.5 was parked. The recut landed at
 # 133541c and meteorite/run.sh + prove-candidate.sh are on main, so the branch
 # no longer holds the only copy of anything. Unprotected 2026-08-03 at the

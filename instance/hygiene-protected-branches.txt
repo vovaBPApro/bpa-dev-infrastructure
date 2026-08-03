@@ -23,6 +23,12 @@ v3
 # Park record: instance/parked/V3-1.1-stage2-2026-08-03.md
 ag-s3-2-r3
 
+# V3-2.3 round 3 — the deployment drift guard. PARKED at the HR-1726 cap: the
+# arming lock mocks systemd instead of executing it, so the circularity moved
+# rather than closing. Park record:
+# instance/parked/V3-2.3-drift-guard-2026-08-03.md
+ag-s6-12
+
 # V3-3.4 round 3 — the durable review-round cap. PARKED at the HR-1726 cap with
 # one open blocker: counted-but-unlanded attempts never reach target history, so a
 # new clone can repeat them. The branch IS the evidence and the starting point.

@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 # Lane-dispatch entry point (INSTRUCTIONS_CONSILIUM_FINAL.md §2.3).
 #
-# The repo has no lane launcher yet (launch.sh hosts the interactive
-# orchestrator, not per-lane prompts). This is the minimal, checked front door
-# for launching a lane from a rendered prompt file: it REFUSES any prompt that
-# lacks the compose.ts pack marker, so a hand-assembled prompt can never reach a
-# lane. The actual launch is intentionally out of scope here — the guarantee this
-# script adds is "no marker, no dispatch". Wire a real launcher in after the
-# `dispatch-check.ts` gate.
+# This is the checked front door used by fleet/launch-lane.sh for a rendered
+# prompt file: it REFUSES any prompt that lacks the compose.ts pack marker, so a
+# hand-assembled prompt can never reach a lane. The guarantee remains "no
+# marker, no dispatch" whether it is used as a pure gate or with a launcher
+# tail.
 #
 # Break-glass: DISPATCH_OVERRIDE=<reason> is honored by dispatch-check.ts (see
 # that file); every override is logged to orchestrator/runtime/ops-journal.log

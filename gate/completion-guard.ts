@@ -140,7 +140,7 @@ const reportPath = resolve(options.report!);
 const repoPath = resolve(options.repo!);
 let report: Report | undefined;
 
-function reviewFieldValues(contents: string): string[] {
+function reviewFieldValues(contents: string): { values: string[]; unterminatedFence: boolean } {
   const values: string[] = [];
   let fence: { marker: "`" | "~"; length: number } | undefined;
 
@@ -161,11 +161,15 @@ function reviewFieldValues(contents: string): string[] {
     if (field) values.push(field[1].trim());
   }
 
-  return values;
+  return { values, unterminatedFence: fence !== undefined };
 }
 
 function checkClaimedReview(contents: string, commit: string | undefined): void {
-  const reviewFields = reviewFieldValues(contents);
+  const { values: reviewFields, unterminatedFence } = reviewFieldValues(contents);
+  if (unterminatedFence) {
+    fail("review-field", "unterminated-fenced-block");
+    return;
+  }
   if (reviewFields.length === 0) return;
   if (reviewFields.length !== 1 || !reviewFields[0]) {
     fail("review-field", "must-occur-once-and-be-nonempty");

@@ -105,6 +105,20 @@ describe("completion guard", () => {
     expect(result.stdout).toContain("GUARD verdict=pass");
   });
 
+  test.each([
+    ["backtick", "```text\nreview: ACCEPT"],
+    ["tilde", "~~~\nreview: ACCEPT"],
+    ["info string", "~~~markdown\nreview: ACCEPT"],
+    ["shorter closing run", "````\nexample\n```\nreview: ACCEPT"],
+    ["two opens and one close", "```\nexample\n```\n~~~\nreview: ACCEPT"],
+  ])("rejects an unterminated %s fence that would hide a review claim", (_case, fencedClaim) => {
+    const item = fixture();
+    const body = `${valid(item.sha)}${fencedClaim}`;
+    const result = run(report(item.directory, body), item.repo, ["--branch", "master"]);
+    expect(result.status).toBe(2);
+    expect(result.stdout).toContain("FAIL review-field unterminated-fenced-block");
+  });
+
   test("ignores a quoted review-looking line", () => {
     const item = fixture();
     const body = valid(item.sha).replace("remaining: none", "> review: example only\nremaining: none");

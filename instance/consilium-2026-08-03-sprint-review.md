@@ -115,6 +115,35 @@ listening on any channel.
 The 11:03 reboot was clean and human-initiated (`systemd-logind: "The system will
 reboot now!"`), not a crash.
 
+### Deeper cause, found after the consilium closed
+
+The watchdog is not merely unarmed — **its canonical system units were never deployed
+to this host at all.** `bootstrap/check-unit-drift.sh` (exit 1, correctly fail-closed)
+reports 8 missing units in `/etc/systemd/system/`:
+
+```
+DRIFT bpa-orchestrator-watchdog.service   DRIFT bpa-orchestrator-watchdog.timer
+DRIFT bpa-deploy-drift-guard.service      DRIFT bpa-deploy-drift-guard.timer
+DRIFT bpa-meteorite.service               DRIFT bpa-meteorite.timer
+DRIFT agentic-bpa-db-grants.{service,timer}   DRIFT agentic-bpa-staleness.{service,timer}
+DRIFT agentic-bpa-stand-verifier.service
+```
+
+The user-level copies under `~/.config/systemd/user/` are the *legacy* ones the
+2026-08-01 incident already ruled non-canonical, and none is armed —
+`timers.target.wants/` holds only `orch-memory-sweep.timer`.
+
+Note what is in that missing list: **`bpa-deploy-drift-guard`**, the timer whose whole
+job is to detect exactly this drift. The guard that would have caught the gap is
+itself part of the gap, which is why nothing reported it for days. This is a Hard
+Floor 5 finding — the repository carries the units, the host does not run them.
+
+`bootstrap/install.sh` is the tracked path that closes this, but it is not a small
+act: its plan includes an apt/bun check, a repo fast-forward, the full daemon/core/
+gate/stand/workspace test sweep, and an activate step that runs
+`systemctl enable --now bpa-orchestrator.service` — i.e. it restarts the live
+orchestrator session. It needs a maintenance boundary, not an opportunistic run.
+
 ## 4. Telegram: what "delivered" means
 
 `delivered` is honest. `daemon/history-logger.ts`'s `applyOutboundHistory` is a global
@@ -143,9 +172,24 @@ Open item, not fully pinned: the exact call site of the 123-byte sender. The
 was provably not running, so attribution rests on `evaluateStall` re-firing under a
 fresh `alertKey` per doomed mission attempt.
 
-## 5. v3 — the structural finding
+## 5. v3 — orphan by design, not by accident
 
-**`v3` is an orphan branch that has never been merged into `main`.** Verified:
+**Operator correction (Vova, Telegram 1718, 2026-08-03), verbatim:**
+
+> гілка v3 — orphan так це норм, я і хотів щоб там почали з пустої історіі бо це
+> абсолютно нова версія яку ми в майстер поки не мержимо, поки треба допилити це в
+> цій гілці і тоді вже будемо тустувати розгортати і вже в самому кінці перенесемо
+> її в мейн
+
+This supersedes the framing below. The orphan history is deliberate: v3 is a
+from-scratch rewrite that is intentionally NOT merged into `main` until it is
+finished, tested and deployed; the move to `main` is the last step, not a missed one.
+"0% integrated" is therefore **not a defect and not a progress measure** — the only
+meaningful measure of v3 is progress against v3's own acceptance bar (the meteorite
+gate), which is how the table below should be read. The measurements are unchanged
+and still correct; only the interpretation was wrong.
+
+The verified facts:
 
 ```
 $ git merge-base main v3
@@ -158,7 +202,8 @@ orchestrator/supervisor.ts  orchestrator/supervisor.test.ts
 ```
 
 55 commits sit on `v3`. The hierarchy engine — dispatcher and supervisor — exists
-**only** there. `main`, which is what actually runs, has neither file.
+**only** there. `main`, which is what actually runs today, has neither file — as
+intended, until v3 is finished and cut over.
 
 Per `reports/v3-plan-2026-08-02.md`, v3's acceptance bar is a 9-assertion Docker
 "meteorite" gate (`scripts/meteorite.sh`) from a clean clone, after which a D1–D7
@@ -169,7 +214,7 @@ says v3 is NO-GO for cutover.
 
 | block | operator's number (msg 1642) | defensible number | why |
 |---|---|---|---|
-| v3 core | ~70% | ~70% of one unmerged branch, **0% integrated** | orphan branch, never merged |
+| v3 core | ~70% | ~70% against v3's own bar | measured on the `v3` branch, which is where v3 is *supposed* to live until the end (Telegram 1718); the meteorite gate is the bar, not merge-into-main |
 | authority / W-48 | ~45% | **~15–20%** | 1 of 6 V3-GAPs landed (GAP-5); GAP-1/2/4/6 only rejected rounds; GAP-3 untouched |
 | provider boundary | ~25% | **unverifiable** | no tracked workboard row or acceptance criterion exists |
 | checkpoint/recovery | ~35% | ~35% | matches W-31 (blocked on W-37) and W-38 (Tier-A + rehearsal NO-GO) |

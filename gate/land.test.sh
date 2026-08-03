@@ -42,6 +42,7 @@ make_fixture() {
   git clone "$bare" "$repo" >/dev/null
   git -C "$repo" config user.email land@example.test
   git -C "$repo" config user.name Land
+  env -u BUN_BIN bun "$root/gate/review-rounds.ts" init --state "$repo/.git/bpa-review-rounds.json" --cap 3 --no-progress-limit 3 >/dev/null
   printf 'base\n' > "$repo/base.txt"
   printf 'import { test, expect } from "bun:test"; test("fixture", () => expect(true).toBe(true));\n' > "$repo/base.test.ts"
   git -C "$repo" add base.txt base.test.ts
@@ -105,7 +106,7 @@ git -C "$repo" commit -m zero-tests >/dev/null
 zero_sha=$(git -C "$repo" rev-parse HEAD)
 git -C "$repo" checkout main >/dev/null
 report "$fixture_root/zero-tests.md" "$zero_sha"
-if "$land" --branch ag-zero-tests --report "$fixture_root/zero-tests.md" --repo "$repo" --no-push >"$fixture_root/zero-tests.out" 2>&1; then
+if "$land" --branch ag-zero-tests --item-id ag-zero-tests --report "$fixture_root/zero-tests.md" --repo "$repo" --no-push >"$fixture_root/zero-tests.out" 2>&1; then
   echo 'zero-tests: single gate accepted an empty suite' >&2
   exit 1
 fi
@@ -121,7 +122,7 @@ git -C "$repo" commit -m skipped-tests >/dev/null
 skipped_sha=$(git -C "$repo" rev-parse HEAD)
 git -C "$repo" checkout main >/dev/null
 report "$fixture_root/skipped-tests.md" "$skipped_sha"
-if "$land" --branch ag-skipped-tests --report "$fixture_root/skipped-tests.md" --repo "$repo" --no-push >"$fixture_root/skipped-tests.out" 2>&1; then
+if "$land" --branch ag-skipped-tests --item-id ag-skipped-tests --report "$fixture_root/skipped-tests.md" --repo "$repo" --no-push >"$fixture_root/skipped-tests.out" 2>&1; then
   echo 'skipped-tests: single gate accepted a suite with no passing tests' >&2
   exit 1
 fi
@@ -139,7 +140,7 @@ git -C "$repo" commit -am collapse-to-one-test >/dev/null
 collapse_sha=$(git -C "$repo" rev-parse HEAD)
 git -C "$repo" checkout main >/dev/null
 report "$fixture_root/count-collapse.md" "$collapse_sha"
-if "$land" --branch ag-count-collapse --report "$fixture_root/count-collapse.md" --repo "$repo" --no-push >"$fixture_root/count-collapse.out" 2>&1; then
+if "$land" --branch ag-count-collapse --item-id ag-count-collapse --report "$fixture_root/count-collapse.md" --repo "$repo" --no-push >"$fixture_root/count-collapse.out" 2>&1; then
   echo 'count-collapse: single gate accepted a reduced test count' >&2
   exit 1
 fi
@@ -211,7 +212,7 @@ make_fixture review-missing
 review_missing_sha=$(make_policy_lane "$fixture_root/review-missing-repo" ag-review-missing)
 report "$fixture_root/review-missing-report.md" "$review_missing_sha"
 review_missing_output="$fixture_root/review-missing-output.txt"
-if "$land" --branch ag-review-missing --report "$fixture_root/review-missing-report.md" --repo "$fixture_root/review-missing-repo" >"$review_missing_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-review-missing --item-id ag-review-missing --report "$fixture_root/review-missing-report.md" --repo "$fixture_root/review-missing-repo" >"$review_missing_output" 2>&1; then exit 1; fi
 assert_output_has "$review_missing_output" 'ERROR review-required missing-artifact'
 assert_output_lacks "$review_missing_output" 'LAND step=merge status=pass'
 assert test "$(git -C "$fixture_root/review-missing-repo" rev-parse HEAD)" = "$(git -C "$fixture_root/review-missing-repo" rev-parse main)"
@@ -221,7 +222,7 @@ review_malformed_sha=$(make_policy_lane "$fixture_root/review-malformed-repo" ag
 report "$fixture_root/review-malformed-report.md" "$review_malformed_sha"
 printf 'verdict: ACCEPT\nreviewer:\n' > "$fixture_root/ag-review-malformed.review.md"
 review_malformed_output="$fixture_root/review-malformed-output.txt"
-if "$land" --branch ag-review-malformed --report "$fixture_root/review-malformed-report.md" --repo "$fixture_root/review-malformed-repo" >"$review_malformed_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-review-malformed --item-id ag-review-malformed --report "$fixture_root/review-malformed-report.md" --repo "$fixture_root/review-malformed-repo" >"$review_malformed_output" 2>&1; then exit 1; fi
 assert_output_has "$review_malformed_output" 'ERROR review-required malformed-artifact'
 assert_output_lacks "$review_malformed_output" 'LAND step=merge status=pass'
 
@@ -230,7 +231,7 @@ review_rejected_sha=$(make_policy_lane "$fixture_root/review-rejected-repo" ag-r
 report "$fixture_root/review-rejected-report.md" "$review_rejected_sha"
 review "$fixture_root/ag-review-rejected.review.md" REJECT independent-reviewer "$review_rejected_sha" separate-session
 review_rejected_output="$fixture_root/review-rejected-output.txt"
-if "$land" --branch ag-review-rejected --report "$fixture_root/review-rejected-report.md" --repo "$fixture_root/review-rejected-repo" >"$review_rejected_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-review-rejected --item-id ag-review-rejected --report "$fixture_root/review-rejected-report.md" --repo "$fixture_root/review-rejected-repo" >"$review_rejected_output" 2>&1; then exit 1; fi
 assert_output_has "$review_rejected_output" 'ERROR review-rejected'
 assert_output_lacks "$review_rejected_output" 'LAND step=merge status=pass'
 
@@ -239,7 +240,7 @@ review_self_sha=$(make_policy_lane "$fixture_root/review-self-repo" ag-review-se
 report "$fixture_root/review-self-report.md" "$review_self_sha"
 review "$fixture_root/ag-review-self.review.md" ACCEPT ag-review-self "$review_self_sha" separate-session
 review_self_output="$fixture_root/review-self-output.txt"
-if "$land" --branch ag-review-self --report "$fixture_root/review-self-report.md" --repo "$fixture_root/review-self-repo" >"$review_self_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-review-self --item-id ag-review-self --report "$fixture_root/review-self-report.md" --repo "$fixture_root/review-self-repo" >"$review_self_output" 2>&1; then exit 1; fi
 assert_output_has "$review_self_output" 'ERROR review-required malformed-artifact'
 assert_output_lacks "$review_self_output" 'LAND step=merge status=pass'
 
@@ -248,7 +249,7 @@ review_self_trailing_space_sha=$(make_policy_lane "$fixture_root/review-self-tra
 report "$fixture_root/review-self-trailing-space-report.md" "$review_self_trailing_space_sha"
 printf 'verdict: ACCEPT\nreviewer: ag-review-self-trailing-space \n' > "$fixture_root/ag-review-self-trailing-space.review.md"
 review_self_trailing_space_output="$fixture_root/review-self-trailing-space-output.txt"
-if "$land" --branch ag-review-self-trailing-space --report "$fixture_root/review-self-trailing-space-report.md" --repo "$fixture_root/review-self-trailing-space-repo" >"$review_self_trailing_space_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-review-self-trailing-space --item-id ag-review-self-trailing-space --report "$fixture_root/review-self-trailing-space-report.md" --repo "$fixture_root/review-self-trailing-space-repo" >"$review_self_trailing_space_output" 2>&1; then exit 1; fi
 assert_output_has "$review_self_trailing_space_output" 'ERROR review-required malformed-artifact'
 assert_output_lacks "$review_self_trailing_space_output" 'LAND step=merge status=pass'
 
@@ -257,7 +258,7 @@ review_self_authored_sha=$(make_policy_lane "$fixture_root/review-self-authored-
 report "$fixture_root/review-self-authored-report.md" "$review_self_authored_sha"
 review "$fixture_root/ag-review-self-authored.review.md" ACCEPT ' land <LAND@EXAMPLE.TEST> ' "$review_self_authored_sha" separate-session
 review_self_authored_output="$fixture_root/review-self-authored-output.txt"
-if "$land" --branch ag-review-self-authored --report "$fixture_root/review-self-authored-report.md" --repo "$fixture_root/review-self-authored-repo" >"$review_self_authored_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-review-self-authored --item-id ag-review-self-authored --report "$fixture_root/review-self-authored-report.md" --repo "$fixture_root/review-self-authored-repo" >"$review_self_authored_output" 2>&1; then exit 1; fi
 assert_output_has "$review_self_authored_output" 'ERROR review-required self-authored-review'
 assert_output_lacks "$review_self_authored_output" 'LAND step=merge status=pass'
 
@@ -266,7 +267,7 @@ review_self_author_name_sha=$(make_policy_lane "$fixture_root/review-self-author
 report "$fixture_root/review-self-author-name-report.md" "$review_self_author_name_sha"
 review "$fixture_root/ag-review-self-author-name.review.md" ACCEPT land "$review_self_author_name_sha" separate-session
 review_self_author_name_output="$fixture_root/review-self-author-name-output.txt"
-if "$land" --branch ag-review-self-author-name --report "$fixture_root/review-self-author-name-report.md" --repo "$fixture_root/review-self-author-name-repo" >"$review_self_author_name_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-review-self-author-name --item-id ag-review-self-author-name --report "$fixture_root/review-self-author-name-report.md" --repo "$fixture_root/review-self-author-name-repo" >"$review_self_author_name_output" 2>&1; then exit 1; fi
 assert_output_has "$review_self_author_name_output" 'ERROR review-required self-authored-review'
 assert_output_lacks "$review_self_author_name_output" 'LAND step=merge status=pass'
 
@@ -275,7 +276,7 @@ review_self_author_email_sha=$(make_policy_lane "$fixture_root/review-self-autho
 report "$fixture_root/review-self-author-email-report.md" "$review_self_author_email_sha"
 review "$fixture_root/ag-review-self-author-email.review.md" ACCEPT LAND@EXAMPLE.TEST "$review_self_author_email_sha" separate-session
 review_self_author_email_output="$fixture_root/review-self-author-email-output.txt"
-if "$land" --branch ag-review-self-author-email --report "$fixture_root/review-self-author-email-report.md" --repo "$fixture_root/review-self-author-email-repo" >"$review_self_author_email_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-review-self-author-email --item-id ag-review-self-author-email --report "$fixture_root/review-self-author-email-report.md" --repo "$fixture_root/review-self-author-email-repo" >"$review_self_author_email_output" 2>&1; then exit 1; fi
 assert_output_has "$review_self_author_email_output" 'ERROR review-required self-authored-review'
 assert_output_lacks "$review_self_author_email_output" 'LAND step=merge status=pass'
 
@@ -285,7 +286,7 @@ review_self_author_reordered_sha=$(make_policy_lane "$fixture_root/review-self-a
 report "$fixture_root/review-self-author-reordered-report.md" "$review_self_author_reordered_sha"
 review "$fixture_root/ag-review-self-author-reordered.review.md" ACCEPT 'Last First <spoofed@example.test>' "$review_self_author_reordered_sha" separate-session
 review_self_author_reordered_output="$fixture_root/review-self-author-reordered-output.txt"
-if "$land" --branch ag-review-self-author-reordered --report "$fixture_root/review-self-author-reordered-report.md" --repo "$fixture_root/review-self-author-reordered-repo" >"$review_self_author_reordered_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-review-self-author-reordered --item-id ag-review-self-author-reordered --report "$fixture_root/review-self-author-reordered-report.md" --repo "$fixture_root/review-self-author-reordered-repo" >"$review_self_author_reordered_output" 2>&1; then exit 1; fi
 assert_output_has "$review_self_author_reordered_output" 'ERROR review-required self-authored-review'
 assert_output_lacks "$review_self_author_reordered_output" 'LAND step=merge status=pass'
 
@@ -294,7 +295,7 @@ review_self_author_crlf_sha=$(make_policy_lane "$fixture_root/review-self-author
 report "$fixture_root/review-self-author-crlf-report.md" "$review_self_author_crlf_sha"
 printf 'verdict: ACCEPT\r\nreviewer: Land\r\nreviewed-sha: %s\r\nindependence: separate-session\r\n' "$review_self_author_crlf_sha" > "$fixture_root/ag-review-self-author-crlf.review.md"
 review_self_author_crlf_output="$fixture_root/review-self-author-crlf-output.txt"
-if "$land" --branch ag-review-self-author-crlf --report "$fixture_root/review-self-author-crlf-report.md" --repo "$fixture_root/review-self-author-crlf-repo" >"$review_self_author_crlf_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-review-self-author-crlf --item-id ag-review-self-author-crlf --report "$fixture_root/review-self-author-crlf-report.md" --repo "$fixture_root/review-self-author-crlf-repo" >"$review_self_author_crlf_output" 2>&1; then exit 1; fi
 assert_output_has "$review_self_author_crlf_output" 'ERROR review-required self-authored-review'
 assert_output_lacks "$review_self_author_crlf_output" 'LAND step=merge status=pass'
 
@@ -303,7 +304,7 @@ review_nul_artifact_sha=$(make_policy_lane "$fixture_root/review-nul-artifact-re
 report "$fixture_root/review-nul-artifact-report.md" "$review_nul_artifact_sha"
 printf 'verdict: ACCEPT\nreviewer: land\0x <other@example.test>\nreviewed-sha: %s\nindependence: separate-session\n' "$review_nul_artifact_sha" > "$fixture_root/ag-review-nul-artifact.review.md"
 review_nul_artifact_output="$fixture_root/review-nul-artifact-output.txt"
-if "$land" --branch ag-review-nul-artifact --report "$fixture_root/review-nul-artifact-report.md" --repo "$fixture_root/review-nul-artifact-repo" >"$review_nul_artifact_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-review-nul-artifact --item-id ag-review-nul-artifact --report "$fixture_root/review-nul-artifact-report.md" --repo "$fixture_root/review-nul-artifact-repo" >"$review_nul_artifact_output" 2>&1; then exit 1; fi
 assert_output_has "$review_nul_artifact_output" 'ERROR review-required invalid-artifact nul-byte'
 assert_output_lacks "$review_nul_artifact_output" 'LAND step=merge status=pass'
 
@@ -312,7 +313,7 @@ review_independent_identity_sha=$(make_policy_lane "$fixture_root/review-indepen
 report "$fixture_root/review-independent-identity-report.md" "$review_independent_identity_sha"
 review "$fixture_root/ag-review-independent-identity.review.md" ACCEPT 'Other Reviewer <other@example.test>' "$review_independent_identity_sha" separate-session
 review_independent_identity_output="$fixture_root/review-independent-identity-output.txt"
-"$land" --branch ag-review-independent-identity --report "$fixture_root/review-independent-identity-report.md" --repo "$fixture_root/review-independent-identity-repo" --no-push >"$review_independent_identity_output" 2>&1
+"$land" --branch ag-review-independent-identity --item-id ag-review-independent-identity --report "$fixture_root/review-independent-identity-report.md" --repo "$fixture_root/review-independent-identity-repo" --no-push >"$review_independent_identity_output" 2>&1
 assert_output_has "$review_independent_identity_output" 'LAND verdict=landed sha='
 assert_output_has "$review_independent_identity_output" 'review=accepted'
 
@@ -322,7 +323,7 @@ report "$fixture_root/review-artifact-symlink-report.md" "$review_artifact_symli
 review "$fixture_root/review-artifact-target.md" ACCEPT independent-reviewer "$review_artifact_symlink_sha" separate-session
 ln -s "$fixture_root/review-artifact-target.md" "$fixture_root/ag-review-artifact-symlink.review.md"
 review_artifact_symlink_output="$fixture_root/review-artifact-symlink-output.txt"
-if "$land" --branch ag-review-artifact-symlink --report "$fixture_root/review-artifact-symlink-report.md" --repo "$fixture_root/review-artifact-symlink-repo" >"$review_artifact_symlink_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-review-artifact-symlink --item-id ag-review-artifact-symlink --report "$fixture_root/review-artifact-symlink-report.md" --repo "$fixture_root/review-artifact-symlink-repo" >"$review_artifact_symlink_output" 2>&1; then exit 1; fi
 assert_output_has "$review_artifact_symlink_output" 'ERROR review-required invalid-artifact non-regular-file'
 assert_output_lacks "$review_artifact_symlink_output" 'LAND step=merge status=pass'
 
@@ -331,7 +332,7 @@ review_unicode_identity_sha=$(make_policy_lane "$fixture_root/review-unicode-ide
 report "$fixture_root/review-unicode-identity-report.md" "$review_unicode_identity_sha"
 review "$fixture_root/ag-review-unicode-identity.review.md" ACCEPT 'independent-reviewerο' "$review_unicode_identity_sha" separate-session
 review_unicode_identity_output="$fixture_root/review-unicode-identity-output.txt"
-if "$land" --branch ag-review-unicode-identity --report "$fixture_root/review-unicode-identity-report.md" --repo "$fixture_root/review-unicode-identity-repo" >"$review_unicode_identity_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-review-unicode-identity --item-id ag-review-unicode-identity --report "$fixture_root/review-unicode-identity-report.md" --repo "$fixture_root/review-unicode-identity-repo" >"$review_unicode_identity_output" 2>&1; then exit 1; fi
 assert_output_has "$review_unicode_identity_output" 'ERROR review-required malformed-artifact unsafe-identity-field'
 assert_output_lacks "$review_unicode_identity_output" 'LAND step=merge status=pass'
 
@@ -339,11 +340,11 @@ make_fixture review-policy-deletion
 review_policy_deletion_sha=$(make_policy_deletion_lane "$fixture_root/review-policy-deletion-repo" ag-review-policy-deletion)
 report "$fixture_root/review-policy-deletion-report.md" "$review_policy_deletion_sha"
 review_policy_deletion_output="$fixture_root/review-policy-deletion-output.txt"
-if "$land" --branch ag-review-policy-deletion --report "$fixture_root/review-policy-deletion-report.md" --repo "$fixture_root/review-policy-deletion-repo" >"$review_policy_deletion_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-review-policy-deletion --item-id ag-review-policy-deletion --report "$fixture_root/review-policy-deletion-report.md" --repo "$fixture_root/review-policy-deletion-repo" >"$review_policy_deletion_output" 2>&1; then exit 1; fi
 assert_output_has "$review_policy_deletion_output" 'ERROR review-required missing-artifact'
 assert_output_lacks "$review_policy_deletion_output" 'LAND step=merge status=pass'
 review "$fixture_root/ag-review-policy-deletion.review.md" ACCEPT independent-reviewer "$review_policy_deletion_sha" separate-session
-"$land" --branch ag-review-policy-deletion --report "$fixture_root/review-policy-deletion-report.md" --repo "$fixture_root/review-policy-deletion-repo" --no-push >"$review_policy_deletion_output" 2>&1
+"$land" --branch ag-review-policy-deletion --item-id ag-review-policy-deletion --report "$fixture_root/review-policy-deletion-report.md" --repo "$fixture_root/review-policy-deletion-repo" --no-push >"$review_policy_deletion_output" 2>&1
 assert_output_has "$review_policy_deletion_output" 'review=accepted'
 assert git -C "$fixture_root/review-policy-deletion-repo" merge-base --is-ancestor "$review_policy_deletion_sha" HEAD
 
@@ -351,7 +352,7 @@ make_fixture review-policy-rename
 review_policy_rename_sha=$(make_policy_rename_lane "$fixture_root/review-policy-rename-repo" ag-review-policy-rename)
 report "$fixture_root/review-policy-rename-report.md" "$review_policy_rename_sha"
 review_policy_rename_output="$fixture_root/review-policy-rename-output.txt"
-if "$land" --branch ag-review-policy-rename --report "$fixture_root/review-policy-rename-report.md" --repo "$fixture_root/review-policy-rename-repo" >"$review_policy_rename_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-review-policy-rename --item-id ag-review-policy-rename --report "$fixture_root/review-policy-rename-report.md" --repo "$fixture_root/review-policy-rename-repo" >"$review_policy_rename_output" 2>&1; then exit 1; fi
 assert_output_has "$review_policy_rename_output" 'ERROR review-required missing-artifact'
 assert_output_lacks "$review_policy_rename_output" 'LAND step=merge status=pass'
 
@@ -360,7 +361,7 @@ review_accepted_sha=$(make_policy_lane "$fixture_root/review-accepted-repo" ag-r
 report "$fixture_root/review-accepted-report.md" "$review_accepted_sha"
 review "$fixture_root/ag-review-accepted.review.md" ACCEPT independent-reviewer "$review_accepted_sha" separate-session
 review_accepted_output="$fixture_root/review-accepted-output.txt"
-"$land" --branch ag-review-accepted --report "$fixture_root/review-accepted-report.md" --repo "$fixture_root/review-accepted-repo" --no-push >"$review_accepted_output" 2>&1
+"$land" --branch ag-review-accepted --item-id ag-review-accepted --report "$fixture_root/review-accepted-report.md" --repo "$fixture_root/review-accepted-repo" --no-push >"$review_accepted_output" 2>&1
 assert_output_has "$review_accepted_output" 'LAND verdict=landed sha='
 assert_output_has "$review_accepted_output" 'review=accepted'
 assert git -C "$fixture_root/review-accepted-repo" merge-base --is-ancestor "$review_accepted_sha" HEAD
@@ -370,7 +371,7 @@ review_stale_sha=$(make_policy_lane "$fixture_root/review-stale-sha-repo" ag-rev
 report "$fixture_root/review-stale-sha-report.md" "$review_stale_sha"
 review "$fixture_root/ag-review-stale-sha.review.md" ACCEPT independent-reviewer aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa separate-session
 review_stale_output="$fixture_root/review-stale-sha-output.txt"
-if "$land" --branch ag-review-stale-sha --report "$fixture_root/review-stale-sha-report.md" --repo "$fixture_root/review-stale-sha-repo" >"$review_stale_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-review-stale-sha --item-id ag-review-stale-sha --report "$fixture_root/review-stale-sha-report.md" --repo "$fixture_root/review-stale-sha-repo" >"$review_stale_output" 2>&1; then exit 1; fi
 assert_output_has "$review_stale_output" 'ERROR review-required stale-artifact reviewed-sha-mismatch'
 
 make_fixture review-missing-sha
@@ -378,7 +379,7 @@ review_missing_sha=$(make_policy_lane "$fixture_root/review-missing-sha-repo" ag
 report "$fixture_root/review-missing-sha-report.md" "$review_missing_sha"
 printf 'verdict: ACCEPT\nreviewer: independent-reviewer\nindependence: separate-session\n' > "$fixture_root/ag-review-missing-sha.review.md"
 review_missing_sha_output="$fixture_root/review-missing-sha-output.txt"
-if "$land" --branch ag-review-missing-sha --report "$fixture_root/review-missing-sha-report.md" --repo "$fixture_root/review-missing-sha-repo" >"$review_missing_sha_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-review-missing-sha --item-id ag-review-missing-sha --report "$fixture_root/review-missing-sha-report.md" --repo "$fixture_root/review-missing-sha-repo" >"$review_missing_sha_output" 2>&1; then exit 1; fi
 assert_output_has "$review_missing_sha_output" "line='reviewed-sha: <40-hex>'"
 
 make_fixture review-missing-independence
@@ -386,18 +387,18 @@ review_missing_independence_sha=$(make_policy_lane "$fixture_root/review-missing
 report "$fixture_root/review-missing-independence-report.md" "$review_missing_independence_sha"
 printf 'verdict: ACCEPT\nreviewer: independent-reviewer\nreviewed-sha: %s\n' "$review_missing_independence_sha" > "$fixture_root/ag-review-missing-independence.review.md"
 review_missing_independence_output="$fixture_root/review-missing-independence-output.txt"
-if "$land" --branch ag-review-missing-independence --report "$fixture_root/review-missing-independence-report.md" --repo "$fixture_root/review-missing-independence-repo" >"$review_missing_independence_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-review-missing-independence --item-id ag-review-missing-independence --report "$fixture_root/review-missing-independence-report.md" --repo "$fixture_root/review-missing-independence-repo" >"$review_missing_independence_output" 2>&1; then exit 1; fi
 assert_output_has "$review_missing_independence_output" "line='independence: <text>'"
 
 make_fixture review-skipped
 review_skipped_sha=$(make_policy_lane "$fixture_root/review-skipped-repo" ag-review-skipped)
 report "$fixture_root/review-skipped-report.md" "$review_skipped_sha"
 review_skipped_output="$fixture_root/review-skipped-output.txt"
-if "$land" --branch ag-review-skipped --report "$fixture_root/review-skipped-report.md" --repo "$fixture_root/review-skipped-repo" --no-push --skip-review >"$review_skipped_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-review-skipped --item-id ag-review-skipped --report "$fixture_root/review-skipped-report.md" --repo "$fixture_root/review-skipped-repo" --no-push --skip-review >"$review_skipped_output" 2>&1; then exit 1; fi
 assert_output_has "$review_skipped_output" 'usage: gate/land.sh'
-if "$land" --branch ag-review-skipped --report "$fixture_root/review-skipped-report.md" --repo "$fixture_root/review-skipped-repo" --no-push --skip-review '   ' >"$review_skipped_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-review-skipped --item-id ag-review-skipped --report "$fixture_root/review-skipped-report.md" --repo "$fixture_root/review-skipped-repo" --no-push --skip-review '   ' >"$review_skipped_output" 2>&1; then exit 1; fi
 assert_output_has "$review_skipped_output" 'usage: gate/land.sh'
-"$land" --branch ag-review-skipped --report "$fixture_root/review-skipped-report.md" --repo "$fixture_root/review-skipped-repo" --no-push --skip-review 'emergency rollback window' >"$review_skipped_output" 2>&1
+"$land" --branch ag-review-skipped --item-id ag-review-skipped --report "$fixture_root/review-skipped-report.md" --repo "$fixture_root/review-skipped-repo" --no-push --skip-review 'emergency rollback window' >"$review_skipped_output" 2>&1
 assert_output_has "$review_skipped_output" 'WARN review-skipped'
 assert_output_has "$review_skipped_output" 'review=skipped'
 assert_output_has "$review_skipped_output" 'LAND review=SKIPPED reason=emergency rollback window'
@@ -409,7 +410,9 @@ make_fixture good
 good_sha=$(make_lane "$fixture_root/good-repo" ag-good)
 report "$fixture_root/good-report.md" "$good_sha"
 good_output="$fixture_root/good-output.txt"
-"$land" --branch ag-good --report "$fixture_root/good-report.md" --repo "$fixture_root/good-repo" --run-verify >"$good_output" 2>&1
+"$land" --branch ag-good --item-id ag-good --report "$fixture_root/good-report.md" --repo "$fixture_root/good-repo" --run-verify >"$good_output" 2>&1
+assert_output_has "$good_output" 'LAND step=review-rounds status=pass'
+assert_output_has "$good_output" 'REVIEW_ROUNDS status=landed item=ag-good'
 assert_output_has "$good_output" 'LAND reap remote=absent branch=ag-good detail=never-on-origin-nothing-to-delete'
 assert_output_has "$good_output" 'LAND step=reap status=pass'
 assert git -C "$fixture_root/good-repo" merge-base --is-ancestor "$good_sha" HEAD
@@ -427,7 +430,7 @@ declared_sha=$(git -C "$fixture_root/declared-check-fail-repo" rev-parse HEAD)
 git -C "$fixture_root/declared-check-fail-repo" checkout main >/dev/null
 report "$fixture_root/declared-check-fail-report.md" "$declared_sha"
 declared_output="$fixture_root/declared-check-fail-output.txt"
-if "$land" --branch ag-declared-check-fail --report "$fixture_root/declared-check-fail-report.md" --repo "$fixture_root/declared-check-fail-repo" --no-push >"$declared_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-declared-check-fail --item-id ag-declared-check-fail --report "$fixture_root/declared-check-fail-report.md" --repo "$fixture_root/declared-check-fail-repo" --no-push >"$declared_output" 2>&1; then exit 1; fi
 assert_output_has "$declared_output" 'LAND declared-check=lint status=running'
 assert_output_has "$declared_output" 'declared-lint-ran'
 assert_output_has "$declared_output" 'LAND step=declared-checks status=fail'
@@ -446,7 +449,7 @@ git -C "$fixture_root/rewritten-test-repo" commit -m rewritten-test >/dev/null
 rewritten_sha=$(git -C "$fixture_root/rewritten-test-repo" rev-parse HEAD)
 git -C "$fixture_root/rewritten-test-repo" checkout main >/dev/null
 report "$fixture_root/rewritten-test-report.md" "$rewritten_sha"
-if "$land" --branch ag-rewritten-test --report "$fixture_root/rewritten-test-report.md" --repo "$fixture_root/rewritten-test-repo" --no-push >"$fixture_root/rewritten-test.out" 2>&1; then
+if "$land" --branch ag-rewritten-test --item-id ag-rewritten-test --report "$fixture_root/rewritten-test-report.md" --repo "$fixture_root/rewritten-test-repo" --no-push >"$fixture_root/rewritten-test.out" 2>&1; then
   echo 'rewritten-test: gate accepted a wrapper that replaced a failing test' >&2
   exit 1
 fi
@@ -469,7 +472,7 @@ for failure_kind in failing-test syntax-error; do
   failure_sha=$(git -C "$failure_repo" rev-parse HEAD)
   git -C "$failure_repo" checkout main >/dev/null
   report "$fixture_root/$failure_kind-report.md" "$failure_sha"
-  if "$land" --branch "ag-$failure_kind" --report "$fixture_root/$failure_kind-report.md" --repo "$failure_repo" --no-push >"$fixture_root/$failure_kind.out" 2>&1; then exit 1; fi
+  if "$land" --branch "ag-$failure_kind" --item-id "ag-$failure_kind" --report "$fixture_root/$failure_kind-report.md" --repo "$failure_repo" --no-push >"$fixture_root/$failure_kind.out" 2>&1; then exit 1; fi
   if [ "$failure_kind" = syntax-error ]; then
     assert_output_has "$fixture_root/$failure_kind.out" 'LAND declared-check=parse status=fail'
     assert test ! -e "$fixture_root/parse-order-ran"
@@ -491,14 +494,14 @@ mkdir "$fixture_root/shadow-bin"
 printf '#!/bin/sh\ntouch %s\nexit 0\n' "$fixture_root/shadow-ran" > "$fixture_root/shadow-bin/node"
 chmod +x "$fixture_root/shadow-bin/node"
 report "$fixture_root/shadowed-node.md" "$shadow_sha"
-if PATH="$fixture_root/shadow-bin:$PATH" "$land" --branch ag-shadowed-node --report "$fixture_root/shadowed-node.md" --repo "$fixture_root/shadowed-node-repo" --no-push >"$fixture_root/shadowed-node.out" 2>&1; then exit 1; fi
+if PATH="$fixture_root/shadow-bin:$PATH" "$land" --branch ag-shadowed-node --item-id ag-shadowed-node --report "$fixture_root/shadowed-node.md" --repo "$fixture_root/shadowed-node-repo" --no-push >"$fixture_root/shadowed-node.out" 2>&1; then exit 1; fi
 assert test ! -e "$fixture_root/shadow-ran"
 assert test "$(git -C "$fixture_root/shadowed-node-repo" rev-parse main)" = "$shadow_before"
 
 make_fixture bad-sha
 make_lane "$fixture_root/bad-sha-repo" ag-bad-sha >/dev/null
 report "$fixture_root/bad-sha-report.md" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-if "$land" --branch ag-bad-sha --report "$fixture_root/bad-sha-report.md" --repo "$fixture_root/bad-sha-repo"; then exit 1; fi
+if "$land" --branch ag-bad-sha --item-id ag-bad-sha --report "$fixture_root/bad-sha-report.md" --repo "$fixture_root/bad-sha-repo"; then exit 1; fi
 assert test "$(git -C "$fixture_root/bad-sha-repo" rev-parse HEAD)" = "$(git -C "$fixture_root/bad-sha-repo" rev-parse main)"
 assert git -C "$fixture_root/bad-sha-repo" show-ref --verify --quiet refs/heads/ag-bad-sha
 
@@ -514,7 +517,7 @@ secret_sha=$(git -C "$fixture_root/secret-repo" rev-parse HEAD)
 git -C "$fixture_root/secret-repo" checkout main >/dev/null
 report "$fixture_root/secret-report.md" "$secret_sha"
 secret_output="$fixture_root/secret-output.txt"
-if "$land" --branch ag-secret --report "$fixture_root/secret-report.md" --repo "$fixture_root/secret-repo" >"$secret_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-secret --item-id ag-secret --report "$fixture_root/secret-report.md" --repo "$fixture_root/secret-repo" >"$secret_output" 2>&1; then exit 1; fi
 assert_output_has "$secret_output" 'LAND step=secret-scan status=fail'
 assert_output_lacks "$secret_output" "${secret_prefix}${secret_suffix}"
 assert test "$(git -C "$fixture_root/secret-repo" rev-parse HEAD)" = "$(git -C "$fixture_root/secret-repo" rev-parse main)"
@@ -531,7 +534,7 @@ secret_path_sha=$(git -C "$fixture_root/secret-path-repo" rev-parse HEAD)
 git -C "$fixture_root/secret-path-repo" checkout main >/dev/null
 report "$fixture_root/secret-path-report.md" "$secret_path_sha"
 secret_path_output="$fixture_root/secret-path-output.txt"
-if "$land" --branch ag-secret-path --report "$fixture_root/secret-path-report.md" --repo "$fixture_root/secret-path-repo" >"$secret_path_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-secret-path --item-id ag-secret-path --report "$fixture_root/secret-path-report.md" --repo "$fixture_root/secret-path-repo" >"$secret_path_output" 2>&1; then exit 1; fi
 assert_output_has "$secret_path_output" 'LAND secret-scan match path-name'
 assert_output_has "$secret_path_output" 'LAND step=secret-scan status=fail'
 assert_output_lacks "$secret_path_output" "$secret_path_name"
@@ -555,7 +558,7 @@ typechange_secret_sha=$(git -C "$fixture_root/typechange-secret-repo" rev-parse 
 git -C "$fixture_root/typechange-secret-repo" checkout main >/dev/null
 report "$fixture_root/typechange-secret-report.md" "$typechange_secret_sha"
 typechange_secret_output="$fixture_root/typechange-secret-output.txt"
-if "$land" --branch ag-typechange-secret --report "$fixture_root/typechange-secret-report.md" --repo "$fixture_root/typechange-secret-repo" >"$typechange_secret_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-typechange-secret --item-id ag-typechange-secret --report "$fixture_root/typechange-secret-report.md" --repo "$fixture_root/typechange-secret-repo" >"$typechange_secret_output" 2>&1; then exit 1; fi
 assert_output_has "$typechange_secret_output" 'LAND step=secret-scan status=fail'
 assert_output_lacks "$typechange_secret_output" "$typechange_secret_value"
 assert test "$(git -C "$fixture_root/typechange-secret-repo" rev-parse HEAD)" = "$(git -C "$fixture_root/typechange-secret-repo" rev-parse main)"
@@ -572,7 +575,7 @@ binary_secret_sha=$(git -C "$fixture_root/binary-secret-repo" rev-parse HEAD)
 git -C "$fixture_root/binary-secret-repo" checkout main >/dev/null
 report "$fixture_root/binary-secret-report.md" "$binary_secret_sha"
 binary_secret_output="$fixture_root/binary-secret-output.txt"
-if "$land" --branch ag-binary-secret --report "$fixture_root/binary-secret-report.md" --repo "$fixture_root/binary-secret-repo" >"$binary_secret_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-binary-secret --item-id ag-binary-secret --report "$fixture_root/binary-secret-report.md" --repo "$fixture_root/binary-secret-repo" >"$binary_secret_output" 2>&1; then exit 1; fi
 assert_output_has "$binary_secret_output" 'LAND step=secret-scan status=fail'
 assert_output_lacks "$binary_secret_output" "$binary_secret_value"
 assert test "$(git -C "$fixture_root/binary-secret-repo" rev-parse HEAD)" = "$(git -C "$fixture_root/binary-secret-repo" rev-parse main)"
@@ -589,7 +592,7 @@ unicode_secret_sha=$(git -C "$fixture_root/unicode-secret-repo" rev-parse HEAD)
 git -C "$fixture_root/unicode-secret-repo" checkout main >/dev/null
 report "$fixture_root/unicode-secret-report.md" "$unicode_secret_sha"
 unicode_secret_output="$fixture_root/unicode-secret-output.txt"
-if "$land" --branch ag-unicode-secret --report "$fixture_root/unicode-secret-report.md" --repo "$fixture_root/unicode-secret-repo" >"$unicode_secret_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-unicode-secret --item-id ag-unicode-secret --report "$fixture_root/unicode-secret-report.md" --repo "$fixture_root/unicode-secret-repo" >"$unicode_secret_output" 2>&1; then exit 1; fi
 assert_output_has "$unicode_secret_output" 'LAND step=secret-scan status=fail'
 assert_output_lacks "$unicode_secret_output" "$unicode_secret_value"
 assert test "$(git -C "$fixture_root/unicode-secret-repo" rev-parse HEAD)" = "$(git -C "$fixture_root/unicode-secret-repo" rev-parse main)"
@@ -607,7 +610,7 @@ git -C "$fixture_root/merge-conflict-repo" commit -m main-conflict >/dev/null
 git -C "$fixture_root/merge-conflict-repo" push origin main >/dev/null
 report "$fixture_root/merge-conflict-report.md" "$merge_conflict_sha"
 merge_conflict_output="$fixture_root/merge-conflict-output.txt"
-if "$land" --branch ag-merge-conflict --report "$fixture_root/merge-conflict-report.md" --repo "$fixture_root/merge-conflict-repo" >"$merge_conflict_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-merge-conflict --item-id ag-merge-conflict --report "$fixture_root/merge-conflict-report.md" --repo "$fixture_root/merge-conflict-repo" >"$merge_conflict_output" 2>&1; then exit 1; fi
 assert_output_has "$merge_conflict_output" 'LAND step=merge status=fail'
 assert_not git -C "$fixture_root/merge-conflict-repo" rev-parse --verify --quiet MERGE_HEAD
 assert test -z "$(git -C "$fixture_root/merge-conflict-repo" status --porcelain)"
@@ -617,7 +620,7 @@ verify_fail_sha=$(make_lane "$fixture_root/verify-fail-repo" ag-verify-fail)
 verify_fail_before=$(git -C "$fixture_root/verify-fail-repo" rev-parse HEAD)
 printf 'commit: %s fixture\nverify: test ! -f lane.txt\nresult: clean\nsecret-scan: clean\nremaining: none\n' "$verify_fail_sha" > "$fixture_root/verify-fail-report.md"
 verify_fail_output="$fixture_root/verify-fail-output.txt"
-if "$land" --branch ag-verify-fail --report "$fixture_root/verify-fail-report.md" --repo "$fixture_root/verify-fail-repo" --run-verify >"$verify_fail_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-verify-fail --item-id ag-verify-fail --report "$fixture_root/verify-fail-report.md" --repo "$fixture_root/verify-fail-repo" --run-verify >"$verify_fail_output" 2>&1; then exit 1; fi
 assert_output_has "$verify_fail_output" 'LAND step=post-merge-verify status=fail'
 assert_output_has "$verify_fail_output" 'merge reset to ORIG_HEAD'
 assert test "$(git -C "$fixture_root/verify-fail-repo" rev-parse HEAD)" = "$verify_fail_before"
@@ -630,7 +633,7 @@ verify_count_sha=$(make_lane "$fixture_root/verify-count-mismatch-repo" ag-verif
 verify_count_before=$(git -C "$fixture_root/verify-count-mismatch-repo" rev-parse HEAD)
 printf "commit: %s fixture\nverify: printf '162 pass\\\\n6 fail\\\\n'\nverify-count: 168/168\nresult: clean\nsecret-scan: clean\nremaining: none\n" "$verify_count_sha" > "$fixture_root/verify-count-mismatch-report.md"
 verify_count_output="$fixture_root/verify-count-mismatch-output.txt"
-if "$land" --branch ag-verify-count-mismatch --report "$fixture_root/verify-count-mismatch-report.md" --repo "$fixture_root/verify-count-mismatch-repo" --run-verify >"$verify_count_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-verify-count-mismatch --item-id ag-verify-count-mismatch --report "$fixture_root/verify-count-mismatch-report.md" --repo "$fixture_root/verify-count-mismatch-repo" --run-verify >"$verify_count_output" 2>&1; then exit 1; fi
 assert_output_has "$verify_count_output" 'LAND verify-count mismatch report=168/168 actual=162/6'
 assert_output_has "$verify_count_output" 'LAND step=post-merge-verify status=fail'
 assert_output_lacks "$verify_count_output" 'LAND step=push status=pass'
@@ -642,7 +645,7 @@ reap_fail_sha=$(make_lane "$fixture_root/reap-fail-repo" ag-reap-fail)
 report "$fixture_root/reap-fail-report.md" "$reap_fail_sha"
 git -C "$fixture_root/reap-fail-repo" worktree add "$fixture_root/reap-fail-worktree" ag-reap-fail >/dev/null
 reap_fail_output="$fixture_root/reap-fail-output.txt"
-if "$land" --branch ag-reap-fail --report "$fixture_root/reap-fail-report.md" --repo "$fixture_root/reap-fail-repo" >"$reap_fail_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-reap-fail --item-id ag-reap-fail --report "$fixture_root/reap-fail-report.md" --repo "$fixture_root/reap-fail-repo" >"$reap_fail_output" 2>&1; then exit 1; fi
 assert_output_has "$reap_fail_output" 'LAND verdict=landed-reap-failed sha='
 assert_not grep -Fq 'LAND verdict=aborted' "$reap_fail_output"
 assert test "$(git --git-dir="$fixture_root/reap-fail-origin.git" rev-parse main)" = "$(git -C "$fixture_root/reap-fail-repo" rev-parse HEAD)"
@@ -678,7 +681,7 @@ no_push_sha=$(make_lane "$fixture_root/no-push-repo" ag-no-push)
 report "$fixture_root/no-push-report.md" "$no_push_sha"
 origin_before=$(git --git-dir="$fixture_root/no-push-origin.git" rev-parse main)
 no_push_output="$fixture_root/no-push-output.txt"
-"$land" --branch ag-no-push --report "$fixture_root/no-push-report.md" --repo "$fixture_root/no-push-repo" --no-push >"$no_push_output" 2>&1
+"$land" --branch ag-no-push --item-id ag-no-push --report "$fixture_root/no-push-report.md" --repo "$fixture_root/no-push-repo" --no-push >"$no_push_output" 2>&1
 assert_output_has "$no_push_output" 'LAND step=post-merge-verify status=skipped'
 assert_output_has "$no_push_output" 'LAND step=push status=skipped'
 assert test "$(git --git-dir="$fixture_root/no-push-origin.git" rev-parse main)" = "$origin_before"
@@ -689,7 +692,7 @@ report "$fixture_root/no-push-reap-fail-report.md" "$no_push_reap_fail_sha"
 origin_before=$(git --git-dir="$fixture_root/no-push-reap-fail-origin.git" rev-parse main)
 git -C "$fixture_root/no-push-reap-fail-repo" worktree add "$fixture_root/no-push-reap-fail-worktree" ag-no-push-reap-fail >/dev/null
 no_push_reap_fail_output="$fixture_root/no-push-reap-fail-output.txt"
-if "$land" --branch ag-no-push-reap-fail --report "$fixture_root/no-push-reap-fail-report.md" --repo "$fixture_root/no-push-reap-fail-repo" --no-push >"$no_push_reap_fail_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-no-push-reap-fail --item-id ag-no-push-reap-fail --report "$fixture_root/no-push-reap-fail-report.md" --repo "$fixture_root/no-push-reap-fail-repo" --no-push >"$no_push_reap_fail_output" 2>&1; then exit 1; fi
 assert_output_has "$no_push_reap_fail_output" 'LAND verdict=landed-local-reap-failed sha='
 assert_not grep -Fq 'LAND verdict=aborted' "$no_push_reap_fail_output"
 assert git -C "$fixture_root/no-push-reap-fail-repo" merge-base --is-ancestor "$no_push_reap_fail_sha" HEAD
@@ -702,7 +705,7 @@ remote_reap_sha=$(make_lane "$fixture_root/remote-reap-repo" ag-remote-reap)
 git -C "$fixture_root/remote-reap-repo" push origin ag-remote-reap >/dev/null 2>&1
 report "$fixture_root/remote-reap-report.md" "$remote_reap_sha"
 remote_reap_output="$fixture_root/remote-reap-output.txt"
-"$land" --branch ag-remote-reap --report "$fixture_root/remote-reap-report.md" --repo "$fixture_root/remote-reap-repo" >"$remote_reap_output" 2>&1
+"$land" --branch ag-remote-reap --item-id ag-remote-reap --report "$fixture_root/remote-reap-report.md" --repo "$fixture_root/remote-reap-repo" >"$remote_reap_output" 2>&1
 assert_output_has "$remote_reap_output" 'LAND reap remote=deleted branch=ag-remote-reap'
 assert_output_has "$remote_reap_output" 'LAND step=reap status=pass'
 assert_output_has "$remote_reap_output" 'LAND verdict=landed sha='
@@ -718,7 +721,7 @@ report "$fixture_root/remote-reap-blocked-report.md" "$remote_reap_blocked_sha"
 printf '#!/usr/bin/env bash\nzero=0000000000000000000000000000000000000000\nwhile read -r _old new _ref; do\n  if [ "$new" = "$zero" ]; then exit 1; fi\ndone\nexit 0\n' > "$fixture_root/remote-reap-blocked-origin.git/hooks/pre-receive"
 chmod +x "$fixture_root/remote-reap-blocked-origin.git/hooks/pre-receive"
 remote_reap_blocked_output="$fixture_root/remote-reap-blocked-output.txt"
-if "$land" --branch ag-remote-reap-blocked --report "$fixture_root/remote-reap-blocked-report.md" --repo "$fixture_root/remote-reap-blocked-repo" >"$remote_reap_blocked_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-remote-reap-blocked --item-id ag-remote-reap-blocked --report "$fixture_root/remote-reap-blocked-report.md" --repo "$fixture_root/remote-reap-blocked-repo" >"$remote_reap_blocked_output" 2>&1; then exit 1; fi
 assert_output_has "$remote_reap_blocked_output" 'LAND reap remote=present branch=ag-remote-reap-blocked detail=push-delete-failed'
 assert_output_has "$remote_reap_blocked_output" 'LAND step=reap status=local-only'
 assert_output_has "$remote_reap_blocked_output" 'LAND verdict=landed-reap-failed sha='
@@ -734,7 +737,7 @@ no_push_remote_retained_sha=$(make_lane "$fixture_root/no-push-remote-retained-r
 git -C "$fixture_root/no-push-remote-retained-repo" push origin ag-no-push-remote-retained >/dev/null 2>&1
 report "$fixture_root/no-push-remote-retained-report.md" "$no_push_remote_retained_sha"
 no_push_remote_retained_output="$fixture_root/no-push-remote-retained-output.txt"
-if "$land" --branch ag-no-push-remote-retained --report "$fixture_root/no-push-remote-retained-report.md" --repo "$fixture_root/no-push-remote-retained-repo" --no-push >"$no_push_remote_retained_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-no-push-remote-retained --item-id ag-no-push-remote-retained --report "$fixture_root/no-push-remote-retained-report.md" --repo "$fixture_root/no-push-remote-retained-repo" --no-push >"$no_push_remote_retained_output" 2>&1; then exit 1; fi
 assert_output_has "$no_push_remote_retained_output" 'LAND reap remote=present branch=ag-no-push-remote-retained detail=no-push-remote-delete-refused'
 assert_output_has "$no_push_remote_retained_output" 'LAND step=reap status=local-only'
 assert_output_has "$no_push_remote_retained_output" 'LAND verdict=landed-local-reap-failed sha='
@@ -752,7 +755,7 @@ git -C "$fixture_root/stale-main-peer" add remote.txt
 git -C "$fixture_root/stale-main-peer" commit -m remote-advance >/dev/null
 git -C "$fixture_root/stale-main-peer" push origin main >/dev/null
 stale_main_output="$fixture_root/stale-main-output.txt"
-if "$land" --branch ag-stale-main --report "$fixture_root/stale-main-report.md" --repo "$fixture_root/stale-main-repo" >"$stale_main_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-stale-main --item-id ag-stale-main --report "$fixture_root/stale-main-report.md" --repo "$fixture_root/stale-main-repo" >"$stale_main_output" 2>&1; then exit 1; fi
 assert_output_has "$stale_main_output" 'LAND step=freshness status=fail'
 assert test "$(git -C "$fixture_root/stale-main-repo" rev-parse main)" != "$(git -C "$fixture_root/stale-main-repo" rev-parse origin/main)"
 
@@ -764,7 +767,7 @@ flock "$fixture_root/lock-repo/.git/bpa-land.lock" sh -c "touch '$lock_ready'; s
 lock_pid=$!
 while [ ! -e "$lock_ready" ]; do sleep 0.1; done
 lock_output="$fixture_root/lock-output.txt"
-if "$land" --branch ag-lock --report "$fixture_root/lock-report.md" --repo "$fixture_root/lock-repo" >"$lock_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-lock --item-id ag-lock --report "$fixture_root/lock-report.md" --repo "$fixture_root/lock-repo" >"$lock_output" 2>&1; then exit 1; fi
 wait "$lock_pid"
 assert_output_has "$lock_output" 'LAND step=lock status=fail'
 assert test "$(git -C "$fixture_root/lock-repo" rev-parse main)" = "$(git -C "$fixture_root/lock-repo" rev-parse origin/main)"
@@ -776,7 +779,7 @@ report "$fixture_root/push-rollback-report.md" "$push_rollback_sha"
 printf '#!/usr/bin/env bash\nexit 1\n' > "$fixture_root/push-rollback-origin.git/hooks/pre-receive"
 chmod +x "$fixture_root/push-rollback-origin.git/hooks/pre-receive"
 push_rollback_output="$fixture_root/push-rollback-output.txt"
-if "$land" --branch ag-push-rollback --report "$fixture_root/push-rollback-report.md" --repo "$fixture_root/push-rollback-repo" >"$push_rollback_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-push-rollback --item-id ag-push-rollback --report "$fixture_root/push-rollback-report.md" --repo "$fixture_root/push-rollback-repo" >"$push_rollback_output" 2>&1; then exit 1; fi
 assert_output_has "$push_rollback_output" 'LAND step=push status=fail'
 assert_output_has "$push_rollback_output" 'main reset to origin/main'
 assert test "$(git -C "$fixture_root/push-rollback-repo" rev-parse main)" = "$(git -C "$fixture_root/push-rollback-repo" rev-parse origin/main)"
@@ -791,7 +794,7 @@ payload_symlink_sha=$(git -C "$fixture_root/payload-symlink-repo" rev-parse HEAD
 git -C "$fixture_root/payload-symlink-repo" checkout main >/dev/null
 report "$fixture_root/payload-symlink-report.md" "$payload_symlink_sha"
 payload_symlink_output="$fixture_root/payload-symlink-output.txt"
-if "$land" --branch ag-payload-symlink --report "$fixture_root/payload-symlink-report.md" --repo "$fixture_root/payload-symlink-repo" >"$payload_symlink_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-payload-symlink --item-id ag-payload-symlink --report "$fixture_root/payload-symlink-report.md" --repo "$fixture_root/payload-symlink-repo" >"$payload_symlink_output" 2>&1; then exit 1; fi
 assert_output_has "$payload_symlink_output" 'LAND step=payload-guard status=fail detail=mode-120000'
 assert_output_lacks "$payload_symlink_output" 'LAND step=merge status=pass'
 
@@ -804,7 +807,7 @@ payload_gitlink_sha=$(git -C "$fixture_root/payload-gitlink-repo" rev-parse HEAD
 git -C "$fixture_root/payload-gitlink-repo" checkout main >/dev/null
 report "$fixture_root/payload-gitlink-report.md" "$payload_gitlink_sha"
 payload_gitlink_output="$fixture_root/payload-gitlink-output.txt"
-if "$land" --branch ag-payload-gitlink --report "$fixture_root/payload-gitlink-report.md" --repo "$fixture_root/payload-gitlink-repo" >"$payload_gitlink_output" 2>&1; then exit 1; fi
+if "$land" --branch ag-payload-gitlink --item-id ag-payload-gitlink --report "$fixture_root/payload-gitlink-report.md" --repo "$fixture_root/payload-gitlink-repo" >"$payload_gitlink_output" 2>&1; then exit 1; fi
 assert_output_has "$payload_gitlink_output" 'LAND step=payload-guard status=fail detail=mode-160000'
 assert_output_lacks "$payload_gitlink_output" 'LAND step=merge status=pass'
 
@@ -817,7 +820,7 @@ git -C "$fixture_root/executable-shell-repo" commit -m executable-shell >/dev/nu
 executable_shell_sha=$(git -C "$fixture_root/executable-shell-repo" rev-parse HEAD)
 git -C "$fixture_root/executable-shell-repo" checkout main >/dev/null
 report "$fixture_root/executable-shell-report.md" "$executable_shell_sha"
-"$land" --branch ag-executable-shell --report "$fixture_root/executable-shell-report.md" --repo "$fixture_root/executable-shell-repo" --no-push >"$fixture_root/executable-shell-output.txt" 2>&1
+"$land" --branch ag-executable-shell --item-id ag-executable-shell --report "$fixture_root/executable-shell-report.md" --repo "$fixture_root/executable-shell-repo" --no-push >"$fixture_root/executable-shell-output.txt" 2>&1
 assert_output_has "$fixture_root/executable-shell-output.txt" 'LAND step=payload-guard status=pass'
 
 echo "land tests: pass"

@@ -4,11 +4,12 @@ set -u
 set -o pipefail
 
 usage() {
-  echo "usage: gate/land.sh --branch <ag-name> --report <file> --repo <path> [--worktree <path>] [--no-push] [--run-verify] [--skip-review <reason>] [--target-branch <name>]" >&2
+  echo "usage: gate/land.sh --branch <ag-name> --item-id <mission/acceptance-id> --report <file> --repo <path> [--worktree <path>] [--no-push] [--run-verify] [--skip-review <reason>] [--target-branch <name>]" >&2
   exit 2
 }
 
 branch=""
+item_id=""
 report=""
 repo=""
 worktree=""
@@ -26,10 +27,11 @@ pre_merge_sha=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --branch|--report|--repo|--worktree|--target-branch)
+    --branch|--item-id|--report|--repo|--worktree|--target-branch)
       if [ "$#" -lt 2 ] || [ -z "$2" ]; then usage; fi
       case "$1" in
         --branch) branch="$2" ;;
+        --item-id) item_id="$2" ;;
         --report) report="$2" ;;
         --repo) repo="$2" ;;
         --worktree) worktree="$2" ;;
@@ -49,7 +51,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-if [ -z "$branch" ] || [ -z "$report" ] || [ -z "$repo" ]; then usage; fi
+if [ -z "$branch" ] || [ -z "$item_id" ] || [ -z "$report" ] || [ -z "$repo" ]; then usage; fi
 if [ "$skip_review" = true ] && [[ -z "${skip_review_reason//[[:space:]]/}" ]]; then usage; fi
 
 land_pass() { echo "LAND step=$1 status=pass"; }
@@ -93,6 +95,11 @@ if ! git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 
 git_dir=$(git -C "$repo" rev-parse --git-dir) || land_fail repo 2
+git_common_dir=$(git -C "$repo" rev-parse --git-common-dir) || land_fail repo 2
+case "$git_common_dir" in
+  /*) review_round_state="$git_common_dir/bpa-review-rounds.json" ;;
+  *) review_round_state="$repo/$git_common_dir/bpa-review-rounds.json" ;;
+esac
 case "$git_dir" in
   /*) lock_file="$git_dir/bpa-land.lock" ;;
   *) lock_file="$repo/$git_dir/bpa-land.lock" ;;
@@ -194,6 +201,14 @@ if ! land_review_check "$repo" "$branch" "$report" "$policy_file" "$skip_review"
 review_verdict="$LAND_REVIEW_VERDICT"
 land_pass review
 if [ "$skip_review" = true ]; then echo "LAND review=SKIPPED reason=$skip_review_reason"; fi
+
+# The item identity is supplied by durable mission/acceptance identity, never
+# inferred from the disposable branch name. The repository-wide landing lock
+# also serializes this read-modify-write with every other landing attempt.
+if ! "$BUN_BIN" "$script_dir/review-rounds.ts" attempt --state "$review_round_state" --item-id "$item_id"; then
+  land_fail review-rounds 2
+fi
+land_pass review-rounds
 
 if ! land_secret_scan "$repo" "$branch"; then land_fail secret-scan 2; fi
 land_pass secret-scan
@@ -308,6 +323,11 @@ landing_complete=true
 if [ "$merged" != true ]; then
   land_reap_fail
 fi
+if ! "$BUN_BIN" "$script_dir/review-rounds.ts" landed --state "$review_round_state" --item-id "$item_id" --sha "$merge_sha"; then
+  landing_complete=false
+  land_reap_fail
+fi
+land_pass review-progress
 if ! land_assert_reap_safe "$repo" "$branch" "$merge_sha" LAND; then
   land_reap_fail
 fi

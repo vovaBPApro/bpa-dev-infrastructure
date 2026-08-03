@@ -72,6 +72,7 @@ make_fixture() {
   git clone "$bare" "$repo" >/dev/null
   git -C "$repo" config user.email land@example.test
   git -C "$repo" config user.name Land
+  env -u BUN_BIN bun "$root/gate/review-rounds.ts" init --state "$repo/.git/bpa-review-rounds.json" --cap 3 --no-progress-limit 3 >/dev/null
   printf 'base\n' > "$repo/base.txt"
   printf 'import { test, expect } from "bun:test"; test("fixture", () => expect(true).toBe(true));\n' > "$repo/base.test.ts"
   git -C "$repo" add base.txt base.test.ts
@@ -113,7 +114,7 @@ lane_sha=$(make_lane "$fixture_root/stale-lock-repo" ag-stale-lock)
 before=$(git -C "$fixture_root/stale-lock-repo" rev-parse main)
 report "$fixture_root/stale-lock-report.md" "$lane_sha" 'touch .git/index.lock; exit 1'
 out="$fixture_root/stale-lock-out.txt"
-if "$land" --branch ag-stale-lock --report "$fixture_root/stale-lock-report.md" --repo "$fixture_root/stale-lock-repo" --run-verify --no-push >"$out" 2>&1; then
+if "$land" --branch ag-stale-lock --item-id ag-stale-lock --report "$fixture_root/stale-lock-report.md" --repo "$fixture_root/stale-lock-repo" --run-verify --no-push >"$out" 2>&1; then
   echo 'stale-lock: gate accepted a failing verify command' >&2
   exit 1
 fi
@@ -138,7 +139,7 @@ git -C "$fixture_root/stale-lock-declared-repo" checkout main >/dev/null
 declared_before=$(git -C "$fixture_root/stale-lock-declared-repo" rev-parse main)
 report "$fixture_root/stale-lock-declared-report.md" "$declared_sha" true
 declared_out="$fixture_root/stale-lock-declared-out.txt"
-if "$land" --branch ag-stale-lock-declared --report "$fixture_root/stale-lock-declared-report.md" --repo "$fixture_root/stale-lock-declared-repo" --no-push >"$declared_out" 2>&1; then
+if "$land" --branch ag-stale-lock-declared --item-id ag-stale-lock-declared --report "$fixture_root/stale-lock-declared-report.md" --repo "$fixture_root/stale-lock-declared-repo" --no-push >"$declared_out" 2>&1; then
   echo 'stale-lock-declared: gate accepted a failing declared test script' >&2
   exit 1
 fi
@@ -162,7 +163,7 @@ if ! capability_forced_missing immutable-file && chattr +i "$immutable_probe" 2>
   unrecoverable_before=$(git -C "$fixture_root/unrecoverable-lock-repo" rev-parse main)
   report "$fixture_root/unrecoverable-lock-report.md" "$unrecoverable_sha" 'touch .git/index.lock; chattr +i .git/index.lock; exit 1'
   unrecoverable_out="$fixture_root/unrecoverable-lock-out.txt"
-  if "$land" --branch ag-unrecoverable-lock --report "$fixture_root/unrecoverable-lock-report.md" --repo "$fixture_root/unrecoverable-lock-repo" --run-verify --no-push >"$unrecoverable_out" 2>&1; then
+  if "$land" --branch ag-unrecoverable-lock --item-id ag-unrecoverable-lock --report "$fixture_root/unrecoverable-lock-report.md" --repo "$fixture_root/unrecoverable-lock-repo" --run-verify --no-push >"$unrecoverable_out" 2>&1; then
     echo 'unrecoverable-lock: gate reported success despite an unrecoverable rollback' >&2
     exit 1
   fi
@@ -203,7 +204,7 @@ if "$proc_locks_visible"; then
   live_lock_cmd='setsid sh -c "exec 8>.git/index.lock; sleep 20" </dev/null >/dev/null 2>&1 & sleep 0.3; exit 1'
   report "$fixture_root/live-lock-report.md" "$live_lock_sha" "$live_lock_cmd"
   live_lock_out="$fixture_root/live-lock-out.txt"
-  if "$land" --branch ag-live-lock --report "$fixture_root/live-lock-report.md" --repo "$fixture_root/live-lock-repo" --run-verify --no-push >"$live_lock_out" 2>&1; then
+  if "$land" --branch ag-live-lock --item-id ag-live-lock --report "$fixture_root/live-lock-report.md" --repo "$fixture_root/live-lock-repo" --run-verify --no-push >"$live_lock_out" 2>&1; then
     echo 'live-lock: gate reported success while a live process held the lock' >&2
     exit 1
   fi
@@ -230,7 +231,7 @@ dirty_sha=$(make_lane "$fixture_root/dirty-tree-repo" ag-dirty-tree)
 dirty_before=$(git -C "$fixture_root/dirty-tree-repo" rev-parse main)
 report "$fixture_root/dirty-tree-report.md" "$dirty_sha" 'echo leftover > untracked-debris.txt; exit 1'
 dirty_out="$fixture_root/dirty-tree-out.txt"
-if "$land" --branch ag-dirty-tree --report "$fixture_root/dirty-tree-report.md" --repo "$fixture_root/dirty-tree-repo" --run-verify --no-push >"$dirty_out" 2>&1; then
+if "$land" --branch ag-dirty-tree --item-id ag-dirty-tree --report "$fixture_root/dirty-tree-report.md" --repo "$fixture_root/dirty-tree-repo" --run-verify --no-push >"$dirty_out" 2>&1; then
   echo 'dirty-tree: gate reported success while an untracked file survived rollback' >&2
   exit 1
 fi

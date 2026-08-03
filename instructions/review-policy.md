@@ -58,3 +58,21 @@ with distinct role/persona lenses. Preserve separate passes for security,
 operations/runtime, and tests/regression; every pass reviews the same SHA and
 any rejection parks the item. Provider constraint never lowers the tier,
 session-independence requirement, or an explicit approval boundary.
+
+## Round cap and test escalation
+
+The landing gate identifies an item by its durable mission/acceptance id, not by
+its disposable branch. It records every reviewed landing attempt in the Git
+common directory, so re-cutting or renaming a branch and restarting the
+orchestrator do not reset either measure.
+
+An item receives at most three review rounds. A fourth is refused and parked as
+`cap` unless the operator makes an explicit, reason-bearing, durably audited
+override. At the cap, unresolved concerns become executable fail-before and
+pass-after locks; if that cannot be done, the item remains parked for recut.
+
+Separately, consecutive reviewed attempts without a landed SHA are counted as
+no progress. Reaching the configured limit parks the item as `no-progress`.
+Every successful landing records its SHA and resets only this consecutive
+no-progress measure; it does not erase the total review-round count. Missing,
+unreadable, non-regular, symlinked, or malformed state fails landing closed.

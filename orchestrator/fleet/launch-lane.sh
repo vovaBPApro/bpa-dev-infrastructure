@@ -24,13 +24,15 @@ Options:
   --agent-command FILE One-argv-entry-per-line command file
                        (blank lines and # comments in column 1 are ignored)
                        (default: AGENT_COMMAND_FILE or instance/lane-agent-command.conf)
+  --runtime-config FILE Installation facts: lane user, group, home, and lanes root
+                       (default: LANE_RUNTIME_CONFIG or instance/lane-runtime.conf)
 EOF
 }
 
 die() { printf 'launch-lane: %s\n' "$*" >&2; exit 2; }
 
 name=""; role=""; task_file=""; repo="$REPO_DEFAULT"
-lanes_dir="${XDG_CACHE_HOME:-$HOME/.cache}/infra-lanes"
+lanes_dir=""; runtime_config="${LANE_RUNTIME_CONFIG:-}"
 base="origin/main"; branch=""; agent_command_file="${AGENT_COMMAND_FILE:-}"
 while (($#)); do
   case "$1" in
@@ -42,6 +44,7 @@ while (($#)); do
     --base) base="${2:-}"; shift 2 ;;
     --branch) branch="${2:-}"; shift 2 ;;
     --agent-command) agent_command_file="${2:-}"; shift 2 ;;
+    --runtime-config) runtime_config="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -51,6 +54,27 @@ done
 case "$role" in coder|reviewer|orchestrator|manager) ;; *) die '--role is missing or invalid' ;; esac
 [[ -f "$task_file" && -r "$task_file" ]] || die "task file missing or unreadable: $task_file"
 repo="$(cd "$repo" && pwd)"
+runtime_config="${runtime_config:-$repo/instance/lane-runtime.conf}"
+[[ -f "$runtime_config" && -r "$runtime_config" ]] || die "runtime config missing or unreadable: $runtime_config"
+lane_user=""; lane_group=""; lane_home=""; configured_lanes_dir=""
+while IFS='=' read -r key value || [[ -n "$key$value" ]]; do
+  [[ -z "$key" || "$key" == \#* ]] && continue
+  case "$key" in
+    lane_user) lane_user="$value" ;;
+    lane_group) lane_group="$value" ;;
+    lane_home) lane_home="$value" ;;
+    lanes_dir) configured_lanes_dir="$value" ;;
+    *) die "unknown runtime config key: $key" ;;
+  esac
+done <"$runtime_config"
+[[ "$lane_user" =~ ^[a-z_][a-z0-9_-]*$ ]] || die 'runtime config has invalid lane_user'
+[[ "$lane_group" =~ ^[a-z_][a-z0-9_-]*$ ]] || die 'runtime config has invalid lane_group'
+[[ "$lane_home" == /* && "$configured_lanes_dir" == /* ]] || die 'runtime config paths must be absolute'
+lane_uid="$(id -u "$lane_user" 2>/dev/null || true)"
+[[ -n "$lane_uid" && "$lane_uid" != 0 ]] || die "lane user is missing or privileged: $lane_user"
+getent group "$lane_group" >/dev/null || die "lane group is missing: $lane_group"
+[[ -d "$lane_home" ]] || die "lane home is missing: $lane_home"
+lanes_dir="${lanes_dir:-$configured_lanes_dir}"
 agent_command_file="${agent_command_file:-$repo/instance/lane-agent-command.conf}"
 [[ -f "$agent_command_file" && -r "$agent_command_file" ]] || die "agent command file missing or unreadable: $agent_command_file"
 [[ -x "$BUN_BIN" ]] || die 'Bun is unavailable; install it with bootstrap/install.sh or set BUN_BIN'
@@ -75,7 +99,7 @@ pack_dir="$lanes_dir/pack-$name"
 prompt="$lanes_dir/lane-$name.prompt.md"
 log="$lanes_dir/lane-$name.log"
 unit="lane-$name"
-tmp_root="${TMPDIR:-/tmp}/infra-lane-tmp-$UID"
+tmp_root="$lanes_dir/tmp"
 tmp_dir="$tmp_root/$name"
 
 mkdir -p "$lanes_dir"
@@ -118,18 +142,24 @@ BUN_BIN="$BUN_BIN" bash "$repo/orchestrator/dispatch-lane.sh" "$prompt" >/dev/nu
 git -C "$repo" worktree add -b "$branch" "$worktree" "$base" -q
 worktree_created=true
 mkdir -p "$tmp_root" "$tmp_dir"
-chmod 0711 "$tmp_root"
+chmod 0700 "$tmp_root"
 chmod 0700 "$tmp_dir"
+chown -R "$lane_user:$lane_group" "$worktree" "$pack_dir" "$prompt" "$tmp_root"
+touch "$log"
+chown "$lane_user:$lane_group" "$log"
+chmod 0600 "$prompt" "$log"
 systemctl reset-failed "$unit" >/dev/null 2>&1 || true
 
 unit_path="$(dirname "$BUN_BIN"):$(dirname "${agent_argv[0]}"):/usr/local/bin:/usr/bin:/bin"
 # All command elements remain positional parameters; no configured value is
 # evaluated as shell source. Agent stdout reaches disk only through mask-stream.
 # shellcheck disable=SC2016
-if ! systemd-run --collect --unit "$unit" \
+if ! systemd-run --collect --unit "$unit" --uid="$lane_user" --gid="$lane_group" \
   --property=IPAddressDeny=localhost \
   --property=IPAddressAllow=127.0.0.53 \
-  --setenv="HOME=$HOME" --setenv="TMPDIR=$tmp_dir" --setenv="PATH=$unit_path" \
+  --setenv="HOME=$lane_home" --setenv="TMPDIR=$tmp_dir" --setenv="PATH=$unit_path" \
+  --setenv="GIT_CONFIG_COUNT=1" --setenv="GIT_CONFIG_KEY_0=safe.directory" \
+  --setenv="GIT_CONFIG_VALUE_0=$worktree" \
   --working-directory="$worktree" \
   /bin/bash -o pipefail -c 'prompt=$1; bun=$2; masker=$3; log=$4; shift 4; "$@" "$(cat "$prompt")" 2>&1 | "$bun" "$masker" >>"$log"' \
   _ "$prompt" "$BUN_BIN" "$repo/daemon/mask-stream.ts" "$log" "${agent_argv[@]}" >/dev/null; then

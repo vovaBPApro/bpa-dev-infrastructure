@@ -27,12 +27,26 @@
 set -euo pipefail
 
 BUN_VERSION="${BUN_VERSION:-1.3.14}"
-INSTALL_ROOT="${INSTALL_ROOT:-/root/bpa-dev-infrastructure}"
+INSTALL_ROOT="${INSTALL_ROOT:-/srv/bpa-dev-infrastructure}"
 DRY_RUN=false
 VERIFY_SOURCE=false
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+LANE_RUNTIME_CONFIG="${LANE_RUNTIME_CONFIG:-$SOURCE_ROOT/instance/lane-runtime.conf}"
+runtime_value() {
+  local key="$1" value
+  value="$(sed -n "s/^${key}=//p" "$LANE_RUNTIME_CONFIG")"
+  [[ -n "$value" && "$(printf '%s\n' "$value" | wc -l)" -eq 1 ]] || {
+    echo "ERROR: missing or duplicate $key in $LANE_RUNTIME_CONFIG" >&2
+    exit 1
+  }
+  printf '%s\n' "$value"
+}
+LANE_USER="$(runtime_value lane_user)"
+LANE_GROUP="$(runtime_value lane_group)"
+LANE_HOME="$(runtime_value lane_home)"
+LANES_DIR="$(runtime_value lanes_dir)"
 ENV_FILE="${ENV_FILE:-/root/.config/bpa/orchestrator.env}"
 BUN_BIN="${BUN_BIN:-/usr/local/bin/bun}"
 RUNTIME_DIR="${RUNTIME_DIR:-$INSTALL_ROOT/runtime}"
@@ -75,11 +89,22 @@ fi
 plan() { printf 'PLAN %-12s %s\n' "$1" "$2"; }
 
 print_plan() {
+  plan "lane-user" "create the locked $LANE_USER system account with private home $LANE_HOME and $LANES_DIR"
   plan "apt" "check git, curl, tmux, flock, findmnt, and unzip; install any missing packages"
   plan "bun" "install Bun ${BUN_VERSION} if $BUN_BIN is absent"
   plan "repository" "clone \$INSTALL_ROOT from REPO_URL on REPO_BRANCH, or fast-forward it -- refusing if it is checked out on any other branch"
   plan "environment" "create $ENV_FILE from bootstrap/env.template if absent, reject symlinks, and enforce mode 0600"
   plan "state-db" "initialize $STATE_DB with core/mission-cli.ts status"
+}
+
+ensure_lane_user() {
+  if ! getent group "$LANE_GROUP" >/dev/null; then
+    groupadd --system "$LANE_GROUP"
+  fi
+  if ! id "$LANE_USER" >/dev/null 2>&1; then
+    useradd --system --gid "$LANE_GROUP" --home-dir "$LANE_HOME" --create-home --shell /usr/sbin/nologin "$LANE_USER"
+  fi
+  install -d -o "$LANE_USER" -g "$LANE_GROUP" -m 0700 "$LANE_HOME" "$LANES_DIR"
 }
 
 result=0
@@ -234,6 +259,7 @@ initialize_state_db() {
 
 if [[ "${BOOTSTRAP_LIB_ONLY:-false}" != true ]]; then
   ensure_prerequisites
+  ensure_lane_user
   install_bun
   sync_repository
   render_environment

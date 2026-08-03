@@ -13,6 +13,16 @@ cleanup() {
 }
 trap cleanup EXIT
 mkdir -p "$SCRATCH/bin" "$SCRATCH/lanes"
+test_user=nobody
+test_group="$(id -gn "$test_user")"
+mkdir -p "$SCRATCH/lane-home"
+cat >"$SCRATCH/runtime.conf" <<EOF
+lane_user=$test_user
+lane_group=$test_group
+lane_home=$SCRATCH/lane-home
+lanes_dir=$SCRATCH/lanes
+EOF
+export LANE_RUNTIME_CONFIG="$SCRATCH/runtime.conf"
 
 cat >"$SCRATCH/task.md" <<'EOF'
 # Dispatch proof
@@ -48,7 +58,7 @@ while (($#)); do
     --unit) shift 2 ;;
     --setenv=*) export "${1#--setenv=}"; shift ;;
     --working-directory=*) cd "${1#--working-directory=}"; shift ;;
-    --property=*) shift ;;
+    --property=*|--uid=*|--gid=*) shift ;;
     *) break ;;
   esac
 done
@@ -60,6 +70,7 @@ PATH="$SCRATCH/bin:$PATH" AGENT_COMMAND_FILE="$SCRATCH/agent.conf" \
   MOCK_SYSTEMD_ARGS="$SCRATCH/systemd.args" MOCK_AGENT_ARGS="$SCRATCH/agent.args" \
   MOCK_AGENT_EXECUTED="$SCRATCH/agent.executed" TMPDIR="$SCRATCH/tmp-parent" \
   "$SCRIPT_DIR/launch-lane.sh" --name proof --role coder --task-file "$SCRATCH/task.md" \
+  --runtime-config "$SCRATCH/runtime.conf" \
   --repo "$REPO_DIR" --lanes-dir "$SCRATCH/lanes" --base HEAD --branch ag-fleet-launch-proof \
   >"$SCRATCH/output"
 
@@ -67,10 +78,12 @@ grep -Fq 'launched lane-proof' "$SCRATCH/output"
 test -f "$SCRATCH/lanes/proof/.git"
 grep -Fq '<!-- compose.ts pack v1 role=coder' "$SCRATCH/lanes/lane-proof.prompt.md"
 grep -Fq '# Dispatch proof' "$SCRATCH/lanes/lane-proof.prompt.md"
-git -C "$SCRATCH/lanes/proof" symbolic-ref --short HEAD | grep -Fxq ag-fleet-launch-proof
+git -c safe.directory="$SCRATCH/lanes/proof" -C "$SCRATCH/lanes/proof" symbolic-ref --short HEAD | grep -Fxq ag-fleet-launch-proof
 grep -Fxq -- '--property=IPAddressDeny=localhost' "$SCRATCH/systemd.args"
+grep -Fxq -- "--uid=$test_user" "$SCRATCH/systemd.args"
+[[ "$(id -u "$test_user")" -ne 0 ]]
 grep -Fq 'daemon/mask-stream.ts' "$SCRATCH/systemd.args"
-grep -Fq "TMPDIR=$SCRATCH/tmp-parent/infra-lane-tmp-$UID/proof" "$SCRATCH/systemd.args"
+grep -Fq "TMPDIR=$SCRATCH/lanes/tmp/proof" "$SCRATCH/systemd.args"
 test -f "$SCRATCH/agent.executed"
 grep -Fxq 'run-lane' "$SCRATCH/agent.args"
 grep -Fxq -- '--custom-safety-mode' "$SCRATCH/agent.args"
@@ -134,7 +147,7 @@ for artifact_kind in worktree pack prompt log tmp; do
     pack) artifact="$SCRATCH/lanes/pack-$lane" ;;
     prompt) artifact="$SCRATCH/lanes/lane-$lane.prompt.md" ;;
     log) artifact="$SCRATCH/lanes/lane-$lane.log" ;;
-    tmp) artifact="$SCRATCH/tmp-parent/infra-lane-tmp-$UID/$lane" ;;
+    tmp) artifact="$SCRATCH/lanes/tmp/$lane" ;;
   esac
   mkdir -p "$(dirname "$artifact")"
   ln -s "$SCRATCH/does-not-exist" "$artifact"
@@ -163,7 +176,7 @@ grep -Fq 'unit launch failed; cleaned lane artifacts: retry' "$SCRATCH/retry-fai
 test ! -e "$SCRATCH/lanes/retry"
 test ! -e "$SCRATCH/lanes/pack-retry"
 test ! -e "$SCRATCH/lanes/lane-retry.prompt.md"
-test ! -e "$SCRATCH/tmp-parent/infra-lane-tmp-$UID/retry"
+test ! -e "$SCRATCH/lanes/tmp/retry"
 PATH="$SCRATCH/bin:$PATH" AGENT_COMMAND_FILE="$SCRATCH/agent.conf" \
   MOCK_SYSTEMD_ARGS="$SCRATCH/retry.systemd.args" MOCK_AGENT_ARGS="$SCRATCH/retry.agent.args" \
   MOCK_AGENT_EXECUTED="$SCRATCH/retry.agent.executed" TMPDIR="$SCRATCH/tmp-parent" \

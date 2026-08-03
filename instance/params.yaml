@@ -29,7 +29,7 @@ repos:
     - agent-bill
     - agent-mila
   legacy_rescue_branch: rescue/vm-final-20260728   # instructions/repo-layout.md
-  canonical_root: /root/bpa-dev-infrastructure     # AS BUILT on bpa-infra after the 2026-07-30 cutover.
+  canonical_root: /srv/bpa-dev-infrastructure     # non-root lanes must traverse the repository and common Git dir
   account: root                     # SYSTEM-unit deployment contract; bootstrap refuses non-root activation.
   git_remote: git@github.com:vovaBPApro/bpa-dev-infrastructure.git  # instance/migration-day.md (clone step)
 
@@ -42,6 +42,9 @@ vm:
   # (msg 11555) was Vova's sizing FLOOR, not this box; the delivered machine exceeds it.
 
 fleet:
+  lane_user: bpa-lane               # instance/lane-runtime.conf; dedicated unprivileged system account
+  lane_home: /var/lib/bpa-lane      # mode 0700; provider credentials are provisioned here, readable only by bpa-lane/root
+  lanes_root: /srv/bpa-infra-lanes  # outside /root so the lane account can traverse it
   # ACTIVE as of 2026-07-31 — instance/decisions/HR-281.md (Vova, verbatim; the
   # row covers his Telegram 275 + 281 together, so cite 281 — HR-275.md does not
   # exist and an earlier version of this comment pointed at it).

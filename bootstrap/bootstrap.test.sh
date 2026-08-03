@@ -64,7 +64,7 @@ for real_dir in /usr/local/bin /usr/bin /bin /usr/sbin /sbin; do
 done
 
 # ── Static shape checks ──────────────────────────────────────────────────
-grep -Fxq 'INSTALL_ROOT="${INSTALL_ROOT:-/root/bpa-dev-infrastructure}"' "$INSTALLER"
+grep -Fxq 'INSTALL_ROOT="${INSTALL_ROOT:-/srv/bpa-dev-infrastructure}"' "$INSTALLER"
 # Dropped-scope proof: none of the out-of-scope donor surface leaked back in
 # as actual CODE. install.sh's own header comments name these on purpose (to
 # document why they were left out), so the scan first drops comment-only
@@ -81,7 +81,7 @@ echo 'PASS static shape (INSTALL_ROOT default present, out-of-scope surface abse
 
 # ── --dry-run / --help / argument validation ─────────────────────────────
 dry_run="$($INSTALLER --dry-run)"
-for expected in 'PLAN apt' 'PLAN bun' 'PLAN repository' 'PLAN environment' 'PLAN state-db'; do
+for expected in 'PLAN lane-user' 'PLAN apt' 'PLAN bun' 'PLAN repository' 'PLAN environment' 'PLAN state-db'; do
   grep -Fq "$expected" <<<"$dry_run"
 done
 # Trimmed-scope proof: the donor's later-stage plan rows must NOT appear.

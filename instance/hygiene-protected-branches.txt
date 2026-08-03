@@ -41,11 +41,8 @@ ag-s6-21
 # instance/parked/V3-2.3-drift-guard-2026-08-03.md
 ag-s6-12
 
-# V3-3.4 round 3 — the durable review-round cap. PARKED at the HR-1726 cap with
-# one open blocker: counted-but-unlanded attempts never reach target history, so a
-# new clone can repeat them. The branch IS the evidence and the starting point.
-# Park record: instance/parked/V3-3.4-review-rounds-2026-08-03.md
-ag-s6-13
+# V3-3.4's parked branch ag-s6-13 was unprotected on 2026-08-04: the row landed at
+# 7c428e0, so the branch no longer holds the only copy of anything.
 
 # V3-1.9 round 3 — the branch that carries the correct single-service-user model.
 # PARKED at the HR-1726 cap: the remaining blocker is operator provisioning of the

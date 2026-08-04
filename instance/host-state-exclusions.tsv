@@ -36,8 +36,9 @@ $HOME/.bun/bin/bun	source	The interpreter inside the bun-toolchain row, not sepa
 /root/.npm	host	npm's own cache. Third-party tooling state; npm rebuilds it.
 /root/.pki	host	NSS certificate database created by the distribution's TLS tooling.
 /root/.step	host	step-cli's own state. Third-party tooling, not driven by anything here.
-/root/.local/bin	host	Per-user binaries installed by third-party tooling. The one this repository pins is $HOME/.bun, which has its own row.
-/root/.local/share	host	XDG data root holding only third-party tooling state on this host; nothing here writes to it.
+/root/.local/share/applications	host	Desktop entry written by the Claude Code installer's URL handler. Third-party tooling.
+/root/.local/share/caddy	host	Caddy's own data directory, belonging to the v2 product's edge. Same domain boundary as the /root/.config/caddy line.
+/root/.local/share/pnpm	host	pnpm's own state. Third-party tooling.
 /root/.local/state/pnpm	host	pnpm's own state. Third-party tooling.
 /root/.config/btop	host	Third-party tool configuration.
 /root/.config/caddy	host	Caddy's own configuration, belonging to the v2 product's edge, not to this control plane. Same domain boundary as the /var/lib/bpa-previews line.
@@ -45,7 +46,6 @@ $HOME/.bun/bin/bun	source	The interpreter inside the bun-toolchain row, not sepa
 /root/.config/mimeapps.list	host	Desktop MIME association file written by the distribution.
 /root/.config/procps	host	Third-party tool configuration.
 /root/.config/pulse	host	Audio daemon state written by the distribution.
-/root/.config/systemd	host	Per-user systemd units. This repository installs system units only; /etc/systemd/system is the systemd-dir row.
 $XDG_CACHE_HOME/claude-cli-nodejs	host	The provider CLI's own cache. Rebuilt on demand.
 $XDG_CACHE_HOME/dconf	host	Distribution settings cache.
 $XDG_CACHE_HOME/ms-playwright	host	Downloaded browser binaries. Re-downloadable and large; a rebuild refetches them.
@@ -77,7 +77,7 @@ $HOME/.claude/.last-update-result.json	host	Harness self-update marker.
 /home/bpa-shell/.cloud-locale-test.skip	host	Cloud-image locale marker written by the distribution.
 /home/bpa-shell/.npm	host	npm's own cache under the second account.
 /home/bpa-shell/.config	host	Third-party tool configuration under the second account; nothing here writes to it.
-/home/bpa-shell/.local	host	XDG data/state root under the second account, holding third-party tooling state only.
+/home/bpa-shell/.local/share	host	Desktop entry written by the Claude Code installer under the second account. Third-party tooling. NOT the whole of .local: the sibling state root is where V3-1.9's non-root lane model will write, so it keeps a row rather than an excuse.
 /var/lib/agentic-bpa	host	Runtime state of the v2 PRODUCT (the agentic-bpa units), not of this control plane. Enumerating the product's state is the product repository's obligation; the boundary is instance/params.yaml phase=sole-mission.
 /var/lib/bpa-edge-last-good	host	Same domain boundary as agentic-bpa: the v2 product's edge rollback marker.
 /var/lib/bpa-previews	host	Same domain boundary as agentic-bpa: the v2 product's preview builds.

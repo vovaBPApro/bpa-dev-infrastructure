@@ -28,7 +28,7 @@
 // The drift scan strips comments first: V3-0.28 was reopened because the
 // reachability checker accepted a code comment as an executor, and a detector
 // that reads prose is not a detector.
-import { existsSync, readFileSync, statSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, statSync, readdirSync, lstatSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, isAbsolute } from "node:path";
 
@@ -326,6 +326,28 @@ export function check(repo: string): string[] {
     }
   }
 
+  // The unit manifest is linted here, at repository level, so the landing gate
+  // validates its shape. WHICH units are deployed is a host question and stays in
+  // `--units`, for the same reason the sweep is not in the gate: the gate also
+  // lands synthetic fixture repositories that have no installation.
+  if (existsSync(join(repo, "instance/host-units.tsv"))) {
+    const units = new Set<string>();
+    for (const row of unitManifest(repo)) {
+      const key = `${row.manager}/${row.unit}`;
+      if (units.has(key)) errors.push(`duplicate unit row: ${key}`);
+      units.add(key);
+      if (!UNIT_SUFFIX.test(row.unit)) errors.push(`not a unit name: ${key}`);
+      if (!["system", "user"].includes(row.manager)) errors.push(`unknown unit manager: ${key}`);
+      if (!UNIT_STATES.has(row.state)) errors.push(`unknown unit state: ${key} ${row.state}`);
+      if (!UNIT_DISPOSITIONS.has(row.disposition)) {
+        errors.push(`unknown unit disposition: ${key} ${row.disposition}`);
+      }
+      if (row.exec !== NO_EXEC && !isAbsolute(resolvePath(normalize(row.exec), process.env, "wildcard"))) {
+        errors.push(`unit exec is not an absolute path: ${key} ${row.exec}`);
+      }
+    }
+  }
+
   // Forward direction: every host path tracked code writes must be enumerated.
   const observed = new Map<string, string[]>();
   for (const file of scannedFiles(repo)) {
@@ -462,6 +484,231 @@ export function sweep(
   // per-run scratch that legitimately comes and goes.
   const stale = hostExclusions.filter((row) => !matched.has(row.prefix)).map((row) => row.prefix);
   return { uncovered: uncovered.sort(), stale, roots: roots.map((root) => root.path) };
+}
+
+// ── Deployed systemd units ────────────────────────────────────────────────────
+
+// The direction NOTHING tracked answered before this. bootstrap/check-unit-drift.sh
+// loops `for template in "$dir"/*.in` -- it asks "is every TRACKED unit deployed
+// and identical?" and never enumerates what is deployed. So a unit that exists on
+// this host and has no template is invisible to it, and the host-state.tsv
+// `systemd-dir` row used to delegate the question to it anyway.
+//
+// It is invisible no longer, and the counter-example is why this mode exists:
+// orch-fleet-nudge.timer is enabled, fires every ten minutes as root, and its
+// ExecStart is /root/.local/bin/orch-fleet-nudge.sh, which is in no template, no
+// tracked file, and no decision. The fleet's own stall detector is one meteorite
+// from gone. A filesystem walk could not see it either -- finding it needs the
+// unit graph, not a directory listing.
+//
+// ARMED vs INSTALLED is the distinction the workboard claimed elsewhere and could
+// not back (V3-0.28). It is derived from the filesystem, not from `systemctl`, so
+// it is testable against a scratch tree and means the thing Hard Floor 5 asks
+// about: `armed` = a .wants/.requires symlink survives a reboot and runs this.
+// `is-active` is deliberately NOT the definition -- a unit active now but not
+// enabled does not come back, and one enabled but inactive does.
+
+export type Unit = {
+  unit: string; manager: string; state: string; exec: string; disposition: string; note: string;
+};
+
+const UNIT_STATES = new Set(["armed", "installed"]);
+const UNIT_DISPOSITIONS = new Set([
+  "rebuildable", // rendered from a tracked template; the template must exist
+  "unresolved",  // deployed here, operates the fleet, in neither git nor a decision
+  "orphan",      // deployed, nothing here depends on it
+  "off-scope",   // belongs to the v2 PRODUCT, not to this control plane
+]);
+
+// `-` is the recorded exec for a unit that has no ExecStart of its own, which is
+// every timer: what a timer runs is its Unit=, and that service has its own row.
+const NO_EXEC = "-";
+
+// A wrapper is not the target. `ExecStart=/usr/bin/bash /root/.local/bin/foo.sh`
+// is a statement about foo.sh, and recording /usr/bin/bash would enumerate the
+// distribution's shell instead of the untracked script that is the finding.
+const INTERPRETERS = new Set(["bash", "sh", "dash", "env", "bun", "node", "python", "python3"]);
+
+export function unitManifest(repo: string): Unit[] {
+  return rows(join(repo, "instance/host-units.tsv"), 6)
+    .map(([unit, manager, state, exec, disposition, note]) => ({ unit, manager, state, exec, disposition, note }));
+}
+
+// systemd's prefix characters (`-` ignore-failure, `@` argv0, `+`/`!`/`!!`
+// privilege) are syntax, not part of the path.
+function stripExecPrefix(token: string): string {
+  return token.replace(/^[-+!@:]+/, "");
+}
+
+export function execTarget(text: string): string {
+  const line = text.split("\n").map((l) => l.trim()).find((l) => l.startsWith("ExecStart="));
+  if (!line) return NO_EXEC;
+  const tokens = line.slice("ExecStart=".length).trim().split(/\s+/).filter(Boolean);
+  let fallback = NO_EXEC;
+  for (const [index, token] of tokens.entries()) {
+    const bare = stripExecPrefix(token);
+    if (!bare.startsWith("/")) continue;
+    if (fallback === NO_EXEC) fallback = bare;
+    // An interpreter followed by something is a wrapper; keep looking for what
+    // it runs. An interpreter with nothing after it IS the target.
+    if (INTERPRETERS.has(bare.split("/").pop() ?? "") && index + 1 < tokens.length) continue;
+    return bare;
+  }
+  return fallback;
+}
+
+// What a .timer/.socket/.path activates: its explicit Unit=, else the same
+// basename as a .service. orch-fleet-nudge.timer takes the default, which is
+// exactly how a `static` service ends up running every ten minutes.
+function activatedUnit(text: string, unit: string): string {
+  const line = text.split("\n").map((l) => l.trim()).find((l) => l.startsWith("Unit="));
+  if (line) return line.slice("Unit=".length).trim();
+  return unit.replace(/\.(timer|socket|path)$/, ".service");
+}
+
+const UNIT_SUFFIX = /\.(service|timer|socket|path|mount)$/;
+
+// Real files only. A symlink in /etc/systemd/system points into the
+// distribution's own unit directory -- that is systemd's enable mechanism, not a
+// unit deployed here, and following it would drag ~200 distro units into an
+// enumeration that is about this installation.
+export function deployedUnits(dir: string): { unit: string; text: string }[] {
+  let entries: string[];
+  try { entries = readdirSync(dir); } catch { return []; }
+  const found: { unit: string; text: string }[] = [];
+  for (const entry of entries.sort()) {
+    if (!UNIT_SUFFIX.test(entry)) continue;
+    const path = join(dir, entry);
+    try { if (!lstatSync(path).isFile()) continue; } catch { continue; }
+    found.push({ unit: entry, text: read(path) });
+  }
+  return found;
+}
+
+// Enabled = systemd's own record of it, which is a symlink under a
+// <target>.wants/ or <target>.requires/ directory. Reading the graph rather than
+// asking systemctl is what lets a test build one in a scratch directory.
+function enabledUnits(dir: string): Set<string> {
+  const enabled = new Set<string>();
+  let entries: string[];
+  try { entries = readdirSync(dir); } catch { return enabled; }
+  for (const entry of entries) {
+    if (!/\.(wants|requires)$/.test(entry)) continue;
+    try { for (const link of readdirSync(join(dir, entry))) enabled.add(link); } catch { /* unreadable */ }
+  }
+  return enabled;
+}
+
+export type Observed = { state: string; exec: string };
+
+export function observeUnits(dir: string): Map<string, Observed> {
+  const files = deployedUnits(dir);
+  const enabled = enabledUnits(dir);
+  const armed = new Set(files.map((f) => f.unit).filter((unit) => enabled.has(unit)));
+  // Propagate through activation: a `static` service with no [Install] section
+  // is armed exactly when something armed activates it.
+  for (const { unit, text } of files) {
+    if (!armed.has(unit) || !/\.(timer|socket|path)$/.test(unit)) continue;
+    armed.add(activatedUnit(text, unit));
+  }
+  const observed = new Map<string, Observed>();
+  for (const { unit, text } of files) {
+    observed.set(unit, { state: armed.has(unit) ? "armed" : "installed", exec: execTarget(text) });
+  }
+  return observed;
+}
+
+// The unit directories this installation is responsible for. /lib/systemd/system
+// is the distribution's and is deliberately out of scope, exactly as /usr is for
+// the sweep. The user manager's directory is IN scope because on this host it
+// holds this installation's own units.
+export function unitDirs(env: Record<string, string | undefined> = process.env): { path: string; manager: string }[] {
+  const home = env.HOME || homedir();
+  return [
+    { path: env.SYSTEMD_SYSTEM_DIR || "/etc/systemd/system", manager: "system" },
+    { path: join(home, ".config/systemd/user"), manager: "user" },
+  ];
+}
+
+// A `rebuildable` unit's template, which is the claim that row makes.
+function trackedTemplate(repo: string, unit: string): string | null {
+  for (const dir of ["bootstrap/units", "instance/units"]) {
+    const path = join(dir, `${unit}.in`);
+    if (existsSync(join(repo, path))) return path;
+  }
+  return null;
+}
+
+export type UnitScan = {
+  unlisted: string[]; drift: string[]; unresolved: string[]; stale: string[]; dirs: string[];
+};
+
+export function scanUnits(
+  repo: string,
+  env: Record<string, string | undefined> = process.env,
+  dirOverride?: { path: string; manager: string }[],
+): UnitScan {
+  const manifestRows = unitManifest(repo);
+  const dirs = (dirOverride ?? unitDirs(env)).filter((dir) => existsSync(dir.path));
+  const byKey = new Map(manifestRows.map((row) => [`${row.manager}/${row.unit}`, row]));
+  const seen = new Set<string>();
+  const unlisted: string[] = [];
+  const drift: string[] = [];
+  const unresolved: string[] = [];
+
+  for (const dir of dirs) {
+    for (const [unit, observation] of observeUnits(dir.path)) {
+      const key = `${dir.manager}/${unit}`;
+      seen.add(key);
+      const row = byKey.get(key);
+      if (!row) { unlisted.push(`${key} state=${observation.state} exec=${observation.exec}`); continue; }
+      // A row that records the wrong state is worse than no row: it is the
+      // V3-0.28 failure, an enumeration asserting a distinction it does not hold.
+      if (row.state !== observation.state) {
+        drift.push(`${key} state: manifest says ${row.state}, host says ${observation.state}`);
+      }
+      if (row.exec === NO_EXEC) {
+        if (observation.exec !== NO_EXEC) {
+          drift.push(`${key} exec: manifest says none, host says ${observation.exec}`);
+        }
+      } else if (!coveragePattern(row.exec, env).test(observation.exec)) {
+        drift.push(`${key} exec: manifest says ${resolvePath(normalize(row.exec), env, "wildcard")}`
+          + `, host says ${observation.exec}`);
+      }
+      // The delegation bootstrap/check-unit-drift.sh never made: a `rebuildable`
+      // unit must actually have a template, or "rendered from tracked sources" is
+      // an assertion about a rebuild that would not reproduce it.
+      const template = trackedTemplate(repo, unit);
+      if (row.disposition === "rebuildable" && !template) {
+        drift.push(`${key} rebuildable but no tracked template under bootstrap/units or instance/units`);
+      }
+      if (row.disposition === "unresolved" && template) {
+        drift.push(`${key} unresolved but ${template} exists -- the row is stale, resolve it`);
+      }
+      // An armed unit whose ExecStart is not on this filesystem cannot run.
+      //
+      // For an `unresolved` row that is part of the standing finding, so it rides
+      // on the UNRESOLVED line rather than DRIFT. The split matters: DRIFT means
+      // the manifest is WRONG and someone must fix it, UNRESOLVED means the
+      // manifest is right and the host has a breach awaiting a decision. Folding
+      // the second into the first is how a permanently-red check stops being read
+      // -- and then a genuinely new drift arrives into noise nobody looks at.
+      const broken = observation.state === "armed" && observation.exec !== NO_EXEC
+        && !existsSync(observation.exec);
+      if (broken && row.disposition !== "unresolved") {
+        drift.push(`${key} is armed but its ExecStart target does not exist: ${observation.exec}`);
+      }
+      if (row.disposition === "unresolved") {
+        unresolved.push(`${key} state=${observation.state}`
+          + `${broken ? ` exec-target-absent=${observation.exec}` : ""} -- ${row.note.split(".")[0]}`);
+      }
+    }
+  }
+  // Same contract as the sweep's stale exclusions: a host getting cleaner is
+  // reported, never failed.
+  const stale = manifestRows.filter((row) => !seen.has(`${row.manager}/${row.unit}`))
+    .map((row) => `${row.manager}/${row.unit}`);
+  return { unlisted, drift, unresolved, stale, dirs: dirs.map((d) => d.path) };
 }
 
 // ── Probes ────────────────────────────────────────────────────────────────────
@@ -625,8 +872,24 @@ function sweepAll(repo: string): number {
   const result = sweep(repo);
   for (const prefix of result.stale) console.log(`${NAME} sweep stale-exclusion ${prefix}`);
   for (const path of result.uncovered) console.log(`${NAME} sweep UNLISTED ${path}`);
-  console.log(`${NAME} sweep roots=${result.roots.length} unlisted=${result.uncovered.length} stale=${result.stale.length}`);
+  // `unresolved` rows are counted on the summary line on purpose. `unlisted=0`
+  // alone reads as "this host is fine", and on a host where an enumerated but
+  // undecided Hard Floor 5 breach is standing, that reading is false. The
+  // headline number may never again be silent about it.
+  const open = manifest(repo).filter((row) => row.disposition === "unresolved").length;
+  console.log(`${NAME} sweep roots=${result.roots.length} unlisted=${result.uncovered.length} stale=${result.stale.length} unresolved=${open}`);
   return result.uncovered.length;
+}
+
+function unitsAll(repo: string): number {
+  const result = scanUnits(repo);
+  for (const unit of result.stale) console.log(`${NAME} units stale-row ${unit}`);
+  for (const line of result.unresolved) console.log(`${NAME} units UNRESOLVED ${line}`);
+  for (const line of result.drift) console.log(`${NAME} units DRIFT ${line}`);
+  for (const line of result.unlisted) console.log(`${NAME} units UNLISTED ${line}`);
+  const failed = result.unlisted.length + result.drift.length + result.unresolved.length;
+  console.log(`${NAME} units dirs=${result.dirs.length} unlisted=${result.unlisted.length} drift=${result.drift.length} unresolved=${result.unresolved.length} stale=${result.stale.length}`);
+  return failed;
 }
 
 if (import.meta.main) {
@@ -645,13 +908,15 @@ if (import.meta.main) {
       process.exit(0);
     }
     if (argv.includes("--sweep")) process.exit(sweepAll(repo) === 0 ? 0 : 1);
+    if (argv.includes("--units")) process.exit(unitsAll(repo) === 0 ? 0 : 1);
     if (argv.includes("--verify")) {
       const only = flag("--only") ?? null;
       let failed = verifyAll(repo, only);
       // `--verify` is the host-level mode, so it owes the host-level question
-      // too: rows that are false AND state that has no row. `--only` narrows to
-      // one row deliberately, so it does not drag the whole sweep along.
-      if (!only) failed += sweepAll(repo);
+      // too: rows that are false AND state that has no row AND units that no
+      // filesystem walk can see. `--only` narrows to one row deliberately, so it
+      // does not drag the whole host scan along.
+      if (!only) failed += sweepAll(repo) + unitsAll(repo);
       process.exit(failed === 0 ? 0 : 1);
     }
     const errors = check(repo);

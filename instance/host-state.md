@@ -8,24 +8,38 @@ about the state that host accumulated. Rebuild this machine from git tomorrow
 and you get every script, unit, rule and decision — and no answer to "what was
 in flight and why".
 
-This document is the narrative half. The binding data is
-[`host-state.tsv`](host-state.tsv): 55 rows, each naming a location, what writes
-it, whether a rebuild needs it, and **the exact command that decides whether it
-is present and sound**. [`host-state-exclusions.tsv`](host-state-exclusions.tsv)
-is the other half of the enumeration — the locations that were looked at and the
-reason each needs no row of its own. Neither file is a snapshot:
-`tools/check-host-state.ts` fails closed when they disagree with the code, and
-again when they disagree with the host.
+This document is the narrative half. The binding data is three files:
+
+- [`host-state.tsv`](host-state.tsv) — 59 rows, each naming a location, what
+  writes it, whether a rebuild needs it, and **the exact command that decides
+  whether it is present and sound**.
+- [`host-state-exclusions.tsv`](host-state-exclusions.tsv) — 58 locations that
+  were looked at and the reason each needs no row of its own.
+- [`host-units.tsv`](host-units.tsv) — 25 systemd units **deployed on this
+  host**, whether each is *armed* or merely *installed*, and where its
+  `ExecStart` points. Added in round 3 because a filesystem walk cannot see the
+  fact that makes a unit matter: that systemd will run it again after a reboot.
+
+None of the three is a snapshot: `tools/check-host-state.ts` fails closed when
+they disagree with the code, again when they disagree with the filesystem, and
+again when they disagree with the unit graph.
 
 ## How to use it
 
 ```sh
 bun tools/check-host-state.ts                      # manifest lint + drift scan (the gate runs this)
 bun tools/check-host-state.ts --sweep              # walk this host for anything unlisted
-bun tools/check-host-state.ts --verify             # run every row's own command, then sweep
+bun tools/check-host-state.ts --units              # enumerate deployed systemd units
+bun tools/check-host-state.ts --verify             # every row's own command, then sweep, then units
 bun tools/check-host-state.ts --verify --only lane-root
 bun tools/check-host-state.ts snapshot <db> <dst>  # WAL-correct sqlite copy
 ```
+
+**`--units` and `--verify` exit non-zero on this host today, and that is the
+correct reading, not a broken check.** Seven unit rows and seven state rows carry
+disposition `unresolved`: they name live Hard Floor 5 breaches that are enumerated
+but *undecided*, and their probes are built to keep failing until someone decides.
+See [What is still broken](#what-is-still-broken-and-is-supposed-to-stay-loud).
 
 `--verify` executes the `verify` column verbatim. There is deliberately no
 second version of those commands: what the manifest documents and what the
@@ -94,22 +108,130 @@ A `host` exclusion that matches nothing is **reported, not failed**. The
 fail-closed direction is uncovered state; a host getting *cleaner* must never
 turn the sweep red, or the operator learns to ignore it.
 
-### The honest limits of both scans
+### Units — "what does systemd run here, and did anything tracked render it?"
+
+The third scan, and the one round 2 did not have. It exists because of a single
+counter-example that both other scans missed completely:
+
+> `orch-fleet-nudge.timer` is **enabled, runs as root, and fires every ten
+> minutes**. Its service runs `/root/.local/bin/orch-fleet-nudge.sh` — 5198
+> bytes, untracked, in no template and no decision. It wakes the orchestrator
+> over tmux and pings the operator over Telegram: it is the fleet's only stall
+> detector, and its own header says *"the Human must not be the thing that
+> notices"*. **The machine is operated by a mechanism the meteorite would not
+> restore**, and while that was true the checker printed `unlisted=0`.
+
+Neither existing scan could see it. The drift scan reads tracked sources, and
+nothing tracked mentions it. The sweep reads the filesystem, and a unit file is
+just a config file — what makes it matter is the *unit graph*, which is not a
+directory listing. It also sat behind two exclusions whose stated reasons were
+factually wrong about this host; both are gone (see below).
+
+#### The reverse of `check-unit-drift.sh`
+
+`bootstrap/check-unit-drift.sh` loops `for template in "$dir"/*.in` — it asks
+*"is every **tracked** unit deployed and identical?"* and **never enumerates what
+is deployed**. So a unit with no template is invisible to it by construction.
+The `systemd-dir` row used to delegate the question to it anyway, and was marked
+`rebuildable` — an affirmative claim that a rebuild reproduces
+`/etc/systemd/system`. It would not: four deployed units there are rendered from
+nothing tracked. That row is now `unresolved`, and the reverse question has a
+mechanism instead of a delegation.
+
+#### Armed is not the same as installed
+
+The distinction the workboard claimed elsewhere and could not back (V3-0.28).
+Here it is derived from the **unit graph on disk**, not from `systemctl`:
+
+| state | meaning |
+|---|---|
+| `armed` | a `.wants`/`.requires` symlink arms it, **or** an armed timer/socket/path activates it |
+| `installed` | the unit file is deployed and nothing arms it |
+
+`systemctl is-active` is deliberately *not* the definition. A unit active now but
+not enabled does not come back after a reboot; one enabled but inactive does — and
+Hard Floor 5's question is about the rebuilt host, not this minute. Deriving it
+from the filesystem is also what lets a test build a unit graph in a scratch
+directory instead of asserting against whatever this machine has installed.
+
+The propagation rule is load-bearing: `orch-fleet-nudge.service` is `static`, so
+`systemctl is-enabled` calls it neither enabled nor disabled. It runs every ten
+minutes because an enabled timer activates it. A checker reading `is-enabled`
+would have called it `installed` and been wrong about the most important unit on
+the host.
+
+#### `DRIFT` and `UNRESOLVED` are different claims
+
+- **`DRIFT`** — the manifest is *wrong*: a row calls an armed unit installed, an
+  `ExecStart` moved, a `rebuildable` row names a template this repository does
+  not carry. Someone must fix the file.
+- **`UNRESOLVED`** — the manifest is *right* and the host has a breach awaiting a
+  decision.
+
+They are separate counters on purpose. Folding the second into the first is how a
+permanently-red check stops being read, and then real drift arrives into noise
+nobody looks at.
+
+### The honest limits of all three scans
 
 - **Scope is `$HOME`, the XDG roots, `/root`, `/home`, `/var/lib`, `/var/log`,
   `/var/spool/cron` and `/etc/systemd`.** `/usr` and `/bin` belong to the
   distribution. `/tmp` is excluded by construction: it does not survive a reboot,
   so it cannot hold state a rebuild restores.
+- **The units scan reads `/etc/systemd/system` and `$HOME/.config/systemd/user`,
+  and follows no symlinks.** `/lib/systemd/system` is the distribution's and is
+  out of scope, exactly as `/usr` is for the sweep. Symlinks under the system
+  directory are systemd's *enable* mechanism and point back into the
+  distribution, so following them would drag ~200 distro units into an
+  enumeration that is about this installation. The cost is real and stated: a
+  unit deployed **as a symlink** to somewhere outside these two directories would
+  not be enumerated. Nothing on this host is.
+- **The units scan does not cover other managers.** No `cron` (that is the
+  `root-crontab` row, F5), no `at`, no container restart policies, no
+  `systemd --user` instance for the `bpa-shell` account. A Docker container with
+  `restart: always` is infrastructure that survives a reboot and this
+  enumeration does not name it. That is a real gap, not a bounded one.
 - **The name claim is the sweep's real boundary.** A future directory belonging
   to this installation but sitting under a shared root *without* `bpa` in its
   name stays invisible to the sweep. That is a deliberate trade against
   false-positive churn, and it is the first thing to revisit if something is
   found missing.
-- **The sweep has no automatic caller.** `--verify` and `--sweep` are operator
-  commands; the gate runs the drift scan only. So a file that appears on the
-  host between manual runs is not detected until the next one. Wiring it to a
-  unit needs a timer that is actually armed, and on this host no bpa timer is
-  (F5, V3-2.1).
+- **No declared scan root is excused wholesale any more, and four used to be.**
+  This section previously omitted its own largest limit. `/root/.local/bin`,
+  `/root/.config/systemd`, `/root/.local/share` and `/home/bpa-shell/.local` each
+  carried a single `host` exclusion that made an entire directory tree — two of
+  them declared XDG scan roots — invisible. Every one of those four reasons was
+  false about this host:
+
+  | excused | the reason it gave | what was actually in it |
+  |---|---|---|
+  | `/root/.local/bin` | "per-user binaries installed by third-party tooling" | **only** `orch-fleet-nudge.sh`, the armed root timer's script |
+  | `/root/.config/systemd` | "this repository installs system units only" | 14 of **this installation's own** units, one of them enabled |
+  | `/root/.local/share` | "only third-party tooling state" | plus `systemd/`, this installation's own timer stamps |
+  | `/home/bpa-shell/.local` | "third-party tooling state only" | swallowed the second account's XDG **state** root — where V3-1.9's non-root lane model will write |
+
+  The first two are deleted and their contents have rows. The last two are
+  narrowed to the specific third-party subdirectories that do occupy them
+  (`applications`, `caddy`, `pnpm`, and the second account's `share`), so the
+  state roots beside them stay visible. `tools/check-host-state.test.ts` locks
+  the direction, and removing the four new rows turns the sweep red on all four
+  paths — that is the fail-before evidence for this fix.
+
+  The general lesson is the one worth keeping: **an exclusion is a claim about a
+  directory's contents, and it decays.** A reason that was true when written goes
+  false when someone drops a file in. Prefer narrow prefixes over roots.
+- **The sweep and the units scan have no automatic caller.** `--verify`,
+  `--sweep` and `--units` are operator commands; the gate runs the drift scan
+  only. So a file or unit that appears between manual runs is not detected until
+  the next one. Wiring one to a timer needs a timer that is actually armed, and
+  `bpa-full-suite.timer` — the one that would carry it — is deployed and
+  **disabled** (F5, V3-2.1).
+
+  Round 2 stated this as *"on this host no bpa timer is armed"*. That was false
+  when written: `orch-morning-report.timer` is armed and tracked, and
+  `orch-fleet-nudge.timer` is armed and untracked (F16). The claim is corrected
+  rather than quietly dropped, because believing no timer was armed is part of
+  what kept F16 unlooked-for.
 - **A path assembled entirely from variables is invisible to the drift scan.**
   The manifest records those as `external:` writers, which costs the reverse
   check on that row. The sweep is what now covers them from the other side, but
@@ -135,6 +257,73 @@ for a week. Stated correctly:
   operator channel material were sitting under the declared scan roots with no
   row and no exclusion, and the checker printed `clean`.
 - A row can also become false on the host between manual `--verify` runs.
+
+## What is still broken, and is supposed to stay loud
+
+`--sweep` reports `unlisted=0` on this host. **That number means "everything here
+has a row", and it does not mean the host is in a good state.** Round 2 shipped
+with `unlisted=0` while an armed root timer operated the fleet from outside git,
+and the number said nothing. It now reports a second figure beside it so that
+reading can never recur:
+
+```
+HOST-STATE sweep roots=6 unlisted=0 stale=0 unresolved=7
+HOST-STATE units dirs=2 unlisted=0 drift=0 unresolved=7 stale=0
+```
+
+`unresolved` counts enumerated, undecided Hard Floor 5 breaches. Their probes
+**fail while the breach exists** and clear themselves when the path is gone, so no
+edit here is needed to resolve one. Today they are:
+
+| what | why it is a breach |
+|---|---|
+| `orch-fleet-nudge.timer` + `.service` + its script (F16) | armed, root, ten-minutely, operates the fleet, untracked |
+| `bpa-db-network-boundary.service` (F17) | armed, and its script went away with a reaped lane worktree |
+| `/etc/systemd/system` (`systemd-dir`) | four deployed units there are rendered from nothing tracked |
+| `/root/.config/systemd/user` + 4 unit rows (F18) | 14 units, one enabled, no templates |
+| `orch-recover.sh`, `orch-recover-claude.sh`, `orch-claude-debug.sh` (F8) | untracked fleet-recovery scripts improvised during incidents |
+| `/var/lib/bpa-authority` (F11) | a second, undeclared lane-provisioning state root |
+
+None of them are deleted, moved or tidied. The operator has ruled against cleanup
+(Telegram 2132, 2134); the decision about each is the operator's and the
+orchestrator's, and these rows exist so the decision is **visible rather than
+absent**.
+
+## What this enumeration does not claim
+
+It is **complete for what it scans, and it scans less than "this host"**. Stating
+which parts are partial is the point — a mechanism that says `unlisted=0` while an
+armed root timer runs untracked is worse than one that says plainly "I do not look
+there".
+
+Not covered, and known to be so:
+
+- **Managers other than systemd**: cron, `at`, Docker restart policies, and the
+  `bpa-shell` account's user manager. A container with `restart: always` survives a
+  reboot and has no row.
+- **Paths outside the declared roots**: `/usr`, `/bin`, `/opt`, `/srv`, `/etc`
+  apart from `/etc/systemd`. The v2 product's `$APP_ROOT` (`/srv/projects/agentic-bpa`)
+  and `/etc/bpa-edge/Caddyfile` are named by unit rows but their contents are not
+  enumerated — that is the product repository's obligation, and the boundary is a
+  recorded decision (`off-scope`), not an omission.
+- **Content of anything marked `secret`**: location and mode only, never opened.
+- **State under a shared root without `bpa` in its name** — the name claim above.
+- **Anything that appears between manual runs.** The sweep and the units scan have
+  **no automatic caller**; `bpa-full-suite.timer` is deployed and *disabled*.
+
+### Deployed units with no tracked template, beyond the fleet nudge
+
+Noted, not asserted beyond what was measured. `agentic-bpa.service`,
+`bpa-edge.service` and `bpa-db-network-boundary.service` are deployed in
+`/etc/systemd/system` and rendered from nothing tracked in this repository. The
+first two are the **v2 product's** and carry `off-scope` — the same domain
+boundary `host-state-exclusions.tsv` already draws for `/var/lib/agentic-bpa`.
+Whether they belong to this control plane at all is not this row's question, and
+no claim is made either way; what *is* measured is that `/etc/systemd/system` is
+not reproducible from this repository, which is why `systemd-dir` stopped saying
+`rebuildable`.
+
+`bpa-db-network-boundary.service` is different in kind and is F17 below.
 
 ## The write-ahead log
 
@@ -252,6 +441,83 @@ fail-closed; a host-only copy means the versioned surface and the live one
 cannot be compared. Enumerated so the gap is visible; closing it is not this
 row's scope.
 
+**F16 — an armed root timer operates this fleet from outside git. (open)**
+The round-2 blocking finding, and the sharpest live instance of Hard Floor 5 on
+this machine. `orch-fleet-nudge.timer` is enabled and fires every ten minutes as
+root; `orch-fleet-nudge.service` runs `/root/.local/bin/orch-fleet-nudge.sh`,
+which is 5198 bytes, mode 755, and **tracked nowhere**. It wakes the orchestrator
+over tmux, pings the operator over Telegram, and reads `instance/workboard.md` —
+it is the fleet's only stall detector, deliberately outside the orchestrator
+session so that, in its own words, *"the Human must not be the thing that
+notices"*.
+
+Three things made it invisible, all three now fixed: two exclusions whose stated
+reasons were false about this host (see the limits table above), and a
+`systemd-dir` row that delegated "which units belong here" to a checker that only
+ever asks the opposite question.
+
+What makes it a finding rather than a task: **`instance/decisions/HR-309.md:66`
+already records this script as fixed** — *"the nudge script and its systemd units
+are captured under `orchestrator/fleet/`"*. `orchestrator/fleet/` contains three
+`launch-lane` files and no nudge script. The ledger records a fix that does not
+exist, which is exactly the `instruction-layers` failure mode of a routed row
+whose target does not carry the restriction. The user-manager unit at F19 even
+names `orchestrator/fleet/fleet-nudge.sh` in its `ExecStart`, so a lane once ran
+in a tree where that file was present.
+
+Not deleted or moved (Telegram 2132, 2134). The decision is the operator's; this
+row's obligation was to make it impossible to miss.
+
+**F17 — an armed security boundary whose implementation was reaped. (open)**
+`bpa-db-network-boundary.service` installs the payload database's network
+boundary. It is **enabled**, ordered `Before=` the orchestrator and the telegram
+daemon, and its `ExecStart` is:
+
+```
+/usr/bin/bash /root/.cache/infra-lanes/database-loopback-boundary-r5-1581/orchestrator/fleet/db-network-boundary.sh apply
+```
+
+That is a **lane worktree**, and it no longer exists. The unit is `Type=oneshot`
+with `RemainAfterExit=yes` and last succeeded 2026-08-03 11:03:30, so
+`systemctl is-active` still reports `active` while the unit is incapable of
+running. The boundary is applied in the running kernel and **would not be
+reapplied on reboot** — and `ExecStop` cannot remove it either.
+
+Two failures compound here, which is why it is worth stating separately from F16.
+The script is untracked, so a meteorite takes it; and it was deployed from a
+disposable tree, so ordinary lane hygiene took it first. A unit pointing into
+`$XDG_CACHE_HOME/infra-lanes` is a defect independent of what the script does,
+because that root is reaped by design (`branching-policy`, `hygiene/reap.sh`).
+Nothing about it is repaired here — the trap list forbids touching the host — but
+`--units` now names it on every run.
+
+**F18 — fourteen units in the user manager, none tracked, one enabled. (open)**
+`/root/.config/systemd/user` holds 14 unit files rendered from no tracked
+template, hidden until now behind an exclusion reading *"this repository installs
+system units only"*. `orch-memory-sweep.timer` is **enabled** there (a
+`timers.target.wants` symlink, mode 600); `orch-runtime-watchdog.*` is deployed
+and not armed.
+
+The user manager is **not running** on this host — `systemctl --user` fails with
+`Failed to connect to bus: No medium found` — so `orch-memory-sweep` fires
+nothing today. That makes it more important to enumerate, not less: a rebuild
+that starts a user manager would begin running a unit nobody chose. Their
+`ExecStart` targets *are* tracked (`tools/instructions/memory-sweep.ts`,
+`orchestrator/watchdog.sh`), so the gap here is the schedule, not the script.
+
+**F19 — a lane test installed units into the user manager and never removed them. (open)**
+Eight of those fourteen point their `ExecStart` into
+`$XDG_CACHE_HOME/lane-tmp/tmp.wxKhUSSRVi/…`, a per-lane scratch tree that is
+already gone. They are residue from a lane test that deployed units into the real
+user manager rather than a fixture, and nothing reaped them — the same unreaped
+`lane-tmp` root as F12, which holds 6559 entries. None are armed, so nothing runs.
+
+Recorded rather than tidied, and enumerated one row each rather than as a group,
+because the most informative line in `host-units.tsv` is one of them: the residual
+`orch-fleet-nudge.service` names `orchestrator/fleet/fleet-nudge.sh`, the exact
+path HR-309 claims the script was captured to. It is evidence that the tracked
+copy existed in some tree at some point and did not survive into `main`.
+
 **F7 — the dispatch's premise, corrected. (closed by measurement)**
 V3-2.9 was dispatched saying `missions` and `lanes` are empty because the fleet
 launcher does not write to the state DB. Half right. Missions and lanes *were*
@@ -267,22 +533,41 @@ copies, schedules, retains, or restores anything. The `snapshot` subcommand is
 only the primitive V3-2.10 needs, plus the proof that the obvious alternative is
 wrong.
 
-**`--verify` and `--sweep` are not on a timer.** The drift scan runs in
-`gate/land.sh`, which is a real executor. The two host-level modes are operator
-commands with no automatic caller. Wiring them to a unit needs a timer that is
-actually armed, and on this host no bpa timer is (F5, V3-2.1). Naming that rather
-than adding a twelfth unarmed unit. What that costs is stated above under the
-honest limits, not left for a reader to infer.
+**`--verify`, `--sweep` and `--units` are not on a timer.** The drift scan runs
+in `gate/land.sh`, which is a real executor. The three host-level modes are
+operator commands with no automatic caller. Wiring them to a unit needs an armed
+timer, and the one that would carry it (`bpa-full-suite.timer`) is deployed and
+disabled — so this lane names the gap rather than adding another unarmed unit.
+What that costs is stated above under the honest limits, not left for a reader to
+infer.
+
+**Nothing was repaired on the host.** F16's timer is still armed, F17's boundary
+service still points into a deleted worktree, and F18's user units are still
+deployed. This row's obligation is that the checker **names** them; the decision
+about the nudge script — track it, retire it, or rule it out of scope — belongs
+to the operator and the orchestrator, and it is not made here.
 
 **Nothing was deleted, moved, pruned or tidied** — including F4's and F13's
 directory modes, the two orphan databases, the three untracked fleet scripts
-(F8), the secret-bearing env backup (F9), and every scratch tree under F12.
+(F8), the secret-bearing env backup (F9), every scratch tree under F12, and the
+lane-test unit residue at F19.
 `git diff --diff-filter=DR` against `origin/main` is empty for this branch.
 
 ## What `--verify` reports on this host today
 
-55 rows, 7 failing, and every failure is a real host condition rather than a
-mechanism defect: `codex-home` 755 (F4), `root-crontab` absent (F5), the four
-`unresolved` exposures (F8 ×3, F11), and `shell-codex-home` 775 (F13). The sweep
-reports 0 unlisted. A row that fails is doing its job; the enumeration is
-complete, and what it enumerates includes things that should not be true.
+59 state rows and 25 unit rows. The failures are real host conditions, not
+mechanism defects: `codex-home` 755 (F4), `root-crontab` absent (F5),
+`shell-codex-home` 775 (F13), and the `unresolved` exposures — F8 ×3, F11, plus
+this round's `systemd-dir`, `fleet-nudge-script` and `user-systemd-units`. The
+units scan adds seven more `unresolved` for F16, F17 and F18. Both host scans
+report `unlisted=0` and `drift=0`.
+
+**A row that fails is doing its job.** What is deliberately *not* claimed is that
+the enumeration is complete about this host: it is complete about what it scans,
+and [what it does not scan](#what-this-enumeration-does-not-claim) is listed
+above — other managers, paths outside the declared roots, the content of secrets.
+Round 2 printed `unlisted=0` and called the enumeration complete while an armed
+root timer ran the fleet from outside git; the difference now is not that the
+scans see everything, but that the summary line reports `unresolved` beside
+`unlisted`, and that the limits section names its own largest limits instead of
+omitting them.

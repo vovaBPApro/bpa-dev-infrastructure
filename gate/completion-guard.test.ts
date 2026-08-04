@@ -310,6 +310,104 @@ describe("completion guard", () => {
     expect(result.stdout).toContain("GUARD verdict=violation");
   });
 
+  // V3-0.40. A shell pipeline exits with the status of its last command, so
+  // every one of these reported a red check as green before the fix.
+  test.each([
+    ["pipe to cat", "exit 1 | cat"],
+    ["pipe to tail", "exit 1 | tail -3"],
+    ["multi-stage pipeline", "exit 1 | cat | sed -E 's/^ +//'"],
+    ["sed unindent, the exact workaround V3-0.38 provoked", "exit 1 | sed -E 's/^ +//'"],
+  ])("rejects a failing verify command hidden behind a %s", (_case, verify) => {
+    const item = fixture();
+    const result = run(report(item.directory, valid(item.sha, "clean", verify)), item.repo, ["--branch", "master"]);
+    expect(result.status).toBe(2);
+    expect(result.stdout).toContain("FAIL verify-run");
+    expect(result.stdout).toContain("GUARD verdict=violation");
+  });
+
+  test("still accepts a passing pipeline, so the fix is not a refusal of pipes", () => {
+    const item = fixture();
+    const body = valid(item.sha, "clean", "printf ' 4 pass\\n 0 fail\\n' | sed -E 's/^ +//'")
+      .replace("result:", "verify-count: 4/0\nresult:");
+    const result = run(report(item.directory, body), item.repo, ["--branch", "master"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("PASS verify-count 4/0");
+  });
+
+  // V3-0.38. Bun indents its summary, so this anchor decides whether the
+  // repository's own test command can satisfy the field the contract demands.
+  test.each([
+    ["bun's leading space", "printf ' 560 pass\\n 0 fail\\n'", "560/0"],
+    ["a tab indent", "printf '\\t7 pass\\n\\t0 fail\\n'", "7/0"],
+    ["trailing whitespace", "printf '  12 pass  \\n  0 fail  \\n'", "12/0"],
+  ])("accepts an indented count summary (%s)", (_case, verify, count) => {
+    const item = fixture();
+    const body = valid(item.sha, "clean", verify).replace("result:", `verify-count: ${count}\nresult:`);
+    const result = run(report(item.directory, body), item.repo, ["--branch", "master"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(`PASS verify-count ${count}`);
+  });
+
+  test("a real bun test run satisfies verify-count", () => {
+    const item = fixture();
+    writeFileSync(
+      join(item.repo, "sample.test.ts"),
+      'import { test, expect } from "bun:test";\ntest("a", () => expect(1).toBe(1));\ntest("b", () => expect(2).toBe(2));\n',
+    );
+    command("git add sample.test.ts && git commit -m sample", item.repo);
+    const sha = spawnSync("git", ["rev-parse", "HEAD"], { cwd: item.repo, encoding: "utf8" }).stdout.trim();
+    const body = valid(sha, "clean", "bun test sample.test.ts").replace("result:", "verify-count: 2/0\nresult:");
+    const result = run(report(item.directory, body), item.repo, ["--branch", "master"]);
+    expect(result.stdout).toContain("PASS verify-count 2/0");
+    expect(result.status).toBe(0);
+  });
+
+  test("a real bun test run that fails is refused behind a pipeline", () => {
+    const item = fixture();
+    writeFileSync(
+      join(item.repo, "sample.test.ts"),
+      'import { test, expect } from "bun:test";\ntest("red", () => expect(1).toBe(2));\n',
+    );
+    command("git add sample.test.ts && git commit -m sample", item.repo);
+    const sha = spawnSync("git", ["rev-parse", "HEAD"], { cwd: item.repo, encoding: "utf8" }).stdout.trim();
+    const result = run(
+      report(item.directory, valid(sha, "clean", "bun test sample.test.ts 2>&1 | sed -E 's/^ +//'")),
+      item.repo,
+      ["--branch", "master"],
+    );
+    expect(result.status).toBe(2);
+    expect(result.stdout).toContain("FAIL verify-run");
+  });
+
+  test("rejects a countable verify output whose count the report omits", () => {
+    const item = fixture();
+    const result = run(report(item.directory, valid(item.sha, "clean", "printf ' 9 pass\\n 0 fail\\n'")), item.repo, [
+      "--branch",
+      "master",
+    ]);
+    expect(result.status).toBe(2);
+    expect(result.stdout).toContain("FAIL verify-count required-when-the-verify-command-reports-a-count");
+  });
+
+  test("rejects an honestly reported failure count that the exit status hid", () => {
+    const item = fixture();
+    const body = valid(item.sha, "clean", "printf ' 40 pass\\n 2 fail\\n' ; true")
+      .replace("result:", "verify-count: 40/2\nresult:");
+    const result = run(report(item.directory, body), item.repo, ["--branch", "master"]);
+    expect(result.status).toBe(2);
+    expect(result.stdout).toContain("FAIL verify-count command-reported-failures 40/2");
+  });
+
+  test("a verify command with no count at all is still measured by its exit status alone", () => {
+    const item = fixture();
+    const result = run(report(item.directory, valid(item.sha, "clean", "printf 'checks ok\\n'")), item.repo, [
+      "--branch",
+      "master",
+    ]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("GUARD verdict=pass");
+  });
+
   test("rejects a claimed count when verify output has no parseable count", () => {
     const item = fixture();
     const body = valid(item.sha)

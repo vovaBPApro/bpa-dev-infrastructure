@@ -36,13 +36,15 @@ function fail(check: string, detail: string): void {
 
 function usage({ stdout = false, exitCode = 2 } = {}): never {
   const message = [
-    "Usage: bun gate/completion-guard.ts --report <file> --repo <path> [--branch <name>] [--run-verify]",
+    "Usage: bun gate/completion-guard.ts --report <file> --repo <path> [--branch <name>] [--defer-verify]",
     "",
     "Options:",
     "  --report <file>    Path to completion report (required)",
     "  --repo <path>      Path to repository (required)",
     "  --branch <name>    Verify commit is reachable from this branch",
-    "  --run-verify       Run the report's verify command",
+    "  --defer-verify     Do not run the report's verify command (the caller runs its own)",
+    "  --run-verify       Accepted and ignored: a `result: clean` report's verify",
+    "                     command is run by default unless --defer-verify is given",
     "  -h, --help         Show this usage",
     "",
     "Exit codes:",
@@ -112,13 +114,28 @@ function parseReportedCount(value: string): { passed: number; failed: number } |
   return { passed: Number(match[1]), failed: Number(match[2]) };
 }
 
+// Bun indents its summary (` 560 pass`), and so do most runners that box their
+// totals. Anchoring on a bare `^([0-9]+) pass$` made the structured field the
+// contract insists on unsatisfiable by this repository's own test command
+// (instance/workboard.md V3-0.38), which is what pushed authors into the
+// `sed`/`awk` pipelines that discard the exit code. gate/land-lib.sh:209 has
+// always tolerated the indent; this is the same tolerance, not a weaker rule:
+// the line must still be nothing but the count and its word.
 function parseVerificationCount(output: string): { passed: number; failed: number } | undefined {
-  const passed = [...output.matchAll(/^([0-9]+) pass(?:ed)?$/gim)];
-  const failed = [...output.matchAll(/^([0-9]+) fail(?:ed)?$/gim)];
+  const passed = [...output.matchAll(/^[ \t]*([0-9]+) pass(?:ed)?[ \t]*\r?$/gim)];
+  const failed = [...output.matchAll(/^[ \t]*([0-9]+) fail(?:ed)?[ \t]*\r?$/gim)];
   if (passed.length !== 1 || failed.length !== 1) return undefined;
   return { passed: Number(passed[0][1]), failed: Number(failed[0][1]) };
 }
 
+// A shell pipeline exits with the status of its LAST command, so `spawnSync`
+// with `shell: true` reported `verify: bun test | tail -3` as green whatever
+// the suite did (instance/workboard.md V3-0.40). Run the declared command
+// through bash with `pipefail` so the pipeline's real failure decides. This is
+// enforcement by the runner, not by inspecting the command text: a refusal
+// list over shell syntax is undecidable and would push authors into a nested
+// `sh -c '...'`, which is the same hole one level down. The exit status is
+// still only one of two channels -- the count check below is the other.
 function runVerification(repo: string, sha: string, command: string) {
   const temporaryRoot = mkdtempSync(join(tmpdir(), "completion-verify-"));
   const checkout = join(temporaryRoot, "checkout");
@@ -128,7 +145,10 @@ function runVerification(repo: string, sha: string, command: string) {
     return { status: added.status, stdout: added.stdout, stderr: added.stderr };
   }
   try {
-    return spawnSync(command, { cwd: checkout, shell: true, encoding: "utf8" });
+    return spawnSync("bash", ["--noprofile", "--norc", "-o", "pipefail", "-c", command], {
+      cwd: checkout,
+      encoding: "utf8",
+    });
   } finally {
     git(repo, ["worktree", "remove", "--force", checkout]);
     rmSync(temporaryRoot, { recursive: true, force: true });
@@ -281,21 +301,40 @@ if (report) {
       const verification = runVerification(repoPath, sha, report.verify);
       const verificationOutput = `${verification.stdout ?? ""}${verification.stderr ?? ""}`;
       const evidence = outputTail(verificationOutput);
-      if (verification.status !== 0) fail("verify-run", `exit=${verification.status ?? "signal"} tail=${evidence}`);
-      else {
+      if (verification.error) {
+        // No runner means no measurement. Fail closed rather than let an
+        // unrunnable verify command read as a passing one.
+        fail("verify-run", `runner-unavailable detail=${(verification.error as NodeJS.ErrnoException).code ?? "spawn-failed"}`);
+      } else if (verification.status !== 0) {
+        fail("verify-run", `exit=${verification.status ?? "signal"} tail=${evidence}`);
+      } else {
         pass("verify-run", `tail=${evidence}`);
-        if (claimedCount) {
-          const actualCount = parseVerificationCount(verificationOutput);
-          if (!actualCount) {
-            fail("verify-count", "command-output-missing-unambiguous-pass/fail-count");
-          } else if (actualCount.passed !== claimedCount.passed || actualCount.failed !== claimedCount.failed) {
-            fail(
-              "verify-count",
-              `mismatch report=${claimedCount.passed}/${claimedCount.failed} actual=${actualCount.passed}/${actualCount.failed}`,
-            );
-          } else {
-            pass("verify-count", `${actualCount.passed}/${actualCount.failed}`);
-          }
+        const actualCount = parseVerificationCount(verificationOutput);
+        if (!actualCount) {
+          // Only a claim can be wrong here; a command that reports no count
+          // (`bash gate/land.test.sh`, `bun gate/completion-guard.ts`) is
+          // measured by its exit status alone.
+          if (claimedCount) fail("verify-count", "command-output-missing-unambiguous-pass/fail-count");
+        } else if (report.verifyCount === undefined) {
+          // The exit status is one channel and the command's own totals are a
+          // second, independent one: `bun test || true` and a nested
+          // `sh -c 'bun test | tail -3'` both exit 0 while reporting failures.
+          // Where the command produces a count, the report must carry it, so
+          // the claim cannot be dodged by omitting the optional field.
+          fail("verify-count", "required-when-the-verify-command-reports-a-count");
+        } else if (!claimedCount) {
+          // Already reported as must-use-<pass>/<fail> above.
+        } else if (actualCount.passed !== claimedCount.passed || actualCount.failed !== claimedCount.failed) {
+          fail(
+            "verify-count",
+            `mismatch report=${claimedCount.passed}/${claimedCount.failed} actual=${actualCount.passed}/${actualCount.failed}`,
+          );
+        } else if (actualCount.failed > 0) {
+          // An honestly reported failure count is still a failure. Hard Floor
+          // 7: green is fail-closed, whatever the exit status said.
+          fail("verify-count", `command-reported-failures ${actualCount.passed}/${actualCount.failed}`);
+        } else {
+          pass("verify-count", `${actualCount.passed}/${actualCount.failed}`);
         }
       }
     }

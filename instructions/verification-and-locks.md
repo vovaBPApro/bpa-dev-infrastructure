@@ -66,6 +66,24 @@ Anything skipped, partial, stale, timed out, or inferred makes the result
 `NO-GO` with a concrete `blocker: <reason>`. A percentage, explanation,
 screenshot, heartbeat, or promise is never `clean`.
 
+### The `verify:` command and its `verify-count:`
+
+The guard runs the declared `verify:` command itself, in a detached checkout of
+the reported SHA, through `bash -o pipefail`. Write the command plainly: a
+pipeline no longer hides its real failure, so `bun test | tail -3` fails the
+guard exactly when the suite fails. Write `verify: bun test`, not a pipeline
+built to reshape its output — the count parser tolerates the runner's own
+indentation, so nothing needs unindenting.
+
+`verify-count: <pass>/<fail>` is required whenever the verify command's output
+reports an unambiguous pass and fail total, and is compared against that
+output. It is not required of a command that reports no such total (a shell
+test script, a gate invocation) — a field an honest command cannot satisfy is
+a trap, not a control, and authors escape traps by writing pipelines. A
+non-zero `<fail>` is refused even when the claim is accurate and the command
+exited 0: the exit status and the command's own totals are two independent
+channels, and green is fail-closed in both.
+
 ### Canonical secret-scan command
 
 The secret-scan pattern has ONE home: the `secret_pattern` variable in the

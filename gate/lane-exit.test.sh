@@ -162,4 +162,52 @@ rm -rf "$fixture_root"/repo "$fixture_root"/*.out
 echo "PASS: a report committed into its own branch can never match the tip, and is rejected"
 echo
 
+echo "== scenario 4: a red suite hidden behind a pipe cannot reach state: terminal =="
+# instance/workboard.md V3-0.40. gate/lane-exit.sh calls the guard WITHOUT
+# --defer-verify, so the guard runs the lane's own verify: command -- and a
+# shell pipeline exits with the status of its LAST command. Before the fix
+# this scenario printed `PASS verify-run` / `LANE-EXIT verdict=clear exit=0`
+# on a genuinely failing suite, which is the exact false green Hard Floor 7
+# forbids. The bare-`exit 1` control below proves the guard was refusing the
+# unpiped form all along, so the difference is the pipe and nothing else.
+make_repo
+tip=$(git -C "$repo" rev-parse HEAD)
+for verify in 'exit 1 | cat' 'exit 1 | sed -E "s/^ +//"' 'exit 1'; do
+  report="$fixture_root/piped.report.md"
+  {
+    printf 'commit: %s fixture\n' "$tip"
+    printf 'verify: %s\n' "$verify"
+    printf 'result: clean\n'
+    printf 'secret-scan: clean\n'
+    printf 'remaining: none\n'
+  } > "$report"
+  out="$fixture_root/piped.out"
+  "$lane_exit" --report "$report" --repo "$repo" --branch ag-lane-1 >"$out" 2>&1
+  status=$?
+  cat "$out"
+  assert [ "$status" -eq 2 ]
+  assert_output_has "$out" "LANE-EXIT verdict=blocked"
+  assert_output_has "$out" "FAIL verify-run"
+  rm -f "$fixture_root"/*.md "$fixture_root"/*.out
+done
+# A passing pipeline is still a passing lane: the fix enforces the real exit
+# status, it does not ban pipes.
+report="$fixture_root/piped-ok.report.md"
+{
+  printf 'commit: %s fixture\n' "$tip"
+  printf 'verify: exit 0 | cat\n'
+  printf 'result: clean\n'
+  printf 'secret-scan: clean\n'
+  printf 'remaining: none\n'
+} > "$report"
+out="$fixture_root/piped-ok.out"
+"$lane_exit" --report "$report" --repo "$repo" --branch ag-lane-1 >"$out" 2>&1
+status=$?
+cat "$out"
+assert [ "$status" -eq 0 ]
+assert_output_has "$out" "LANE-EXIT verdict=clear"
+rm -rf "$fixture_root"/repo "$fixture_root"/*.md "$fixture_root"/*.out
+echo "PASS: a lane cannot end clean on a red check hidden by a pipeline"
+echo
+
 echo "ALL PASS"

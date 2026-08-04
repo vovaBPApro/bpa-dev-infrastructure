@@ -107,27 +107,50 @@ grants nothing; a file with no frontmatter, or an unterminated block, grants
 nothing either.
 
 The landing gate reads that directory from **the commit SHA `git ls-remote`
-returns for the target branch on origin** — never from a ref name. That
-distinction is the whole trust root. A remote-tracking ref such as
-`refs/remotes/origin/main` is a local branch ref in another namespace: lane
-worktrees share one Git common directory, so any lane can point one at a commit
-origin has never held with an ordinary `git update-ref`, needing no push access,
-no signing key, and nothing the permission surface treats as privileged. The
-command therefore refuses a ref name outright and accepts only an immutable SHA,
-and the gate refuses to proceed at all when its local view of the target
-disagrees with what origin answers. It equally accepts no authorization payload,
-trust root, or decision selector from its caller; a lane branch is refused as a
-target before any of this runs.
+returns for the target branch on origin** — never from a ref name. A
+remote-tracking ref such as `refs/remotes/origin/main` is a local branch ref in
+another namespace: lane worktrees share one Git common directory, so any lane
+can point one at a commit origin has never held with an ordinary
+`git update-ref`, needing no push access, no signing key, and nothing the
+permission surface treats as privileged. The command therefore refuses a ref
+name outright and accepts only an immutable SHA, and the gate refuses to
+proceed at all when its local view of the target disagrees with what origin
+answers. It accepts no authorization payload, trust root, or decision selector
+from its caller — the one candidate fact it takes, the rev being landed, can
+only make a decision file inert (one that rev **deletes**, measured against its
+merge-base, so a lane cut before a grant was published is not mistaken for a
+lane retracting it), never make one grant. A lane branch is refused as a
+target, and as a default-branch nomination, before any of this runs.
 
-The trust root is therefore the one the repository already enforces:
-`instance/decisions/` reaches origin only through this gate, gate paths require
-an independent ACCEPT, and the payload guard reserves any candidate file under
-that directory carrying the marker in its frontmatter — so a lane cannot land the
-authorization that would release it, while recording an ordinary decision, or
-quoting the format inside one, stays ordinary lane work. What the guard reserves
-and what the authority reads are the same definition on purpose: reserving less
-would let a lane land its own authority, and reserving more would block the
-operator's verbatim words.
+What `origin` *means* is shared mutable state too. `remote.origin.url` lives in
+the same lane-writable common directory, and Git honors extra `pushurl` values
+— which once let three plain `git config` writes point the gate's reads at a
+forged repository while its writes still reached the real one. The gate
+therefore resolves **one origin URL per landing and uses it for every remote
+read and write**: a second `url`, or any `pushurl`, is refused outright, and
+the URL must equal the pin the target branch itself tracks
+(`instance/params.yaml: repos.git_remote`) wherever that pin exists. With a
+single URL there is no read/write split left to exploit — either it names the
+real origin and the authority read from it is real, or it does not and nothing
+the landing does ever reaches the real integration branch. Redirecting a clone
+now requires forging the tracked pin on a forged remote — durable, reviewable
+content, not an invisible config edit — and the payload guard reserves the
+pinned value against candidate branches.
+
+What the payload guard reserves and what the authority reads are **one
+implementation, not two matching ones**: the guard asks the authority code
+itself, over the raw blob bytes, whether a candidate file under
+`instance/decisions/` carries a grant in its frontmatter. They used to be two
+parsers over two I/O paths, and the gap between them was one NUL byte wide —
+bash command substitution deletes NUL bytes, so a single binary byte closed
+the frontmatter for the guard's copy and left it open for the reader's, and a
+lane could land its own authorization through the ordinary gate. A blob
+containing a NUL byte is not text: it grants nothing, and it is reserved,
+because a file the predicate cannot certify inert must not be landable by a
+lane. Recording an ordinary decision, or quoting the format inside one, stays
+ordinary lane work; reserving less than the reader grants would let a lane
+land its own authority, and reserving more would block the operator's verbatim
+words.
 
 Consumption is recorded in the target-branch review-round history and is durable
 only if the landing merges, so a failed landing does not burn a decision — and
@@ -142,10 +165,16 @@ park is not consumed — it waits for one, and never fires against a `cap` park.
 
 A malformed, archived, or hostile file in that directory fails **that decision**
 and never the gate. Files are filtered to the item being landed before any strict
-check, so one bad file cannot abort landings for items it does not name — which
-is what leaves a repair path through the gate rather than around it. A file that
-does name the item is still held to the whole contract, so an authorization-shaped
-line for that item is never silently ignored.
+check, so one bad file cannot abort landings for items it does not name. A file
+that does name the item is still held to the whole contract, so an
+authorization-shaped line for that item is never silently ignored — with one
+exception that keeps the repair path inside the gate: a file the landing
+candidate **deletes** is inert, grant and refusal alike. Deletion is
+retraction, so refusing it would protect an authorization that is being
+removed. Without that, the two most likely operator typos — `park=cap`, or a
+trailing space — bricked precisely the item he was trying to release, including
+the branch that would delete the file, and repairing it meant borrowing another
+item's id from a closed registry.
 
 The alternative authority is a signature, kept because HR-2109 gives the eventual
 administrator bot a signing role. An operator may release the same park with
@@ -167,33 +196,64 @@ namespaces. Keeping the private key off-host prevents supported agents from
 producing authority; paired immutable records make every supported use visible
 and detect one-sided suppression, matching the attempt-ref threat boundary.
 
-The decision authority has the same boundary and one addition of its own: it is
-only as strong as write access to the integration branch on origin. An agent that
-can push there directly, rather than through this gate, can write its own
-authorization — which is why direct pushes to the integration branch are outside
-lane authority, and why the review requirement on gate paths is the thing that
-makes a tracked decision mean anything. Calling the command outside a landing
+Two failure modes are outside the mechanism and known, so they are named rather
+than implied. The replay loop consumes attempt refs in lexicographic order, so
+once an item reaches two-digit rounds with a single-digit ref still unreplayed,
+`10-` sorts before `2-` and the landing dies inside the replay loop — the same
+place a stranded decision used to die. And `land_force_reset` treats an
+untracked file in the canonical checkout as a failed rollback, so an ordinary
+aborted landing can report `rollback-failed` for a ref that provably did not
+move and wedge the next landing. Both are pre-existing, both have their own
+rows, and neither is reachable through this authority.
+
+The decision authority's trust root, stated without flattery, is **write access
+to the integration branch on the real origin**. A tracked decision file proves
+that someone with that write access published it — no more. On this
+installation (`capture.mode: manual`) decision files do not travel through the
+gate at all: the orchestrator captures the operator's words and pushes them to
+the integration branch directly, as mandated routine, so the gate's review
+requirement never applies to the decision itself, and what a tracked decision
+is worth is exactly what the orchestrator's capture discipline is worth. The
+gate's own guarantee is narrower and mechanical: no *lane*, using ordinary git
+commands against anything a lane can write — local refs, remote-tracking refs,
+the shared config, a candidate branch — can mint, redirect, or split that
+authority, and every supported use of it is durably recorded. An agent that
+pushes to the integration branch directly, or edits the gate's own tracked
+code, is outside that boundary and always was; the mechanism makes such acts
+durable and attributable, not impossible. Calling the command outside a landing
 grants nothing, because the gate rebuilds review-round state from the target
 branch at the start of every landing.
 
 The recorded events are hash-chained, and the chain is verified on every read:
 each digest is recomputed from the event's own fields, so editing a decision id,
 an authorizer, a source path, a timestamp, or the order of events is a
-fail-closed refusal rather than a value the next event chains onto. That makes it
-tamper-**evident** against edits to the state file, which is the claim it can
-support. It is not tamper-proof: the file is a reserved path rebuilt from the
-target branch each landing, so an agent that can push to the integration branch
-directly can still rewrite history and the chain with it — the same boundary as
-everything else on this page.
+fail-closed refusal rather than a value the next event chains onto. The
+consumed-decision ledger and the events are checked against each other in both
+directions, so neither an event without its ledger entry nor a ledger entry
+whose event was deleted — including the newest one, where forward chain
+verification cannot notice — loads. What this supports is detection of
+**careless or partial** edits to the state file. It is not tamper-evidence
+against a deliberate attacker: the digests are a pure function of public
+fields, with no secret and no external anchor, so anyone who can write the file
+can recompute a chain that verifies cleanly. And the file is a reserved path
+rebuilt from the target branch each landing, so an agent that can push to the
+integration branch directly rewrites history and the chain with it — the same
+boundary as everything else on this page.
 
-One property here is deliberately left open for the operator rather than decided
-in the mechanism: an authorization that arrives before its park **waits
-indefinitely**, and will fire at the first `no-progress` park the item reaches,
-possibly much later and for a different reason than the one he was asked about.
-A one-time go-ahead and a standing condition are not the same thing. The grant
-already carries the commit date of the commit that published it, so bounding its
-age — or requiring it to name the round it authorises — would close this by
-construction. Both change what the operator has to write, so the choice is his.
+One property here is recorded as an open defect, not decided: an authorization
+that arrives before its park **waits indefinitely**, and will fire at the first
+`no-progress` park the item reaches, possibly much later and for a different
+reason than the one he was asked about. A one-time go-ahead and a standing
+condition are not the same thing. Bounding it costs the operator nothing to
+write — the `at` a grant carries is gate-derived from the publishing commit,
+not operator-supplied — but it does cost a correct definition of "the item has
+advanced since": the natural bound (a grant published at round N authorises
+round N+1 only) must be measured against the durable attempt-ref
+reconstruction, because the tracked round cache can lag it — an item can carry
+attempt refs and no cache entry at all, and HR-2149's own target does — and
+measured against the cache such a bound would strand exactly the decision it
+is meant to protect. That definition is successor work with its own row; until
+it lands, the gun is loaded and this paragraph is the record saying so.
 
 The counter is honest-but-not-tamper-resistant while lanes are root-equivalent.
 A root lane can coordinate the same rewrite or deletion across both remote

@@ -1,0 +1,13 @@
+# Quota readings, recorded on the operator's instruction (Telegram 2367, 2026-08-04).
+# Purpose: make consumption measurable instead of impressional -- he wants to see what a
+# lane-hour actually costs in percent of quota. This file is the manual seed of workboard
+# row V3-3.10 (per-provider consumption persisted across restarts); it is a hand-kept
+# ledger until that lands, and it is deliberately tracked so a rebuild keeps the history.
+#
+# Readings come from the Claude usage panel screenshot the operator sends. Percentages are
+# "used", not remaining. A field that was not visible in the source is recorded as
+# "unmeasured" and NEVER as 0 -- Hard Floor 7: absence of a reading is not a reading of
+# zero, and this file will be graphed.
+#
+# ts_utc	source	plan	session_used_pct	session_resets_in	weekly_all_used_pct	weekly_fable_used_pct	weekly_resets	note
+2026-08-04T17:07:15Z	operator-screenshot	max-20x	17	2h23m	31	9	tue-00:00	baseline before the overnight fleet-nudge lane; one lane running (v3-fleet-nudge-restore); orchestrator on claude-opus-5 per HR-2315

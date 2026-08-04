@@ -90,6 +90,14 @@ script_dir=$(CDPATH='' cd "$(dirname "$0")" && pwd)
 source "$script_dir/land-lib.sh"
 if ! land_resolve_bun; then exit 2; fi
 
+# Extract the pinned origin URL from an instance/params.yaml stream: the first
+# `git_remote:` value, with any trailing ` # comment` stripped. That key's one
+# home is instance/params.yaml (instruction-layers: reference, never copy), so
+# this is a reader of that home, not a second copy of the value.
+land_origin_pin() {
+  sed -n 's/^[[:space:]]*git_remote:[[:space:]]*//p' | head -n 1 | sed 's/[[:space:]]#.*$//; s/[[:space:]]*$//'
+}
+
 if ! git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   land_fail repo 2
 fi
@@ -102,8 +110,11 @@ case "$git_common_dir" in
 esac
 review_round_history_rel=".bpa/review-rounds.json"
 review_round_history="$repo/$review_round_history_rel"
+operator_unpark_candidate_trust_rel="instance/operator-unpark.allowed-signers"
 review_attempt_namespace="refs/bpa-review-attempts"
 review_attempt_mirror_namespace="refs/bpa-review-attempt-mirrors"
+review_unpark_namespace="refs/bpa-review-unparks"
+review_unpark_mirror_namespace="refs/bpa-review-unpark-mirrors"
 case "$git_dir" in
   /*) lock_file="$git_dir/bpa-land.lock" ;;
   *) lock_file="$repo/$git_dir/bpa-land.lock" ;;
@@ -164,8 +175,31 @@ if [ -n "$target_branch" ]; then
     echo "LAND target-branch missing-origin target=$target_branch" >&2
     land_fail target-branch 2
   fi
+  # A lane branch can exist on origin, so it is not an authority root: only an
+  # integration branch reaches origin through this gate's review requirement,
+  # which is the whole reason a decision tracked there means anything. This
+  # check lives here because this is the only layer that still sees a branch
+  # NAME -- the unpark authority itself now takes an immutable SHA and refuses
+  # ref names outright.
+  case "$target_branch" in
+    ag-*)
+      echo "LAND target-branch lane-branch-not-an-authority-root target=$target_branch" >&2
+      land_fail target-branch 2
+      ;;
+  esac
   default_branch="$target_branch"
 fi
+
+# The same refusal for the default-branch detection path: refs/remotes/origin/HEAD
+# is a symbolic ref in the lane-writable common directory, so without this a lane
+# could nominate a lane branch as the integration target by repointing it -- no
+# --target-branch needed. Whatever named the target, it is never a lane branch.
+case "$default_branch" in
+  ag-*)
+    echo "LAND default-branch lane-branch-not-an-integration-target target=$default_branch" >&2
+    land_fail default-branch 2
+    ;;
+esac
 
 current_branch=$(git -C "$repo" branch --show-current)
 if [ "$current_branch" != "$default_branch" ]; then
@@ -185,11 +219,61 @@ if [ "$skip_review" = true ]; then
   branch_sha=$(git -C "$repo" rev-parse "$branch") || land_fail branch 2
   if ! land_record_review_skip "$repo" "$branch" "$branch_sha" "$skip_review_reason"; then land_fail review 2; fi
 fi
+# What `origin` MEANS is shared mutable state too. `remote.origin.url` lives in
+# the Git common directory every lane worktree shares, and Git honors extra
+# `pushurl` values -- which is how three plain `git config` writes from a lane
+# worktree once pointed this gate's reads (ls-remote, fetch) at a forged
+# repository while its writes still reached the real one, landing a self-authored
+# authorization (round-4 review, F1). The gate therefore resolves ONE origin URL
+# and uses that explicit URL for every remote read and write in this landing:
+# with a single URL there is no read/write split left to exploit -- either it
+# names the real origin and the authority read from it is real, or it does not
+# and nothing this landing does ever reaches the real integration branch. A
+# second url or any pushurl is refused outright, and the URL must equal the pin
+# the target branch itself tracks (instance/params.yaml: repos.git_remote, one
+# home, checked below once origin has answered) -- so redirecting a clone means
+# forging durable tracked content on a forged remote, not an invisible config
+# edit.
+origin_url=$(git -C "$repo" config --get-all remote.origin.url) || origin_url=""
+if [ -z "$origin_url" ] || [ "$(printf '%s\n' "$origin_url" | wc -l)" -ne 1 ]; then
+  echo "LAND freshness origin-url-not-single configured=$(printf '%s' "$origin_url" | tr '\n' ' ')" >&2
+  land_fail freshness 2
+fi
+origin_pushurls=$(git -C "$repo" config --get-all remote.origin.pushurl 2>/dev/null || true)
+if [ -n "$origin_pushurls" ]; then
+  echo "LAND freshness origin-pushurl-refused pushurl=$(printf '%s' "$origin_pushurls" | tr '\n' ' ')" >&2
+  land_fail freshness 2
+fi
 if ! git -C "$repo" fetch origin; then land_fail freshness 2; fi
 if [ "$(git -C "$repo" rev-parse "$default_branch")" != "$(git -C "$repo" rev-parse "origin/$default_branch")" ]; then
   land_fail freshness 2
 fi
 pre_merge_sha=$(git -C "$repo" rev-parse "$default_branch")
+# The one commit origin actually holds, asked of origin at the single verified
+# URL. Local refs -- including refs/remotes/origin/* -- are writable by any lane
+# sharing this Git common directory, so they are not evidence of what origin
+# carries. This SHA is the trust root for the tracked-decision unpark authority
+# below, and it is immutable once resolved: nothing a lane writes afterwards can
+# substitute it.
+target_authority_sha=$(git -C "$repo" ls-remote --refs "$origin_url" "refs/heads/$default_branch" 2>/dev/null | awk 'NR == 1 { print $1 }')
+if [ -z "$target_authority_sha" ] || [ "$target_authority_sha" != "$pre_merge_sha" ]; then
+  echo "LAND freshness origin-target-mismatch target=$default_branch origin=${target_authority_sha:-missing} local=$pre_merge_sha" >&2
+  land_fail freshness 2
+fi
+if ! git -C "$repo" rev-parse --verify --quiet "${target_authority_sha}^{commit}" >/dev/null; then
+  echo "LAND freshness origin-target-object-missing sha=$target_authority_sha" >&2
+  land_fail freshness 2
+fi
+# The pin's one home is instance/params.yaml (repos.git_remote), read from the
+# SHA origin itself answered with. A repo that tracks no pin (minimal fixture
+# and product repos) falls back to the single configured URL enforced above; a
+# repo that tracks one must be configured to match it exactly, and the payload
+# guard below refuses any candidate that changes the pinned value.
+pinned_origin_url=$(git -C "$repo" show "$target_authority_sha:instance/params.yaml" 2>/dev/null | land_origin_pin)
+if [ -n "$pinned_origin_url" ] && [ "$pinned_origin_url" != "$origin_url" ]; then
+  echo "LAND freshness origin-redirected pinned=$pinned_origin_url configured=$origin_url" >&2
+  land_fail freshness 2
+fi
 land_pass freshness
 
 # Bind caller input to tracked authority on the target branch. Instance repos
@@ -243,8 +327,8 @@ fi
 item_key=$(printf '%s' "$item_id" | git -C "$repo" hash-object --stdin) || land_fail review-rounds 2
 attempt_prefix="$review_attempt_namespace/$item_key"
 attempt_mirror_prefix="$review_attempt_mirror_namespace/$item_key"
-attempt_refs=$(git -C "$repo" ls-remote --refs origin "$attempt_prefix/*") || land_fail review-rounds 2
-attempt_mirror_refs=$(git -C "$repo" ls-remote --refs origin "$attempt_mirror_prefix/*") || land_fail review-rounds 2
+attempt_refs=$(git -C "$repo" ls-remote --refs "$origin_url" "$attempt_prefix/*") || land_fail review-rounds 2
+attempt_mirror_refs=$(git -C "$repo" ls-remote --refs "$origin_url" "$attempt_mirror_prefix/*") || land_fail review-rounds 2
 # The mirror is deliberately a separate remote namespace. A lane can mutate
 # either namespace today, but a forged or suppressed record in only one is
 # detectable. Coordinated root mutation of both is outside this mechanism's
@@ -274,11 +358,64 @@ while IFS=$'\t' read -r attempt_sha attempt_ref; do
     echo "LAND review-rounds nonsequential-attempt-ref expected=$((rounds + 1)) found=$attempt_round" >&2
     land_fail review-rounds 2
   fi
-  if ! "$BUN_BIN" "$script_dir/review-rounds.ts" attempt --defer-park-exit --state "$review_round_state" --item-id "$item_id" >/dev/null; then
+  # --replay: this ref proves the round happened, so reconstruct it instead of
+  # re-admitting it. A parked reconstructed state is not a refusal here -- the
+  # operator authorities below have not run yet, and dying at this point is what
+  # made one aborted landing strand a one-time decision forever. The park is
+  # carried forward untouched; if nothing releases it, the attempt and check
+  # steps further down still refuse the landing.
+  if ! "$BUN_BIN" "$script_dir/review-rounds.ts" attempt --replay --defer-park-exit --state "$review_round_state" --item-id "$item_id" >/dev/null; then
     land_fail review-rounds 2
   fi
   rounds=$attempt_round
 done <<< "$attempt_refs"
+
+unpark_prefix="$review_unpark_namespace/$item_key"
+unpark_mirror_prefix="$review_unpark_mirror_namespace/$item_key"
+unpark_refs=$(git -C "$repo" ls-remote --refs "$origin_url" "$unpark_prefix/*") || land_fail review-rounds 2
+unpark_mirror_refs=$(git -C "$repo" ls-remote --refs "$origin_url" "$unpark_mirror_prefix/*") || land_fail review-rounds 2
+normalized_unpark_refs=$(printf '%s\n' "$unpark_refs" | sed "s#refs/bpa-review-unparks/#refs/bpa-review-unpark-mirrors/#")
+if [ "$normalized_unpark_refs" != "$unpark_mirror_refs" ]; then
+  echo "LAND review-rounds unpark-mirror-mismatch item=$item_id" >&2
+  land_fail review-rounds 2
+fi
+while IFS=$'\t' read -r unpark_sha unpark_ref; do
+  [ -n "$unpark_ref" ] || continue
+  git -C "$repo" fetch -q "$origin_url" "$unpark_ref" || land_fail review-rounds 2
+  unpark_tmp=$(mktemp -d)
+  if ! git -C "$repo" show FETCH_HEAD:authorization > "$unpark_tmp/authorization" ||
+     ! git -C "$repo" show FETCH_HEAD:signature > "$unpark_tmp/signature"; then
+    rm -rf "$unpark_tmp"; land_fail review-rounds 2
+  fi
+  decision_id=$(sed -n 's/^decision-id=//p' "$unpark_tmp/authorization")
+  authorized_by=$(sed -n 's/^authorized-by=//p' "$unpark_tmp/authorization")
+  authorized_at=$(sed -n 's/^authorized-at=//p' "$unpark_tmp/authorization")
+  if ! "$BUN_BIN" "$script_dir/review-rounds.ts" operator-unpark --state "$review_round_state" --item-id "$item_id" \
+      --decision-id "$decision_id" --authorized-by "$authorized_by" --authorized-at "$authorized_at" \
+      --authorization "$unpark_tmp/authorization" --signature "$unpark_tmp/signature" >/dev/null; then
+    rm -rf "$unpark_tmp"; land_fail review-rounds 2
+  fi
+  rm -rf "$unpark_tmp"
+done <<< "$unpark_refs"
+
+# Second operator authority: a decision file tracked on the integration branch.
+# The signature path above stays available because HR-2109 gives the eventual
+# administrator bot a signing role; this one exists because the operator is
+# usually not at a computer (HR-2103) and decides over Telegram. What a tracked
+# decision proves is write access to the integration branch on the real origin
+# -- on this installation the orchestrator pushes decision captures there
+# directly (see review-policy) -- and this gate's own contribution is narrower:
+# nothing a LANE can write may mint or redirect that authority. The item id
+# passed here is the same tracked-authority id the review-item guard already
+# bound above; the content root is the immutable SHA the single verified origin
+# URL answered with, never a ref name, the working tree, or $branch; and the
+# candidate rev can only make a decision file inert (one it deletes), never
+# make one grant.
+if ! "$BUN_BIN" "$script_dir/review-rounds.ts" operator-unpark-decision \
+    --state "$review_round_state" --item-id "$item_id" --repo "$repo" --target-sha "$target_authority_sha" \
+    --candidate "$branch"; then
+  land_fail review-rounds 2
+fi
 
 export LAND_DEFAULT_BRANCH="$default_branch"
 guard_args=("$script_dir/completion-guard.ts" --report "$report" --repo "$repo" --branch "$branch")
@@ -309,13 +446,13 @@ rounds=$((rounds + 1))
 branch_sha=$(git -C "$repo" rev-parse --verify "${branch}^{commit}") || land_fail branch-tip 2
 attempt_ref="$attempt_prefix/$rounds-$branch_sha"
 attempt_mirror_ref="$attempt_mirror_prefix/$rounds-$branch_sha"
-if ! git -C "$repo" push --atomic origin "$branch_sha:$attempt_ref" "$branch_sha:$attempt_mirror_ref" >/dev/null; then
+if ! git -C "$repo" push --atomic "$origin_url" "$branch_sha:$attempt_ref" "$branch_sha:$attempt_mirror_ref" >/dev/null; then
   echo "LAND review-rounds attempt-persist-failed ref=$attempt_ref" >&2
   land_fail review-rounds 2
 fi
-persisted_attempt_sha=$(git -C "$repo" ls-remote --refs origin "$attempt_ref" 2>/dev/null | awk 'NR == 1 { print $1 }')
-persisted_attempt_mirror_sha=$(git -C "$repo" ls-remote --refs origin "$attempt_mirror_ref" 2>/dev/null | awk 'NR == 1 { print $1 }')
-remote_target_sha=$(git -C "$repo" ls-remote --refs origin "refs/heads/$default_branch" 2>/dev/null | awk 'NR == 1 { print $1 }')
+persisted_attempt_sha=$(git -C "$repo" ls-remote --refs "$origin_url" "$attempt_ref" 2>/dev/null | awk 'NR == 1 { print $1 }')
+persisted_attempt_mirror_sha=$(git -C "$repo" ls-remote --refs "$origin_url" "$attempt_mirror_ref" 2>/dev/null | awk 'NR == 1 { print $1 }')
+remote_target_sha=$(git -C "$repo" ls-remote --refs "$origin_url" "refs/heads/$default_branch" 2>/dev/null | awk 'NR == 1 { print $1 }')
 if [ "$persisted_attempt_sha" != "$branch_sha" ] || [ "$persisted_attempt_mirror_sha" != "$branch_sha" ] || [ "$remote_target_sha" != "$pre_merge_sha" ]; then
   echo "LAND review-rounds attempt-persist-mismatch ref=$attempt_ref found=${persisted_attempt_sha:-missing} target=${remote_target_sha:-missing} expected-target=$pre_merge_sha" >&2
   land_fail review-rounds 2
@@ -338,6 +475,62 @@ if ! git -C "$repo" diff --quiet "$payload_base..$branch" -- "$review_round_hist
   echo "LAND step=payload-guard status=fail detail=reserved-path path=$review_round_history_rel" >&2
   land_fail payload-guard 2
 fi
+if ! git -C "$repo" diff --quiet "$payload_base..$branch" -- "$operator_unpark_candidate_trust_rel"; then
+  echo "LAND step=payload-guard status=fail detail=reserved-path path=$operator_unpark_candidate_trust_rel" >&2
+  land_fail payload-guard 2
+fi
+# The origin pin is authority-adjacent for the same reason as the files above:
+# a candidate that rewrites repos.git_remote redirects every later landing's
+# trust root, and one that introduces a pin chooses it. The VALUE is reserved,
+# not the file -- instance/params.yaml stays ordinary, heavily edited instance
+# state. Reserved means "this candidate does not CHANGE it", measured against
+# the same merge-base every other payload check uses: a lane that never touched
+# the file is not refused for being behind main on it, because the merge takes
+# main's version anyway.
+base_origin_pin=$(git -C "$repo" show "$payload_base:instance/params.yaml" 2>/dev/null | land_origin_pin)
+candidate_origin_pin=$(git -C "$repo" show "$branch:instance/params.yaml" 2>/dev/null | land_origin_pin)
+if [ "$candidate_origin_pin" != "$base_origin_pin" ]; then
+  echo "LAND step=payload-guard status=fail detail=reserved-origin-pin base=${base_origin_pin:-none} candidate=${candidate_origin_pin:-none}" >&2
+  land_fail payload-guard 2
+fi
+# A candidate may still record decisions -- that is ordinary governance work --
+# but it may not land one that carries an unpark authorization, because that is
+# the authorization this same gate reads back as authority. "Carries an
+# authorization" is decided by review-rounds.ts's OWN predicate, through its
+# `reserved-blob` command, over the raw blob bytes -- the same function the
+# authority reader runs. It used to be a second awk implementation fed through
+# a command substitution, and bash silently deletes NUL bytes from $(...): one
+# NUL in a fake close line ended the frontmatter for that copy while the reader
+# kept the grant inside the block, and a lane landed its own authorization
+# (round-4 review, F8). The blob therefore reaches the predicate through a file
+# redirect, byte-exact. One predicate, one home: reserving less than the reader
+# grants lets a lane land its own authority; reserving more blocks the
+# operator's verbatim words whenever they quote the format.
+# -z keeps path bytes raw. Without it Git C-quotes any non-ASCII or special
+# path, `cat-file -e` on the quoted string fails, and the && short-circuited the
+# whole check into "not a reserved path" -- so naming the file HR-9999<eacute>.md
+# walked a self-authored authorization straight past this guard.
+operator_unpark_decision_dir="instance/decisions"
+while IFS= read -r -d '' decision_path; do
+  [ -n "$decision_path" ] || continue
+  git -C "$repo" cat-file -e "$branch:$decision_path" 2>/dev/null || continue
+  decision_blob_file=$(mktemp) || land_fail payload-guard 2
+  if ! git -C "$repo" show "$branch:$decision_path" > "$decision_blob_file"; then
+    rm -f "$decision_blob_file"
+    land_fail payload-guard 2
+  fi
+  "$BUN_BIN" "$script_dir/review-rounds.ts" reserved-blob --blob "$decision_blob_file" >/dev/null
+  decision_blob_verdict=$?
+  rm -f "$decision_blob_file"
+  case "$decision_blob_verdict" in
+    0) ;;
+    3)
+      echo "LAND step=payload-guard status=fail detail=reserved-path path=$decision_path" >&2
+      land_fail payload-guard 2
+      ;;
+    *) land_fail payload-guard 2 ;;
+  esac
+done < <(git -C "$repo" diff -z --name-only "$payload_base..$branch" -- "$operator_unpark_decision_dir/")
 if ! land_payload_guard "$repo" "$branch"; then
   echo "LAND verdict=aborted sha=$merge_sha" >&2
   exit 2
@@ -481,7 +674,7 @@ else
 fi
 
 if [ "$no_push" = false ]; then
-  if ! git -C "$repo" push origin "$default_branch"; then
+  if ! git -C "$repo" push "$origin_url" "$default_branch"; then
     if git -C "$repo" fetch origin >/dev/null 2>&1; then
       rollback_sha=$(git -C "$repo" rev-parse "origin/$default_branch")
     else
@@ -495,7 +688,7 @@ if [ "$no_push" = false ]; then
     echo "LAND push failure: main reset to origin/main" >&2
     land_fail push
   fi
-  remote_sha=$(git -C "$repo" ls-remote --refs origin "refs/heads/$default_branch" 2>/dev/null | awk 'NR == 1 { print $1 }')
+  remote_sha=$(git -C "$repo" ls-remote --refs "$origin_url" "refs/heads/$default_branch" 2>/dev/null | awk 'NR == 1 { print $1 }')
   if [ "$remote_sha" != "$merge_sha" ]; then
     echo "LAND push remote-mismatch target=$default_branch found=${remote_sha:-missing} expected=$merge_sha" >&2
     if git -C "$repo" fetch origin >/dev/null 2>&1; then

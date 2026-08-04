@@ -974,6 +974,527 @@ assert_output_has "$push_rollback_output" 'main reset to origin/main'
 assert test "$(git -C "$fixture_root/push-rollback-repo" rev-parse main)" = "$(git -C "$fixture_root/push-rollback-repo" rev-parse origin/main)"
 assert git -C "$fixture_root/push-rollback-repo" show-ref --verify --quiet refs/heads/ag-push-rollback
 
+# REGRESSION V3-0.29 F1: a candidate cannot mint operator authority by adding
+# the old working-tree signer path.
+make_fixture operator-trust-root
+git -C "$fixture_root/operator-trust-root-repo" checkout -b ag-operator-trust-root >/dev/null
+mkdir -p "$fixture_root/operator-trust-root-repo/instance"
+printf 'lane ssh-ed25519 AAAA\n' > "$fixture_root/operator-trust-root-repo/instance/operator-unpark.allowed-signers"
+git -C "$fixture_root/operator-trust-root-repo" add instance/operator-unpark.allowed-signers
+git -C "$fixture_root/operator-trust-root-repo" commit -m operator-trust-root >/dev/null
+operator_trust_root_sha=$(git -C "$fixture_root/operator-trust-root-repo" rev-parse HEAD)
+git -C "$fixture_root/operator-trust-root-repo" checkout main >/dev/null
+report "$fixture_root/operator-trust-root-report.md" "$operator_trust_root_sha"
+operator_trust_root_output="$fixture_root/operator-trust-root-output.txt"
+if "$land" --branch ag-operator-trust-root --item-id ag-operator-trust-root --report "$fixture_root/operator-trust-root-report.md" --repo "$fixture_root/operator-trust-root-repo" >"$operator_trust_root_output" 2>&1; then exit 1; fi
+assert_output_has "$operator_trust_root_output" 'LAND step=payload-guard status=fail detail=reserved-path path=instance/operator-unpark.allowed-signers'
+assert_output_lacks "$operator_trust_root_output" 'LAND step=merge status=pass'
+
+# The grant lives in the file's YAML frontmatter, where the prose of a verbatim
+# operator capture cannot reach it. Everything after the closing `---` is text
+# about an authorization, never an authorization.
+unpark_authorization() {
+  printf -- '---\nid: %s\noperator-unpark: v2 item=%s decision=%s park=no-progress\n---\n\n# %s\n' \
+    "$2" "$1" "$2" "$2"
+}
+
+# REGRESSION V3-0.29 r3: an operator decision tracked on origin/main -- and only
+# there -- releases a no-progress park. Proven on fixture items throughout.
+make_fixture operator-unpark-decision
+unpark_repo="$fixture_root/operator-unpark-decision-repo"
+unpark_state="$unpark_repo/.bpa/review-rounds.json"
+mkdir -p "$unpark_repo/.bpa"
+env -u BUN_BIN bun "$root/gate/review-rounds.ts" init --state "$unpark_state" --cap 10 --no-progress-limit 3 >/dev/null
+for unpark_item in ag-unpark-decision ag-unpark-second; do
+  for _unpark_round in 1 2 3; do
+    env -u BUN_BIN bun "$root/gate/review-rounds.ts" attempt --defer-park-exit --state "$unpark_state" --item-id "$unpark_item" >/dev/null
+  done
+done
+git -C "$unpark_repo" add .bpa/review-rounds.json
+git -C "$unpark_repo" commit -m 'seed parked items' >/dev/null
+git -C "$unpark_repo" push origin main >/dev/null
+unpark_sha=$(make_lane "$unpark_repo" ag-unpark-decision)
+report "$fixture_root/operator-unpark-decision-report.md" "$unpark_sha"
+
+# Without a tracked decision the park still refuses.
+unpark_refused_output="$fixture_root/operator-unpark-decision-refused.txt"
+if "$land" --branch ag-unpark-decision --item-id ag-unpark-decision --report "$fixture_root/operator-unpark-decision-report.md" --repo "$unpark_repo" --no-push >"$unpark_refused_output" 2>&1; then exit 1; fi
+assert_output_has "$unpark_refused_output" 'REVIEW_ROUNDS status=unpark-none item=ag-unpark-decision'
+assert_output_has "$unpark_refused_output" 'parked=no-progress'
+assert_output_lacks "$unpark_refused_output" 'LAND step=merge status=pass'
+
+# A decision the lane wrote itself is not authority: the gate reads origin, so
+# the candidate's own file is invisible and the park is unchanged.
+git -C "$unpark_repo" checkout ag-unpark-decision >/dev/null
+mkdir -p "$unpark_repo/instance/decisions"
+unpark_authorization ag-unpark-decision HR-9999 > "$unpark_repo/instance/decisions/HR-9999.md"
+git -C "$unpark_repo" add instance/decisions/HR-9999.md
+git -C "$unpark_repo" commit -m lane-authored-authorization >/dev/null
+unpark_self_sha=$(git -C "$unpark_repo" rev-parse HEAD)
+git -C "$unpark_repo" checkout main >/dev/null
+report "$fixture_root/operator-unpark-self-report.md" "$unpark_self_sha"
+unpark_self_output="$fixture_root/operator-unpark-decision-self.txt"
+if "$land" --branch ag-unpark-decision --item-id ag-unpark-decision --report "$fixture_root/operator-unpark-self-report.md" --repo "$unpark_repo" --no-push >"$unpark_self_output" 2>&1; then exit 1; fi
+assert_output_has "$unpark_self_output" 'REVIEW_ROUNDS status=unpark-none item=ag-unpark-decision'
+assert_output_has "$unpark_self_output" 'parked=no-progress'
+assert_output_lacks "$unpark_self_output" 'LAND step=merge status=pass'
+git -C "$unpark_repo" branch -f ag-unpark-decision "$unpark_sha"
+
+# The operator's decision, tracked on origin/main, makes the same item landable.
+mkdir -p "$unpark_repo/instance/decisions"
+unpark_authorization ag-unpark-decision HR-2149 > "$unpark_repo/instance/decisions/HR-2149.md"
+git -C "$unpark_repo" add instance/decisions/HR-2149.md
+git -C "$unpark_repo" commit -m 'record HR-2149' >/dev/null
+git -C "$unpark_repo" push origin main >/dev/null
+unpark_landed_output="$fixture_root/operator-unpark-decision-landed.txt"
+"$land" --branch ag-unpark-decision --item-id ag-unpark-decision --report "$fixture_root/operator-unpark-decision-report.md" --repo "$unpark_repo" --no-push >"$unpark_landed_output" 2>&1
+assert_output_has "$unpark_landed_output" 'REVIEW_ROUNDS status=unparked item=ag-unpark-decision decision=HR-2149 source=instance/decisions/HR-2149.md'
+assert_output_has "$unpark_landed_output" 'LAND verdict=landed sha='
+assert grep -Fq '"HR-2149": "ag-unpark-decision"' "$unpark_state"
+git -C "$unpark_repo" push origin main >/dev/null
+
+# The same decision retargeted at a second parked item is refused: a decision id
+# is bound to the one item it released.
+git -C "$unpark_repo" checkout -b ag-unpark-second >/dev/null
+printf 'second\n' > "$unpark_repo/second.txt"
+git -C "$unpark_repo" add second.txt
+git -C "$unpark_repo" commit -m second >/dev/null
+unpark_second_sha=$(git -C "$unpark_repo" rev-parse HEAD)
+git -C "$unpark_repo" checkout main >/dev/null
+unpark_authorization ag-unpark-second HR-2149 > "$unpark_repo/instance/decisions/HR-2149.md"
+git -C "$unpark_repo" commit -am 'retarget HR-2149' >/dev/null
+git -C "$unpark_repo" push origin main >/dev/null
+report "$fixture_root/operator-unpark-second-report.md" "$unpark_second_sha"
+unpark_second_output="$fixture_root/operator-unpark-decision-second.txt"
+if "$land" --branch ag-unpark-second --item-id ag-unpark-second --report "$fixture_root/operator-unpark-second-report.md" --repo "$unpark_repo" --no-push >"$unpark_second_output" 2>&1; then exit 1; fi
+assert_output_has "$unpark_second_output" 'decision-bound-to-other-item decision=HR-2149 bound=ag-unpark-decision'
+assert_output_lacks "$unpark_second_output" 'LAND step=merge status=pass'
+
+# REGRESSION V3-0.29 r3: a candidate carrying an authorization is a reserved-path
+# refusal, so a lane cannot land the authority this gate reads back.
+make_fixture operator-unpark-reserved
+git -C "$fixture_root/operator-unpark-reserved-repo" checkout -b ag-operator-unpark-reserved >/dev/null
+mkdir -p "$fixture_root/operator-unpark-reserved-repo/instance/decisions"
+unpark_authorization ag-operator-unpark-reserved HR-9999 > "$fixture_root/operator-unpark-reserved-repo/instance/decisions/HR-9999.md"
+git -C "$fixture_root/operator-unpark-reserved-repo" add instance/decisions/HR-9999.md
+git -C "$fixture_root/operator-unpark-reserved-repo" commit -m lane-authorization >/dev/null
+operator_unpark_reserved_sha=$(git -C "$fixture_root/operator-unpark-reserved-repo" rev-parse HEAD)
+git -C "$fixture_root/operator-unpark-reserved-repo" checkout main >/dev/null
+report "$fixture_root/operator-unpark-reserved-report.md" "$operator_unpark_reserved_sha"
+operator_unpark_reserved_output="$fixture_root/operator-unpark-reserved-output.txt"
+if "$land" --branch ag-operator-unpark-reserved --item-id ag-operator-unpark-reserved --report "$fixture_root/operator-unpark-reserved-report.md" --repo "$fixture_root/operator-unpark-reserved-repo" >"$operator_unpark_reserved_output" 2>&1; then exit 1; fi
+assert_output_has "$operator_unpark_reserved_output" 'LAND step=payload-guard status=fail detail=reserved-path path=instance/decisions/HR-9999.md'
+assert_output_lacks "$operator_unpark_reserved_output" 'LAND step=merge status=pass'
+
+# The reservation is the authorization, not the directory: recording an ordinary
+# decision stays ordinary lane work.
+make_fixture operator-unpark-plain-decision
+git -C "$fixture_root/operator-unpark-plain-decision-repo" checkout -b ag-operator-unpark-plain >/dev/null
+mkdir -p "$fixture_root/operator-unpark-plain-decision-repo/instance/decisions"
+printf '# HR-1234\n\nThe operator asked for a shorter status line.\n' > "$fixture_root/operator-unpark-plain-decision-repo/instance/decisions/HR-1234.md"
+git -C "$fixture_root/operator-unpark-plain-decision-repo" add instance/decisions/HR-1234.md
+git -C "$fixture_root/operator-unpark-plain-decision-repo" commit -m plain-decision >/dev/null
+operator_unpark_plain_sha=$(git -C "$fixture_root/operator-unpark-plain-decision-repo" rev-parse HEAD)
+git -C "$fixture_root/operator-unpark-plain-decision-repo" checkout main >/dev/null
+report "$fixture_root/operator-unpark-plain-report.md" "$operator_unpark_plain_sha"
+operator_unpark_plain_output="$fixture_root/operator-unpark-plain-output.txt"
+"$land" --branch ag-operator-unpark-plain --item-id ag-operator-unpark-plain --report "$fixture_root/operator-unpark-plain-report.md" --repo "$fixture_root/operator-unpark-plain-decision-repo" --no-push >"$operator_unpark_plain_output" 2>&1
+assert_output_has "$operator_unpark_plain_output" 'LAND verdict=landed sha='
+
+# REGRESSION V3-0.29 r4 F5: quoting the format back is governance, not authority.
+# instance/decisions/ is where the operator's words are stored verbatim (Hard
+# Rule 16) and the doc that teaches this feature prints the line in a fence, so
+# a capture of him discussing it must stay landable and must grant nothing.
+make_fixture operator-unpark-quoted-decision
+unpark_quoted_repo="$fixture_root/operator-unpark-quoted-decision-repo"
+git -C "$unpark_quoted_repo" checkout -b ag-operator-unpark-quoted >/dev/null
+mkdir -p "$unpark_quoted_repo/instance/decisions"
+printf '# HR-1235\n\nHe asked how it works. The line is:\n\n```text\noperator-unpark: v2 item=ag-operator-unpark-quoted decision=HR-1235 park=no-progress\n```\n' \
+  > "$unpark_quoted_repo/instance/decisions/HR-1235.md"
+git -C "$unpark_quoted_repo" add instance/decisions/HR-1235.md
+git -C "$unpark_quoted_repo" commit -m quoted-decision >/dev/null
+unpark_quoted_sha=$(git -C "$unpark_quoted_repo" rev-parse HEAD)
+git -C "$unpark_quoted_repo" checkout main >/dev/null
+report "$fixture_root/operator-unpark-quoted-report.md" "$unpark_quoted_sha"
+unpark_quoted_output="$fixture_root/operator-unpark-quoted-output.txt"
+"$land" --branch ag-operator-unpark-quoted --item-id ag-operator-unpark-quoted --report "$fixture_root/operator-unpark-quoted-report.md" --repo "$unpark_quoted_repo" --no-push >"$unpark_quoted_output" 2>&1
+assert_output_has "$unpark_quoted_output" 'LAND verdict=landed sha='
+assert_output_lacks "$unpark_quoted_output" 'reserved-path path=instance/decisions/HR-1235.md'
+assert_output_lacks "$unpark_quoted_output" 'status=unparked'
+
+# REGRESSION V3-0.29 r4 F3: the reserved-path guard reads every candidate file,
+# including one whose name Git would C-quote. Feeding the loop from an unquoted
+# `git diff --name-only` handed `cat-file -e` a quoted string, the `&&`
+# short-circuited into "not a reserved path", and a self-authored authorization
+# landed on main.
+make_fixture operator-unpark-quoted-path
+unpark_quoted_path_repo="$fixture_root/operator-unpark-quoted-path-repo"
+git -C "$unpark_quoted_path_repo" checkout -b ag-operator-unpark-quoted-path >/dev/null
+mkdir -p "$unpark_quoted_path_repo/instance/decisions"
+unpark_authorization ag-operator-unpark-quoted-path HR-9999 > "$unpark_quoted_path_repo/instance/decisions/HR-9999é.md"
+git -C "$unpark_quoted_path_repo" add "instance/decisions/HR-9999é.md"
+git -C "$unpark_quoted_path_repo" commit -m quoted-path-authorization >/dev/null
+unpark_quoted_path_sha=$(git -C "$unpark_quoted_path_repo" rev-parse HEAD)
+git -C "$unpark_quoted_path_repo" checkout main >/dev/null
+report "$fixture_root/operator-unpark-quoted-path-report.md" "$unpark_quoted_path_sha"
+unpark_quoted_path_output="$fixture_root/operator-unpark-quoted-path-output.txt"
+if "$land" --branch ag-operator-unpark-quoted-path --item-id ag-operator-unpark-quoted-path --report "$fixture_root/operator-unpark-quoted-path-report.md" --repo "$unpark_quoted_path_repo" >"$unpark_quoted_path_output" 2>&1; then exit 1; fi
+assert_output_has "$unpark_quoted_path_output" 'LAND step=payload-guard status=fail detail=reserved-path path=instance/decisions/HR-9999é.md'
+assert_output_lacks "$unpark_quoted_path_output" 'LAND step=merge status=pass'
+
+# REGRESSION V3-0.29 r4 F1: the trust root is the SHA origin answers with, not a
+# ref name. Every lane worktree here shares one Git common directory, so
+# refs/remotes/origin/<target> is writable by any lane with a plain
+# `git update-ref` -- no push, no key, no privilege. A landing whose local view
+# of the target disagrees with origin is refused before any authority is read.
+make_fixture operator-unpark-forged-ref
+unpark_forged_repo="$fixture_root/operator-unpark-forged-ref-repo"
+unpark_forged_state="$unpark_forged_repo/.bpa/review-rounds.json"
+mkdir -p "$unpark_forged_repo/.bpa"
+env -u BUN_BIN bun "$root/gate/review-rounds.ts" init --state "$unpark_forged_state" --cap 10 --no-progress-limit 3 >/dev/null
+for _unpark_round in 1 2 3; do
+  env -u BUN_BIN bun "$root/gate/review-rounds.ts" attempt --defer-park-exit --state "$unpark_forged_state" --item-id ag-unpark-forged >/dev/null
+done
+git -C "$unpark_forged_repo" add .bpa/review-rounds.json
+git -C "$unpark_forged_repo" commit -m 'seed parked item' >/dev/null
+git -C "$unpark_forged_repo" push origin main >/dev/null
+git -C "$unpark_forged_repo" checkout -b v3 >/dev/null
+git -C "$unpark_forged_repo" push -u origin v3 >/dev/null
+unpark_forged_lane_sha=$(make_lane "$unpark_forged_repo" ag-unpark-forged)
+report "$fixture_root/operator-unpark-forged-report.md" "$unpark_forged_lane_sha"
+git -C "$unpark_forged_repo" checkout v3 >/dev/null
+# Origin no longer has the branch, so `git fetch origin` leaves the stale
+# remote-tracking ref exactly where a lane put it -- the deterministic form of
+# the same primitive. The authorization is committed locally and never pushed.
+git -C "$unpark_forged_repo" push origin --delete v3 >/dev/null 2>&1
+mkdir -p "$unpark_forged_repo/instance/decisions"
+unpark_authorization ag-unpark-forged HR-5001 > "$unpark_forged_repo/instance/decisions/HR-5001.md"
+git -C "$unpark_forged_repo" add instance/decisions/HR-5001.md
+git -C "$unpark_forged_repo" commit -m forged-authorization >/dev/null
+unpark_forged_sha=$(git -C "$unpark_forged_repo" rev-parse v3)
+git -C "$unpark_forged_repo" update-ref refs/remotes/origin/v3 "$unpark_forged_sha"
+unpark_forged_output="$fixture_root/operator-unpark-forged-output.txt"
+if "$land" --branch ag-unpark-forged --item-id ag-unpark-forged --report "$fixture_root/operator-unpark-forged-report.md" --repo "$unpark_forged_repo" --target-branch v3 --no-push >"$unpark_forged_output" 2>&1; then exit 1; fi
+# The local view is self-consistent -- refs/heads/v3 and refs/remotes/origin/v3
+# agree -- so the old freshness check passes. Only asking origin catches it.
+assert_output_has "$unpark_forged_output" "LAND freshness origin-target-mismatch target=v3 origin=missing local=$unpark_forged_sha"
+assert_output_lacks "$unpark_forged_output" 'status=unparked'
+assert_output_lacks "$unpark_forged_output" 'LAND step=merge status=pass'
+assert grep -Fq '"park": "no-progress"' "$unpark_forged_state"
+assert_output_lacks "$unpark_forged_output" 'HR-5001'
+
+# A lane branch is never an authority root, even when it exists on origin: only
+# an integration branch reaches origin through this gate's review requirement,
+# which is the whole reason a decision tracked there means anything. This is the
+# one check that still needs a branch NAME, so it lives here rather than in the
+# unpark command, which now takes an immutable SHA and refuses names outright.
+git -C "$unpark_forged_repo" checkout -b ag-other-root >/dev/null
+git -C "$unpark_forged_repo" push -u origin ag-other-root >/dev/null
+git -C "$unpark_forged_repo" checkout ag-other-root >/dev/null
+unpark_lane_root_output="$fixture_root/operator-unpark-lane-root-output.txt"
+if "$land" --branch ag-unpark-forged --item-id ag-unpark-forged --report "$fixture_root/operator-unpark-forged-report.md" --repo "$unpark_forged_repo" --target-branch ag-other-root --no-push >"$unpark_lane_root_output" 2>&1; then exit 1; fi
+assert_output_has "$unpark_lane_root_output" 'LAND target-branch lane-branch-not-an-authority-root target=ag-other-root'
+assert_output_has "$unpark_lane_root_output" 'LAND step=target-branch status=fail'
+assert_output_lacks "$unpark_lane_root_output" 'LAND step=merge status=pass'
+
+# REGRESSION V3-0.29 r4 F2: one aborted landing must not strand the operator's
+# decision. The authorised attempt pushes attempt ref N to origin and then
+# aborts, so the target branch never records the unpark while the ref is
+# permanent. Replaying that ref used to die on the park before either authority
+# was consulted, which made the park unreleasable and the one-time decision
+# unspendable forever.
+make_fixture operator-unpark-abort
+unpark_abort_repo="$fixture_root/operator-unpark-abort-repo"
+unpark_abort_state="$unpark_abort_repo/.bpa/review-rounds.json"
+mkdir -p "$unpark_abort_repo/.bpa"
+env -u BUN_BIN bun "$root/gate/review-rounds.ts" init --state "$unpark_abort_state" --cap 3 --no-progress-limit 3 >/dev/null
+for _unpark_round in 1 2 3; do
+  env -u BUN_BIN bun "$root/gate/review-rounds.ts" attempt --defer-park-exit --state "$unpark_abort_state" --item-id ag-unpark-abort >/dev/null
+done
+git -C "$unpark_abort_repo" add .bpa/review-rounds.json
+git -C "$unpark_abort_repo" commit -m 'seed parked item' >/dev/null
+mkdir -p "$unpark_abort_repo/instance/decisions"
+unpark_authorization ag-unpark-abort HR-2149 > "$unpark_abort_repo/instance/decisions/HR-2149.md"
+git -C "$unpark_abort_repo" add instance/decisions/HR-2149.md
+git -C "$unpark_abort_repo" commit -m 'record HR-2149' >/dev/null
+git -C "$unpark_abort_repo" push origin main >/dev/null
+unpark_abort_sha=$(make_lane "$unpark_abort_repo" ag-unpark-abort)
+# The authorised round, aborted after the merge by a failing reviewed verify.
+printf 'commit: %s fixture\nverify: false\nresult: clean\nsecret-scan: clean\nremaining: none\n' "$unpark_abort_sha" \
+  > "$fixture_root/operator-unpark-abort-report.md"
+unpark_abort_first="$fixture_root/operator-unpark-abort-first.txt"
+if "$land" --branch ag-unpark-abort --item-id ag-unpark-abort --report "$fixture_root/operator-unpark-abort-report.md" --repo "$unpark_abort_repo" --run-verify --no-push >"$unpark_abort_first" 2>&1; then exit 1; fi
+assert_output_has "$unpark_abort_first" 'REVIEW_ROUNDS status=unparked item=ag-unpark-abort decision=HR-2149'
+assert_output_has "$unpark_abort_first" 'LAND verdict=aborted'
+# Origin now carries the attempt ref, and main never recorded the release.
+assert test -n "$(git -C "$unpark_abort_repo" ls-remote --refs origin 'refs/bpa-review-attempts/*')"
+assert grep -Fq '"park": "no-progress"' "$(git -C "$unpark_abort_repo" rev-parse --show-toplevel)/.bpa/review-rounds.json"
+# A second, clean attempt on the same branch must still be admitted: the
+# decision is intact on origin/main and has never been consumed.
+report "$fixture_root/operator-unpark-abort-report.md" "$unpark_abort_sha"
+unpark_abort_second="$fixture_root/operator-unpark-abort-second.txt"
+"$land" --branch ag-unpark-abort --item-id ag-unpark-abort --report "$fixture_root/operator-unpark-abort-report.md" --repo "$unpark_abort_repo" --no-push >"$unpark_abort_second" 2>&1
+assert_output_has "$unpark_abort_second" 'REVIEW_ROUNDS status=unparked item=ag-unpark-abort decision=HR-2149'
+assert_output_has "$unpark_abort_second" 'LAND verdict=landed sha='
+assert grep -Fq '"HR-2149": "ag-unpark-abort"' "$unpark_abort_state"
+
+# REGRESSION V3-0.29 r4 F4: a malformed or hostile decision file on the target
+# branch fails that decision, never the gate. It used to abort every landing of
+# every item -- including the landing of the branch that would delete it, which
+# left no repair path through the gate at all.
+make_fixture operator-unpark-hostile
+unpark_hostile_repo="$fixture_root/operator-unpark-hostile-repo"
+mkdir -p "$unpark_hostile_repo/instance/decisions/archive"
+printf -- '---\noperator-unpark: v2 item=ag-elsewhere decision=HR-3000 park=no-progress\noperator-unpark: v2 item=ag-elsewhere decision=HR-3000 park=no-progress\n---\n' \
+  > "$unpark_hostile_repo/instance/decisions/HR-3000.md"
+printf -- '---\noperator-unpark: v2 item=ag-elsewhere decision=HR-3001 park=cap\n---\n' \
+  > "$unpark_hostile_repo/instance/decisions/HR-3001.md"
+unpark_authorization ag-elsewhere HR-9999 > "$unpark_hostile_repo/instance/decisions/HR-9999é.md"
+unpark_authorization ag-elsewhere HR-4000 > "$unpark_hostile_repo/instance/decisions/archive/HR-4000.md"
+git -C "$unpark_hostile_repo" add instance/decisions
+git -C "$unpark_hostile_repo" commit -m 'hostile decisions' >/dev/null
+git -C "$unpark_hostile_repo" push origin main >/dev/null
+unpark_hostile_sha=$(make_lane "$unpark_hostile_repo" ag-unpark-hostile)
+report "$fixture_root/operator-unpark-hostile-report.md" "$unpark_hostile_sha"
+unpark_hostile_output="$fixture_root/operator-unpark-hostile-output.txt"
+"$land" --branch ag-unpark-hostile --item-id ag-unpark-hostile --report "$fixture_root/operator-unpark-hostile-report.md" --repo "$unpark_hostile_repo" --no-push >"$unpark_hostile_output" 2>&1
+assert_output_has "$unpark_hostile_output" 'LAND verdict=landed sha='
+assert_output_has "$unpark_hostile_output" 'REVIEW_ROUNDS status=warn detail=decision-ignored-not-this-item path=instance/decisions/HR-3000.md'
+git -C "$unpark_hostile_repo" push origin main >/dev/null
+# And the repair goes through the gate: a branch that deletes the offending
+# files lands like any other change.
+git -C "$unpark_hostile_repo" checkout -b ag-unpark-repair >/dev/null
+git -C "$unpark_hostile_repo" rm -q "instance/decisions/HR-3000.md" "instance/decisions/HR-3001.md" "instance/decisions/HR-9999é.md" "instance/decisions/archive/HR-4000.md"
+git -C "$unpark_hostile_repo" commit -m 'remove the malformed decisions' >/dev/null
+unpark_repair_sha=$(git -C "$unpark_hostile_repo" rev-parse HEAD)
+git -C "$unpark_hostile_repo" checkout main >/dev/null
+report "$fixture_root/operator-unpark-repair-report.md" "$unpark_repair_sha"
+unpark_repair_output="$fixture_root/operator-unpark-repair-output.txt"
+"$land" --branch ag-unpark-repair --item-id ag-unpark-repair --report "$fixture_root/operator-unpark-repair-report.md" --repo "$unpark_hostile_repo" --no-push >"$unpark_repair_output" 2>&1
+assert_output_has "$unpark_repair_output" 'LAND verdict=landed sha='
+
+# REGRESSION V3-0.29 r5 F8: the reserved-path guard and the authority reader are
+# ONE predicate. They used to be two -- an awk over a bash command substitution,
+# and a TypeScript reader over raw bytes -- and bash silently deletes NUL bytes
+# from $(...). A file whose third line is `-<NUL>--` therefore closed the
+# frontmatter for the guard (grant outside the block, not reserved) while the
+# reader saw a line that is not `---` (grant inside the block, grants). A lane
+# landed its own operator authorization through the ordinary gate and then spent
+# it on its own park. Both halves are locked here: the candidate is refused, and
+# the same bytes tracked on the target branch grant nothing.
+make_fixture unpark-nul-blob
+unpark_nul_repo="$fixture_root/unpark-nul-blob-repo"
+git -C "$unpark_nul_repo" checkout -b ag-unpark-nul >/dev/null
+mkdir -p "$unpark_nul_repo/instance/decisions"
+printf -- '---\nid: HR-9999\n-\000--\noperator-unpark: v2 item=ag-unpark-nul decision=HR-9999 park=no-progress\n---\n' \
+  > "$unpark_nul_repo/instance/decisions/HR-9999.md"
+assert grep -qa 'operator-unpark' "$unpark_nul_repo/instance/decisions/HR-9999.md"
+git -C "$unpark_nul_repo" add instance/decisions/HR-9999.md
+git -C "$unpark_nul_repo" commit -m nul-authorization >/dev/null
+unpark_nul_sha=$(git -C "$unpark_nul_repo" rev-parse HEAD)
+git -C "$unpark_nul_repo" checkout main >/dev/null
+report "$fixture_root/unpark-nul-report.md" "$unpark_nul_sha"
+unpark_nul_output="$fixture_root/unpark-nul-output.txt"
+if "$land" --branch ag-unpark-nul --item-id ag-unpark-nul --report "$fixture_root/unpark-nul-report.md" --repo "$unpark_nul_repo" >"$unpark_nul_output" 2>&1; then exit 1; fi
+assert_output_has "$unpark_nul_output" 'LAND step=payload-guard status=fail detail=reserved-path path=instance/decisions/HR-9999.md'
+assert_output_lacks "$unpark_nul_output" 'LAND step=merge status=pass'
+
+# Reader half: the same bytes, already tracked on the target branch, against a
+# genuinely parked item. A blob the shared predicate cannot certify as text
+# grants nothing -- and says so rather than passing over it silently.
+make_fixture unpark-nul-authority
+unpark_nul_auth_repo="$fixture_root/unpark-nul-authority-repo"
+unpark_nul_auth_state="$unpark_nul_auth_repo/.bpa/review-rounds.json"
+mkdir -p "$unpark_nul_auth_repo/.bpa" "$unpark_nul_auth_repo/instance/decisions"
+env -u BUN_BIN bun "$root/gate/review-rounds.ts" init --state "$unpark_nul_auth_state" --cap 10 --no-progress-limit 3 >/dev/null
+for _unpark_round in 1 2 3; do
+  env -u BUN_BIN bun "$root/gate/review-rounds.ts" attempt --defer-park-exit --state "$unpark_nul_auth_state" --item-id ag-unpark-nul-auth >/dev/null
+done
+printf -- '---\nid: HR-9999\n-\000--\noperator-unpark: v2 item=ag-unpark-nul-auth decision=HR-9999 park=no-progress\n---\n' \
+  > "$unpark_nul_auth_repo/instance/decisions/HR-9999.md"
+git -C "$unpark_nul_auth_repo" add .bpa/review-rounds.json instance/decisions/HR-9999.md
+git -C "$unpark_nul_auth_repo" commit -m 'parked item plus a NUL-carrying decision' >/dev/null
+git -C "$unpark_nul_auth_repo" push origin main >/dev/null
+unpark_nul_auth_sha=$(make_lane "$unpark_nul_auth_repo" ag-unpark-nul-auth)
+report "$fixture_root/unpark-nul-authority-report.md" "$unpark_nul_auth_sha"
+unpark_nul_auth_output="$fixture_root/unpark-nul-authority-output.txt"
+if "$land" --branch ag-unpark-nul-auth --item-id ag-unpark-nul-auth --report "$fixture_root/unpark-nul-authority-report.md" --repo "$unpark_nul_auth_repo" --no-push >"$unpark_nul_auth_output" 2>&1; then exit 1; fi
+assert_output_has "$unpark_nul_auth_output" 'REVIEW_ROUNDS status=warn detail=decision-ignored-binary path=instance/decisions/HR-9999.md'
+assert_output_lacks "$unpark_nul_auth_output" 'status=unparked'
+assert_output_lacks "$unpark_nul_auth_output" 'LAND step=merge status=pass'
+assert grep -Fq '"park": "no-progress"' "$unpark_nul_auth_state"
+
+# REGRESSION V3-0.29 r5 F1: `origin` is not a fixed thing. remote.origin.url
+# lives in the Git common directory every lane worktree shares, and Git honors
+# multiple pushurl values -- so three plain `git config` writes once split the
+# gate's reads (ls-remote, fetch) from its writes: authority was read from a
+# forged repository holding a self-authored decision while the merge still
+# reached the real origin. The gate now resolves ONE url and uses it for every
+# remote read and write; a second url or any pushurl is refused outright.
+make_fixture origin-redirect
+origin_redirect_repo="$fixture_root/origin-redirect-repo"
+origin_redirect_real="$fixture_root/origin-redirect-origin.git"
+origin_redirect_state="$origin_redirect_repo/.bpa/review-rounds.json"
+mkdir -p "$origin_redirect_repo/.bpa" "$origin_redirect_repo/instance"
+env -u BUN_BIN bun "$root/gate/review-rounds.ts" init --state "$origin_redirect_state" --cap 10 --no-progress-limit 3 >/dev/null
+for _unpark_round in 1 2 3; do
+  env -u BUN_BIN bun "$root/gate/review-rounds.ts" attempt --defer-park-exit --state "$origin_redirect_state" --item-id ag-origin-redirect >/dev/null
+done
+# The pin has one home: instance/params.yaml, read from the SHA origin answers
+# with. A redirected clone must forge durable tracked content, not a config line.
+printf 'repos:\n  git_remote: %s   # pinned origin\n' "$origin_redirect_real" > "$origin_redirect_repo/instance/params.yaml"
+git -C "$origin_redirect_repo" add .bpa/review-rounds.json instance/params.yaml
+git -C "$origin_redirect_repo" commit -m 'seed parked item and pin origin' >/dev/null
+git -C "$origin_redirect_repo" push origin main >/dev/null
+origin_redirect_lane_sha=$(make_lane "$origin_redirect_repo" ag-origin-redirect)
+report "$fixture_root/origin-redirect-report.md" "$origin_redirect_lane_sha"
+# The forged origin: a full copy of the real one, plus one commit adding the
+# authorization the lane wrote itself.
+origin_redirect_forged="$fixture_root/origin-redirect-forged.git"
+git clone --bare "$origin_redirect_real" "$origin_redirect_forged" >/dev/null 2>&1
+git clone "$origin_redirect_forged" "$fixture_root/origin-redirect-forger" >/dev/null 2>&1
+git -C "$fixture_root/origin-redirect-forger" config user.email land@example.test
+git -C "$fixture_root/origin-redirect-forger" config user.name Land
+mkdir -p "$fixture_root/origin-redirect-forger/instance/decisions"
+unpark_authorization ag-origin-redirect HR-5001 > "$fixture_root/origin-redirect-forger/instance/decisions/HR-5001.md"
+git -C "$fixture_root/origin-redirect-forger" add instance/decisions/HR-5001.md
+git -C "$fixture_root/origin-redirect-forger" commit -m 'self-authored authorization' >/dev/null
+git -C "$fixture_root/origin-redirect-forger" push origin main >/dev/null
+# The whole attack, verbatim: reads go to the forged copy, writes to both.
+git -C "$origin_redirect_repo" config remote.origin.url "$origin_redirect_forged"
+git -C "$origin_redirect_repo" config --add remote.origin.pushurl "$origin_redirect_real"
+git -C "$origin_redirect_repo" config --add remote.origin.pushurl "$origin_redirect_forged"
+git -C "$origin_redirect_repo" fetch origin >/dev/null 2>&1
+git -C "$origin_redirect_repo" reset --hard origin/main >/dev/null 2>&1
+origin_redirect_output="$fixture_root/origin-redirect-output.txt"
+if "$land" --branch ag-origin-redirect --item-id ag-origin-redirect --report "$fixture_root/origin-redirect-report.md" --repo "$origin_redirect_repo" >"$origin_redirect_output" 2>&1; then exit 1; fi
+assert_output_has "$origin_redirect_output" 'LAND freshness origin-pushurl-refused'
+assert_output_lacks "$origin_redirect_output" 'status=unparked'
+assert_output_lacks "$origin_redirect_output" 'LAND step=merge status=pass'
+assert test "$(git -C "$origin_redirect_real" rev-parse main)" != "$(git -C "$origin_redirect_forged" rev-parse main)"
+
+# Without the pushurl split, a single redirected url is caught by the pin the
+# target branch itself tracks: the authority is not "whatever this clone calls
+# origin" any more.
+git -C "$origin_redirect_repo" config --unset-all remote.origin.pushurl
+origin_pin_output="$fixture_root/origin-redirect-pin-output.txt"
+if "$land" --branch ag-origin-redirect --item-id ag-origin-redirect --report "$fixture_root/origin-redirect-report.md" --repo "$origin_redirect_repo" >"$origin_pin_output" 2>&1; then exit 1; fi
+assert_output_has "$origin_pin_output" "LAND freshness origin-redirected pinned=$origin_redirect_real configured=$origin_redirect_forged"
+assert_output_lacks "$origin_pin_output" 'status=unparked'
+assert_output_lacks "$origin_pin_output" 'LAND step=merge status=pass'
+
+# And the residual case, stated so nobody mistakes it for a hole: an attacker
+# who also rewrites the pin ON the forged remote gets a landing that succeeds
+# against the forged repository -- and reaches the real origin with nothing.
+# That is the property the single url buys: read and write cannot be split.
+git -C "$fixture_root/origin-redirect-forger" fetch origin >/dev/null 2>&1
+git -C "$fixture_root/origin-redirect-forger" reset --hard origin/main >/dev/null 2>&1
+printf 'repos:\n  git_remote: %s   # pinned origin\n' "$origin_redirect_forged" > "$fixture_root/origin-redirect-forger/instance/params.yaml"
+git -C "$fixture_root/origin-redirect-forger" add instance/params.yaml
+git -C "$fixture_root/origin-redirect-forger" commit -m 'forge the pin too' >/dev/null
+git -C "$fixture_root/origin-redirect-forger" push origin main >/dev/null
+git -C "$origin_redirect_repo" fetch origin >/dev/null 2>&1
+git -C "$origin_redirect_repo" reset --hard origin/main >/dev/null 2>&1
+origin_real_before=$(git -C "$origin_redirect_real" rev-parse main)
+origin_forged_output="$fixture_root/origin-redirect-forged-output.txt"
+"$land" --branch ag-origin-redirect --item-id ag-origin-redirect --report "$fixture_root/origin-redirect-report.md" --repo "$origin_redirect_repo" >"$origin_forged_output" 2>&1
+assert_output_has "$origin_forged_output" 'LAND verdict=landed sha='
+assert test "$(git -C "$origin_redirect_real" rev-parse main)" = "$origin_real_before"
+assert_not git -C "$origin_redirect_real" cat-file -e main:instance/decisions/HR-5001.md
+
+# The pinned value is authority-adjacent state: a candidate that rewrites it
+# redirects every later landing's trust root, so the VALUE is reserved even
+# though instance/params.yaml stays ordinary, heavily edited instance state.
+make_fixture origin-pin-candidate
+origin_pin_repo="$fixture_root/origin-pin-candidate-repo"
+origin_pin_real="$fixture_root/origin-pin-candidate-origin.git"
+mkdir -p "$origin_pin_repo/instance"
+printf 'repos:\n  git_remote: %s   # pinned origin\n' "$origin_pin_real" > "$origin_pin_repo/instance/params.yaml"
+git -C "$origin_pin_repo" add instance/params.yaml
+git -C "$origin_pin_repo" commit -m 'pin origin' >/dev/null
+git -C "$origin_pin_repo" push origin main >/dev/null
+git -C "$origin_pin_repo" checkout -b ag-origin-pin >/dev/null
+printf 'repos:\n  git_remote: %s   # pinned origin\n' "$fixture_root/somewhere-else.git" > "$origin_pin_repo/instance/params.yaml"
+git -C "$origin_pin_repo" add instance/params.yaml
+git -C "$origin_pin_repo" commit -m 'repoint the pin' >/dev/null
+origin_pin_sha=$(git -C "$origin_pin_repo" rev-parse HEAD)
+git -C "$origin_pin_repo" checkout main >/dev/null
+report "$fixture_root/origin-pin-report.md" "$origin_pin_sha"
+origin_pin_candidate_output="$fixture_root/origin-pin-candidate-output.txt"
+if "$land" --branch ag-origin-pin --item-id ag-origin-pin --report "$fixture_root/origin-pin-report.md" --repo "$origin_pin_repo" >"$origin_pin_candidate_output" 2>&1; then exit 1; fi
+assert_output_has "$origin_pin_candidate_output" "LAND step=payload-guard status=fail detail=reserved-origin-pin base=$origin_pin_real candidate=$fixture_root/somewhere-else.git"
+assert_output_lacks "$origin_pin_candidate_output" 'LAND step=merge status=pass'
+# Introducing a pin where the merge-base has none is the same class of change:
+# a lane that chooses the pin chooses what the next landing will call origin.
+git -C "$origin_pin_repo" checkout -b ag-origin-pin-new main >/dev/null
+git -C "$origin_pin_repo" rm -q instance/params.yaml >/dev/null
+git -C "$origin_pin_repo" commit -m 'drop the pin' >/dev/null
+git -C "$origin_pin_repo" checkout main >/dev/null
+origin_pin_drop_sha=$(git -C "$origin_pin_repo" rev-parse ag-origin-pin-new)
+report "$fixture_root/origin-pin-drop-report.md" "$origin_pin_drop_sha"
+origin_pin_drop_output="$fixture_root/origin-pin-drop-output.txt"
+if "$land" --branch ag-origin-pin-new --item-id ag-origin-pin-new --report "$fixture_root/origin-pin-drop-report.md" --repo "$origin_pin_repo" --no-push >"$origin_pin_drop_output" 2>&1; then exit 1; fi
+assert_output_has "$origin_pin_drop_output" "LAND step=payload-guard status=fail detail=reserved-origin-pin base=$origin_pin_real candidate=none"
+assert_output_lacks "$origin_pin_drop_output" 'LAND step=merge status=pass'
+# Ordinary edits to the same file, leaving the pin alone, stay ordinary work.
+git -C "$origin_pin_repo" checkout -b ag-origin-pin-ok main >/dev/null
+printf 'repos:\n  git_remote: %s   # pinned origin\noperator:\n  language: uk\n' "$origin_pin_real" > "$origin_pin_repo/instance/params.yaml"
+git -C "$origin_pin_repo" add instance/params.yaml
+git -C "$origin_pin_repo" commit -m 'ordinary params edit' >/dev/null
+origin_pin_ok_sha=$(git -C "$origin_pin_repo" rev-parse HEAD)
+git -C "$origin_pin_repo" checkout main >/dev/null
+report "$fixture_root/origin-pin-ok-report.md" "$origin_pin_ok_sha"
+origin_pin_ok_output="$fixture_root/origin-pin-ok-output.txt"
+"$land" --branch ag-origin-pin-ok --item-id ag-origin-pin-ok --report "$fixture_root/origin-pin-ok-report.md" --repo "$origin_pin_repo" --no-push >"$origin_pin_ok_output" 2>&1
+assert_output_has "$origin_pin_ok_output" 'LAND verdict=landed sha='
+
+# A lane branch is not an integration target however it was nominated. The
+# --target-branch path already refused one; refs/remotes/origin/HEAD is a
+# symbolic ref in the same shared common directory, so the detection path needs
+# the same refusal or a lane can nominate its own branch by repointing it.
+make_fixture origin-head-lane
+origin_head_repo="$fixture_root/origin-head-lane-repo"
+origin_head_sha=$(make_lane "$origin_head_repo" ag-origin-head-target)
+git -C "$origin_head_repo" push -u origin ag-origin-head-target >/dev/null
+git -C "$origin_head_repo" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/ag-origin-head-target
+report "$fixture_root/origin-head-report.md" "$origin_head_sha"
+origin_head_output="$fixture_root/origin-head-output.txt"
+if "$land" --branch ag-origin-head-target --item-id ag-origin-head-target --report "$fixture_root/origin-head-report.md" --repo "$origin_head_repo" --no-push >"$origin_head_output" 2>&1; then exit 1; fi
+assert_output_has "$origin_head_output" 'LAND default-branch lane-branch-not-an-integration-target target=ag-origin-head-target'
+assert_output_lacks "$origin_head_output" 'LAND step=merge status=pass'
+
+# REGRESSION V3-0.29 r5 F4: a decision file that NAMES an item refused every
+# landing of that item, including the branch that would delete the file -- and
+# minting a fresh item id to repair it requires landing a change to the closed
+# registry, which itself needs an id. The two likeliest operator typos
+# (`park=cap`, a trailing space) hit exactly the item he was releasing. A
+# candidate that deletes the file is now inert against it.
+make_fixture unpark-bricked-item
+unpark_bricked_repo="$fixture_root/unpark-bricked-item-repo"
+mkdir -p "$unpark_bricked_repo/instance/decisions"
+printf -- '---\nid: HR-6000\noperator-unpark: v2 item=ag-unpark-bricked decision=HR-6000 park=cap\n---\n' \
+  > "$unpark_bricked_repo/instance/decisions/HR-6000.md"
+git -C "$unpark_bricked_repo" add instance/decisions/HR-6000.md
+git -C "$unpark_bricked_repo" commit -m 'operator typo: park=cap' >/dev/null
+git -C "$unpark_bricked_repo" push origin main >/dev/null
+unpark_bricked_sha=$(make_lane "$unpark_bricked_repo" ag-unpark-bricked)
+report "$fixture_root/unpark-bricked-report.md" "$unpark_bricked_sha"
+unpark_bricked_output="$fixture_root/unpark-bricked-output.txt"
+if "$land" --branch ag-unpark-bricked --item-id ag-unpark-bricked --report "$fixture_root/unpark-bricked-report.md" --repo "$unpark_bricked_repo" --no-push >"$unpark_bricked_output" 2>&1; then exit 1; fi
+assert_output_has "$unpark_bricked_output" 'malformed-authorization path=instance/decisions/HR-6000.md'
+# The repair goes through the gate, under the SAME item id -- no borrowed id,
+# no registry change, no push around the gate.
+git -C "$unpark_bricked_repo" checkout ag-unpark-bricked >/dev/null
+git -C "$unpark_bricked_repo" rm -q instance/decisions/HR-6000.md
+git -C "$unpark_bricked_repo" commit -m 'delete the malformed decision' >/dev/null
+unpark_bricked_repair_sha=$(git -C "$unpark_bricked_repo" rev-parse HEAD)
+git -C "$unpark_bricked_repo" checkout main >/dev/null
+report "$fixture_root/unpark-bricked-repair-report.md" "$unpark_bricked_repair_sha"
+unpark_bricked_repair_output="$fixture_root/unpark-bricked-repair-output.txt"
+"$land" --branch ag-unpark-bricked --item-id ag-unpark-bricked --report "$fixture_root/unpark-bricked-repair-report.md" --repo "$unpark_bricked_repo" --no-push >"$unpark_bricked_repair_output" 2>&1
+assert_output_has "$unpark_bricked_repair_output" 'REVIEW_ROUNDS status=warn detail=decision-ignored-deleted-by-candidate path=instance/decisions/HR-6000.md'
+assert_output_has "$unpark_bricked_repair_output" 'LAND verdict=landed sha='
+
 make_fixture payload-symlink
 git -C "$fixture_root/payload-symlink-repo" checkout -b ag-payload-symlink >/dev/null
 ln -s /home/user/.env "$fixture_root/payload-symlink-repo/env.template"

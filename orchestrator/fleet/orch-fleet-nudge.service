@@ -1,0 +1,6 @@
+[Unit]
+Description=Stopgap: wake the orchestrator when the lane fleet goes idle (until ML-2 lands)
+
+[Service]
+Type=oneshot
+ExecStart=/root/.local/bin/orch-fleet-nudge.sh

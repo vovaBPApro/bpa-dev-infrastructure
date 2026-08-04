@@ -1,7 +1,7 @@
-import { expect, test } from "bun:test";
-import { spawnSync } from "child_process";
+import { afterAll, beforeAll, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
+import { acquireShellTierGuard, type ShellTierGuard } from "./shell-test-guard";
 
 // This file is the landing-gate executor for the shell-test tier. The gate's
 // immutable framework collection includes *.test.ts but not *.test.sh, so the
@@ -9,6 +9,15 @@ import { join } from "path";
 // Do not replace this inventory with a glob: a glob cannot detect deletion.
 
 const repoRoot = join(import.meta.dir, "..");
+let tierGuard: ShellTierGuard;
+
+beforeAll(async () => {
+  tierGuard = await acquireShellTierGuard(repoRoot);
+});
+
+afterAll(async () => {
+  await tierGuard?.release();
+});
 
 const requiredTypeScriptExecutors = [
   "tools/check-mechanism-reachability.test.ts",
@@ -50,20 +59,26 @@ test("the independently pinned shell-test inventory still exists", () => {
 for (const relativePath of runnableShellTests) {
   test(
     `shell tier: ${relativePath}`,
-    () => {
+    async () => {
       const env = { ...process.env };
       // gate/land.sh exports BUN_BIN, while nested gate checks reject caller
       // binary selectors. The shell tier must behave the same inside the gate
       // as it does standalone.
       delete env.BUN_BIN;
-      const result = spawnSync("bash", [relativePath], {
+      const result = Bun.spawn(["bash", relativePath], {
         cwd: repoRoot,
-        encoding: "utf8",
         env,
+        stdout: "pipe",
+        stderr: "pipe",
       });
+      const [status, stdout, stderr] = await Promise.all([
+        result.exited,
+        new Response(result.stdout).text(),
+        new Response(result.stderr).text(),
+      ]);
       expect(
-        result.status,
-        `${relativePath} exited ${result.status}\n${result.stdout}${result.stderr}`,
+        status,
+        `${relativePath} exited ${status}\n${stdout}${stderr}`,
       ).toBe(0);
     },
     120_000,
@@ -100,9 +115,10 @@ test(
       delete env.BUN_BIN;
       env.INFRA_TEST_FORCE_MISSING_CAPABILITIES =
         "immutable-file,proc-lock-observability,pid-mount-namespace";
-      const result = spawnSync("bash", [file], { cwd: repoRoot, encoding: "utf8", env });
-      expect(result.status, `${file}: ${result.stdout}${result.stderr}`).toBe(0);
-      for (const line of result.stdout.split("\n")) {
+      const result = Bun.spawnSync(["bash", file], { cwd: repoRoot, stdout: "pipe", stderr: "pipe", env });
+      const stdout = result.stdout.toString();
+      expect(result.exitCode, `${file}: ${stdout}${result.stderr.toString()}`).toBe(0);
+      for (const line of stdout.split("\n")) {
         const match = line.match(/EXCLUDED case=([^ ]+) capability=([^ ]+)$/);
         if (match) observed.push(`${file}\t${match[1]}\t${match[2]}`);
       }

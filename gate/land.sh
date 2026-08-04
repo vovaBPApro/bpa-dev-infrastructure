@@ -66,6 +66,10 @@ land_fail() {
   echo "LAND verdict=aborted sha=$merge_sha" >&2
   exit "${2:-1}"
 }
+land_fail_detail() {
+  land_failure_detail="$2"
+  land_fail "$1" "${3:-1}"
+}
 # Used only when a post-merge abort's own rollback attempt (land_force_reset)
 # could not verify that $default_branch was restored. "aborted" is reserved
 # for the case where the ref provably did not move; this path exists so the
@@ -314,7 +318,7 @@ if ! "$BUN_BIN" "$script_dir/review-rounds.ts" attempt --defer-park-exit --state
   land_fail review-rounds 2
 fi
 rounds=$((rounds + 1))
-branch_sha=$(git -C "$repo" rev-parse --verify "${branch}^{commit}") || land_fail branch-tip 2
+branch_sha=$(git -C "$repo" rev-parse --verify "${branch}^{commit}") || land_fail_detail branch-tip candidate-ref-unreadable 2
 attempt_ref="$attempt_prefix/$rounds-$branch_sha"
 attempt_mirror_ref="$attempt_mirror_prefix/$rounds-$branch_sha"
 if ! git -C "$repo" push --atomic origin "$branch_sha:$attempt_ref" "$branch_sha:$attempt_mirror_ref" >/dev/null; then
@@ -335,17 +339,17 @@ if [[ "$review_round_check" == *"status=pending"* ]]; then review_round_park_pen
 land_pass review-rounds
 
 report_sha=$(sed -n 's/^commit:[[:space:]]*\([0-9a-fA-F]\{40\}\).*/\1/p' "$report" | head -n 1)
-branch_sha=$(git -C "$repo" rev-parse --verify "${branch}^{commit}") || land_fail branch-tip 2
+branch_sha=$(git -C "$repo" rev-parse --verify "${branch}^{commit}") || land_fail_detail branch-tip candidate-ref-unreadable 2
 if [ -z "$report_sha" ] || [ "${report_sha,,}" != "${branch_sha,,}" ]; then
   echo "LAND branch-tip mismatch report=${report_sha:-missing} branch=$branch_sha" >&2
-  land_fail branch-tip 2
+  land_fail_detail branch-tip report-sha-mismatch 2
 fi
 land_pass branch-tip
 
-payload_base=$(land_changed_base "$repo" "$branch") || land_fail payload-guard 2
+payload_base=$(land_changed_base "$repo" "$branch") || land_fail_detail payload-guard changed-base-unreadable 2
 if ! git -C "$repo" diff --quiet "$payload_base..$branch" -- "$review_round_history_rel"; then
   echo "LAND step=payload-guard status=fail detail=reserved-path path=$review_round_history_rel" >&2
-  land_fail payload-guard 2
+  land_fail_detail payload-guard reserved-path 2
 fi
 if ! land_payload_guard "$repo" "$branch"; then
   land_failure_detail=${LAND_PAYLOAD_FAILURE_DETAIL:-unspecified}
@@ -354,7 +358,7 @@ fi
 land_pass payload-guard
 
 if ! land_run_declared_checks "$repo" 'LAND BASELINE'; then
-  land_fail baseline-checks
+  land_fail_detail baseline-checks declared-check-failed
 fi
 baseline_test_count="$LAND_FRAMEWORK_TEST_COUNT"
 land_pass baseline-checks
@@ -367,13 +371,13 @@ if land_meteorite_required "$repo" "$branch"; then
 else
   meteorite_required_status=$?
   if [ "$meteorite_required_status" -ne 1 ]; then
-    land_fail meteorite-trigger 2
+    land_fail_detail meteorite-trigger trigger-evaluation-failed 2
   fi
 fi
 
 if ! git -C "$repo" merge --no-ff "$branch" -m "[ORCH] land lane $branch" -m "secret-scan: clean"; then
   git -C "$repo" merge --abort >/dev/null 2>&1 || true
-  land_fail merge
+  land_fail_detail merge merge-conflict
 fi
 merged=true
 merge_sha=$(git -C "$repo" rev-parse HEAD)
@@ -382,13 +386,13 @@ merge_sha=$(git -C "$repo" rev-parse HEAD)
 # SHA is used as the progress marker because the merge SHA cannot be known
 # before the state embedded in that merge is committed.
 if ! "$BUN_BIN" "$script_dir/review-rounds.ts" landed --state "$review_round_state" --item-id "$item_id" --sha "$branch_sha"; then
-  land_fail review-rounds 2
+  land_fail_detail review-rounds landed-state-write-failed 2
 fi
-mkdir -p "$(dirname "$review_round_history")" || land_fail review-rounds 2
+mkdir -p "$(dirname "$review_round_history")" || land_fail_detail review-rounds history-directory-failed 2
 if ! install -m 600 "$review_round_state" "$review_round_history" ||
    ! git -C "$repo" add -- "$review_round_history_rel" ||
    ! git -C "$repo" commit --amend --no-edit >/dev/null; then
-  land_fail review-rounds 2
+  land_fail_detail review-rounds history-commit-failed 2
 fi
 merge_sha=$(git -C "$repo" rev-parse HEAD)
 land_pass merge
@@ -402,7 +406,7 @@ if [ "$meteorite_required" = true ]; then
     fi
     merged=false
     merge_sha="none"
-    land_fail meteorite
+    land_fail_detail meteorite proof-failed
   fi
   land_pass meteorite
 else
@@ -415,7 +419,7 @@ if ! land_run_declared_checks "$repo" LAND "$baseline_test_count"; then
   fi
   merged=false
   merge_sha="none"
-  land_fail declared-checks
+  land_fail_detail declared-checks declared-check-failed
 fi
 land_pass declared-checks
 
@@ -433,7 +437,7 @@ if [ "$run_verify" = true ]; then
       fi
       merged=false
       merge_sha="none"
-      land_fail reviewed-verify
+      land_fail_detail reviewed-verify exact-sha-verification-failed
     fi
     land_failure_detail=verify-count-mismatch
     if ! land_verify_count "$report" "$reviewed_verify_output" exact; then
@@ -443,7 +447,7 @@ if [ "$run_verify" = true ]; then
       fi
       merged=false
       merge_sha="none"
-      land_fail reviewed-verify
+      land_fail_detail reviewed-verify verify-count-mismatch
     fi
     land_failure_detail=""
     rm -f "$reviewed_verify_output"
@@ -465,7 +469,7 @@ if [ "$run_verify" = true ]; then
     merged=false
     merge_sha="none"
     echo "LAND post-merge-verify failure: merge reset to ORIG_HEAD" >&2
-    land_fail post-merge-verify
+    land_fail_detail post-merge-verify command-failed
   fi
   cat "$verify_output"
   if ! land_verify_count "$report" "$verify_output" carry; then
@@ -476,7 +480,7 @@ if [ "$run_verify" = true ]; then
     merged=false
     merge_sha="none"
     echo "LAND post-merge-verify count mismatch: merge reset to ORIG_HEAD" >&2
-    land_fail post-merge-verify
+    land_fail_detail post-merge-verify verify-count-mismatch
   fi
   rm -f "$verify_output"
   land_pass post-merge-verify
@@ -502,7 +506,7 @@ if [ "$no_push" = false ]; then
     merged=false
     merge_sha="none"
     echo "LAND push failure: main reset to origin/main" >&2
-    land_fail push
+    land_fail_detail push remote-update-failed
   fi
   remote_sha=$(git -C "$repo" ls-remote --refs origin "refs/heads/$default_branch" 2>/dev/null | awk 'NR == 1 { print $1 }')
   if [ "$remote_sha" != "$merge_sha" ]; then
@@ -517,7 +521,7 @@ if [ "$no_push" = false ]; then
     fi
     merged=false
     merge_sha="none"
-    land_fail push
+    land_fail_detail push remote-sha-mismatch
   fi
   pushed=true
   land_pass push

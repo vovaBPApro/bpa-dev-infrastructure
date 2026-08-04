@@ -732,8 +732,13 @@ git -C "$fixture_root/merge-conflict-repo" commit -m main-conflict >/dev/null
 git -C "$fixture_root/merge-conflict-repo" push origin main >/dev/null
 report "$fixture_root/merge-conflict-report.md" "$merge_conflict_sha"
 merge_conflict_output="$fixture_root/merge-conflict-output.txt"
-if "$land" --branch ag-merge-conflict --item-id ag-merge-conflict --report "$fixture_root/merge-conflict-report.md" --repo "$fixture_root/merge-conflict-repo" >"$merge_conflict_output" 2>&1; then exit 1; fi
+for merge_conflict_attempt in 1 2 3; do
+  if "$land" --branch ag-merge-conflict --item-id ag-merge-conflict --report "$fixture_root/merge-conflict-report.md" --repo "$fixture_root/merge-conflict-repo" >"$merge_conflict_output" 2>&1; then exit 1; fi
+done
 assert_output_has "$merge_conflict_output" 'LAND step=merge status=fail'
+# V3-0.26 round-3 regression lock: a counted non-payload refusal names the
+# concrete merge reason instead of allowing the park record to say unspecified.
+assert_output_has "$merge_conflict_output" 'REVIEW_ROUNDS status=parked item=ag-merge-conflict parked=no-progress blocker-step=merge blocker-detail=merge-conflict'
 assert_not git -C "$fixture_root/merge-conflict-repo" rev-parse --verify --quiet MERGE_HEAD
 assert test -z "$(git -C "$fixture_root/merge-conflict-repo" status --porcelain)"
 

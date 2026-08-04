@@ -11,15 +11,43 @@ const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 // The tracked-decision authority. `instance/decisions/` reaches the integration
 // branch only through this gate, and gate/land.sh reserves that directory
 // against any candidate branch whose own version of a file there carries this
-// marker -- so a lane cannot land the authorization that would release it.
-// The directory scanned here and the directory reserved there are the same one
-// by construction; changing either without the other opens the self-authorization
-// hole that reserved path exists to close.
+// marker in its frontmatter -- so a lane cannot land the authorization that
+// would release it. The directory scanned here and the directory reserved there
+// are the same one, and "carries an authorization" means the same thing in both
+// (see frontmatterGrants below and the awk in land.sh's reserved-path loop);
+// changing either without the other either opens the self-authorization hole
+// that reserved path exists to close, or blocks the operator's verbatim words
+// from landing whenever they quote the format back.
 const DECISION_DIR = "instance/decisions";
 const DECISION_MARKER = "operator-unpark: v2 ";
 const DECISION_LINE = /^operator-unpark: v2 item=([^ ]+) decision=([^ ]+) park=no-progress$/;
 
 function die(message: string): never { console.error(`REVIEW_ROUNDS status=fail detail=${message}`); process.exit(2); }
+// A refusal that is scoped to one decision file and never to the gate. Every
+// parse failure below that cannot be attributed to THIS item comes out here.
+function warn(message: string): void { console.error(`REVIEW_ROUNDS status=warn detail=${message}`); }
+// The authorization lives in the file's YAML frontmatter and nowhere else.
+// `instance/decisions/` is where the operator's words are stored verbatim (Hard
+// Rule 16), and those words routinely quote this very format back -- in prose, in
+// a blockquote, in a fenced block. Matching at column 1 anywhere in the file
+// cannot tell a quotation from a grant, and the doc that teaches the format
+// prints the line in a fence, so capturing the operator's message about this
+// feature would silently unpark whatever item it quotes. The grant is therefore
+// put where prose cannot reach: between the opening `---` on line 1 and the first
+// `---` that closes it. Anything else in the file is text about an authorization,
+// not an authorization.
+function frontmatterGrants(body: string): string[] {
+  const lines = body.split("\n");
+  if (lines[0] !== "---") return [];
+  const grants: string[] = [];
+  for (let index = 1; index < lines.length; index++) {
+    if (lines[index] === "---") return grants;
+    if (lines[index]!.startsWith(DECISION_MARKER)) grants.push(lines[index]!);
+  }
+  // An unterminated frontmatter block is not a frontmatter block, so it carries
+  // no authority. Under-accepting here is safe; over-accepting is the defect.
+  return [];
+}
 function arg(name: string): string {
   const index = Bun.argv.indexOf(name);
   if (index < 0 || !Bun.argv[index + 1]) die(`missing-${name.slice(2)}`);
@@ -53,6 +81,33 @@ function validateDecisions(value: unknown): boolean {
   return Object.entries(value as Record<string, unknown>).every(([decisionId, boundItem]) =>
     ID_PATTERN.test(decisionId) && typeof boundItem === "string" && ID_PATTERN.test(boundItem));
 }
+// The payload a recorded event was chained over, reconstructed from the event's
+// own fields. `source` is what distinguishes the two authorities: the tracked
+// decision names the file it came from, the signature names its signer.
+function unparkPayload(id: string, entry: Unpark): string {
+  return entry.source === undefined
+    ? `operator-unpark-v1\nitem-id=${id}\ndecision-id=${entry.decisionId}\nauthorized-by=${entry.authorizedBy}\nauthorized-at=${entry.at}\n`
+    : `operator-unpark-v2\nitem-id=${id}\ndecision-id=${entry.decisionId}\nsource=${entry.source}\nauthorized-at=${entry.at}\n`;
+}
+// A hash chain that is written and never read is provenance, not tamper-evidence.
+// Recompute every link from the recorded fields on load, so editing a decision
+// id, an authorizer, a timestamp, a source path, or the order of events is a
+// fail-closed refusal rather than a value the next event quietly chains onto.
+function verifyUnparkChain(id: string, item: Item): boolean {
+  let previous = "0".repeat(64);
+  for (const entry of item.unparks ?? []) {
+    // `authorizedBy` is not part of the v2 payload -- it is derived, not
+    // supplied -- so the digest alone cannot speak for it. Bind it structurally
+    // instead: `source` is present exactly for tracked-decision events, so
+    // relabelling one authority as the other is a refusal rather than a field
+    // the chain silently passes over.
+    if ((entry.source !== undefined) !== (entry.authorizedBy === "tracked-decision")) return false;
+    if (entry.previous !== previous) return false;
+    if (entry.digest !== createHash("sha256").update(`${previous}\n${unparkPayload(id, entry)}`).digest("hex")) return false;
+    previous = entry.digest;
+  }
+  return true;
+}
 function load(path: string): State {
   let stat;
   try { stat = lstatSync(path); } catch { die(`state-missing file=${path}`); }
@@ -65,6 +120,15 @@ function load(path: string): State {
       !state.items || typeof state.items !== "object" || Array.isArray(state.items) ||
       !Object.values(state.items).every(validateItem) ||
       !validateDecisions((parsed as Record<string, unknown>).decisions)) die(`state-malformed file=${path}`);
+  for (const [id, item] of Object.entries(state.items)) {
+    if (!verifyUnparkChain(id, item)) die(`unpark-chain-broken file=${path} item=${id}`);
+    // The consumed-decision ledger is what makes a decision spendable once. A
+    // state carrying the event but not the ledger entry would let the same
+    // authorization apply again, so the two must agree or the state is malformed.
+    for (const entry of item.unparks ?? []) {
+      if ((state.decisions ?? {})[entry.decisionId] !== id) die(`unpark-ledger-missing file=${path} item=${id} decision=${entry.decisionId}`);
+    }
+  }
   return state;
 }
 function save(path: string, state: State): void {
@@ -126,12 +190,31 @@ if (command === "round") {
   if (item.park) die(`item=${itemId} parked=${item.park}`);
   console.log(`REVIEW_ROUNDS status=admissible item=${itemId} round=${item.rounds}`);
 } else if (command === "attempt") {
-  if (item.park) die(`item=${itemId} parked=${item.park}`);
-  if (item.rounds >= state.cap && !(item.unparkCredits && item.unparkCredits > 0)) { item.park = "cap"; state.items[itemId] = item; save(path, state); die(`item=${itemId} cap=${state.cap} parked=cap`); }
-  if (item.rounds >= state.cap) item.unparkCredits!--;
-  item.rounds += 1;
-  item.noProgress += 1;
-  if (item.noProgress >= state.noProgressLimit) item.park = "no-progress";
+  // `--replay` reconstructs a round that origin already proves happened (a
+  // durable attempt ref), as opposed to admitting a new one. The distinction
+  // matters only when the reconstructed state is parked: the ref proves an
+  // authorization had released that park when the attempt was made, but the
+  // landing that granted it aborted before the release reached the target
+  // branch, so the rebuilt state does not carry the credit. Refusing here is
+  // what stranded the operator's one-time decision -- every later landing died
+  // in the replay loop before either unpark authority was consulted, and the
+  // decision could never be spent. Replay therefore counts the round and leaves
+  // the park exactly as the target branch recorded it, for the authorities that
+  // run after this loop to release. It must not manufacture a fresh park either:
+  // a `no-progress` park is releasable by an operator decision and a `cap` park
+  // is not, so re-deriving one here would strand the decision a second way.
+  const replay = Bun.argv.includes("--replay");
+  if (item.park && !replay) die(`item=${itemId} parked=${item.park}`);
+  if (item.park) {
+    item.rounds += 1;
+    item.noProgress += 1;
+  } else {
+    if (item.rounds >= state.cap && !(item.unparkCredits && item.unparkCredits > 0)) { item.park = "cap"; state.items[itemId] = item; save(path, state); die(`item=${itemId} cap=${state.cap} parked=cap`); }
+    if (item.rounds >= state.cap) item.unparkCredits!--;
+    item.rounds += 1;
+    item.noProgress += 1;
+    if (item.noProgress >= state.noProgressLimit) item.park = "no-progress";
+  }
   state.items[itemId] = item;
   save(path, state);
   if (item.park && !Bun.argv.includes("--defer-park-exit")) die(`item=${itemId} consecutive_no_progress=${item.noProgress} parked=no-progress`);
@@ -173,32 +256,51 @@ if (command === "round") {
 } else if (command === "operator-unpark-decision") {
   // Authority by tracked decision. Nothing about the authorization comes from
   // the caller: not the payload, not the trust root, not even WHICH decision to
-  // apply. This command reads `instance/decisions/` from the remote-tracking ref
-  // of the landing target and applies whatever the operator already published
-  // there -- so a working tree, a stash, a local branch, or a command-line file
-  // cannot introduce an authorization that origin does not already carry.
+  // apply. The content root is an immutable commit SHA, and a ref NAME is
+  // refused outright -- including `refs/remotes/origin/<target>`, which this
+  // command used to trust. A remote-tracking ref is a local branch ref by
+  // another name: every lane worktree here shares one Git common directory, so
+  // any lane can point it at a commit origin has never held with an ordinary
+  // `git update-ref`, and authorize itself with no push, no key and no
+  // privilege. The caller resolves the SHA the way gate/land.sh already
+  // resolves its push target -- `git ls-remote --refs origin refs/heads/<t>` --
+  // and a SHA cannot be substituted after it is resolved.
   for (const rejected of ["--authorization", "--signature", "--allowed-signers", "--decision-id", "--decision-file"]) {
     if (Bun.argv.includes(rejected)) die("caller-controlled-trust-root-refused");
   }
+  if (Bun.argv.includes("--target-branch")) die("ref-name-is-not-an-authority-root");
   const repo = resolve(arg("--repo"));
-  const target = arg("--target-branch");
-  if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(target) || target.includes("..")) die("invalid-target-branch");
-  // A lane branch can exist on origin, so it is not an authority root: only an
-  // integration branch reaches origin through this gate's review requirement.
-  if (/^ag-/.test(target)) die("lane-branch-not-an-authority-root");
-  const rev = `refs/remotes/origin/${target}`;
-  if (git(repo, ["rev-parse", "--verify", "--quiet", `${rev}^{tree}`]).exitCode !== 0) die(`origin-target-missing ref=${rev}`);
-  const scan = git(repo, ["grep", "-l", "-E", "-e", `^${DECISION_MARKER}`, rev, "--", `${DECISION_DIR}/`]);
-  if (scan.exitCode !== 0 && scan.exitCode !== 1) die(`decision-scan-failed ref=${rev}`);
+  const targetSha = arg("--target-sha").toLowerCase();
+  if (!/^[0-9a-f]{40}$/.test(targetSha)) die("invalid-target-sha");
+  if (git(repo, ["rev-parse", "--verify", "--quiet", `${targetSha}^{tree}`]).exitCode !== 0) die(`origin-target-missing sha=${targetSha}`);
+  const scan = git(repo, ["grep", "-l", "-z", "-E", "-e", `^${DECISION_MARKER}`, targetSha, "--", `${DECISION_DIR}/`]);
+  if (scan.exitCode !== 0 && scan.exitCode !== 1) die(`decision-scan-failed sha=${targetSha}`);
   const grants: Array<{ decisionId: string; at: string; payload: string; source: string }> = [];
-  for (const line of scan.stdout.toString().split("\n")) {
-    if (!line) continue;
-    const source = line.startsWith(`${rev}:`) ? line.slice(rev.length + 1) : die(`decision-scan-failed ref=${rev}`);
-    const shown = git(repo, ["show", `${rev}:${source}`]);
-    if (shown.exitCode !== 0) die(`decision-unreadable path=${source}`);
-    const shaped = shown.stdout.toString().split("\n").filter((candidate) => candidate.startsWith(DECISION_MARKER));
-    // One file carries at most one authorization, so "which decision authorised
-    // this" has exactly one answer and cannot be padded with extra grants.
+  // `-z` keeps the path bytes raw. Without it Git C-quotes any non-ASCII or
+  // special path, and every read of the quoted string fails -- which used to be
+  // a `die`, i.e. one oddly named file under instance/decisions/ took the whole
+  // gate down.
+  for (const entry of scan.stdout.toString().split("\0")) {
+    if (!entry) continue;
+    const source = entry.startsWith(`${targetSha}:`) ? entry.slice(targetSha.length + 1) : die(`decision-scan-failed sha=${targetSha}`);
+    const shown = git(repo, ["show", `${targetSha}:${source}`]);
+    if (shown.exitCode !== 0) { warn(`decision-unreadable path=${source}`); continue; }
+    const shaped = frontmatterGrants(shown.stdout.toString());
+    if (shaped.length === 0) continue;
+    // Filter by item BEFORE any strict check. A decision file that does not
+    // name this item is not this item's business: it is skipped, never a die.
+    // Every refusal below used to fire ahead of this filter, so one malformed,
+    // archived or hostile file aborted every landing of every item -- including
+    // the landing of the branch that would delete it, which left no repair path
+    // through the gate at all. A bad decision must fail that decision only.
+    if (!shaped.some((line) => line.includes(` item=${itemId} `))) {
+      if (shaped.length !== 1 || !DECISION_LINE.test(shaped[0]!)) warn(`decision-ignored-not-this-item path=${source}`);
+      continue;
+    }
+    // From here the file DOES name this item, so it is held to the whole
+    // contract: an authorization-shaped line for this item is never silently
+    // ignored, and a file that names it cannot be padded with extra grants, so
+    // "which decision authorised this" has exactly one answer.
     if (shaped.length !== 1) die(`multiple-authorizations path=${source} count=${shaped.length}`);
     const parsed = DECISION_LINE.exec(shaped[0]!);
     if (!parsed) die(`malformed-authorization path=${source}`);
@@ -208,13 +310,13 @@ if (command === "round") {
     // reader can go from the audit record straight to the operator's words.
     if (source !== `${DECISION_DIR}/${decisionId}.md`) die(`decision-id-path-mismatch path=${source} decision=${decisionId}`);
     if (authorizedItem !== itemId) continue;
-    const dated = git(repo, ["log", "-1", "--format=%cI", rev, "--", source]);
+    const dated = git(repo, ["log", "-1", "--format=%cI", targetSha, "--", source]);
     const at = dated.exitCode === 0 ? dated.stdout.toString().trim() : "";
     if (!at) die(`decision-provenance-missing path=${source}`);
     grants.push({ decisionId, at, source, payload: `operator-unpark-v2\nitem-id=${itemId}\ndecision-id=${decisionId}\nsource=${source}\nauthorized-at=${at}\n` });
   }
   if (grants.length === 0) {
-    console.log(`REVIEW_ROUNDS status=unpark-none item=${itemId} ref=${rev}`);
+    console.log(`REVIEW_ROUNDS status=unpark-none item=${itemId} sha=${targetSha}`);
     process.exit(0);
   }
   for (const grant of grants.sort((left, right) => left.decisionId.localeCompare(right.decisionId))) {

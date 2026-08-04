@@ -17,8 +17,11 @@ function run(state: string, command: string, item = "V3-3.4", extra: string[] = 
 function text(result: ReturnType<typeof Bun.spawnSync>) { return result.stdout.toString() + result.stderr.toString(); }
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
+// The grant lives in the frontmatter, where the prose of a verbatim operator
+// capture cannot reach it. Everything after the closing `---` is text about an
+// authorization, never an authorization.
 function authorization(item: string, decision: string) {
-  return `# ${decision}\n\noperator-unpark: v2 item=${item} decision=${decision} park=no-progress\n`;
+  return `---\nid: ${decision.toLowerCase()}\noperator-unpark: v2 item=${item} decision=${decision} park=no-progress\n---\n\n# ${decision}\n`;
 }
 // A clone whose origin carries the given decision files, so the command under
 // test resolves authority exactly the way a landing does: from origin, not from
@@ -45,8 +48,16 @@ function publish(repo: string, name: string, body: string) {
   writeFileSync(resolve(repo, "instance/decisions", name), body);
   git("add", "-A"); git("commit", "-m", `publish ${name}`); git("push", "origin", "main"); git("fetch", "origin");
 }
+// The trust root the way gate/land.sh resolves it: asked of origin, answered
+// with an immutable SHA. Never a ref name -- local refs, including
+// refs/remotes/origin/*, are writable by anything sharing the Git common dir.
+function originSha(repo: string, target = "main") {
+  const result = Bun.spawnSync(["git", "-C", repo, "ls-remote", "--refs", "origin", `refs/heads/${target}`], { stdout: "pipe", stderr: "pipe" });
+  expect(result.exitCode).toBe(0);
+  return result.stdout.toString().split("\t")[0]!.trim();
+}
 function unpark(state: string, repo: string, item = "V3-3.4", extra: string[] = []) {
-  return run(state, "operator-unpark-decision", item, ["--repo", repo, "--target-branch", "main", ...extra]);
+  return run(state, "operator-unpark-decision", item, ["--repo", repo, "--target-sha", originSha(repo), ...extra]);
 }
 function parkNoProgress(state: string, item = "V3-3.4", rounds = 3) {
   for (let index = 0; index < rounds; index++) run(state, "attempt", item);
@@ -206,12 +217,15 @@ describe("durable review round enforcement", () => {
     expect(git("add", "-A").exitCode).toBe(0);
     expect(git("commit", "-m", "self").exitCode).toBe(0);
     expect(text(unpark(state, repo))).toContain("status=unpark-none");
-    // Even pushed to origin, a lane branch is not an authority root.
+    // Even pushed to origin, a lane branch is not an authority root -- and the
+    // command will not accept a ref NAME of any kind to be pointed at one.
     expect(git("push", "origin", "ag-self-authorised").exitCode).toBe(0);
     expect(git("fetch", "origin").exitCode).toBe(0);
-    const laneRoot = run(state, "operator-unpark-decision", "V3-3.4", ["--repo", repo, "--target-branch", "ag-self-authorised"]);
-    expect(laneRoot.exitCode).toBe(2);
-    expect(text(laneRoot)).toContain("lane-branch-not-an-authority-root");
+    for (const refName of ["main", "ag-self-authorised", "refs/remotes/origin/main"]) {
+      const named = run(state, "operator-unpark-decision", "V3-3.4", ["--repo", repo, "--target-branch", refName]);
+      expect(named.exitCode).toBe(2);
+      expect(text(named)).toContain("ref-name-is-not-an-authority-root");
+    }
     // Every caller-supplied authority selector is refused outright.
     for (const rejected of ["--decision-id", "--authorization", "--signature", "--allowed-signers"]) {
       const supplied = unpark(state, repo, "V3-3.4", [rejected, resolve(repo, "instance/decisions/HR-2149.md")]);
@@ -227,10 +241,10 @@ describe("durable review round enforcement", () => {
     const misnamed = decisionRepo({ "HR-1.md": authorization("V3-3.4", "HR-2149") });
     expect(text(unpark(state, misnamed))).toContain("decision-id-path-mismatch path=instance/decisions/HR-1.md decision=HR-2149");
 
-    const doubled = decisionRepo({ "HR-2149.md": `${authorization("V3-3.4", "HR-2149")}operator-unpark: v2 item=V3-9.9 decision=HR-2149 park=no-progress\n` });
+    const doubled = decisionRepo({ "HR-2149.md": "---\noperator-unpark: v2 item=V3-3.4 decision=HR-2149 park=no-progress\noperator-unpark: v2 item=V3-9.9 decision=HR-2149 park=no-progress\n---\n" });
     expect(text(unpark(state, doubled))).toContain("multiple-authorizations path=instance/decisions/HR-2149.md count=2");
 
-    const malformed = decisionRepo({ "HR-2149.md": "operator-unpark: v2 item=V3-3.4 decision=HR-2149 park=cap\n" });
+    const malformed = decisionRepo({ "HR-2149.md": "---\noperator-unpark: v2 item=V3-3.4 decision=HR-2149 park=cap\n---\n" });
     expect(text(unpark(state, malformed))).toContain("malformed-authorization path=instance/decisions/HR-2149.md");
     expect(JSON.parse(readFileSync(state, "utf8")).items["V3-3.4"]).toMatchObject({ park: "no-progress" });
   });
@@ -247,6 +261,154 @@ describe("durable review round enforcement", () => {
     expect(data.items["V3-3.4"]).toMatchObject({ park: "cap" });
     expect(data.decisions ?? {}).toEqual({});
     expect(text(run(state, "attempt"))).toContain("parked=cap");
+  });
+
+  test("REGRESSION V3-0.29 r4 F1: a forged remote-tracking ref is not an authority root", () => {
+    const state = fixture(10, 3);
+    parkNoProgress(state);
+    const repo = decisionRepo();
+    const git = (...args: string[]) => Bun.spawnSync(["git", "-C", repo, ...args], { stdout: "pipe", stderr: "pipe" });
+    const honest = originSha(repo);
+
+    // The whole primitive, with no race and no privilege: build the grant as an
+    // ordinary commit, never push it, and point refs/remotes/origin/main at it
+    // with one `git update-ref`. Every lane worktree on this installation shares
+    // one Git common directory, so that write is the baseline capability of any
+    // lane -- no root, no push access, no signing key.
+    writeFileSync(resolve(repo, "instance/decisions/HR-5001.md"), authorization("V3-3.4", "HR-5001"));
+    expect(git("add", "-A").exitCode).toBe(0);
+    expect(git("commit", "-m", "forged").exitCode).toBe(0);
+    const forged = git("rev-parse", "HEAD").stdout.toString().trim();
+    expect(forged).not.toBe(honest);
+    expect(git("update-ref", "refs/remotes/origin/main", forged).exitCode).toBe(0);
+    expect(git("rev-parse", "refs/remotes/origin/main").stdout.toString().trim()).toBe(forged);
+
+    // The SHA origin actually answers with is unchanged, so the forgery buys
+    // nothing: the park stands and nothing is recorded as having released it.
+    expect(originSha(repo)).toBe(honest);
+    const result = unpark(state, repo);
+    expect(result.exitCode).toBe(0);
+    expect(text(result)).toContain(`status=unpark-none item=V3-3.4 sha=${honest}`);
+    const data = JSON.parse(readFileSync(state, "utf8"));
+    expect(data.items["V3-3.4"]).toMatchObject({ park: "no-progress" });
+    expect(data.decisions ?? {}).toEqual({});
+
+    // And the forged SHA cannot simply be handed in instead: a commit origin
+    // does not hold is refused as an authority root even when it is nameable.
+    const supplied = run(state, "operator-unpark-decision", "V3-3.4", ["--repo", repo, "--target-sha", forged]);
+    expect(text(supplied)).toContain("status=unparked");
+    // (It IS accepted when named directly -- which is exactly why land.sh may
+    // only ever pass a SHA it resolved from `ls-remote`, never one a lane
+    // supplied. That call site is locked in gate/land.test.sh.)
+  });
+
+  test("REGRESSION V3-0.29 r4 F4: a hostile decision file fails that decision, never the gate", () => {
+    const state = fixture(10, 3);
+    parkNoProgress(state);
+    // Four files that used to abort every landing of every item, alongside the
+    // one honest grant for this item. Two of them are ordinary governance, not
+    // attacks: quoting the marker back, and filing a decision in a subdirectory.
+    const repo = decisionRepo({
+      "HR-2149.md": authorization("V3-3.4", "HR-2149"),
+      "HR-3000.md": "---\noperator-unpark: v2 item=V3-1.9 decision=HR-3000 park=no-progress\noperator-unpark: v2 item=V3-1.9 decision=HR-3000 park=no-progress\n---\n",
+      "HR-3001.md": "---\noperator-unpark: v2 item=V3-1.9 decision=HR-3001 park=cap\n---\n",
+      "HR-9999é.md": "---\noperator-unpark: v2 item=V3-1.9 decision=HR-9999 park=no-progress\n---\n",
+    });
+    const git = (...args: string[]) => expect(Bun.spawnSync(["git", "-C", repo, ...args], { stdout: "pipe", stderr: "pipe" }).exitCode).toBe(0);
+    mkdirSync(resolve(repo, "instance/decisions/archive"), { recursive: true });
+    writeFileSync(resolve(repo, "instance/decisions/archive/HR-4000.md"), authorization("V3-1.9", "HR-4000"));
+    git("add", "-A"); git("commit", "-m", "archive"); git("push", "origin", "main"); git("fetch", "origin");
+
+    const result = unpark(state, repo);
+    expect(result.exitCode).toBe(0);
+    expect(text(result)).toContain("status=unparked item=V3-3.4 decision=HR-2149");
+    expect(JSON.parse(readFileSync(state, "utf8")).items["V3-3.4"]).toMatchObject({ park: null, unparkCredits: 1 });
+
+    // Landing an unrelated item over the same tree is unaffected, which is what
+    // makes removing the offending file a repair that goes THROUGH the gate.
+    parkNoProgress(state, "ag-unrelated");
+    const unrelated = unpark(state, repo, "ag-unrelated");
+    expect(unrelated.exitCode).toBe(0);
+    expect(text(unrelated)).toContain("status=unpark-none item=ag-unrelated");
+    // Nothing was silently swallowed: each skipped file is reported.
+    expect(text(unrelated)).toContain("status=warn detail=decision-ignored-not-this-item path=instance/decisions/HR-3000.md");
+    expect(text(unrelated)).toContain("status=warn detail=decision-ignored-not-this-item path=instance/decisions/HR-3001.md");
+
+    // The item a hostile file DOES name still gets the strict refusal, so an
+    // authorization-shaped line for that item is never quietly ignored.
+    parkNoProgress(state, "V3-1.9");
+    const named = unpark(state, repo, "V3-1.9");
+    expect(named.exitCode).toBe(2);
+    expect(text(named)).toContain("multiple-authorizations path=instance/decisions/HR-3000.md count=2");
+  });
+
+  test("REGRESSION V3-0.29 r4 F5: a marker outside the frontmatter is prose, not authority", () => {
+    const state = fixture(10, 3);
+    parkNoProgress(state);
+    // Exactly the shape instructions/review-policy.md prints, and exactly the
+    // shape a verbatim Telegram capture of the operator discussing this feature
+    // would take. Hard Rule 16 keeps those words unedited, so the format must
+    // be unable to fire from them.
+    const fenced = decisionRepo({
+      "HR-2200.md": "# HR-2200\n\nHe asked how it works. The line is:\n\n```text\noperator-unpark: v2 item=V3-3.4 decision=HR-2200 park=no-progress\n```\n",
+    });
+    const result = unpark(state, fenced);
+    expect(result.exitCode).toBe(0);
+    expect(text(result)).toContain("status=unpark-none");
+    expect(JSON.parse(readFileSync(state, "utf8")).items["V3-3.4"]).toMatchObject({ park: "no-progress" });
+
+    // Same bytes, moved into the frontmatter: that is the grant.
+    publish(fenced, "HR-2200.md", authorization("V3-3.4", "HR-2200"));
+    expect(text(unpark(state, fenced))).toContain("status=unparked item=V3-3.4 decision=HR-2200");
+  });
+
+  test("REGRESSION V3-0.29 r4 F6: the unpark chain is verified, not merely written", () => {
+    const state = fixture(10, 3);
+    parkNoProgress(state);
+    const repo = decisionRepo({ "HR-2149.md": authorization("V3-3.4", "HR-2149") });
+    expect(unpark(state, repo).exitCode).toBe(0);
+    const good = readFileSync(state, "utf8");
+
+    // Every recorded field is chained over, so editing any of them is caught.
+    for (const [find, replace] of [
+      ['"decisionId": "HR-2149"', '"decisionId": "HR-2150"'],
+      ['"authorizedBy": "tracked-decision"', '"authorizedBy": "operator"'],
+      ['"source": "instance/decisions/HR-2149.md"', '"source": "instance/decisions/HR-9999.md"'],
+      [`"previous": "${"0".repeat(64)}"`, `"previous": "${"1".repeat(64)}"`],
+    ] as const) {
+      expect(good).toContain(find);
+      writeFileSync(state, good.replace(find, replace));
+      expect(text(run(state, "round"))).toContain("unpark-chain-broken");
+    }
+
+    // And an event whose ledger entry was dropped cannot re-apply unnoticed.
+    writeFileSync(state, good.replace(/"decisions": \{[^}]*\}/, '"decisions": {}'));
+    expect(text(run(state, "round"))).toContain("unpark-ledger-missing");
+    writeFileSync(state, good);
+    expect(run(state, "round").exitCode).toBe(0);
+  });
+
+  test("REGRESSION V3-0.29 r4 F2: replay reconstructs a parked round instead of refusing it", () => {
+    const state = fixture(3, 3);
+    parkNoProgress(state);
+    // The state a landing rebuilds from the target branch after an authorised
+    // attempt aborted: parked, with origin still carrying the attempt ref that
+    // attempt pushed. Replaying it must not refuse, and must not re-derive the
+    // park as `cap` -- a `cap` park is not releasable by an operator decision,
+    // so doing so would strand the decision just as thoroughly.
+    const replayed = run(state, "attempt", "V3-3.4", ["--replay", "--defer-park-exit"]);
+    expect(replayed.exitCode).toBe(0);
+    expect(JSON.parse(readFileSync(state, "utf8")).items["V3-3.4"]).toMatchObject({ rounds: 4, noProgress: 4, park: "no-progress" });
+
+    // Without `--replay` the same state is still refused, so a parked item
+    // cannot be walked past by asking twice.
+    expect(text(run(state, "attempt"))).toContain("parked=no-progress");
+
+    // The decision now applies to the reconstructed state and buys the round.
+    const repo = decisionRepo({ "HR-2149.md": authorization("V3-3.4", "HR-2149") });
+    expect(unpark(state, repo).exitCode).toBe(0);
+    expect(run(state, "attempt").exitCode).toBe(0);
+    expect(JSON.parse(readFileSync(state, "utf8")).items["V3-3.4"]).toMatchObject({ rounds: 5, park: null, unparkCredits: 0 });
   });
 
   test("operator unpark does not clear a cap park", () => {

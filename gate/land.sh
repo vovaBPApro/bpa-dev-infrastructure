@@ -167,6 +167,18 @@ if [ -n "$target_branch" ]; then
     echo "LAND target-branch missing-origin target=$target_branch" >&2
     land_fail target-branch 2
   fi
+  # A lane branch can exist on origin, so it is not an authority root: only an
+  # integration branch reaches origin through this gate's review requirement,
+  # which is the whole reason a decision tracked there means anything. This
+  # check lives here because this is the only layer that still sees a branch
+  # NAME -- the unpark authority itself now takes an immutable SHA and refuses
+  # ref names outright.
+  case "$target_branch" in
+    ag-*)
+      echo "LAND target-branch lane-branch-not-an-authority-root target=$target_branch" >&2
+      land_fail target-branch 2
+      ;;
+  esac
   default_branch="$target_branch"
 fi
 
@@ -193,6 +205,20 @@ if [ "$(git -C "$repo" rev-parse "$default_branch")" != "$(git -C "$repo" rev-pa
   land_fail freshness 2
 fi
 pre_merge_sha=$(git -C "$repo" rev-parse "$default_branch")
+# The one commit origin actually holds, asked of origin. Local refs -- including
+# refs/remotes/origin/* -- are writable by any lane sharing this Git common
+# directory, so they are not evidence of what origin carries. This SHA is the
+# trust root for the tracked-decision unpark authority below, and it is
+# immutable once resolved: nothing a lane writes afterwards can substitute it.
+target_authority_sha=$(git -C "$repo" ls-remote --refs origin "refs/heads/$default_branch" 2>/dev/null | awk 'NR == 1 { print $1 }')
+if [ -z "$target_authority_sha" ] || [ "$target_authority_sha" != "$pre_merge_sha" ]; then
+  echo "LAND freshness origin-target-mismatch target=$default_branch origin=${target_authority_sha:-missing} local=$pre_merge_sha" >&2
+  land_fail freshness 2
+fi
+if ! git -C "$repo" rev-parse --verify --quiet "${target_authority_sha}^{commit}" >/dev/null; then
+  echo "LAND freshness origin-target-object-missing sha=$target_authority_sha" >&2
+  land_fail freshness 2
+fi
 land_pass freshness
 
 # Bind caller input to tracked authority on the target branch. Instance repos
@@ -277,7 +303,13 @@ while IFS=$'\t' read -r attempt_sha attempt_ref; do
     echo "LAND review-rounds nonsequential-attempt-ref expected=$((rounds + 1)) found=$attempt_round" >&2
     land_fail review-rounds 2
   fi
-  if ! "$BUN_BIN" "$script_dir/review-rounds.ts" attempt --defer-park-exit --state "$review_round_state" --item-id "$item_id" >/dev/null; then
+  # --replay: this ref proves the round happened, so reconstruct it instead of
+  # re-admitting it. A parked reconstructed state is not a refusal here -- the
+  # operator authorities below have not run yet, and dying at this point is what
+  # made one aborted landing strand a one-time decision forever. The park is
+  # carried forward untouched; if nothing releases it, the attempt and check
+  # steps further down still refuse the landing.
+  if ! "$BUN_BIN" "$script_dir/review-rounds.ts" attempt --replay --defer-park-exit --state "$review_round_state" --item-id "$item_id" >/dev/null; then
     land_fail review-rounds 2
   fi
   rounds=$attempt_round
@@ -318,10 +350,11 @@ done <<< "$unpark_refs"
 # repository already has a trust root of exactly the right shape --
 # instance/decisions/ reaches origin only through this gate, which requires an
 # independent review for gate-policy paths. The item id passed here is the same
-# tracked-authority id the review-item guard already bound above, and the target
-# is read from the remote-tracking ref, never from the working tree or $branch.
+# tracked-authority id the review-item guard already bound above, and the content
+# root is the immutable SHA origin answered with, never a ref name, the working
+# tree, or $branch.
 if ! "$BUN_BIN" "$script_dir/review-rounds.ts" operator-unpark-decision \
-    --state "$review_round_state" --item-id "$item_id" --repo "$repo" --target-branch "$default_branch"; then
+    --state "$review_round_state" --item-id "$item_id" --repo "$repo" --target-sha "$target_authority_sha"; then
   land_fail review-rounds 2
 fi
 
@@ -389,18 +422,32 @@ if ! git -C "$repo" diff --quiet "$payload_base..$branch" -- "$operator_unpark_c
 fi
 # A candidate may still record decisions -- that is ordinary governance work --
 # but it may not land one that carries an unpark authorization, because that is
-# the authorization this same gate reads back as authority. The directory and
-# marker below are the pair review-rounds.ts scans; they must stay identical.
+# the authorization this same gate reads back as authority. What counts as an
+# authorization here is exactly what review-rounds.ts reads back: the marker at
+# column 1 inside the file's YAML frontmatter. The two must stay identical --
+# reserving less would let a lane land its own authority, and reserving more
+# would block the operator's verbatim words whenever they quote the format.
+# -z keeps path bytes raw. Without it Git C-quotes any non-ASCII or special
+# path, `cat-file -e` on the quoted string fails, and the && short-circuited the
+# whole check into "not a reserved path" -- so naming the file HR-9999<eacute>.md
+# walked a self-authored authorization straight past this guard.
 operator_unpark_decision_dir="instance/decisions"
-operator_unpark_decision_marker="^operator-unpark: v2 "
-while IFS= read -r decision_path; do
+while IFS= read -r -d '' decision_path; do
   [ -n "$decision_path" ] || continue
-  if git -C "$repo" cat-file -e "$branch:$decision_path" 2>/dev/null &&
-     git -C "$repo" show "$branch:$decision_path" | grep -qE "$operator_unpark_decision_marker"; then
+  git -C "$repo" cat-file -e "$branch:$decision_path" 2>/dev/null || continue
+  # Read the blob first: with `set -o pipefail` a failing reader on the left of
+  # a pipe would mask a positive match on the right, which is the same
+  # short-circuit-into-"safe" shape that F3 exploited.
+  decision_blob=$(git -C "$repo" show "$branch:$decision_path") || land_fail payload-guard 2
+  if printf '%s\n' "$decision_blob" | awk '
+      NR == 1 { if ($0 != "---") exit; infm = 1; next }
+      infm && $0 == "---" { infm = 0; closed = 1 }
+      infm && index($0, "operator-unpark: v2 ") == 1 { found = 1 }
+      END { exit (found && closed ? 0 : 1) }'; then
     echo "LAND step=payload-guard status=fail detail=reserved-path path=$decision_path" >&2
     land_fail payload-guard 2
   fi
-done < <(git -C "$repo" diff --name-only "$payload_base..$branch" -- "$operator_unpark_decision_dir/")
+done < <(git -C "$repo" diff -z --name-only "$payload_base..$branch" -- "$operator_unpark_decision_dir/")
 if ! land_payload_guard "$repo" "$branch"; then
   echo "LAND verdict=aborted sha=$merge_sha" >&2
   exit 2

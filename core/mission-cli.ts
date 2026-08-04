@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DurableStore, FencedTransitionError } from "./state";
 import { lineValue } from "../gate/report-contract";
+import { isMissionCliAction } from "./mission-cli-actions";
 
 const path = () => process.env.INFRA_STATE_DB || resolve(import.meta.dir, "..", "runtime", "state.db");
 // The repository this lane's evidence lives in. Defaults to mission-cli.ts's
@@ -43,9 +44,14 @@ function run(args: string[]): void {
   const store = new DurableStore(database, Number.isSafeInteger(injected) ? { now: () => injected } : {});
   try {
     const [group, action, ...v] = args;
+    if (!isMissionCliAction(group ?? "", action)) throw new Error(`unknown action: ${[group, action].filter(Boolean).join(" ") || "missing"}`);
     if (group === "mission" && action === "create" && v.length === 2) {
       const id = crypto.randomUUID(); store.createMission({ id, correlationId: required(v[0], "correlation id"), acceptanceId: required(v[1], "acceptance id") });
       console.log(`MISSION id=${id} state=queued`); return;
+    }
+    if (group === "mission" && action === "complete" && v.length === 1) {
+      store.completeMission(required(v[0], "mission id"));
+      console.log(`MISSION id=${v[0]} state=clean`); return;
     }
     if (group === "manager" && action === "create" && v.length === 2) {
       store.createManager({ id: required(v[1], "manager id"), missionId: required(v[0], "mission id"), parentId: v[0]!, depth: 1 });
@@ -102,9 +108,12 @@ function run(args: string[]): void {
     }
     if (group === "outbox" && action === "enqueue" && v.length === 4) { store.enqueueOutbox({ id:v[0]!, channel:v[1]!, dedupeKey:v[2]!, payload:JSON.parse(v[3]!) }); console.log("OUTBOX"); return; }
     if (group === "status" && action === undefined) { console.log(JSON.stringify(store.reconstruct())); return; }
-    throw new Error("usage: mission create <correlation> <acceptance> | manager create <mission> <manager> | lane create <mission> <manager> <lane> <acceptance> <retries> | lane claim <lane> <owner> <lease-ms> | lane ack <lane> <owner> <token> | lane progress <lane> <owner> <token> <evidence> | lane complete <lane> <owner> <token> <sha> <report-path> <clean|NO-GO> <branch> | outbox enqueue ... | status");
+    throw new Error("usage: mission create <correlation> <acceptance> | mission complete <mission> | manager create <mission> <manager> | lane create <mission> <manager> <lane> <acceptance> <retries> | lane claim <lane> <owner> <lease-ms> | lane ack <lane> <owner> <token> | lane progress <lane> <owner> <token> <evidence> | lane complete <lane> <owner> <token> <sha> <report-path> <clean|NO-GO> <branch> | outbox enqueue ... | status");
   } finally { store.close(); }
 }
 
 try { run(Bun.argv.slice(2)); }
-catch (error) { console.error(`ERROR ${error instanceof FencedTransitionError ? "FENCED" : error instanceof Error ? error.message : String(error)}`); process.exitCode = 1; }
+// A fenced refusal keeps its stable `FENCED` class token AND carries the
+// reason the store constructed. Failing closed without saying why is correct
+// behaviour delivered uselessly: the operator debugs the wrong thing.
+catch (error) { console.error(`ERROR ${error instanceof FencedTransitionError ? `FENCED ${error.message}` : error instanceof Error ? error.message : String(error)}`); process.exitCode = 1; }

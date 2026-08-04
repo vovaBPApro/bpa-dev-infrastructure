@@ -61,6 +61,25 @@ export class DurableStore {
     this.tx(() => this.db.query("INSERT INTO missions VALUES (?, ?, ?, 'queued', ?, ?)").run(input.id, input.correlationId, input.acceptanceId, this.now(), this.now()));
   }
 
+  completeMission(id: string): void {
+    this.required(id, "mission id");
+    this.tx(() => {
+      const mission = this.db.query("SELECT state FROM missions WHERE id=?").get(id) as { state: string } | null;
+      if (!mission) throw new SchemaError(`unknown mission: ${id}`);
+      if (mission.state === "clean") return;
+      const lanes = this.db.query("SELECT id, state FROM lanes WHERE mission_id=? ORDER BY id").all(id) as { id: string; state: string }[];
+      if (lanes.length === 0) throw new FencedTransitionError(`mission has no lanes: ${id}`);
+      // Name the lanes that block, not just the mission: the operator's next
+      // action is to go look at a specific lane, and a reason that omits it
+      // sends them to debug the mission row instead.
+      const blocking = lanes.filter(({ state }) => state !== "clean");
+      if (blocking.length) throw new FencedTransitionError(`mission has non-clean lanes: ${id} (${blocking.map(({ id: lane, state }) => `${lane}=${state}`).join(", ")})`);
+      const at = this.now();
+      this.db.query("UPDATE managers SET state='clean', updated_at=? WHERE mission_id=?").run(at, id);
+      this.db.query("UPDATE missions SET state='clean', updated_at=? WHERE id=?").run(at, id);
+    });
+  }
+
   createManager(input: { id: string; missionId: string; parentId: string; depth: number }): void {
     if (input.depth !== 1 || input.parentId !== input.missionId) throw new SchemaError("manager parent/depth must be mission/1");
     this.tx(() => this.db.query("INSERT INTO managers VALUES (?, ?, ?, ?, 'ready', ?, ?)").run(input.id, input.missionId, input.parentId, input.depth, this.now(), this.now()));

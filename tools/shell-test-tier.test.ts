@@ -12,6 +12,7 @@ const repoRoot = join(import.meta.dir, "..");
 
 const requiredTypeScriptExecutors = [
   "tools/check-mechanism-reachability.test.ts",
+  "tools/check-documented-mission-cli.test.ts",
 ] as const;
 
 test("independently pinned TypeScript gate executors still exist", () => {

@@ -1,0 +1,55 @@
+# Referenced-path exemptions for tools/instructions/check.ts:path-exists.
+#
+# That check reads every backticked token in a `status: binding` instruction
+# doc, in CLAUDE.md, and every bare token in instance/params.yaml, and fails
+# when a token that looks like a repo-relative path does not exist. Absence is
+# a FAIL, never a skip: a rule with no predicate is the defect this file's
+# check was built to remove.
+#
+# Format: source<TAB>path<TAB>reason<TAB>note. Keyed on the source+path PAIR,
+# never on the source alone -- a whole-file exemption would silently license
+# every future dangling path added to that file under the original, unrelated
+# justification (the lesson already paid for in instance/unit-path-exemptions.tsv).
+#
+# reason is a closed vocabulary; an unknown value is a hard FAIL:
+#   illustrative   a placeholder path in an example, never meant to resolve
+#   external       outside this repository's tree (another repo, a host path)
+#   planned        deliberately not built yet, tracked in its own row
+#   generated      a deliberately untracked runtime artifact -- presence is host
+#                  state, so the stale-exemption check does not apply to it
+#   pending-<row>  a citation believed FALSE, awaiting the row named here
+#
+# An exemption is a DEBT, not a dismissal. Every row reports as a WARN so it
+# stays visible; a row nobody consults is a FAIL; and a row whose path now
+# exists is a FAIL, so an exemption cannot outlive the reason it was granted.
+#
+# The pending-V3-2.13 rows below are the findings of
+# instance/audits/false-facts-2026-08-04.md plus six the widened check found on
+# its own. V3-2.13 landed the mechanism deliberately without fixing them: some
+# are genuine deletions, some want a redirect, and gate/land-batch.sh is a
+# policy question (should the batch path exist at all) rather than a broken
+# reference. Each becomes its own row now that the checker names it.
+CLAUDE.md	instance/README.md	pending-V3-2.13	F9 -- the installation index named by CLAUDE.md and by HR-735 as the place to check whether the operator already answered; never written on v3
+instance/params.yaml	instance/decisions/inbox.jsonl	generated	raw capture, never tracked: gitignored by instance/decisions/.gitignore, so it is host state in every tree
+instructions/operator-feedback.md	instance/decisions/inbox.jsonl	generated	same artifact as the params.yaml row: gitignored raw capture, deliberately never tracked
+instructions/repository-hygiene.md	instance/decisions/inbox.jsonl	generated	the doc cites it precisely to say it is ignored; the file is host state, not repository content
+instance/params.yaml	instance/handoff-oldorch-2026-07-30.md	pending-V3-2.13	cited as the source for escalation_model and lean_model; the old-orchestrator handoff record was never carried into v3
+instance/params.yaml	instance/migration-day.md	pending-V3-2.13	cited as the source for repos.git_remote and the vm block; not carried into v3
+instance/params.yaml	migration-prep/HUMAN_REQUIREMENTS_MATRIX_2026-07-28.md	pending-V3-2.13	F10 -- operator.timezone cites a file in the absent migration-prep/ directory
+instance/params.yaml	migration-prep/INSTRUCTIONS_CONSILIUM_FINAL.md	pending-V3-2.13	F10 -- phase.active_scope cites the design authority in the absent migration-prep/ directory
+instance/params.yaml	orchestrator/codex-notify-wiring.test.sh	pending-V3-2.13	fallback_model_status: pinned claims this test locks the emitted --model; no such test exists, so the pin has no lock
+instance/params.yaml	orchestrator/model-command.test.sh	pending-V3-2.13	top_model_status: pinned claims this test locks the emitted --model; no such test exists, so the pin has no lock
+instance/params.yaml	tools/state-contract/check.ts	pending-V3-2.13	F6 -- asserted as the fail-closed FLEET-IDLE enforcer; the directory does not exist and nothing enforces it
+instructions/branching-policy.md	gate/land-batch.sh	pending-V3-2.13	F5 -- named by a Hard Floor doc carried in every coder pack; whether the batch path should exist at all is a policy question, not a broken link to repair
+instructions/landing-and-merge.md	gate/land-batch.sh	pending-V3-2.13	F5 -- the gate contract doc names the batch script alongside gate/land.sh
+instructions/orchestrator-playbook.md	gate/land-batch.sh	pending-V3-2.13	F5 -- the playbook routes a reviewed batch to a script that is not there
+instructions/review-policy.md	gate/land-batch.sh	pending-V3-2.13	F5 -- review policy names the batch path as the serialized landing route
+instructions/instruction-layers.md	bpa-dev-infrastructure/instructions/	external	addresses the L1 layer by repository name, so it is deliberately not resolvable relative to this repo root
+instructions/instruction-layers.md	migration-prep/	pending-V3-2.13	F10 -- the directory holding the cited design rationale does not exist
+instructions/instruction-layers.md	migration-prep/INSTRUCTIONS_CONSILIUM_FINAL.md	pending-V3-2.13	F10 -- cited as the full design rationale in every composed pack
+instructions/isolated-test-environments.md	stand/	pending-V3-2.13	found by this check, not in the audit: a coder-baseline doc names stand/ as the repo mechanism for disposable isolation; the directory does not exist
+instructions/isolated-test-environments.md	soak/	pending-V3-2.13	found by this check, not in the audit: the same doc names soak/ for concurrent durable-state exercise; the directory does not exist
+instructions/stands-and-scenarios.md	stand/	pending-V3-2.13	found by this check: the teardown-assertion mechanism is named but not present
+instructions/stands-and-scenarios.md	soak/	pending-V3-2.13	found by this check: the teardown-assertion mechanism is named but not present
+instructions/orchestrator-cold-start.md	runtime/state.db	generated	durable mission state created at runtime by core/mission-cli.ts via INFRA_STATE_DB; never a tracked file
+instructions/repo-layout.md	workspace/repos.conf	pending-V3-2.13	F11 -- named as the machine-readable registry of managed repos; no workspace/ directory exists, and this matters the day a product repo appears

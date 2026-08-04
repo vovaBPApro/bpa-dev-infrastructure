@@ -203,6 +203,75 @@ describe("check.ts", () => {
   });
 });
 
+// End-to-end for the widened check (V3-2.13). The unit-level match rule and
+// exemption semantics live in paths.test.ts; these lock the wiring — that the
+// checker itself goes red on a doc naming a missing path, that an exemption is
+// what makes it green, and that neither can be faked.
+describe("check.ts referenced-path existence", () => {
+  const exemptions = join("instance", "doc-path-exemptions.tsv");
+
+  test("a binding doc naming a missing path fails the whole checker", () => {
+    const repo = repoWith({
+      "binding.md": doc(VALID, "The only path into `main` is `gate/land.sh`, or `gate/land-batch.sh` for a batch.\n"),
+    });
+    writeFileSync(join(repo, "gate", "land.sh"), "");
+    const result = runCheck(repo);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain("FAIL instructions/binding.md [path-exists]");
+    expect(result.stdout).toContain("missing 'gate/land-batch.sh'");
+    // gate/land.sh is written by the fixture builder, so the true citation passes.
+    expect(result.stdout).not.toContain("missing 'gate/land.sh'");
+  });
+
+  test("an exemption turns it green as a visible WARN, and removing it turns it red again", () => {
+    const repo = repoWith({
+      "binding.md": doc(VALID, "Batch landing uses `gate/land-batch.sh`.\n"),
+    });
+    mkdirSync(join(repo, "instance"), { recursive: true });
+    writeFileSync(
+      join(repo, exemptions),
+      "# reason column is a closed vocabulary\n" +
+        "instructions/binding.md\tgate/land-batch.sh\tpending-V3-2.13\tpolicy question, own row\n",
+    );
+    const exempted = runCheck(repo);
+    expect(exempted.status).toBe(0);
+    expect(exempted.stdout).toContain("WARN instructions/binding.md [path-exists]");
+    expect(exempted.stdout).toContain("(reason=pending-V3-2.13)");
+
+    writeFileSync(join(repo, exemptions), "# nothing exempt now\n");
+    const removed = runCheck(repo);
+    expect(removed.status).toBe(1);
+    expect(removed.stdout).toContain("missing 'gate/land-batch.sh'");
+  });
+
+  test("an exemption naming a path that exists is itself rejected", () => {
+    const repo = repoWith({ "binding.md": doc(VALID, "Landing runs `gate/land.sh`.\n") });
+    writeFileSync(join(repo, "gate", "land.sh"), "");
+    mkdirSync(join(repo, "instance"), { recursive: true });
+    writeFileSync(
+      join(repo, exemptions),
+      "instructions/binding.md\tgate/land.sh\tpending-V3-2.13\tstale — the file was written\n",
+    );
+    const result = runCheck(repo);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain("FAIL instance/doc-path-exemptions.tsv [path-exemption]");
+    expect(result.stdout).toContain("now exists — remove this exemption");
+  });
+
+  test("CLAUDE.md and instance/params.yaml are held to the same predicate", () => {
+    const repo = repoWith({ "valid-doc.md": doc(VALID) });
+    mkdirSync(join(repo, "instance"), { recursive: true });
+    writeFileSync(join(repo, "CLAUDE.md"), "Entry points: `instance/README.md`.\n");
+    writeFileSync(join(repo, "instance", "params.yaml"), "  fleet_idle_check: tools/state-contract/check.ts:FLEET-IDLE\n");
+    const result = runCheck(repo);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain("FAIL CLAUDE.md [path-exists]");
+    expect(result.stdout).toContain("missing 'instance/README.md'");
+    expect(result.stdout).toContain("FAIL instance/params.yaml [path-exists]");
+    expect(result.stdout).toContain("missing 'tools/state-contract/check.ts'");
+  });
+});
+
 // Fixed clock for deterministic aging via the LEDGER_NOW_MS test seam.
 const LEDGER_NOW = Date.parse("2026-07-29T12:00:00.000Z");
 

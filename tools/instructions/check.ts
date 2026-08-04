@@ -30,6 +30,7 @@ import {
 } from "./floor.ts";
 import { runLedgerChecks } from "./ledger.ts";
 import { runSessionLoadCheck } from "./session-load.ts";
+import { runPathChecks } from "./paths.ts";
 
 type Options = { repo: string; strict: boolean };
 type Level = "PASS" | "WARN" | "FAIL" | "SKIP";
@@ -278,6 +279,16 @@ for (const doc of docs) {
       record("FAIL", doc.relative, "cmd-exists", `missing '${path}' referenced by command '${command}'`);
     }
   }
+}
+
+// (j) Referenced-path existence: any backticked token in a `status: binding`
+// doc (plus CLAUDE.md and instance/params.yaml, which are asserted to agents
+// the same way) that looks like a repo-relative path must exist. Absence is a
+// FAIL, never a skip; the illustrative/external/planned/generated surface is
+// carried by named exemptions in instance/doc-path-exemptions.tsv, which are
+// themselves checked. Rule and rationale: tools/instructions/paths.ts.
+for (const finding of runPathChecks(options.repo, docs)) {
+  record(finding.level, finding.file, finding.check, finding.detail);
 }
 
 function checkReferences(

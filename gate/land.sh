@@ -423,6 +423,24 @@ if ! "$BUN_BIN" "$repo/hygiene/check-retained-branches.ts" --repo "$repo"; then
 fi
 land_pass retained-branches
 
+# The plan the operator reads and every dispatch decision is made from. V3-0.43:
+# e0cd52b landed a corrupted board through this same gate and it stayed wrong
+# for hours because nothing checked its shape. Only run when the workboard is
+# actually tracked at this SHA -- an unrelated repository/fixture has none.
+if git -C "$repo" ls-files --error-unmatch instance/workboard.md >/dev/null 2>&1; then
+  if ! "$BUN_BIN" "$repo/hygiene/check-workboard-integrity.ts" --workboard "$repo/instance/workboard.md"; then
+    if ! land_force_reset "$repo" "$pre_merge_sha"; then
+      land_fail_rollback workboard-integrity "$pre_merge_sha" "$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)"
+    fi
+    merged=false
+    merge_sha="none"
+    land_fail workboard-integrity
+  fi
+  land_pass workboard-integrity
+else
+  land_skip workboard-integrity
+fi
+
 if [ "$run_verify" = true ]; then
   # Trust model: report verify commands are coder-authored and guard-validated.
   verify_command=$(sed -n 's/^verify:[[:space:]]*//p' "$report" | head -n 1)

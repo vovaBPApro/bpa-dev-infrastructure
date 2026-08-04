@@ -8,24 +8,24 @@ type ApiCall = { method: string; payload: Record<string, unknown> };
 const stateDir = mkdtempSync(join(tmpdir(), 'daemon-decision-handler.'));
 const calls: ApiCall[] = [];
 let messageId = 40;
+mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+writeFileSync(join(stateDir, 'access.json'), JSON.stringify({
+  dmPolicy: 'allowlist',
+  allowFrom: ['7'],
+  groups: {},
+  pending: {},
+}));
+process.env.TELEGRAM_DAEMON_TEST_MODE = '1';
+process.env.TELEGRAM_ACCESS_MODE = 'static';
+process.env.TELEGRAM_STATE_DIR = stateDir;
+process.env.TELEGRAM_BOT_TOKEN = '123456:fixture-token';
+process.env.ORCH_SESSION = '';
 
 let dispatchTool: (name: string, args: Record<string, unknown>) => Promise<unknown>;
 let dispatchUpdate: (update: Record<string, unknown>) => Promise<void>;
 let bufferedDecisionContents: () => string[];
 
 beforeAll(async () => {
-  mkdirSync(stateDir, { recursive: true, mode: 0o700 });
-  writeFileSync(join(stateDir, 'access.json'), JSON.stringify({
-    dmPolicy: 'allowlist',
-    allowFrom: ['7'],
-    groups: {},
-    pending: {},
-  }));
-  process.env.TELEGRAM_DAEMON_TEST_MODE = '1';
-  process.env.TELEGRAM_ACCESS_MODE = 'static';
-  process.env.TELEGRAM_STATE_DIR = stateDir;
-  process.env.TELEGRAM_BOT_TOKEN = '123456:fixture-token';
-  process.env.ORCH_SESSION = '';
   const server = await import('./server');
   server.installBotApiStubForTest(async (method, payload) => {
     calls.push({ method, payload });

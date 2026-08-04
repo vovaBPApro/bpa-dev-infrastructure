@@ -169,7 +169,8 @@ check, so one bad file cannot abort landings for items it does not name. A file
 that does name the item is still held to the whole contract, so an
 authorization-shaped line for that item is never silently ignored — with one
 exception that keeps the repair path inside the gate: a file the landing
-candidate **deletes** is inert, grant and refusal alike. Deletion is
+candidate **deletes** — relative to its merge-base, so mere absence in a lane
+cut earlier does not count — is inert, grant and refusal alike. Deletion is
 retraction, so refusing it would protect an authorization that is being
 removed. Without that, the two most likely operator typos — `park=cap`, or a
 trailing space — bricked precisely the item he was trying to release, including

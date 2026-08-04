@@ -67,4 +67,50 @@ describe("durable review round enforcement", () => {
     expect(text(run(state, "override", "durable", ["--reason", "agent self reset"]))).toContain("unknown-command");
     expect(run(state, "attempt", "durable").exitCode).toBe(2);
   });
+
+  test("REGRESSION V3-0.29: only a signed operator decision clears no-progress and preserves history", () => {
+    const state = fixture(3, 3);
+    for (let index = 0; index < 3; index++) run(state, "attempt");
+    expect(text(run(state, "attempt"))).toContain("parked=no-progress");
+
+    const root = resolve(state, "..");
+    const key = resolve(root, "operator");
+    expect(Bun.spawnSync(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", key]).exitCode).toBe(0);
+    const allowed = resolve(root, "bpa-operator-unpark.allowed-signers");
+    writeFileSync(allowed, `operator namespaces="bpa-operator-unpark" ${readFileSync(`${key}.pub`, "utf8")}`);
+    chmodSync(allowed, 0o600);
+    const authorization = resolve(root, "authorization");
+    const at = "2026-08-04T12:00:00Z";
+    writeFileSync(authorization, `operator-unpark-v1\nitem-id=V3-3.4\ndecision-id=test-unpark-1\nauthorized-by=operator\nauthorized-at=${at}\n`);
+    expect(Bun.spawnSync(["ssh-keygen", "-Y", "sign", "-f", key, "-n", "bpa-operator-unpark", authorization]).exitCode).toBe(0);
+    const args = ["--decision-id", "test-unpark-1", "--authorized-by", "operator", "--authorized-at", at,
+      "--authorization", authorization, "--signature", `${authorization}.sig`];
+
+    const forged = [...args]; forged[forged.indexOf("operator") ] = "lane";
+    expect(run(state, "operator-unpark", "V3-3.4", forged).exitCode).toBe(2);
+    expect(run(state, "operator-unpark", "V3-3.4", args).exitCode).toBe(0);
+    expect(run(state, "attempt").exitCode).toBe(0);
+    const data = JSON.parse(readFileSync(state, "utf8"));
+    expect(data.items["V3-3.4"]).toMatchObject({ rounds: 4, noProgress: 1, park: null, unparkCredits: 0 });
+    expect(data.items["V3-3.4"].unparks[0]).toMatchObject({ decisionId: "test-unpark-1", authorizedBy: "operator" });
+  });
+
+  test("REGRESSION V3-0.29 F2: caller-controlled signer files are refused", () => {
+    const state = fixture(3, 1);
+    expect(text(run(state, "attempt"))).toContain("parked=no-progress");
+    const fake = resolve(state, "../lane-signers");
+    writeFileSync(fake, "lane ssh-ed25519 AAAA\n");
+    const result = run(state, "operator-unpark", "V3-3.4", ["--decision-id", "forged", "--authorized-by", "lane",
+      "--authorized-at", "2026-08-04T12:00:00Z", "--authorization", state, "--signature", state,
+      "--allowed-signers", fake]);
+    expect(result.exitCode).toBe(2);
+    expect(text(result)).toContain("caller-controlled-trust-root-refused");
+  });
+
+  test("operator unpark does not clear a cap park", () => {
+    const state = fixture(1, 3);
+    expect(run(state, "attempt").exitCode).toBe(0);
+    expect(text(run(state, "attempt"))).toContain("parked=cap");
+    expect(text(run(state, "operator-unpark", "V3-3.4", ["--decision-id", "x", "--authorized-by", "operator", "--authorized-at", "2026-08-04T12:00:00Z", "--authorization", state, "--signature", state, "--allowed-signers", state]))).toContain("not-no-progress-park");
+  });
 });

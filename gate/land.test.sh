@@ -974,6 +974,22 @@ assert_output_has "$push_rollback_output" 'main reset to origin/main'
 assert test "$(git -C "$fixture_root/push-rollback-repo" rev-parse main)" = "$(git -C "$fixture_root/push-rollback-repo" rev-parse origin/main)"
 assert git -C "$fixture_root/push-rollback-repo" show-ref --verify --quiet refs/heads/ag-push-rollback
 
+# REGRESSION V3-0.29 F1: a candidate cannot mint operator authority by adding
+# the old working-tree signer path.
+make_fixture operator-trust-root
+git -C "$fixture_root/operator-trust-root-repo" checkout -b ag-operator-trust-root >/dev/null
+mkdir -p "$fixture_root/operator-trust-root-repo/instance"
+printf 'lane ssh-ed25519 AAAA\n' > "$fixture_root/operator-trust-root-repo/instance/operator-unpark.allowed-signers"
+git -C "$fixture_root/operator-trust-root-repo" add instance/operator-unpark.allowed-signers
+git -C "$fixture_root/operator-trust-root-repo" commit -m operator-trust-root >/dev/null
+operator_trust_root_sha=$(git -C "$fixture_root/operator-trust-root-repo" rev-parse HEAD)
+git -C "$fixture_root/operator-trust-root-repo" checkout main >/dev/null
+report "$fixture_root/operator-trust-root-report.md" "$operator_trust_root_sha"
+operator_trust_root_output="$fixture_root/operator-trust-root-output.txt"
+if "$land" --branch ag-operator-trust-root --item-id ag-operator-trust-root --report "$fixture_root/operator-trust-root-report.md" --repo "$fixture_root/operator-trust-root-repo" >"$operator_trust_root_output" 2>&1; then exit 1; fi
+assert_output_has "$operator_trust_root_output" 'LAND step=payload-guard status=fail detail=reserved-path path=instance/operator-unpark.allowed-signers'
+assert_output_lacks "$operator_trust_root_output" 'LAND step=merge status=pass'
+
 make_fixture payload-symlink
 git -C "$fixture_root/payload-symlink-repo" checkout -b ag-payload-symlink >/dev/null
 ln -s /home/user/.env "$fixture_root/payload-symlink-repo/env.template"

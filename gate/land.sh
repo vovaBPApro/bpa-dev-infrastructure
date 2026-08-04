@@ -102,8 +102,11 @@ case "$git_common_dir" in
 esac
 review_round_history_rel=".bpa/review-rounds.json"
 review_round_history="$repo/$review_round_history_rel"
+operator_unpark_candidate_trust_rel="instance/operator-unpark.allowed-signers"
 review_attempt_namespace="refs/bpa-review-attempts"
 review_attempt_mirror_namespace="refs/bpa-review-attempt-mirrors"
+review_unpark_namespace="refs/bpa-review-unparks"
+review_unpark_mirror_namespace="refs/bpa-review-unpark-mirrors"
 case "$git_dir" in
   /*) lock_file="$git_dir/bpa-land.lock" ;;
   *) lock_file="$repo/$git_dir/bpa-land.lock" ;;
@@ -280,6 +283,34 @@ while IFS=$'\t' read -r attempt_sha attempt_ref; do
   rounds=$attempt_round
 done <<< "$attempt_refs"
 
+unpark_prefix="$review_unpark_namespace/$item_key"
+unpark_mirror_prefix="$review_unpark_mirror_namespace/$item_key"
+unpark_refs=$(git -C "$repo" ls-remote --refs origin "$unpark_prefix/*") || land_fail review-rounds 2
+unpark_mirror_refs=$(git -C "$repo" ls-remote --refs origin "$unpark_mirror_prefix/*") || land_fail review-rounds 2
+normalized_unpark_refs=$(printf '%s\n' "$unpark_refs" | sed "s#refs/bpa-review-unparks/#refs/bpa-review-unpark-mirrors/#")
+if [ "$normalized_unpark_refs" != "$unpark_mirror_refs" ]; then
+  echo "LAND review-rounds unpark-mirror-mismatch item=$item_id" >&2
+  land_fail review-rounds 2
+fi
+while IFS=$'\t' read -r unpark_sha unpark_ref; do
+  [ -n "$unpark_ref" ] || continue
+  git -C "$repo" fetch -q origin "$unpark_ref" || land_fail review-rounds 2
+  unpark_tmp=$(mktemp -d)
+  if ! git -C "$repo" show FETCH_HEAD:authorization > "$unpark_tmp/authorization" ||
+     ! git -C "$repo" show FETCH_HEAD:signature > "$unpark_tmp/signature"; then
+    rm -rf "$unpark_tmp"; land_fail review-rounds 2
+  fi
+  decision_id=$(sed -n 's/^decision-id=//p' "$unpark_tmp/authorization")
+  authorized_by=$(sed -n 's/^authorized-by=//p' "$unpark_tmp/authorization")
+  authorized_at=$(sed -n 's/^authorized-at=//p' "$unpark_tmp/authorization")
+  if ! "$BUN_BIN" "$script_dir/review-rounds.ts" operator-unpark --state "$review_round_state" --item-id "$item_id" \
+      --decision-id "$decision_id" --authorized-by "$authorized_by" --authorized-at "$authorized_at" \
+      --authorization "$unpark_tmp/authorization" --signature "$unpark_tmp/signature" >/dev/null; then
+    rm -rf "$unpark_tmp"; land_fail review-rounds 2
+  fi
+  rm -rf "$unpark_tmp"
+done <<< "$unpark_refs"
+
 export LAND_DEFAULT_BRANCH="$default_branch"
 guard_args=("$script_dir/completion-guard.ts" --report "$report" --repo "$repo" --branch "$branch")
 if [ "$run_verify" = true ]; then guard_args+=(--defer-verify); fi
@@ -336,6 +367,10 @@ land_pass branch-tip
 payload_base=$(land_changed_base "$repo" "$branch") || land_fail payload-guard 2
 if ! git -C "$repo" diff --quiet "$payload_base..$branch" -- "$review_round_history_rel"; then
   echo "LAND step=payload-guard status=fail detail=reserved-path path=$review_round_history_rel" >&2
+  land_fail payload-guard 2
+fi
+if ! git -C "$repo" diff --quiet "$payload_base..$branch" -- "$operator_unpark_candidate_trust_rel"; then
+  echo "LAND step=payload-guard status=fail detail=reserved-path path=$operator_unpark_candidate_trust_rel" >&2
   land_fail payload-guard 2
 fi
 if ! land_payload_guard "$repo" "$branch"; then

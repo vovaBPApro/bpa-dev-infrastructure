@@ -78,6 +78,24 @@ An item receives at most three review rounds. A fourth is refused and parked as
 concerns become executable fail-before and pass-after locks; if that cannot be
 done, the item remains parked for recut.
 
+An operator may release only a `no-progress` park with `gate/operator-unpark.sh`.
+The authorization is an exact, versioned statement signed in the
+`bpa-operator-unpark` SSH namespace by a principal pinned in the fixed
+`bpa-operator-unpark.allowed-signers` file in the repository's Git common
+directory; the private key must remain off the agent host. This host-level public
+trust root is provisioned during onboarding, is never read from a candidate tree,
+and cannot be selected with a command-line option. The command publishes the authorization and signature atomically in
+two origin-visible ref namespaces. Landing verifies the mirror and signature,
+retains the decision id, authorizer, time, and hash-chained event in review-round
+history, clears only consecutive no-progress, and grants exactly one additional
+attempt without erasing the round count. It cannot release a `cap` park.
+
+Root equivalence means no mechanism on this host can absolutely stop a malicious
+agent that replaces the Git-common-dir trust file, steals an available signing key, or coordinates rewriting both remote
+namespaces. Keeping the private key off-host prevents supported agents from
+producing authority; paired immutable records make every supported use visible
+and detect one-sided suppression, matching the attempt-ref threat boundary.
+
 The counter is honest-but-not-tamper-resistant while lanes are root-equivalent.
 A root lane can coordinate the same rewrite or deletion across both remote
 namespaces, edit Git-common-dir state, or edit the gate itself; the mirror detects

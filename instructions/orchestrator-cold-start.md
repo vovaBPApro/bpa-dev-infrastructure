@@ -40,6 +40,10 @@ Set the values used below:
 ```sh
 REPO="$(pwd)"
 CORRELATION_ID='replace-with-durable-correlation-id'
+MISSION_ACCEPTANCE_ID='replace-with-mission-acceptance-id'
+LANE_ACCEPTANCE_ID='replace-with-lane-acceptance-id'
+MANAGER_ID='replace-with-manager-id'
+OWNER='replace-with-lane-owner'
 LANE_ID='replace-with-lane-id'
 BRANCH="ag-$LANE_ID"
 LANE_DIR="/absolute/path/to/lanes/$LANE_ID"
@@ -56,10 +60,10 @@ once when the correlation ID is absent, then retain the emitted mission ID.
 
 ```sh
 INFRA_STATE_DB="$REPO/runtime/state.db" bun "$REPO/core/mission-cli.ts" status
-INFRA_STATE_DB="$REPO/runtime/state.db" bun "$REPO/core/mission-cli.ts" mission create "$CORRELATION_ID"
+INFRA_STATE_DB="$REPO/runtime/state.db" bun "$REPO/core/mission-cli.ts" mission create "$CORRELATION_ID" "$MISSION_ACCEPTANCE_ID"
 MISSION_ID='paste-the-emitted-mission-id'
-INFRA_STATE_DB="$REPO/runtime/state.db" bun "$REPO/core/mission-cli.ts" mission transition "$MISSION_ID" running
-INFRA_STATE_DB="$REPO/runtime/state.db" bun "$REPO/core/mission-cli.ts" lane create "$MISSION_ID" "$LANE_ID"
+INFRA_STATE_DB="$REPO/runtime/state.db" bun "$REPO/core/mission-cli.ts" manager create "$MISSION_ID" "$MANAGER_ID"
+INFRA_STATE_DB="$REPO/runtime/state.db" bun "$REPO/core/mission-cli.ts" lane create "$MISSION_ID" "$MANAGER_ID" "$LANE_ID" "$LANE_ACCEPTANCE_ID" 3
 ```
 
 The durable mission artifact must hold the verbatim Human requirement, scope,
@@ -93,9 +97,17 @@ Validate before launch:
 ```
 
 `dispatch-lane.sh` is currently gate-only unless an external launcher is
-supplied. When one is configured, dispatch through the supported tail; the
-script runs `exec <launcher> [launcher-args...] "$PROMPT_FILE"`, so the
-launcher receives its own arguments first and the prompt file path as its final
+supplied. Claim the lane before starting its writer:
+
+```sh
+CLAIM_OUTPUT="$(INFRA_STATE_DB="$REPO/runtime/state.db" bun "$REPO/core/mission-cli.ts" lane claim "$LANE_ID" "$OWNER" 3600000)"
+TOKEN="$(printf '%s\n' "$CLAIM_OUTPUT" | sed -n 's/.* token=\([0-9][0-9]*\).*/\1/p')"
+test -n "$TOKEN"
+```
+
+When a launcher is configured, dispatch through the supported tail; the script
+runs `exec <launcher> [launcher-args...] "$PROMPT_FILE"`, so the launcher
+receives its own arguments first and the prompt file path as its final
 positional argument:
 
 ```sh
@@ -103,12 +115,7 @@ positional argument:
 ```
 
 Do not replace `/absolute/path/to/launcher` with a guessed command. Record the
-actual configured launcher and transition the lane with the real CLI as its
-state changes:
-
-```sh
-INFRA_STATE_DB="$REPO/runtime/state.db" bun "$REPO/core/mission-cli.ts" lane transition "$LANE_ID" running
-```
+actual configured launcher.
 
 ## 2.5. Gate the lane's own terminal report before treating it as done
 
@@ -136,16 +143,16 @@ and both must pass.
 step. `core/mission-cli.ts lane complete` now runs this exact check itself
 and refuses to write a terminal record when it fails (instance/workboard.md
 V3-0.5) — that is the structural version of this same gate, not a second one.
-It requires the owner/token from a live `lane claim` (fenced dispatch), which
-this cold-start path never establishes (see the note at step 5): today the
-prose-driven flow this document describes has no durable, gated record of
-lane completion at all, only this manual gate step. `core/mission-cli.ts`
-also has no `lane transition` or `mission transition` action — every use of
-those two verbs below (this step and step 1, step 5) names a command that
-does not exist; that gap predates and is out of scope for V3-0.5, and is
-recorded here so the next row that touches lane/mission state tracking does
-not have to rediscover it. `mission-cli.ts status` is unaffected and always
-reflects real durable state.
+It requires the owner/token from the live `lane claim` established in step 2.
+After the manual early check passes, record the same guarded terminal result
+through the durable CLI:
+
+```sh
+LANE_SHA="$(git -C "$LANE_DIR" rev-parse HEAD)"
+INFRA_STATE_DB="$REPO/runtime/state.db" INFRA_REPO_DIR="$LANE_DIR" \
+  bun "$REPO/core/mission-cli.ts" lane complete "$LANE_ID" "$OWNER" "$TOKEN" \
+  "$LANE_SHA" "$REPORT_FILE" clean "$BRANCH"
+```
 
 ## 3. Route review
 
@@ -234,19 +241,10 @@ git -C "$REPO" show "$MERGE_SHA" --stat
 ./orchestrator/status.sh
 ```
 
-`lane transition "$LANE_ID" succeeded` and `mission transition "$MISSION_ID"
-succeeded` were written here as the intended durable close-out step, but
-`core/mission-cli.ts` has no `transition` action for either `lane` or
-`mission` (only `create`/`claim`/`ack`/`progress`/`complete` for lanes, a
-fixed `queued` state for missions with no move out of it) — pre-existing,
-found and left open by instance/workboard.md V3-0.5, not a regression from
-this row. Recording this lane as durably `succeeded` today means `lane
-create` + `lane claim` (step 1/2, establishing the owner/token this needs)
-followed by `lane complete "$LANE_ID" "$OWNER" "$TOKEN" "$MERGE_SHA"
-"$REPORT_FILE" clean "$BRANCH"`, which is gated per the note at step 2.5 —
-but this cold-start path as written never calls `lane claim`, so there is no
-live owner/token to complete against. Until a lane/mission transition surface
-exists, closing out this way is manual and best-effort, not durable.
+The lane terminal record was written at step 2.5 against the reviewed lane SHA.
+The CLI has no mission terminal transition; do not invent one or imply that the
+mission itself has been durably closed. Treat that missing lifecycle operation
+as an explicit `NO-GO` row if mission-terminal state is required by the caller.
 
 Report the exact merge SHA, the verification command actually run at that SHA,
 and `result: clean` only when every condition in

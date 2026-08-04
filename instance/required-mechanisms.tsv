@@ -20,6 +20,7 @@ checker:decision-ledger	checker	tools/check-decision-ledger-drift.sh
 checker:github-ref-protection	checker	tools/check-github-ref-protection.sh
 checker:shared-stash	checker	hygiene/check-shared-stash.sh
 checker:mechanism-reachability	checker	tools/check-mechanism-reachability.ts
+checker:documented-mission-cli	checker	tools/check-documented-mission-cli.ts
 checker:retained-branches	checker	hygiene/check-retained-branches.ts
 cron:reap	cron	hygiene/install-cron.sh
 tier:shell	shell-tier	tools/shell-test-tier.test.ts

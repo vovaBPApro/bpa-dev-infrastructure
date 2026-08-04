@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { closeSync, mkdirSync, openSync, statSync } from "fs";
+import { closeSync, lstatSync, mkdirSync, openSync } from "fs";
 import { join } from "path";
 
 // Serialisation and liveness for the shell-test tier.
@@ -30,10 +30,19 @@ export const DEFAULT_LOCK_ROOT = "/tmp/bpa-shell-test-tier-locks";
 
 // Derived from measurement, not chosen. Every pinned shell test was timed
 // individually under deliberate 12-worker load on this 12-core host; the slowest
-// was gate/land.test.sh at 86.35 s (next: bootstrap/bootstrap.test.sh 26.14 s,
-// gate/land-rollback.test.sh 24.37 s; whole-tier sum 200.5 s against 92.5 s
-// idle, so full contention costs about 2.2x). The bound is the worst measurement
-// with a safety factor of 4.
+// was gate/land.test.sh at 86.35 s (next: gate/land-rollback.test.sh 54.46 s,
+// bootstrap/bootstrap.test.sh 27.31 s; whole-tier serial sum 235.4 s against
+// 92.5 s idle, so full contention costs about 2.5x). The bound is the worst
+// measurement with a safety factor of 4.
+//
+// The secondary figures were corrected in round 3. The original comment put
+// gate/land-rollback.test.sh at 24.37 s; two later independent passes measured
+// 52.84 s and 54.46 s, so that figure was wrong by better than 2x. The serial
+// sum moved with it (200.5 s originally, 223.5 s and 235.4 s since). What did
+// NOT move is the constant, and that is the property worth stating: it is
+// derived from the MAXIMUM and not from the sum, and the maximum reproduced
+// across all three passes at 86.35 / 86.00 / 87.49 s — a spread of 1.7%. A 2x
+// error in the second-slowest test does not reach it.
 //
 // The factor is deliberately generous and the asymmetry is the reason: a bound
 // that is too small manufactures the false red this tier exists to eliminate,
@@ -58,6 +67,26 @@ const LOCK_CONFLICT_EXIT = 75;
 
 const WAIT_HEARTBEAT_MS = 15_000;
 
+// Grace for the bounded drain a caller performs after a stall is declared. It is
+// exported because it sits between the moment the watchdog decides and the
+// moment the caller's test throws, so a caller's timeout has to contain it.
+export const DRAIN_GRACE_MS = 5_000;
+
+// Scheduling slack added on top of every quantity a caller's timeout must
+// contain. It is slack and nothing else: it may never be the term that makes a
+// timeout large enough, because then the timeout is a tuned constant again.
+export const TIMEOUT_SLACK_MS = 30_000;
+
+// The watchdog is a poll, so a stall beginning just after a tick is declared up
+// to one whole period late: worst-case detection is stallMs + period, not
+// stallMs. The period must therefore stay bounded rather than grow with the
+// budget it polices. Round 2 derived it as stallMs / 10 with no ceiling, which at
+// DEFAULT_STALL_MS meant a 36 s period and 396 s worst-case detection inside a
+// 390 s per-test timeout — the watchdog armed to decide later than the runner
+// containing it, which is the failure this cap and watchedTestTimeoutMs close.
+export const MONITOR_PERIOD_MIN_MS = 1_000;
+export const MONITOR_PERIOD_MAX_MS = 15_000;
+
 export type ShellTierGuardOptions = {
   /** Directory holding lock files. Tests point this at their own temp tree so
    *  fixtures never mint locks in the shared host root. */
@@ -72,6 +101,10 @@ export type ShellTierGuardOptions = {
 export type WatchableChild = {
   exited: Promise<number>;
   kill(signal?: number | NodeJS.Signals): void;
+  /** Set by bun when the child was terminated by a signal rather than by its own
+   *  exit. The guard reads it to tell "this child finished" from "somebody else
+   *  killed this child", which is how an abandoned watch is detected. */
+  readonly signalCode?: string | null;
 };
 
 export type ShellTierGuard = {
@@ -124,7 +157,7 @@ export function collectStream(stream: ReadableStream<Uint8Array>): CollectedStre
 
 /** Bounded drain: EOF normally arrives at once, and when it does not, the
  *  output already collected is the evidence rather than a reason to hang. */
-export async function drain(streams: CollectedStream[], graceMs = 5_000): Promise<void> {
+export async function drain(streams: CollectedStream[], graceMs = DRAIN_GRACE_MS): Promise<void> {
   await Promise.race([Promise.all(streams.map((s) => s.settled)), Bun.sleep(graceMs)]);
 }
 
@@ -151,16 +184,54 @@ function envMs(name: string, fallback: number): number {
   return parsed;
 }
 
-/** The effective bounds, including any environment override. Callers need these
- *  to size their own timeouts: a bun hook or test timeout below the bound it is
- *  meant to contain would abort the wait or the watchdog before either decides,
- *  which is how a tuned constant reintroduces the failure it was tuned against. */
+/** The effective bounds, including any environment override. A bun hook or test
+ *  timeout below the bound it is meant to contain would abort the wait or the
+ *  watchdog before either decides, which is how a tuned constant reintroduces
+ *  the failure it was tuned against. Callers must therefore size their timeouts
+ *  with lockAcquireTimeoutMs / watchedTestTimeoutMs below, never by adding a
+ *  constant of their own to these. */
 export function resolveLockWaitMs(): number {
   return envMs("SHELL_TIER_LOCK_WAIT_MS", DEFAULT_LOCK_WAIT_MS);
 }
 
 export function resolveStallMs(): number {
   return envMs("SHELL_TIER_STALL_MS", DEFAULT_STALL_MS);
+}
+
+/** How often the stall watchdog looks, bounded above so that worst-case
+ *  detection stays stallMs + a constant instead of stallMs * 1.1. */
+export function monitorPeriodMs(stallMs: number): number {
+  return Math.min(
+    MONITOR_PERIOD_MAX_MS,
+    Math.max(MONITOR_PERIOD_MIN_MS, Math.floor(stallMs / 10)),
+  );
+}
+
+/**
+ * The bun per-test timeout a watched child requires, derived from every quantity
+ * that must elapse before the caller can throw the named stall — never tuned.
+ *
+ *   stallMs            the budget itself
+ * + monitorPeriodMs    the watchdog is a poll; it may see the stall a period late
+ * + DRAIN_GRACE_MS     the caller drains the killed child's output before throwing
+ * + TIMEOUT_SLACK_MS   scheduling slack, and only slack
+ *
+ * If this is smaller than that sum, bun's timeout decides a genuine hang before
+ * the guard does: the failure carries no named reason, the release record says
+ * `stalled=no` for a run that hung, and the tier keeps going. That is V3-0.23's
+ * round-2 rejection, and `shell-test-guard.test.ts` locks this sum directly and
+ * end-to-end at a budget above 300 000 ms, which is the smallest budget at which
+ * the round-2 arithmetic could fail.
+ */
+export function watchedTestTimeoutMs(stallMs: number = resolveStallMs()): number {
+  return stallMs + monitorPeriodMs(stallMs) + DRAIN_GRACE_MS + TIMEOUT_SLACK_MS;
+}
+
+/** The bun hook timeout the acquisition requires. flock(1) enforces the wait
+ *  budget itself, so the only extra term is slack for spawn and identity
+ *  resolution. */
+export function lockAcquireTimeoutMs(lockWaitMs: number = resolveLockWaitMs()): number {
+  return lockWaitMs + TIMEOUT_SLACK_MS;
 }
 
 // The lock is shared across worktrees, so its identity must be a property of the
@@ -202,9 +273,12 @@ function prepareLockPath(lockRoot: string, repoRoot: string): string {
   // flock(1) will lock a directory inode and report success, which is
   // indistinguishable from a healthy acquisition while saying nothing about the
   // file we believe we hold. Assert the target is the regular file we manage.
+  // lstat, not stat: stat resolves symlinks, so a symlinked lock path passed
+  // isFile() while the kernel lock landed on some other inode entirely — the
+  // guard would report holding <digest>.lock and exclude nobody.
   let existing = null;
   try {
-    existing = statSync(lockPath);
+    existing = lstatSync(lockPath);
   } catch {
     existing = null;
   }
@@ -226,6 +300,12 @@ export async function acquireShellTierGuard(
   const lockRoot = options.lockRoot ?? DEFAULT_LOCK_ROOT;
   const lockWaitMs = options.lockWaitMs ?? resolveLockWaitMs();
   const stallMs = options.stallMs ?? resolveStallMs();
+  const lockWaitFrom =
+    options.lockWaitMs !== undefined
+      ? "caller-option"
+      : (process.env.SHELL_TIER_LOCK_WAIT_MS ?? "").trim() !== ""
+        ? "SHELL_TIER_LOCK_WAIT_MS"
+        : "DEFAULT_LOCK_WAIT_MS";
   const emit = options.onEvent ?? ((line: string) => void process.stderr.write(`${line}\n`));
 
   const lockPath = prepareLockPath(lockRoot, repoRoot);
@@ -280,11 +360,20 @@ export async function acquireShellTierGuard(
     const exitCode = await holder.exited;
     const detail = (await new Response(holder.stderr).text()).trim();
     if (exitCode === LOCK_CONFLICT_EXIT) {
+      // The next step must name only a remedy that exists where this message is
+      // read. The landing gate invokes the tier under `env -i` with HOME, CI and
+      // PATH and nothing else (gate/land-lib.sh, land_run_declared_checks), so
+      // SHELL_TIER_LOCK_WAIT_MS is unset there by construction and telling the
+      // reader to raise it would be advice they cannot take. Rerunning the tier
+      // when the fleet is idle always works. `budget-from` says where the number
+      // actually came from, so a reader who does have the override knows whether
+      // it took effect, and a reader inside the gate can see that it did not.
       throw new ShellTierIncomplete("lock-wait-expired", {
         lock: lockPath,
         "waited-ms": waitedMs,
         "wait-budget-ms": lockWaitMs,
-        "next-step": "rerun-the-tier-alone-or-raise-SHELL_TIER_LOCK_WAIT_MS",
+        "budget-from": lockWaitFrom,
+        "next-step": "rerun-the-tier-alone-when-the-fleet-is-idle",
       });
     }
     throw new ShellTierIncomplete("lock-unavailable", {
@@ -305,7 +394,16 @@ export async function acquireShellTierGuard(
   let lastLabel = "tier-start";
   let progressEvents = 0;
   let stalled: string | null = null;
-  let watched: { label: string; child: WatchableChild } | null = null;
+  let watched: { label: string; child: WatchableChild; startedAt: number } | null = null;
+
+  /** Records a stall exactly once and says so on the event stream. Every path
+   *  that ends the tier's liveness goes through here, so `stalled` can never be
+   *  false while the run is known to have hung. */
+  function declareStall(reason: string, fields: Record<string, string | number>): void {
+    if (stalled) return;
+    stalled = new ShellTierIncomplete(reason, fields).message;
+    emit(stalled);
+  }
 
   function noteProgress(label: string): void {
     lastProgressAt = Date.now();
@@ -317,40 +415,102 @@ export async function acquireShellTierGuard(
     return stalled;
   }
 
+  /**
+   * A watch is outstanding only while `watch()` is awaiting that child. Nothing
+   * else in the tier runs during it, so finding one outstanding from anywhere
+   * else means the caller stopped awaiting it without the guard deciding —
+   * bun's per-test timeout, a hook timeout, an outer harness.
+   *
+   * This has to be checked from `assertRunning()` and not only from the next
+   * `watch()`, because bun resolves the killed child's `exited` promise
+   * asynchronously: measured here, the next test can start and ask whether the
+   * tier is running BEFORE `watch()`'s own finally has run. Without this the
+   * answer to that question is "yes" for a run that has already hung.
+   */
+  function noticeAbandonedWatch(detail: string): void {
+    if (stalled || !watched) return;
+    declareStall("watch-abandoned", {
+      "abandoned-label": watched.label,
+      "abandoned-elapsed-ms": Date.now() - watched.startedAt,
+      "stall-budget-ms": stallMs,
+      detail,
+      "next-step": "treat-this-tier-run-as-incomplete",
+    });
+    // Do not leave it watched: the watchdog would otherwise kill it later and
+    // attribute the hang to whichever test happened to be running by then.
+    killWatched();
+    watched = null;
+  }
+
   function assertRunning(): void {
+    noticeAbandonedWatch("outer-runner-stopped-awaiting-a-watched-child");
     if (stalled) throw new Error(stalled);
   }
 
-  const monitor = setInterval(
-    () => {
-      if (released || stalled) return;
-      const idleMs = Date.now() - lastProgressAt;
-      if (idleMs < stallMs) return;
-      stalled =
-        `SHELL_TIER_INCOMPLETE reason=no-progress idle-ms=${idleMs}` +
-        ` stall-budget-ms=${stallMs} last-progress=${lastLabel}` +
-        ` running=${watched ? watched.label : "none"}`;
-      emit(stalled);
-      // Kill the stalled child so its awaited test fails through bun's own
-      // reporter. Exiting the process here would destroy every result the tier
-      // has already produced, which is the evidence this tier exists to produce.
-      try {
-        watched?.child.kill("SIGKILL");
-      } catch {
-        // The child may already be gone; the declared stall still stands.
-      }
-    },
-    Math.max(1_000, Math.floor(stallMs / 10)),
-  );
+  function killWatched(): void {
+    // Kill the stalled child so its awaited test fails through bun's own
+    // reporter. Exiting the process here would destroy every result the tier
+    // has already produced, which is the evidence this tier exists to produce.
+    try {
+      watched?.child.kill("SIGKILL");
+    } catch {
+      // The child may already be gone; the declared stall still stands.
+    }
+  }
+
+  const monitor = setInterval(() => {
+    if (released || stalled) return;
+    const idleMs = Date.now() - lastProgressAt;
+    if (idleMs < stallMs) return;
+    declareStall("no-progress", {
+      "idle-ms": idleMs,
+      "stall-budget-ms": stallMs,
+      "last-progress": lastLabel,
+      running: watched ? watched.label : "none",
+    });
+    killWatched();
+  }, monitorPeriodMs(stallMs));
   monitor.unref?.();
 
   async function watch(label: string, child: WatchableChild): Promise<number> {
+    // Covers re-entry with a previous watch still outstanding: assertRunning
+    // notices it, so this never reassigns `watched` out from under the watchdog.
     assertRunning();
     noteProgress(`start:${label}`);
-    watched = { label, child };
+    const startedAt = Date.now();
+    watched = { label, child, startedAt };
+    let exitedOnItsOwn = false;
     try {
-      return await child.exited;
+      const status = await child.exited;
+      exitedOnItsOwn = true;
+      return status;
     } finally {
+      const elapsedMs = Date.now() - startedAt;
+      // Measured on bun 1.2.22 and 1.3.14: when a per-test timeout fires, bun
+      // SIGTERMs the dangling child, so `exited` resolves and this block runs
+      // exactly as it does on a healthy exit — the guard cannot tell the two
+      // apart by control flow. The signal is what tells them apart. A watched
+      // child that the guard did not kill, and that did not exit on its own
+      // terms, was killed by somebody else, and that somebody decided a hang
+      // before the watchdog could. Left unrecorded it becomes `stalled=no` on a
+      // run that hung plus a re-armed budget for the next test, which is
+      // V3-0.23 round 2's rejection.
+      //
+      // Deliberately not conditioned on elapsedMs reaching the budget: a runner
+      // that kills EARLIER than the budget has out-raced the watchdog by more,
+      // not less, and that is the case a caller who sizes a timeout by hand
+      // produces. `abandoned-elapsed-ms` reports which of the two happened.
+      const signalled = (child.signalCode ?? null) !== null;
+      if (!stalled && exitedOnItsOwn && signalled) {
+        declareStall("watch-abandoned", {
+          "abandoned-label": label,
+          "abandoned-elapsed-ms": elapsedMs,
+          "stall-budget-ms": stallMs,
+          signal: String(child.signalCode),
+          detail: "killed-by-something-other-than-the-watchdog",
+          "next-step": "treat-this-tier-run-as-incomplete",
+        });
+      }
       watched = null;
       noteProgress(`end:${label}`);
     }
@@ -360,6 +520,10 @@ export async function acquireShellTierGuard(
     if (released) return;
     released = true;
     clearInterval(monitor);
+    // The last watch never came back and there is no next test to notice it for
+    // us. Checked before the release record is written, so that record can never
+    // say stalled=no about a run that was still holding a hung child.
+    noticeAbandonedWatch("released-while-a-watched-child-was-still-outstanding");
     emit(
       `SHELL_TIER_RELEASE lock=${lockPath} held-ms=${Date.now() - acquiredAt}` +
         ` waited-ms=${waitedMs} progress-events=${progressEvents}` +

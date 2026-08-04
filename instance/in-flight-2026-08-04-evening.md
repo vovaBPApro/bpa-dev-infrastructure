@@ -99,3 +99,20 @@ reproducing, and reporting the fleet broken on a `usage:` line without establish
 called the script. Each time the announcement was wrong and each time it did **not** act on
 it — no rollback, no landing past a red gate. The pattern to watch: a plausible explanation
 gets stated as established rather than marked as a hypothesis.
+
+## Running at the moment of restart
+
+**`ag-s11-4-r6`**, lane `v3-2.9-rebase-only` — a deliberately narrow round: rebase V3-2.9's
+ACCEPTed work onto current `origin/main`, audit it for position-coupling, run the full
+suite, and stop. It runs as its own systemd unit and is unaffected by the session restart.
+
+**It was told not to run the meteorite and not to land** — both are the orchestrator's, this
+round. Two earlier attempts at the same work died mid-turn because the brief bundled a
+rebase, a ten-minute meteorite and a full suite into one lane. That was the orchestrator's
+error and this round is the correction.
+
+When it finishes: collect `$LANE_REPORT_PATH`
+(`/root/.cache/infra-lanes/v3-2.9-rebase-only.report.md`), then **you** run
+`meteorite/prove-candidate.sh --ref <its SHA>`, then dispatch a re-attestation (its standing
+ACCEPT names `71d1105` and will be stale), then land. If it died mid-turn again, its commits
+are still on the branch — check before re-dispatching.

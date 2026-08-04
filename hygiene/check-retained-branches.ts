@@ -28,6 +28,20 @@ function retainedBranchNames(text: string): string[] {
   return [...names].map((name) => name.replace(/\.review\.md$/, ""));
 }
 
+function parkItemId(filename: string): string | undefined {
+  return filename.match(/^(V\d+-\d+(?:\.\d+)*[a-z]?)-/)?.[1];
+}
+
+function landedWorkboardItems(workboard: string): Set<string> {
+  const landed = new Set<string>();
+  for (const row of workboard.split("\n")) {
+    const cells = row.split("|").map((cell) => cell.trim());
+    const item = cells[1];
+    if (/^V\d+-\d+(?:\.\d+)*[a-z]?$/.test(item ?? "") && /\*\*done\*\*/i.test(row) && /\blanded\b/i.test(row)) landed.add(item);
+  }
+  return landed;
+}
+
 export function expectedBranches(options: Options): Set<string> {
   const expected = new Set<string>();
   for (const raw of readableFile(options.protectedFile, "protected-list").split("\n")) {
@@ -35,6 +49,8 @@ export function expectedBranches(options: Options): Set<string> {
     if (name) expected.add(name);
   }
 
+  const workboard = readableFile(options.workboard, "workboard");
+  const landedItems = landedWorkboardItems(workboard);
   let parkedFiles: string[];
   try {
     const stat = statSync(options.parkedDir);
@@ -44,10 +60,13 @@ export function expectedBranches(options: Options): Set<string> {
     fail(`parked-dir-unreadable path=${options.parkedDir} detail=${error instanceof Error ? error.message : String(error)}`);
   }
   for (const name of parkedFiles) {
+    const item = parkItemId(name);
+    // A park record is historical once its authoritative workboard row explicitly
+    // says both done and landed. Missing or ambiguous disposition stays retained.
+    if (item && landedItems.has(item)) continue;
     for (const branch of retainedBranchNames(readableFile(join(options.parkedDir, name), `park-record-${basename(name)}`))) expected.add(branch);
   }
 
-  const workboard = readableFile(options.workboard, "workboard");
   for (const row of workboard.split("\n")) {
     if (/\bPARKED\b|\bparked\b|\bretained\b|\bRetained\b/.test(row)) {
       for (const branch of retainedBranchNames(row)) expected.add(branch);

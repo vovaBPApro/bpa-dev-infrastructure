@@ -42,6 +42,25 @@ test("passes when protected, parked-file, and workboard-only branches are on ori
   const result = run(f.args); expect(result.status).toBe(0); expect(result.stdout).toContain("checked=3");
 });
 
+test("a landed park is history while a still-parked row remains retained", () => {
+  const f = fixture();
+  rmSync(join(f.parked, "one.md"));
+  writeFileSync(join(f.parked, "V3-3.4-review-rounds.md"), "Retained branch: `ag-s6-13`.\n");
+  writeFileSync(join(f.parked, "V3-1.9b-network-boundary.md"), "Retained branch: `ag-s6-21`.\n");
+  writeFileSync(f.workboard, [
+    "| V3-3.4 | review rounds | **done** — landed `7c428e0` |",
+    "| V3-1.9b | network boundary | still unfixed |",
+  ].join("\n"));
+  writeFileSync(f.protectedFile, "ag-protected\n");
+  spawnSync("git", ["-C", f.repo, "config", "user.email", "test@example.test"]); spawnSync("git", ["-C", f.repo, "config", "user.name", "Test"]);
+  writeFileSync(join(f.repo, "file"), "x"); spawnSync("git", ["-C", f.repo, "add", "."]); spawnSync("git", ["-C", f.repo, "commit", "-m", "fixture"]);
+  publish(f.repo, f.remote, "ag-protected", "ag-s6-21");
+  let result = run(f.args); expect(result.status).toBe(0); expect(result.stdout).toContain("checked=2");
+  spawnSync("git", ["--git-dir", f.remote, "branch", "-D", "ag-s6-21"]);
+  result = run(f.args); expect(result.status).toBe(1); expect(result.stderr).toContain("branches=ag-s6-21");
+  expect(result.stderr).not.toContain("ag-s6-13");
+});
+
 test("missing or unreadable inputs fail closed with a named cause", () => {
   const f = fixture(); rmSync(f.protectedFile); let result = run(f.args); expect(result.status).toBe(1); expect(result.stderr).toContain("protected-list-unreadable");
   writeFileSync(f.protectedFile, "ag-protected\n"); chmodSync(f.workboard, 0); result = run(f.args); expect(result.status).toBe(1); expect(result.stderr).toContain("workboard-unreadable");

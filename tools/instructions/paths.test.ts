@@ -293,3 +293,124 @@ describe("the exemption ledger is itself checked", () => {
     expect(details(run(repo), "FAIL")).toHaveLength(1);
   });
 });
+
+// The design requires exemptions keyed on the source+path PAIR, never on the
+// path alone: a debt earned in one document must not silence the same false
+// citation everywhere. Nothing pinned that until these two cases — every other
+// exemption test uses a single source, so none of them can tell pair keying
+// from path keying. Both cases below go red against a path-only key.
+describe("an exemption is keyed on the source+path pair", () => {
+  const exempt = (rows: string[]) => `# header\n${rows.join("\n")}\n`;
+  const secondDoc = (body: string) =>
+    `${BINDING.replace("id: demo", "id: second")}\n${body}\n`;
+
+  test("one document's exemption does not exempt another document citing the same path", () => {
+    const repo = scratchRepo();
+    write(repo, "instructions/first.md", bindingDoc("The gate is `gate/land-batch.sh`."));
+    write(repo, "instructions/second.md", secondDoc("So is `gate/land-batch.sh`."));
+    write(
+      repo,
+      PATH_EXEMPTIONS_FILE,
+      exempt(["instructions/first.md\tgate/land-batch.sh\tplanned\tdebt owed by this document only"]),
+    );
+    const findings = run(repo);
+
+    // The document that owns the debt is downgraded to a visible WARN...
+    const warnings = findings.filter((finding) => finding.level === "WARN");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0].file).toBe("instructions/first.md");
+
+    // ...and the document that owes nothing still FAILs on the same path.
+    const failures = findings.filter((finding) => finding.level === "FAIL");
+    expect(failures).toHaveLength(1);
+    expect(failures[0].file).toBe("instructions/second.md");
+    expect(failures[0].detail).toContain("missing 'gate/land-batch.sh'");
+  });
+
+  test("a citation by another source does not keep an unconsulted row alive", () => {
+    const repo = scratchRepo();
+    // Only `second.md` cites the path; the row names `first.md`, which does not.
+    write(repo, "instructions/first.md", bindingDoc("No paths here."));
+    write(repo, "instructions/second.md", secondDoc("The gate is `gate/land-batch.sh`."));
+    write(
+      repo,
+      PATH_EXEMPTIONS_FILE,
+      exempt(["instructions/first.md\tgate/land-batch.sh\tplanned\tgranted to a document that never cited it"]),
+    );
+    const failures = details(run(repo), "FAIL");
+
+    // Debt runs in both directions: the citation goes red *and* the row does.
+    expect(failures).toHaveLength(2);
+    expect(failures.join("\n")).toContain("missing 'gate/land-batch.sh'");
+    expect(failures.join("\n")).toContain("never consulted");
+    expect(details(run(repo), "WARN")).toEqual([]);
+  });
+});
+
+// A citation with neither a final extension nor a trailing slash. The shape
+// rule alone drops it, which is how `instance/README` — the absent index
+// CLAUDE.md and HR-735 both route agents to — stayed invisible in the one file
+// session-load.ts pushes into the orchestrator's context verbatim.
+describe("extensionless citations — the directory-prefix route", () => {
+  const exempt = (rows: string[]) => `# header\n${rows.join("\n")}\n`;
+
+  test("the leading segment decides: a repository directory is a citation, prose is not", () => {
+    const repo = scratchRepo();
+    write(repo, "instance/params.yaml", "placeholder\n");
+    write(repo, "instructions/binding.md", bindingDoc("No paths here."));
+    const isRepoDirectory = createPathResolver(repo).isRepoDirectory;
+
+    expect(normalizePathToken("instance/README", isRepoDirectory)).toBe("instance/README");
+    expect(normalizePathToken("instructions/*", isRepoDirectory)).toBe("instructions/*");
+    // The prose the shape rule was narrowed to reject stays rejected: none of
+    // these leading segments is a directory this repository carries.
+    for (const prose of ["origin/main", "Europe/Warsaw", "read/write", "go/no-go", "CI/CD", "refs/stash"]) {
+      expect(normalizePathToken(prose, isRepoDirectory)).toBeUndefined();
+    }
+    // Without the predicate the rule is shape-only — the fail-closed direction.
+    expect(normalizePathToken("instance/README")).toBeUndefined();
+  });
+
+  test("params.yaml's extensionless citation FAILs while its slashed prose is untouched", () => {
+    const repo = scratchRepo();
+    write(
+      repo,
+      "instance/params.yaml",
+      [
+        "phase:",
+        "  current: sole-mission   # instance/README + CLAUDE.md Mission (this repo is the sole current mission)",
+        "operator:",
+        "  timezone: Europe/Warsaw",
+        "git:",
+        "  base: origin/main",
+        "  range: origin/main...HEAD",
+        "notes: read/write, go/no-go, CI/CD, Bun/TypeScript",
+      ].join("\n"),
+    );
+    expect(details(run(repo), "FAIL")).toEqual([
+      "missing 'instance/README' — the document names a path the repository does not carry",
+    ]);
+  });
+
+  test("a binding doc's extensionless citation is caught too", () => {
+    const repo = scratchRepo();
+    write(repo, "gate/land.sh", "");
+    write(repo, "instructions/binding.md", bindingDoc("Batch landing is `gate/land-batch` in this repo."));
+    expect(details(run(repo), "FAIL")).toEqual([
+      "missing 'gate/land-batch' — the document names a path the repository does not carry",
+    ]);
+  });
+
+  test("an extensionless citation can carry an exemption row like any other", () => {
+    const repo = scratchRepo();
+    write(repo, "instance/params.yaml", "current: sole-mission   # instance/README + CLAUDE.md Mission\n");
+    write(
+      repo,
+      PATH_EXEMPTIONS_FILE,
+      exempt(["instance/params.yaml\tinstance/README\tpending-V3-2.13\tF9, asserted a second time"]),
+    );
+    const findings = run(repo);
+    expect(details(findings, "FAIL")).toEqual([]);
+    expect(details(findings, "WARN")[0]).toContain("exempt 'instance/README' (reason=pending-V3-2.13)");
+  });
+});

@@ -175,25 +175,6 @@ real_rows=$(awk '
 [ "$real_open" -lt "$real_rows" ] ||
   fail "every one of the $real_rows real rows counted open — the classifier is not discriminating"
 
-# ── Deployed-copy drift ─────────────────────────────────────────────────────
-# The tracked-to-deployed check must detect drift, not merely locate both files.
-cp "$SCRIPT" "$TMP/deployed.sh"
-"$SCRIPT" --verify-deployed "$TMP/deployed.sh"
-printf '\n# stale deployed copy\n' >>"$TMP/deployed.sh"
-if "$SCRIPT" --verify-deployed "$TMP/deployed.sh" >"$TMP/out" 2>"$TMP/err"; then
-  fail "deployed drift was accepted"
-fi
-grep -q 'deployed script differs from tracked script' "$TMP/err"
-# The 2026-08-04 condition: a hand-edited host copy, shorter than the tracked one.
-head -n 20 "$SCRIPT" >"$TMP/handedited.sh"
-if "$SCRIPT" --verify-deployed "$TMP/handedited.sh" >"$TMP/out" 2>"$TMP/err"; then
-  fail "a truncated hand-edited deployed copy was accepted"
-fi
-# An absent deployed copy is drift too, not a pass.
-if "$SCRIPT" --verify-deployed "$TMP/does-not-exist.sh" >"$TMP/out" 2>"$TMP/err"; then
-  fail "a missing deployed copy was accepted"
-fi
-
 # ── Timer path, through mocked process boundaries ───────────────────────────
 mkdir "$TMP/bin"
 cat >"$TMP/bin/systemctl" <<'EOF'
@@ -205,6 +186,7 @@ EOF
 cat >"$TMP/bin/tmux" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$FLEET_NUDGE_TEST_TMUX_LOG"
+if [ "$1" = has-session ] && [ "${FLEET_NUDGE_TEST_NO_SESSION:-0}" = 1 ]; then exit 1; fi
 exit 0
 EOF
 cat >"$TMP/bin/curl" <<'EOF'
@@ -215,62 +197,195 @@ exit 0
 EOF
 chmod +x "$TMP/bin/systemctl" "$TMP/bin/tmux" "$TMP/bin/curl"
 
+# FLEET_NUDGE_ALERT_DIR is pinned into $TMP with the heartbeat: the alert state
+# is what makes deduplication work, so a test that let it default would both
+# write into the host's /run and read another test's episodes.
 run_watchdog() {
   PATH="$TMP/bin:$PATH" \
   FLEET_NUDGE_BOARD="$1" \
   FLEET_NUDGE_HEARTBEAT="$TMP/runtime/heartbeat" \
+  FLEET_NUDGE_ALERT_DIR="$TMP/runtime" \
   FLEET_NUDGE_LOGFILE="$TMP/fleet.log" \
+  FLEET_NUDGE_PASTE_DELAY=0 \
   FLEET_NUDGE_TEST_NOTIFY_LOG="$TMP/notify.log" \
   FLEET_NUDGE_TEST_TMUX_LOG="$TMP/tmux.log" \
   "$SCRIPT"
 }
 
-board "$TMP/valid.md" '| V3-1 | row | acc | **open** |' '| V3-2 | row | acc | **done** |'
+# A fresh episode: no alert state, no history. Every count below starts here, so
+# a number in this file is always "messages caused by THIS scenario".
+reset_state() {
+  rm -rf "$TMP/runtime"
+  : >"$TMP/notify.log"
+  : >"$TMP/tmux.log"
+}
+notifies() { wc -l <"$TMP/notify.log" | tr -d ' '; }
+pastes() { grep -c 'paste-buffer' "$TMP/tmux.log" || true; }
 
-: >"$TMP/notify.log"
-: >"$TMP/tmux.log"
+# Six hours of a ten-minute timer: 02:00 to 08:00, the window in which the
+# 2026-08-04 storm was delivered.
+NIGHT=36
+fire_night() { # board [env assignments applied by caller]
+  local i
+  for ((i = 0; i < NIGHT; i++)); do
+    run_watchdog "$1" >/dev/null 2>&1 || true
+  done
+}
+
+board "$TMP/valid.md" '| V3-1 | row | acc | **open** |' '| V3-2 | row | acc | **done** |'
+board "$TMP/empty.md" '| V3-1 | row | acc | **done** |'
+
+reset_state
 run_watchdog "$TMP/valid.md"
 grep -q '/notify' "$TMP/notify.log"
 grep -q 'has-session' "$TMP/tmux.log"
 grep -q 'paste-buffer' "$TMP/tmux.log"
 
-# HR-2342 caps parallel lanes at three, so three is the default floor. At or
-# above it the watchdog stays quiet; below it, the operator-facing string quotes
-# the floor rather than a second, driftable literal.
-grep -Fq "$(esc 'потрібно 3')" "$TMP/notify.log" ||
-  fail "the sub-floor warning does not quote the default floor of 3"
-if grep -Fq "$(esc 'потрібно 10')" "$TMP/notify.log"; then
-  fail "the sub-floor warning still hardcodes the pre-HR-2342 floor of 10"
-fi
+# ── B1: every operator-facing path deduplicates and clears ──────────────────
+# THE lock this file was missing. The shipped suite asserted that each condition
+# produced a message and never that it produced only one, so 36 identical
+# messages a night passed it. Each block below counts messages across a full
+# night of firings, then across the repair.
 
-: >"$TMP/notify.log"
-: >"$TMP/tmux.log"
+# The 2026-08-04 incident itself: a board the parser refuses.
+reset_state
+fire_night "$TMP/lowercase.md"
+test "$(notifies)" -eq 1 ||
+  fail "an unparseable board sent $(notifies) messages over $NIGHT firings, expected 1"
 FLEET_NUDGE_TEST_LANES=3 run_watchdog "$TMP/valid.md"
-if [ -s "$TMP/notify.log" ] || [ -s "$TMP/tmux.log" ]; then
-  fail "the watchdog fired at the floor of 3 running lanes"
-fi
+test "$(notifies)" -eq 2 || fail "a repaired board did not tell the operator exactly once"
+grep -Fq "$(esc 'знову читає workboard')" "$TMP/notify.log" ||
+  fail "the repaired board reported something other than a cleared alert"
+FLEET_NUDGE_TEST_LANES=3 run_watchdog "$TMP/valid.md"
+FLEET_NUDGE_TEST_LANES=3 run_watchdog "$TMP/valid.md"
+test "$(notifies)" -eq 2 || fail "the cleared board alert kept talking after it cleared"
 
-# Raising the floor moves BOTH numbers together: the nudge fires again and the
-# string follows the knob.
-: >"$TMP/notify.log"
-: >"$TMP/tmux.log"
-FLEET_NUDGE_TEST_LANES=0 FLEET_NUDGE_FLOOR=10 run_watchdog "$TMP/valid.md"
-grep -Fq "$(esc 'потрібно 10')" "$TMP/notify.log" ||
-  fail "the sub-floor warning did not follow FLEET_NUDGE_FLOOR"
+# An idle fleet with work outstanding. The ORCHESTRATOR is woken on every single
+# firing — it is a tmux paste, it costs nothing, and waking it is the point. Only
+# the HUMAN is deduplicated. Conflating the two is how B1 and B2 became one fix.
+reset_state
+fire_night "$TMP/valid.md"
+test "$(notifies)" -eq 1 ||
+  fail "an idle fleet sent $(notifies) messages over $NIGHT firings, expected 1"
+test "$(pastes)" -eq "$NIGHT" ||
+  fail "the orchestrator was woken $(pastes) times over $NIGHT firings, expected $NIGHT"
+FLEET_NUDGE_TEST_LANES=3 run_watchdog "$TMP/valid.md"
+test "$(notifies)" -eq 2 || fail "a fleet back at work did not clear the idle alert exactly once"
+grep -Fq "$(esc 'Флот знову працює')" "$TMP/notify.log" || fail "the idle alert cleared silently"
 
-# An empty board is the one case that legitimately asks the Human what is next.
-: >"$TMP/notify.log"
-: >"$TMP/tmux.log"
-board "$TMP/empty.md" '| V3-1 | row | acc | **done** |'
-run_watchdog "$TMP/empty.md"
+# An empty board asks the Human what comes next — once, not once per firing.
+reset_state
+fire_night "$TMP/empty.md"
+test "$(notifies)" -eq 1 ||
+  fail "an empty board sent $(notifies) messages over $NIGHT firings, expected 1"
 grep -Fq "$(esc 'Роботи для флоту не лишилось')" "$TMP/notify.log" ||
   fail "an empty board did not ask the Human what comes next"
-if grep -q 'paste-buffer' "$TMP/tmux.log"; then
-  fail "the orchestrator was nudged with no work left"
+test "$(pastes)" -eq 0 || fail "the orchestrator was nudged with no work left"
+FLEET_NUDGE_TEST_LANES=3 run_watchdog "$TMP/valid.md"
+test "$(notifies)" -eq 2 || fail "work returning did not clear the empty-board alert exactly once"
+grep -Fq "$(esc 'На дошці знову є робота')" "$TMP/notify.log" ||
+  fail "the empty-board alert cleared silently"
+
+# A missing orchestrator session. One message, and NOT also an idle message: the
+# same situation reported twice is the volume defect in miniature.
+reset_state
+FLEET_NUDGE_TEST_NO_SESSION=1 fire_night "$TMP/valid.md"
+test "$(notifies)" -eq 1 ||
+  fail "an absent orchestrator sent $(notifies) messages over $NIGHT firings, expected 1"
+grep -Fq "$(esc 'Оркестратор не запущений')" "$TMP/notify.log" ||
+  fail "an absent orchestrator was reported as something else"
+run_watchdog "$TMP/valid.md"
+grep -Fq "$(esc 'Оркестратор знову запущений')" "$TMP/notify.log" ||
+  fail "a restarted orchestrator did not clear its alert"
+
+# A condition that repairs and then recurs must be reported AGAIN. Deduplication
+# that never releases is silence with extra steps.
+reset_state
+run_watchdog "$TMP/lowercase.md" >/dev/null 2>&1 || true
+FLEET_NUDGE_TEST_LANES=3 run_watchdog "$TMP/valid.md"
+run_watchdog "$TMP/lowercase.md" >/dev/null 2>&1 || true
+test "$(notifies)" -eq 3 ||
+  fail "a recurrence after repair sent $(notifies) messages, expected 3 (raise, clear, raise)"
+
+# Delivery failure must not mark the operator as told. If the state file were
+# written before the notify succeeded, the retry ten minutes later would be
+# swallowed as a duplicate and the condition would never reach him.
+reset_state
+set +e
+FLEET_NUDGE_TEST_NOTIFY_FAIL=1 run_watchdog "$TMP/valid.md" >"$TMP/out" 2>"$TMP/err"
+status=$?
+set -e
+test "$status" -eq 3 || fail "notification failure exited $status, expected 3"
+grep -q 'operator notification failed' "$TMP/err"
+test ! -e "$TMP/runtime/fleet-nudge-idle.alerted" ||
+  fail "an undelivered alert still marked the operator as told"
+test "$(pastes)" -eq 0 || fail "orchestrator was nudged after operator notification failed"
+run_watchdog "$TMP/valid.md"
+test "$(notifies)" -eq 2 || fail "the retry after a failed delivery did not reach the operator"
+
+# ── B3: the cap is a ceiling, not a floor ───────────────────────────────────
+# HR-2342: "Three is a ceiling, not a target: fewer is allowed whenever the work
+# does not need them." One and two running lanes are therefore ALLOWED, not a
+# fault, and the watchdog must be completely silent at both — the shipped
+# version nudged the orchestrator every ten minutes at either count and paged the
+# operator every ten minutes at zero.
+for lanes in 0 1 2 3; do
+  reset_state
+  FLEET_NUDGE_TEST_LANES=$lanes run_watchdog "$TMP/valid.md"
+  if [ "$lanes" -eq 0 ]; then
+    test "$(notifies)" -eq 1 || fail "an idle fleet sent $(notifies) messages, expected 1"
+    test "$(pastes)" -eq 1 || fail "an idle fleet did not wake the orchestrator"
+  else
+    test "$(notifies)" -eq 0 ||
+      fail "$lanes running lanes were reported to the operator; HR-2342 permits them"
+    test "$(pastes)" -eq 0 ||
+      fail "$lanes running lanes nudged the orchestrator; HR-2342 permits them"
+  fi
+done
+
+# The severe tier must be REACHABLE. `CRITICAL=$((FLOOR / 3))` truncated to 0 at
+# any floor below three, and `running -lt 0` is never true, so the operator ping
+# was silently unreachable. A zero or a non-integer clamps to 1 instead.
+for critical in 0 '' abc; do
+  reset_state
+  FLEET_NUDGE_CRITICAL="$critical" run_watchdog "$TMP/valid.md"
+  test "$(notifies)" -eq 1 ||
+    fail "FLEET_NUDGE_CRITICAL='$critical' made the severe tier unreachable"
+done
+
+# "Idle" and "below a target width" are different questions with different
+# audiences. A target is the seam for the derived budget V3-0.34 asks for; while
+# it is set, a non-idle fleet under it wakes the ORCHESTRATOR and never the Human.
+reset_state
+FLEET_NUDGE_TEST_LANES=2 FLEET_NUDGE_TARGET=3 run_watchdog "$TMP/valid.md"
+test "$(notifies)" -eq 0 || fail "a below-target but working fleet paged the operator"
+test "$(pastes)" -eq 1 || fail "a below-target fleet did not wake the orchestrator"
+reset_state
+FLEET_NUDGE_TEST_LANES=3 FLEET_NUDGE_TARGET=3 run_watchdog "$TMP/valid.md"
+test "$(pastes)" -eq 0 || fail "a fleet at its target was nudged anyway"
+
+# The operator-facing string must not tell him a number of lanes is REQUIRED.
+# That sentence is what turned HR-2342's ceiling into a floor, and it read
+# correctly right up until the ruling arrived.
+reset_state
+run_watchdog "$TMP/valid.md"
+grep -Fq "$(esc 'Флот простоює: активних лейнів 0')" "$TMP/notify.log" ||
+  fail "the idle warning does not report the actual lane count"
+if grep -Fq "$(esc 'потрібно')" "$TMP/notify.log"; then
+  fail "the idle warning still tells the operator a lane count is required"
 fi
 
+# The wake-up quotes the cap AS a cap, and follows the knob rather than a second
+# literal that can drift away from it.
+grep -Fq 'caps parallel lanes at 3 — a ceiling, not a target' "$TMP/tmux.log" ||
+  fail "the orchestrator wake-up does not quote HR-2342's cap as a ceiling"
+reset_state
+FLEET_NUDGE_CAP=5 run_watchdog "$TMP/valid.md"
+grep -Fq 'caps parallel lanes at 5' "$TMP/tmux.log" ||
+  fail "the orchestrator wake-up did not follow FLEET_NUDGE_CAP"
+
 # A parse error is operator-loud and remains a failed service invocation.
-: >"$TMP/notify.log"
+reset_state
 set +e
 run_watchdog "$TMP/lowercase.md" >"$TMP/out" 2>"$TMP/err"
 status=$?
@@ -279,18 +394,23 @@ test "$status" -eq 2 || fail "malformed runtime board exited $status, expected 2
 grep -q '/notify' "$TMP/notify.log"
 grep -q 'refusing to run with an unparseable workboard' "$TMP/err"
 
-# Notification delivery failure is loud and prevents a false-success nudge.
-: >"$TMP/notify.log"
-: >"$TMP/tmux.log"
-set +e
-FLEET_NUDGE_TEST_NOTIFY_FAIL=1 run_watchdog "$TMP/valid.md" >"$TMP/out" 2>"$TMP/err"
-status=$?
-set -e
-test "$status" -eq 3 || fail "notification failure exited $status, expected 3"
-grep -q 'operator notification failed' "$TMP/err"
-if grep -q 'paste-buffer' "$TMP/tmux.log"; then
-  fail "orchestrator was nudged after operator notification failed"
-fi
+# ── Reproducible from git: the units run from the checkout ───────────────────
+# The mechanism has exactly one copy, the tracked one. A unit pointing at a
+# second copy under /root/.local/bin is what let the deployed script be
+# hand-edited to 120 lines against the tracked 141 and diverge in silence.
+for unit in orch-fleet-nudge.service orch-fleet-nudge-liveness.service; do
+  template="$REPO/bootstrap/units/$unit.in"
+  [ -r "$template" ] || fail "$unit has no tracked template at bootstrap/units/"
+  grep -q '^ExecStart=\$INSTALL_ROOT/orchestrator/fleet/' "$template" ||
+    fail "$unit does not run the watchdog from the checkout"
+  if grep -q '/root/.local/bin' "$template"; then
+    fail "$unit still points at a second, hand-editable copy of the script"
+  fi
+  grep -q '^EnvironmentFile=' "$template" ||
+    fail "$unit exposes no configuration surface; FLEET_NUDGE_* would need a hand-edited unit"
+done
+grep -q '^unit:orch-fleet-nudge.timer' "$REPO/instance/expected-mechanisms.tsv" ||
+  fail "the watchdog timer is not registered in expected-mechanisms.tsv"
 
 printf 'fleet-nudge watchdog regression locks: PASS (real workboard open rows=%s of %s)\n' \
   "$real_open" "$real_rows"

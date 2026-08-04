@@ -1,6 +1,0 @@
-[Unit]
-Description=Alert when the fleet watchdog heartbeat goes missing
-
-[Service]
-Type=oneshot
-ExecStart=/root/.local/bin/orch-fleet-nudge-liveness.sh

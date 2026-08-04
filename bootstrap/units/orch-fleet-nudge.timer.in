@@ -5,6 +5,7 @@ Description=Check every 10 min whether the orchestrator has gone idle with work 
 OnBootSec=10min
 OnUnitActiveSec=10min
 AccuracySec=1min
+Unit=orch-fleet-nudge.service
 
 [Install]
 WantedBy=timers.target

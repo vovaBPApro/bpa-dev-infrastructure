@@ -11,6 +11,10 @@ unit:bpa-deploy-drift-guard.service	only reachable through an unarmed timer
 unit:bpa-deploy-drift-guard.timer	V3-2.3 is parked without an independent armed witness
 unit:orch-morning-report.service	only reachable through an unarmed timer
 unit:orch-morning-report.timer	activation is parked pending accepted bootstrap stage
+unit:orch-fleet-nudge.service	only reachable through an unarmed timer
+unit:orch-fleet-nudge.timer	V3-2.11 keeps the watchdog deliberately stopped until the recut lands; arming is the deploy step
+unit:orch-fleet-nudge-liveness.service	only reachable through an unarmed timer
+unit:orch-fleet-nudge-liveness.timer	V3-2.11 keeps the watchdog deliberately stopped until the recut lands; arming is the deploy step
 unit:agentic-bpa-db-grants.service	only reachable through an unarmed timer
 unit:agentic-bpa-db-grants.timer	instance activation is not yet tracked
 unit:agentic-bpa-staleness.service	only reachable through an unarmed timer

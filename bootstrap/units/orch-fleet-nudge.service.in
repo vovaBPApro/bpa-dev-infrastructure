@@ -1,0 +1,15 @@
+[Unit]
+Description=Stopgap: wake the orchestrator when the lane fleet goes idle (until ML-2 lands)
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=$INSTALL_ROOT
+EnvironmentFile=-$ENV_FILE
+Environment=FLEET_NUDGE_BOARD=$INSTALL_ROOT/instance/workboard.md
+ExecStart=$INSTALL_ROOT/orchestrator/fleet/fleet-nudge.sh
+NoNewPrivileges=true
+# Deliberately NOT PrivateTmp: the nudge reaches the orchestrator by pasting into
+# its tmux session, and tmux's socket lives under /tmp. A private /tmp would make
+# every wake-up silently miss its target while the service still exited 0.

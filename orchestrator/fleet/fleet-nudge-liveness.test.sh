@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Regression lock: timer silence alerts within the bound and restoration clears
-# it, and a hand-edited deployed copy is reported rather than assumed identical.
+# Regression lock: a watchdog that STOPS is alerted within the bound and clears
+# on restoration, and a watchdog that keeps firing while FAILING is alerted too —
+# the case that made 2026-08-04 invisible to this alarm.
 set -euo pipefail
 
 DIR=$(cd "$(dirname "$0")" && pwd)
+REPO=$(cd "$DIR/../.." && pwd)
 WATCHDOG="$DIR/fleet-nudge.sh"
 ALARM="$DIR/fleet-nudge-liveness.sh"
 TMP=$(mktemp -d)
@@ -11,6 +13,10 @@ trap 'rm -rf "$TMP"' EXIT
 mkdir "$TMP/bin"
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+
+# Operator-facing strings are Ukrainian and reach the mock JSON-escaped, so
+# assertions compare against the same escaping the alarm produces.
+esc() { printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read())[1:-1])'; }
 
 cat >"$TMP/bin/curl" <<'EOF'
 #!/usr/bin/env bash
@@ -30,15 +36,12 @@ printf '| id | row | acceptance | state |\n|---|---|---|---|\n| W-1 | pending wo
 export PATH="$TMP/bin:$PATH"
 export FLEET_NUDGE_HEARTBEAT="$TMP/runtime/heartbeat"
 export FLEET_NUDGE_ALERT_STATE="$TMP/runtime/alerted"
-export FLEET_NUDGE_DRIFT_ALERT_STATE="$TMP/runtime/drift-alerted"
+export FLEET_NUDGE_FAILING_ALERT_STATE="$TMP/runtime/failing-alerted"
+export FLEET_NUDGE_ALERT_DIR="$TMP/runtime"
 export FLEET_NUDGE_TEST_NOTIFY_LOG="$TMP/notify.log"
 : >"$FLEET_NUDGE_TEST_NOTIFY_LOG"
 
-# The heartbeat section pins the deployed pair to a matching copy so that the
-# drift channel stays silent and cannot be confused with the timer channel.
-cp "$WATCHDOG" "$TMP/deployed.sh"
-export FLEET_NUDGE_TRACKED="$WATCHDOG"
-export FLEET_NUDGE_DEPLOYED="$TMP/deployed.sh"
+notifies() { wc -l <"$FLEET_NUDGE_TEST_NOTIFY_LOG" | tr -d ' '; }
 
 # Red-before condition: with the old watchdog, both outcomes left no heartbeat.
 set +e
@@ -50,14 +53,14 @@ grep -Fxq "status=$watchdog_status" "$FLEET_NUDGE_HEARTBEAT"
 FLEET_NUDGE_BOARD="$TMP/board.md" "$WATCHDOG" >/dev/null 2>&1
 grep -Fxq 'status=0' "$FLEET_NUDGE_HEARTBEAT"
 
-# The query flags must NOT refresh the heartbeat. This alarm calls
-# `--verify-deployed` every minute; if that counted as a heartbeat, the alarm
-# would keep its own subject looking alive and never fire.
+# The query flag must NOT refresh the heartbeat. `--count-open` is a diagnostic
+# anyone may run at any time; if it counted as a heartbeat it would keep this
+# alarm's own subject looking alive and the staleness check would never fire.
 printf 'epoch=1000\nstatus=0\n' >"$FLEET_NUDGE_HEARTBEAT"
-"$WATCHDOG" --verify-deployed "$TMP/deployed.sh"
 "$WATCHDOG" --count-open "$TMP/board.md" >/dev/null
 grep -Fxq 'epoch=1000' "$FLEET_NUDGE_HEARTBEAT" ||
   fail "a query flag refreshed the heartbeat it is supposed to supervise"
+: >"$FLEET_NUDGE_TEST_NOTIFY_LOG"
 
 # Stop-timer proof: after the final tick, 720s threshold + <=60s check cadence
 # + 5s timer accuracy means the operator is told within 12m05s.
@@ -81,60 +84,86 @@ FLEET_NUDGE_NOW_EPOCH=1801 "$ALARM"
 test ! -e "$FLEET_NUDGE_ALERT_STATE"
 grep -q 'Alert cleared' "$FLEET_NUDGE_TEST_NOTIFY_LOG"
 
-# ── Deployed-copy drift, the 2026-08-04 condition ───────────────────────────
-# The host script was 120 lines against the tracked 141: hand-edited, diverged,
-# and silent because `--verify-deployed` had no caller. This alarm is the caller.
+# ── A FRESH heartbeat that reports failure ──────────────────────────────────
+# This is the 2026-08-04 shape and the reason the incident was invisible here.
+# The watchdog fired every ten minutes and failed every time, so `epoch=` stayed
+# perfectly current while `status=` said 2 — and the alarm, which read only
+# `epoch=`, reported a healthy watchdog through 36 consecutive failures. The only
+# thing that told anyone was the watchdog paging the operator six times an hour:
+# the harm channel WAS the detection channel. Deduplicating those messages
+# (fleet-nudge.test.sh) without this lock would close detection entirely.
 : >"$FLEET_NUDGE_TEST_NOTIFY_LOG"
-printf 'epoch=1800\nstatus=0\n' >"$FLEET_NUDGE_HEARTBEAT"
-FLEET_NUDGE_NOW_EPOCH=1801 "$ALARM"
-test ! -e "$FLEET_NUDGE_DRIFT_ALERT_STATE" ||
-  fail "an identical deployed copy raised a drift alert"
-test ! -s "$FLEET_NUDGE_TEST_NOTIFY_LOG" ||
-  fail "an identical deployed copy notified the operator"
-
-head -n 20 "$WATCHDOG" >"$TMP/deployed.sh"
+rm -f "$FLEET_NUDGE_ALERT_STATE" "$FLEET_NUDGE_FAILING_ALERT_STATE"
+printf 'epoch=2000\nstatus=2\n' >"$FLEET_NUDGE_HEARTBEAT"
 set +e
-FLEET_NUDGE_NOW_EPOCH=1801 "$ALARM"
-drift_status=$?
+FLEET_NUDGE_NOW_EPOCH=2001 "$ALARM"
+failing_status=$?
 set -e
-test "$drift_status" -eq 1 ||
-  fail "a hand-edited deployed copy exited $drift_status, expected 1"
-test -e "$FLEET_NUDGE_DRIFT_ALERT_STATE" || fail "drift raised no alert state"
-grep -q 'deployed' "$FLEET_NUDGE_TEST_NOTIFY_LOG" || fail "drift did not reach the operator"
-drift_count=$(wc -l <"$FLEET_NUDGE_TEST_NOTIFY_LOG")
-set +e
-FLEET_NUDGE_NOW_EPOCH=1802 "$ALARM"
-set -e
-test "$(wc -l <"$FLEET_NUDGE_TEST_NOTIFY_LOG")" -eq "$drift_count" ||
-  fail "the drift alert repeated instead of deduplicating"
+test "$failing_status" -ne 0 ||
+  fail "a watchdog failing on every firing was reported healthy"
+test -e "$FLEET_NUDGE_FAILING_ALERT_STATE" || fail "a failing watchdog raised no alert state"
+test "$(notifies)" -eq 1 ||
+  fail "a failing watchdog sent $(notifies) messages, expected exactly 1"
+grep -Fq "$(esc 'кодом 2')" "$FLEET_NUDGE_TEST_NOTIFY_LOG" ||
+  fail "the failing-watchdog alert did not name the exit status it read"
 
-# A deployed copy that is not there at all is drift, not a pass.
-rm -f "$TMP/deployed.sh"
-rm -f "$FLEET_NUDGE_DRIFT_ALERT_STATE"
-set +e
-FLEET_NUDGE_NOW_EPOCH=1803 "$ALARM"
-missing_status=$?
-set -e
-test "$missing_status" -eq 1 || fail "a missing deployed copy exited $missing_status, expected 1"
-test -e "$FLEET_NUDGE_DRIFT_ALERT_STATE" || fail "a missing deployed copy raised no alert"
+# Six hours of a one-minute timer against the same failing watchdog: still one
+# message. The alert cannot become the storm it exists to replace.
+for epoch in $(seq 2002 2361); do
+  set +e
+  FLEET_NUDGE_NOW_EPOCH=$epoch "$ALARM" >/dev/null 2>&1
+  set -e
+done
+test "$(notifies)" -eq 1 ||
+  fail "360 firings against a failing watchdog sent $(notifies) messages, expected 1"
 
-# Redeploying clears the alert, so the operator learns the drift is closed.
-cp "$WATCHDOG" "$TMP/deployed.sh"
-FLEET_NUDGE_NOW_EPOCH=1804 "$ALARM"
-test ! -e "$FLEET_NUDGE_DRIFT_ALERT_STATE" || fail "a restored deployed copy left the alert raised"
-grep -q 'Alert cleared' "$FLEET_NUDGE_TEST_NOTIFY_LOG"
+# A run that succeeds clears it, once.
+printf 'epoch=2400\nstatus=0\n' >"$FLEET_NUDGE_HEARTBEAT"
+FLEET_NUDGE_NOW_EPOCH=2401 "$ALARM"
+test ! -e "$FLEET_NUDGE_FAILING_ALERT_STATE" || fail "a recovered watchdog left the alert raised"
+test "$(notifies)" -eq 2 || fail "recovery did not tell the operator exactly once"
+FLEET_NUDGE_NOW_EPOCH=2402 "$ALARM"
+test "$(notifies)" -eq 2 || fail "the cleared failing alert kept talking"
 
-# An unreadable tracked path is unconfigured, not drift: loud on stderr, no ping.
+# A heartbeat this alarm cannot read is not a healthy one. Fail closed.
 : >"$FLEET_NUDGE_TEST_NOTIFY_LOG"
-rm -f "$FLEET_NUDGE_DRIFT_ALERT_STATE"
-FLEET_NUDGE_TRACKED="$TMP/no-such-tracked.sh" FLEET_NUDGE_NOW_EPOCH=1805 "$ALARM" 2>"$TMP/err"
-grep -q 'drift unchecked' "$TMP/err" || fail "an unreadable tracked path was silent"
-test ! -s "$FLEET_NUDGE_TEST_NOTIFY_LOG" || fail "an unreadable tracked path pinged the operator"
+rm -f "$FLEET_NUDGE_FAILING_ALERT_STATE"
+printf 'epoch=2400\n' >"$FLEET_NUDGE_HEARTBEAT"
+set +e
+FLEET_NUDGE_NOW_EPOCH=2401 "$ALARM"
+unreadable_status=$?
+set -e
+test "$unreadable_status" -ne 0 || fail "a heartbeat with no status= was accepted as healthy"
+test "$(notifies)" -eq 1 || fail "a statusless heartbeat sent $(notifies) messages, expected 1"
+
+# A STALE heartbeat carrying a failure reports the silence, not both: two
+# messages about one dead watchdog is the volume defect in miniature.
+: >"$FLEET_NUDGE_TEST_NOTIFY_LOG"
+rm -f "$FLEET_NUDGE_ALERT_STATE" "$FLEET_NUDGE_FAILING_ALERT_STATE"
+printf 'epoch=2400\nstatus=2\n' >"$FLEET_NUDGE_HEARTBEAT"
+set +e
+FLEET_NUDGE_NOW_EPOCH=4000 "$ALARM"
+both_status=$?
+set -e
+test "$both_status" -eq 1 || fail "a stale failing heartbeat exited $both_status, expected 1"
+test "$(notifies)" -eq 1 ||
+  fail "a stale failing heartbeat sent $(notifies) messages, expected 1"
+grep -Fq "$(esc 'замовк')" "$FLEET_NUDGE_TEST_NOTIFY_LOG" ||
+  fail "a stale heartbeat was reported as something other than silence"
 
 if grep -Eq '(^|[[:space:]])(kill|pkill|systemctl[[:space:]]+(stop|restart|start)|tmux)([[:space:]]|$)' "$ALARM"; then
   echo 'FAIL: liveness alarm contains process-control behavior' >&2
   exit 1
 fi
-grep -Fq 'OnUnitActiveSec=1min' "$DIR/orch-fleet-nudge-liveness.timer"
-grep -Fq 'AccuracySec=5s' "$DIR/orch-fleet-nudge-liveness.timer"
-printf 'fleet-nudge liveness regression locks: PASS (detection <= 12m05s; recovery clears; deployed drift reported)\n'
+
+# ── Reproducible from git ───────────────────────────────────────────────────
+# The units are tracked templates that run the alarm out of the checkout, so a
+# clone plus the deploy step is the whole mechanism. There is no deployed copy to
+# drift from, which is why this file no longer carries a drift channel.
+TIMER="$REPO/bootstrap/units/orch-fleet-nudge-liveness.timer.in"
+grep -Fq 'OnUnitActiveSec=1min' "$TIMER"
+grep -Fq 'AccuracySec=5s' "$TIMER"
+grep -q '^ExecStart=\$INSTALL_ROOT/orchestrator/fleet/fleet-nudge-liveness.sh$' \
+  "$REPO/bootstrap/units/orch-fleet-nudge-liveness.service.in" ||
+  fail "the liveness unit does not run the alarm from the checkout"
+printf 'fleet-nudge liveness regression locks: PASS (detection <= 12m05s; recovery clears; a failing watchdog is detected)\n'

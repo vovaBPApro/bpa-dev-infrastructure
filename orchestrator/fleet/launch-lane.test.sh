@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Exercise the fixture with the restrictive mask used by the landing gate.
+# Inputs consumed after the launcher drops privileges must set their own modes.
+umask 0077
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SCRATCH="$(mktemp -d /tmp/infra-launch-test.XXXXXX)"
@@ -82,8 +86,10 @@ printf proof >proof.txt
 "\$@" || true
 exit 0
 EOF
-chmod +x "$SCRATCH/bin/"*
+chmod 0755 "$SCRATCH/bin/"*
 chown -R "$fixture_uid:$fixture_gid" "$SCRATCH/home" "$SCRATCH/repo" "$SCRATCH/bin" "$SCRATCH/tmp" "$SCRATCH/service.conf" "$SCRATCH/task.md"
+chmod 0644 "$SCRATCH/service.conf" "$SCRATCH/task.md" "$SCRATCH/agent.conf"
+chown "$fixture_uid:$fixture_gid" "$SCRATCH/agent.conf"
 cd "$SCRATCH/repo"
 run_launcher() {
   env -u DISPATCH_OVERRIDE PATH="$SCRATCH/bin:/usr/local/bin:/usr/bin:/bin" BUN_BIN="$SCRATCH/bin/bun" \
@@ -171,7 +177,7 @@ cat >"$SCRATCH/uid-mismatch-bin/stat" <<'EOF'
 #!/bin/sh
 if [ "$1" = -c ] && [ "$2" = %u ]; then printf '1000\n'; else exec /usr/bin/stat "$@"; fi
 EOF
-chmod +x "$SCRATCH/uid-mismatch-bin/"*
+chmod 0755 "$SCRATCH/uid-mismatch-bin" "$SCRATCH/uid-mismatch-bin/"*
 if setpriv --reuid="$fixture_uid" --regid="$fixture_gid" --init-groups \
   env PATH="$SCRATCH/uid-mismatch-bin:$SCRATCH/bin:$PATH" LANE_SERVICE_CONFIG="$SCRATCH/service.conf" \
   "$fixture_launcher" --name uid-mismatch --role coder --task-file "$SCRATCH/task.md" \
@@ -184,7 +190,7 @@ cat >"$SCRATCH/failed-setpriv-bin/setpriv" <<'EOF'
 #!/bin/sh
 exit 91
 EOF
-chmod +x "$SCRATCH/failed-setpriv-bin/setpriv"
+chmod 0755 "$SCRATCH/failed-setpriv-bin" "$SCRATCH/failed-setpriv-bin/setpriv"
 if PATH="$SCRATCH/failed-setpriv-bin:$SCRATCH/bin:$PATH" LANE_SERVICE_CONFIG="$SCRATCH/service.conf" \
   "$fixture_launcher" --name failed-setpriv --role coder --task-file "$SCRATCH/task.md" \
   2>"$SCRATCH/failed-setpriv.err"; then exit 1; fi
@@ -208,10 +214,13 @@ sha=$(git rev-parse HEAD)
   if [[ "$mode" == invalid ]]; then printf 'review: claimed\n'; fi
 } >"$LANE_REPORT_PATH"
 EOF
-chmod +x "$SCRATCH/bin/report-agent"
+chmod 0755 "$SCRATCH/bin/report-agent"
+chown "$fixture_uid:$fixture_gid" "$SCRATCH/bin/report-agent"
 for mode in silent valid invalid crash; do
   lane="outcome-$mode"
   printf '%s\n%s\n' "$SCRATCH/bin/report-agent" "$mode" >"$SCRATCH/$mode.conf"
+  chmod 0644 "$SCRATCH/$mode.conf"
+  chown "$fixture_uid:$fixture_gid" "$SCRATCH/$mode.conf"
   PATH="$SCRATCH/bin:$PATH" BUN_BIN="$SCRATCH/bin/bun" AGENT_COMMAND_FILE="$SCRATCH/$mode.conf" \
     TMPDIR="$SCRATCH/tmp" "$fixture_launcher" --name "$lane" --role coder \
     --task-file "$SCRATCH/task.md" --repo "$SCRATCH/repo" --lanes-dir "$SCRATCH/home/lanes" \
@@ -231,6 +240,8 @@ grep -Fxq 'exit: 17' "$SCRATCH/home/lanes/lane-outcome-crash.status"
 
 mkdir "$SCRATCH/command-dir"
 : >"$SCRATCH/empty.conf"
+chmod 0644 "$SCRATCH/empty.conf"
+chown "$fixture_uid:$fixture_gid" "$SCRATCH/empty.conf"
 printf '%s\n' "$SCRATCH/bin/agent" >"$SCRATCH/unreadable.conf"
 chmod 000 "$SCRATCH/unreadable.conf"
 for case_name in missing empty directory unreadable; do
@@ -253,6 +264,8 @@ done
 # must stop before any of those post-dispatch artifacts exist.
 cp "$fixture_launcher" "$SCRATCH/repo/orchestrator/fleet/launch-lane.bad-dispatch.sh"
 sed -i 's/cat "$pack_dir\/preamble.md"/printf "malformed pack\\n"/' "$SCRATCH/repo/orchestrator/fleet/launch-lane.bad-dispatch.sh"
+chmod 0755 "$SCRATCH/repo/orchestrator/fleet/launch-lane.bad-dispatch.sh"
+chown "$fixture_uid:$fixture_gid" "$SCRATCH/repo/orchestrator/fleet/launch-lane.bad-dispatch.sh"
 if setpriv --reuid="$fixture_uid" --regid="$fixture_gid" --init-groups \
   env -u DISPATCH_OVERRIDE HOME="$SCRATCH/home" USER="$fixture_user" LOGNAME="$fixture_user" \
   PATH="$SCRATCH/bin:$PATH" BUN_BIN="$SCRATCH/bin/bun" AGENT_COMMAND_FILE="$SCRATCH/agent.conf" \

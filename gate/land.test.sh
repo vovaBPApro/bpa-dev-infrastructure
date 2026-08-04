@@ -771,6 +771,23 @@ assert_output_has "$verify_fail_output" 'merge reset to ORIG_HEAD'
 assert test "$(git -C "$fixture_root/verify-fail-repo" rev-parse HEAD)" = "$verify_fail_before"
 assert git -C "$fixture_root/verify-fail-repo" show-ref --verify --quiet refs/heads/ag-verify-fail
 
+# V3-0.40 regression lock: post-merge-verify ran the coder-authored verify
+# command through plain `sh -c`, and a shell pipeline exits with the status of
+# its LAST command -- so this identical report, whose check genuinely fails,
+# used to reach `LAND step=post-merge-verify status=pass` and land. The control
+# above it (verify-fail) proves the unpiped form was refused all along, so the
+# difference here is the pipe and nothing else.
+make_fixture verify-fail-piped
+verify_piped_sha=$(make_lane "$fixture_root/verify-fail-piped-repo" ag-verify-fail-piped)
+verify_piped_before=$(git -C "$fixture_root/verify-fail-piped-repo" rev-parse HEAD)
+printf 'commit: %s fixture\nverify: test ! -f lane.txt | cat\nresult: clean\nsecret-scan: clean\nremaining: none\n' "$verify_piped_sha" > "$fixture_root/verify-fail-piped-report.md"
+verify_piped_output="$fixture_root/verify-fail-piped-output.txt"
+if "$land" --branch ag-verify-fail-piped --item-id ag-verify-fail-piped --report "$fixture_root/verify-fail-piped-report.md" --repo "$fixture_root/verify-fail-piped-repo" --run-verify >"$verify_piped_output" 2>&1; then exit 1; fi
+assert_output_has "$verify_piped_output" 'LAND step=post-merge-verify status=fail'
+assert_output_has "$verify_piped_output" 'merge reset to ORIG_HEAD'
+assert_output_lacks "$verify_piped_output" 'LAND step=push status=pass'
+assert test "$(git -C "$fixture_root/verify-fail-piped-repo" rev-parse HEAD)" = "$verify_piped_before"
+
 # W-16 regression lock: the old gate landed this report because it accepted the
 # typed 168/168 claim without comparing it with the mandated command's output.
 make_fixture verify-count-mismatch

@@ -452,7 +452,11 @@ if [ "$run_verify" = true ]; then
     land_pass reviewed-verify
   fi
   verify_output=$(mktemp)
-  if [ -z "$verify_command" ] || ! (cd "$repo" && sh -c "$verify_command") >"$verify_output" 2>&1; then
+  # `pipefail`, because a pipeline exits with the status of its LAST command:
+  # under plain `sh -c`, `verify: bun test | tail -3` reported post-merge-verify
+  # as passing whatever the suite did. Same defect as the one V3-0.40 fixed in
+  # gate/completion-guard.ts, in the step that decides whether the merge stands.
+  if [ -z "$verify_command" ] || ! (cd "$repo" && bash --noprofile --norc -o pipefail -c "$verify_command") >"$verify_output" 2>&1; then
     cat "$verify_output"
     rm -f "$verify_output"
     if ! land_force_reset "$repo" "$pre_merge_sha"; then

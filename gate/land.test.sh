@@ -563,6 +563,7 @@ if "$land" --branch ag-retained-check --item-id ag-retained-check --report "$fix
 assert_output_has "$retained_output" 'RETAINED-BRANCHES FAIL cause=absent-from-remote remote=origin branches=ag-never-pushed'
 assert_output_has "$retained_output" 'LAND step=retained-branches status=fail'
 assert test "$(git -C "$retained_repo" rev-parse main)" = "$retained_before"
+assert test -z "$(git -C "$retained_repo" status --porcelain)"
 
 make_fixture declared-check-fail
 declared_before=$(git -C "$fixture_root/declared-check-fail-repo" rev-parse main)

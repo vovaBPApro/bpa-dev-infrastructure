@@ -1,0 +1,18 @@
+# mechanism<TAB>reason. Rows are invalid as soon as the mechanism becomes reachable.
+unit:bpa-orchestrator.service	activation is parked pending accepted bootstrap stage
+unit:bpa-orchestrator-watchdog.service	only reachable through the unarmed watchdog timer
+unit:bpa-orchestrator-watchdog.timer	2026-08-01 regression; activation row V3-2.1 is parked without ACCEPT
+unit:bpa-telegram-daemon.service	activation is parked pending accepted bootstrap stage
+unit:bpa-full-suite.service	only reachable through an unarmed timer
+unit:bpa-full-suite.timer	activation is parked pending accepted bootstrap stage
+unit:bpa-meteorite.service	only reachable through an unarmed timer
+unit:bpa-meteorite.timer	activation is parked pending accepted bootstrap stage
+unit:bpa-deploy-drift-guard.service	only reachable through an unarmed timer
+unit:bpa-deploy-drift-guard.timer	V3-2.3 is parked without an independent armed witness
+unit:orch-morning-report.service	only reachable through an unarmed timer
+unit:orch-morning-report.timer	activation is parked pending accepted bootstrap stage
+unit:agentic-bpa-db-grants.service	only reachable through an unarmed timer
+unit:agentic-bpa-db-grants.timer	instance activation is not yet tracked
+unit:agentic-bpa-staleness.service	only reachable through an unarmed timer
+unit:agentic-bpa-staleness.timer	instance activation is not yet tracked
+unit:agentic-bpa-stand-verifier.service	instance activation is not yet tracked

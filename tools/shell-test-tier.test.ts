@@ -10,6 +10,16 @@ import { join } from "path";
 
 const repoRoot = join(import.meta.dir, "..");
 
+const requiredTypeScriptExecutors = [
+  "tools/check-mechanism-reachability.test.ts",
+] as const;
+
+test("independently pinned TypeScript gate executors still exist", () => {
+  for (const relativePath of requiredTypeScriptExecutors) {
+    expect(existsSync(join(repoRoot, relativePath)), `${relativePath} is missing`).toBe(true);
+  }
+});
+
 const runnableShellTests = [
   "bootstrap/bootstrap.test.sh",
   "bootstrap/provision-service-user.test.sh",

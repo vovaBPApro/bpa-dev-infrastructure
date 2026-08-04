@@ -1,0 +1,27 @@
+# id<TAB>kind<TAB>tracked target. Independent required set; the reachability scan must match it exactly.
+unit:bpa-orchestrator.service	systemd	bootstrap/units/bpa-orchestrator.service.in
+unit:bpa-orchestrator-watchdog.service	systemd	bootstrap/units/bpa-orchestrator-watchdog.service.in
+unit:bpa-orchestrator-watchdog.timer	systemd	bootstrap/units/bpa-orchestrator-watchdog.timer.in
+unit:bpa-telegram-daemon.service	systemd	bootstrap/units/bpa-telegram-daemon.service.in
+unit:bpa-full-suite.service	systemd	bootstrap/units/bpa-full-suite.service.in
+unit:bpa-full-suite.timer	systemd	bootstrap/units/bpa-full-suite.timer.in
+unit:bpa-meteorite.service	systemd	bootstrap/units/bpa-meteorite.service.in
+unit:bpa-meteorite.timer	systemd	bootstrap/units/bpa-meteorite.timer.in
+unit:bpa-deploy-drift-guard.service	systemd	bootstrap/units/bpa-deploy-drift-guard.service.in
+unit:bpa-deploy-drift-guard.timer	systemd	bootstrap/units/bpa-deploy-drift-guard.timer.in
+unit:orch-morning-report.service	systemd	bootstrap/units/orch-morning-report.service.in
+unit:orch-morning-report.timer	systemd	bootstrap/units/orch-morning-report.timer.in
+unit:agentic-bpa-db-grants.service	systemd	instance/units/agentic-bpa-db-grants.service.in
+unit:agentic-bpa-db-grants.timer	systemd	instance/units/agentic-bpa-db-grants.timer.in
+unit:agentic-bpa-staleness.service	systemd	instance/units/agentic-bpa-staleness.service.in
+unit:agentic-bpa-staleness.timer	systemd	instance/units/agentic-bpa-staleness.timer.in
+unit:agentic-bpa-stand-verifier.service	systemd	instance/units/agentic-bpa-stand-verifier.service.in
+checker:decision-ledger	checker	tools/check-decision-ledger-drift.sh
+checker:github-ref-protection	checker	tools/check-github-ref-protection.sh
+checker:shared-stash	checker	hygiene/check-shared-stash.sh
+checker:mechanism-reachability	checker	tools/check-mechanism-reachability.ts
+checker:retained-branches	checker	hygiene/check-retained-branches.ts
+cron:reap	cron	hygiene/install-cron.sh
+tier:shell	shell-tier	tools/shell-test-tier.test.ts
+gate:landing	gate	gate/land.sh
+runner:meteorite	runner	meteorite/run.sh

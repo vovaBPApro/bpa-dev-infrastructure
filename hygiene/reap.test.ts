@@ -573,6 +573,7 @@ test("install-cron.sh installs an idempotent, deterministic managed block and ca
   expect(contentsAfterFirst).toContain("MAILTO=hygiene@example.test");
   expect(contentsAfterFirst).toContain("reap.sh branches");
   expect(contentsAfterFirst).toContain("reap.sh worktrees");
+  expect(contentsAfterFirst).toContain("check-retained-branches.ts --repo");
 
   const install2 = spawnSync("bash", [installCron], { encoding: "utf8", env });
   expect(install2.status).toBe(0);

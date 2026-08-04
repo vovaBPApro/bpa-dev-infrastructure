@@ -98,3 +98,24 @@ before and green after; replaces the regression with a weaker assertion; relies
 only on jsdom for a UI defect; ignores timeouts or partial output; tests a mock
 instead of the affected boundary; or has stale, unverifiable evidence. Review
 the exact change, not a narrative claim.
+
+### A kill is not a pass
+
+A command stopped by a bound — a harness bound, a `timeout` wrapper, a lease
+expiry, a container limit — was killed, whatever exit status reaches the
+caller. Do not let the status alone decide, because a kill is easy to launder:
+a bare pipeline reports only its LAST command's status, so a killed producer
+piped into a filter that succeeds reports success. Use `pipefail` or inspect
+every element, and never run a bounded command through an unguarded pipe.
+
+Read truncated output as the primary signal. A suite that prints no trailing
+summary did not finish, and the count that would have proven the result is
+exactly what the kill removed. **No failures printed and no failures occurred
+are different claims**, and only the second one is a pass; a partial run is
+`NO-GO` with the kill named as the blocker, never `clean`.
+
+Prefer bounds that announce themselves. A mechanism that enforces its own
+timeout should report the timeout as a distinct, named outcome rather than
+letting it reach the caller as an ordinary non-zero — or worse, a zero. Where a
+lane runs under a bound it did not set, that bound is declared and proven under
+`lane-capabilities`.

@@ -49,6 +49,10 @@ make_fixture() {
   git -C "$repo" config user.name Land
   printf 'base\n' > "$repo/base.txt"
   printf 'import { test, expect } from "bun:test"; test("fixture", () => expect(true).toBe(true));\n' > "$repo/base.test.ts"
+  mkdir -p "$repo/hygiene" "$repo/instance/parked"
+  cp "$root/hygiene/check-retained-branches.ts" "$repo/hygiene/check-retained-branches.ts"
+  printf 'main\n' > "$repo/instance/hygiene-protected-branches.txt"
+  printf '| row | active |\n' > "$repo/instance/workboard.md"
   mkdir -p "$repo/meteorite"
   cat > "$repo/meteorite/prove-candidate.sh" <<'EOF'
 # BEGIN TRUSTED TEST PROVER
@@ -75,7 +79,7 @@ REPORT
 # END TRUSTED TEST PROVER
 EOF
   chmod +x "$repo/meteorite/prove-candidate.sh"
-  git -C "$repo" add base.txt base.test.ts meteorite/prove-candidate.sh
+  git -C "$repo" add base.txt base.test.ts hygiene/check-retained-branches.ts instance meteorite/prove-candidate.sh
   git -C "$repo" commit -m base >/dev/null
   git -C "$repo" push -u origin main >/dev/null
   printf 'ref: refs/heads/main\n' > "$bare/HEAD"
@@ -534,6 +538,7 @@ report "$fixture_root/good-report.md" "$good_sha"
 good_output="$fixture_root/good-output.txt"
 "$land" --branch ag-good --item-id ag-good --report "$fixture_root/good-report.md" --repo "$fixture_root/good-repo" --run-verify >"$good_output" 2>&1
 assert_output_has "$good_output" 'LAND step=review-rounds status=pass'
+assert_output_has "$good_output" 'LAND step=retained-branches status=pass'
 assert_output_has "$good_output" 'REVIEW_ROUNDS status=landed item=ag-good'
 assert_output_has "$good_output" 'LAND reap remote=absent branch=ag-good detail=never-on-origin-nothing-to-delete'
 assert_output_has "$good_output" 'LAND step=reap status=pass'
@@ -541,6 +546,24 @@ assert git -C "$fixture_root/good-repo" merge-base --is-ancestor "$good_sha" HEA
 assert test "$(git -C "$fixture_root/good-repo" rev-list --parents -n 1 HEAD | wc -w)" -eq 3
 assert_not git -C "$fixture_root/good-repo" show-ref --verify --quiet refs/heads/ag-good
 assert test "$(git --git-dir="$fixture_root/good-origin.git" rev-parse main)" = "$(git -C "$fixture_root/good-repo" rev-parse HEAD)"
+
+# Regression lock: a protected branch that nobody pushed must make a real
+# landing fail and roll back, rather than leaving the checker inert.
+make_fixture retained-branch-missing
+retained_repo="$fixture_root/retained-branch-missing-repo"
+printf 'main\nag-never-pushed\n' > "$retained_repo/instance/hygiene-protected-branches.txt"
+git -C "$retained_repo" add instance/hygiene-protected-branches.txt
+git -C "$retained_repo" commit -m protect-unpublished >/dev/null
+git -C "$retained_repo" push origin main >/dev/null
+retained_before=$(git -C "$retained_repo" rev-parse main)
+retained_sha=$(make_lane "$retained_repo" ag-retained-check)
+report "$fixture_root/retained-branch-missing-report.md" "$retained_sha"
+retained_output="$fixture_root/retained-branch-missing-output.txt"
+if "$land" --branch ag-retained-check --item-id ag-retained-check --report "$fixture_root/retained-branch-missing-report.md" --repo "$retained_repo" --no-push >"$retained_output" 2>&1; then exit 1; fi
+assert_output_has "$retained_output" 'RETAINED-BRANCHES FAIL cause=absent-from-remote remote=origin branches=ag-never-pushed'
+assert_output_has "$retained_output" 'LAND step=retained-branches status=fail'
+assert test "$(git -C "$retained_repo" rev-parse main)" = "$retained_before"
+assert test -z "$(git -C "$retained_repo" status --porcelain)"
 
 make_fixture declared-check-fail
 declared_before=$(git -C "$fixture_root/declared-check-fail-repo" rev-parse main)

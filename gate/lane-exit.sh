@@ -24,27 +24,37 @@
 #   3  report is contract-valid and honestly NO-GO       -> lane may end
 #      (a legitimate parked row per Hard Rule 13, not a violation)
 #
-# Usage: gate/lane-exit.sh --report <file> --repo <path> --branch <branch>
+# A lane's ROLE decides which contract applies. Without it this wrapper applied
+# the coder contract to everything, so every reviewer lane -- which by design
+# commits nothing and writes a review record instead of a coder report -- ended
+# `state: failed reason: report-invalid` no matter how good its review was. The
+# role is known at launch (orchestrator/fleet/launch-lane.sh --role) and was
+# simply being dropped before the guard ran. Default stays `coder`, so an
+# existing caller that passes no --role is unaffected.
+#
+# Usage: gate/lane-exit.sh --report <file> --repo <path> --branch <branch> [--role <role>]
 set -u
 set -o pipefail
 
 usage() {
-  echo "usage: gate/lane-exit.sh --report <file> --repo <path> --branch <branch>" >&2
+  echo "usage: gate/lane-exit.sh --report <file> --repo <path> --branch <branch> [--role coder|reviewer]" >&2
   exit 2
 }
 
 report=""
 repo=""
 branch=""
+role="coder"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --report|--repo|--branch)
+    --report|--repo|--branch|--role)
       if [ "$#" -lt 2 ] || [ -z "$2" ]; then usage; fi
       case "$1" in
         --report) report="$2" ;;
         --repo) repo="$2" ;;
         --branch) branch="$2" ;;
+        --role) role="$2" ;;
       esac
       shift 2
       ;;
@@ -52,6 +62,14 @@ while [ "$#" -gt 0 ]; do
     *) usage ;;
   esac
 done
+
+# The launcher's role vocabulary is wider than the guard's; a lane that is not a
+# reviewer is held to the coder contract, which is the pre-existing behaviour.
+case "$role" in
+  reviewer) ;;
+  coder|orchestrator|manager) role="coder" ;;
+  *) usage ;;
+esac
 
 if [ -z "$report" ] || [ -z "$repo" ] || [ -z "$branch" ]; then usage; fi
 
@@ -64,13 +82,13 @@ if ! land_resolve_bun; then
   exit 2
 fi
 
-"$BUN_BIN" "$script_dir/completion-guard.ts" --report "$report" --repo "$repo" --branch "$branch"
+"$BUN_BIN" "$script_dir/completion-guard.ts" --report "$report" --repo "$repo" --branch "$branch" --role "$role"
 status=$?
 
 if [ "$status" -eq 0 ] || [ "$status" -eq 3 ]; then
-  echo "LANE-EXIT verdict=clear report=$report branch=$branch exit=$status"
+  echo "LANE-EXIT verdict=clear role=$role report=$report branch=$branch exit=$status"
   exit "$status"
 fi
 
-echo "LANE-EXIT verdict=blocked report=$report branch=$branch exit=$status" >&2
+echo "LANE-EXIT verdict=blocked role=$role report=$report branch=$branch exit=$status" >&2
 exit "$status"

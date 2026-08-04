@@ -10,9 +10,18 @@ type Options = {
   report?: string;
   repo?: string;
   branch?: string;
+  role: Role;
   runVerify: boolean;
   deferVerify: boolean;
 };
+
+// A lane's role decides WHICH contract its terminal artifact must satisfy. A
+// reviewer commits nothing and writes a review record, so the coder contract
+// (commit: equal to the branch tip, verify:, secret-scan:) can never be
+// satisfiable by one -- which is why every reviewer lane on this installation
+// ended `state: failed reason: report-invalid` while its ACCEPT landed anyway.
+const ROLES = ["coder", "reviewer"] as const;
+type Role = (typeof ROLES)[number];
 
 type Report = {
   commit: string;
@@ -36,12 +45,13 @@ function fail(check: string, detail: string): void {
 
 function usage({ stdout = false, exitCode = 2 } = {}): never {
   const message = [
-    "Usage: bun gate/completion-guard.ts --report <file> --repo <path> [--branch <name>] [--run-verify]",
+    "Usage: bun gate/completion-guard.ts --report <file> --repo <path> [--branch <name>] [--role <role>] [--run-verify]",
     "",
     "Options:",
     "  --report <file>    Path to completion report (required)",
     "  --repo <path>      Path to repository (required)",
     "  --branch <name>    Verify commit is reachable from this branch",
+    "  --role <role>      Contract to apply: " + ROLES.join(" | ") + " (default: coder)",
     "  --run-verify       Run the report's verify command",
     "  -h, --help         Show this usage",
     "",
@@ -56,7 +66,7 @@ function usage({ stdout = false, exitCode = 2 } = {}): never {
 }
 
 function parseArgs(args: string[]): Options {
-  const options: Options = { runVerify: false, deferVerify: false };
+  const options: Options = { role: "coder", runVerify: false, deferVerify: false };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "-h" || arg === "--help") {
@@ -70,12 +80,16 @@ function parseArgs(args: string[]): Options {
       options.deferVerify = true;
       continue;
     }
-    if (arg === "--report" || arg === "--repo" || arg === "--branch") {
+    if (arg === "--report" || arg === "--repo" || arg === "--branch" || arg === "--role") {
       const value = args[index + 1];
       if (!value || value.startsWith("--")) usage();
       if (arg === "--report") options.report = value;
       if (arg === "--repo") options.repo = value;
       if (arg === "--branch") options.branch = value;
+      if (arg === "--role") {
+        if (!(ROLES as readonly string[]).includes(value)) usage();
+        options.role = value as Role;
+      }
       index += 1;
       continue;
     }
@@ -206,6 +220,67 @@ function checkClaimedReview(contents: string, commit: string | undefined): void 
     fail("review-artifact", `unreadable-or-non-regular file=${artifactPath}`);
   }
 }
+
+// Each code the shared contract can emit, rendered as the thing a reviewer
+// actually has to go fix. "invalid" told 26 of 27 reviewer lanes nothing.
+const REVIEW_CODE_DETAIL: Record<string, string> = {
+  "missing-artifact": "no-review-record-written",
+  "non-regular-file": "review-record-is-not-a-regular-file",
+  "nul-byte": "review-record-contains-a-nul-byte",
+  unreadable: "review-record-unreadable",
+  "malformed-verdict": "verdict (expected exactly one `verdict: ACCEPT|REJECT|NO-GO`)",
+  "malformed-reviewer": "reviewer (expected exactly one non-empty `reviewer: <identity>`)",
+  "unsafe-identity-field": "reviewer/independence contain non-printable-ASCII",
+  "missing-reviewed-sha": "reviewed-sha (expected exactly one `reviewed-sha: <40-hex>`)",
+  "missing-independence": "independence (expected exactly one non-empty `independence: <text>`)",
+};
+
+// A reviewer lane's terminal artifact IS its review record, so the contract it
+// must satisfy is the review-artifact contract -- read from its single home in
+// gate/land-lib.sh through gate/review-artifact-check.sh, never restated here.
+function runReviewerContract(): never {
+  const checker = resolve(import.meta.dir, "review-artifact-check.sh");
+  if (!existsSync(checker)) {
+    fail("review-contract", `checker-missing file=${checker}`);
+  } else {
+    const run = spawnSync("bash", [checker, "--artifact", reportPath, "--mode", "exit"], { encoding: "utf8" });
+    const output = `${run.stdout ?? ""}${run.stderr ?? ""}`.trim();
+    if (run.status === 0) {
+      const decision = output.match(/decision=(\S+)/)?.[1] ?? "unknown";
+      pass("review-contract", `verdict=${decision} file=${reportPath}`);
+    } else if (run.status === 2) {
+      const code = output.match(/code=(\S+)/)?.[1] ?? "unknown";
+      fail("review-contract", `missing=${REVIEW_CODE_DETAIL[code] ?? code} code=${code} file=${reportPath}`);
+    } else {
+      fail("review-contract", `checker-failed exit=${run.status ?? "signal"} tail=${outputTail(output)}`);
+    }
+  }
+
+  const reviewerRepoCheck = git(repoPath, ["rev-parse", "--is-inside-work-tree"]);
+  if (reviewerRepoCheck.status !== 0 || reviewerRepoCheck.stdout.trim() !== "true") {
+    fail("repo", "not-a-git-worktree");
+  } else if (options.branch) {
+    // A reviewer must not have edited the tree it was reviewing.
+    const checkedOut = git(repoPath, ["branch", "--show-current"]).stdout.trim();
+    if (checkedOut === options.branch) {
+      const status = git(repoPath, ["status", "--porcelain", "--untracked-files=no"]);
+      if (status.status !== 0) fail("working-tree", "status-failed");
+      else if (status.stdout.trim()) fail("working-tree", "tracked-uncommitted-changes");
+      else pass("working-tree", "clean");
+    } else {
+      pass("working-tree", `not-checked-out (${checkedOut || "detached"})`);
+    }
+  }
+
+  if (failures.length > 0) {
+    console.log("GUARD verdict=violation");
+    process.exit(2);
+  }
+  console.log("GUARD verdict=pass");
+  process.exit(0);
+}
+
+if (options.role === "reviewer") runReviewerContract();
 
 if (!existsSync(reportPath)) {
   fail("report-file", "missing");

@@ -47,7 +47,23 @@ is `closed` only when its new evidence would have caught the original failure.
 
 For gate-routed changes, the record must include plain column-1 `reviewed-sha:`
 and non-empty `independence:` fields. The landing gate verifies that the SHA
-equals the report's commit before it accepts the record. Break-glass
+equals the report's commit before it accepts the record.
+
+A reviewer LANE writes that record to TWO destinations, because two mechanisms
+read it at different times. Landing reads `<reviewed-branch>.review.md` next to
+the reviewed lane's report, as above. Lane exit reads `$LANE_REPORT_PATH`, the
+reviewer's own terminal artifact, and `gate/lane-exit.sh --role reviewer` holds
+it to the review contract rather than the coder report contract. Nothing copies
+one to the other: a reviewer that writes only the landing artifact still exits
+unfinished, and a reviewer that writes only its own report leaves nothing for
+the gate to accept. Write both, with identical field values. The two readers share one
+definition — `land_review_artifact_contract()` in `gate/land-lib.sh` — so a record
+the exit guard accepts is shape-valid at landing too. They diverge only where
+policy differs, and only in these three places: landing refuses a `REJECT` while
+lane exit accepts it (a reviewer that reached a REJECT finished its work, so its
+lane is terminal, not failed); `reviewed-sha` equality against the report's commit
+is checked only at landing; and self-authorship is checked only at landing, where
+the reviewed branch is known. Break-glass
 `--skip-review` requires a reason and is durably audited in the runtime review
 skip log; see the gate's usage output for operational mechanics.
 

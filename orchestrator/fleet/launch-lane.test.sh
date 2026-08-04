@@ -151,6 +151,46 @@ grep -Fxq 'state: failed' "$SCRATCH/lanes/lane-crashed.status"
 grep -Fxq 'reason: payload-exit' "$SCRATCH/lanes/lane-crashed.status"
 grep -Fxq 'exit: 17' "$SCRATCH/lanes/lane-crashed.status"
 
+# V3-0.44: --role reaches the exit guard, so a reviewer lane is judged by the
+# review contract instead of the coder one. Before this, the role was validated
+# here and then dropped, and 26 of 27 reviewer lanes on the installation ended
+# `failed reason: report-invalid` -- including reviews whose ACCEPT had landed.
+cat >"$SCRATCH/bin/review-agent" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+mode=$1
+if [[ "$mode" == silent ]]; then exit 0; fi
+{
+  printf 'verdict: ACCEPT\n'
+  printf 'reviewer: independent-reviewer <rev@example.test>\n'
+  printf 'reviewed-sha: %s\n' "$(git rev-parse HEAD)"
+  printf 'independence: separate session; did not author the change\n'
+  if [[ "$mode" == truncated ]]; then printf 'DROPPED\n'; fi
+} >"$LANE_REPORT_PATH"
+if [[ "$mode" == truncated ]]; then head -n 2 "$LANE_REPORT_PATH" >"$LANE_REPORT_PATH.cut"; mv "$LANE_REPORT_PATH.cut" "$LANE_REPORT_PATH"; fi
+EOF
+chmod +x "$SCRATCH/bin/review-agent"
+for mode in accept truncated silent; do
+  printf '%s\n%s\n' "$SCRATCH/bin/review-agent" "$mode" >"$SCRATCH/rev-$mode.conf"
+  PATH="$SCRATCH/bin:$PATH" BUN_BIN="$(command -v bun)" AGENT_COMMAND_FILE="$SCRATCH/rev-$mode.conf" \
+    MOCK_SYSTEMD_ARGS="$SCRATCH/rev-$mode.systemd.args" TMPDIR="$SCRATCH/tmp-parent" \
+    "$SCRIPT_DIR/launch-lane.sh" --name "rev-$mode" --role reviewer --task-file "$SCRATCH/task.md" \
+    --repo "$REPO_DIR" --lanes-dir "$SCRATCH/lanes" --base HEAD --branch "ag-fleet-rev-$mode" \
+    >"$SCRATCH/rev-$mode.output"
+done
+# The acceptance criterion: a valid review record ends the lane terminal.
+grep -Fxq 'state: terminal' "$SCRATCH/lanes/lane-rev-accept.status" \
+  || { cat "$SCRATCH/lanes/lane-rev-accept.status" "$SCRATCH/lanes/lane-rev-accept.log" >&2; exit 1; }
+grep -Fxq 'reason: report-valid' "$SCRATCH/lanes/lane-rev-accept.status"
+grep -Fq 'PASS review-contract verdict=ACCEPT' "$SCRATCH/lanes/lane-rev-accept.log"
+# ...and a truncated or absent record still fails closed, naming what is missing.
+grep -Fxq 'state: failed' "$SCRATCH/lanes/lane-rev-truncated.status"
+grep -Fq 'missing=reviewed-sha' "$SCRATCH/lanes/lane-rev-truncated.log"
+grep -Fxq 'state: failed' "$SCRATCH/lanes/lane-rev-silent.status"
+grep -Fq 'missing=no-review-record-written' "$SCRATCH/lanes/lane-rev-silent.log"
+# The composed pack must be the reviewer's, not the coder's.
+grep -Fq '<!-- compose.ts pack v1 role=reviewer' "$SCRATCH/lanes/lane-rev-accept.prompt.md"
+
 # Existing-name lock: the launcher must refuse before composition or unit use.
 rm -f "$SCRATCH/systemd.args" "$SCRATCH/agent.executed"
 if PATH="$SCRATCH/bin:$PATH" AGENT_COMMAND_FILE="$SCRATCH/agent.conf" \

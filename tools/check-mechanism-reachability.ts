@@ -23,11 +23,15 @@ function rows(path: string, columns: number): string[][] {
 
 export function check(repo: string): string[] {
   const manifestPath = join(repo, "instance/expected-mechanisms.tsv");
+  const requiredPath = join(repo, "instance/required-mechanisms.tsv");
   const exclusionPath = join(repo, "instance/expected-mechanism-exclusions.tsv");
   const manifest = rows(manifestPath, 3).map(([id, kind, target]) => ({ id, kind, target }));
+  const required = rows(requiredPath, 3).map((row) => row.join("\t")).sort();
   const exclusions = new Map(rows(exclusionPath, 2).map(([id, reason]) => [id, reason]));
   const ids = new Set<string>();
   const errors: string[] = [];
+  const observed = manifest.map(({ id, kind, target }) => [id, kind, target].join("\t")).sort();
+  if (JSON.stringify(observed) !== JSON.stringify(required)) errors.push("mechanism inventory differs from independent required-mechanisms.tsv");
   for (const row of manifest) {
     if (ids.has(row.id)) errors.push(`duplicate mechanism: ${row.id}`);
     ids.add(row.id);
@@ -41,7 +45,7 @@ export function check(repo: string): string[] {
   if (JSON.stringify(unitRows) !== JSON.stringify(expectedUnits)) errors.push("systemd inventory differs from independent expected-units.tsv");
 
   const tracked = (suffix: string) => Bun.spawnSync(["git", "-C", repo, "ls-files", "-z", suffix]).stdout.toString().split("\0").filter(Boolean);
-  const trackedCheckers = [...tracked("tools/check*.sh"), ...tracked("tools/check*.ts"), ...tracked("hygiene/check*.sh")]
+  const trackedCheckers = [...tracked("tools/check*.sh"), ...tracked("tools/check*.ts"), ...tracked("hygiene/check*.sh"), ...tracked("hygiene/check*.ts")]
     .filter((file) => !file.includes(".test.")).sort();
   const checkerRows = manifest.filter((r) => r.kind === "checker").map((r) => r.target).sort();
   if (JSON.stringify(checkerRows) !== JSON.stringify(trackedCheckers)) errors.push("checker inventory differs from tracked checker files");

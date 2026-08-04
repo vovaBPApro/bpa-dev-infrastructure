@@ -1,4 +1,4 @@
-# id<TAB>kind<TAB>tracked target. Independent inventory; never generate it from the scan.
+# id<TAB>kind<TAB>tracked target. Independent required set; the reachability scan must match it exactly.
 unit:bpa-orchestrator.service	systemd	bootstrap/units/bpa-orchestrator.service.in
 unit:bpa-orchestrator-watchdog.service	systemd	bootstrap/units/bpa-orchestrator-watchdog.service.in
 unit:bpa-orchestrator-watchdog.timer	systemd	bootstrap/units/bpa-orchestrator-watchdog.timer.in

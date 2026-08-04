@@ -11,7 +11,7 @@ function fixture(): string {
   const archive = Bun.spawnSync(["git", "-C", root, "archive", "HEAD"], { stdout: "pipe" });
   const unpack = Bun.spawnSync(["tar", "-x", "-C", dir], { stdin: archive.stdout });
   if (archive.exitCode !== 0 || unpack.exitCode !== 0) throw new Error("fixture archive failed");
-  for (const file of ["instance/expected-mechanisms.tsv", "instance/expected-mechanism-exclusions.tsv", "tools/check-mechanism-reachability.ts", "tools/check-mechanism-reachability.test.ts"])
+  for (const file of ["instance/expected-mechanisms.tsv", "instance/required-mechanisms.tsv", "instance/expected-mechanism-exclusions.tsv", "tools/check-mechanism-reachability.ts", "tools/check-mechanism-reachability.test.ts"])
     writeFileSync(join(dir, file), readFileSync(join(root, file)));
   Bun.spawnSync(["git", "-C", dir, "init", "-q"]);
   Bun.spawnSync(["git", "-C", dir, "add", "."]);
@@ -56,6 +56,17 @@ test("a missing mechanism target fails closed", () => {
   try {
     rmSync(join(dir, "tools/check-github-ref-protection.sh"));
     expect(() => check(dir)).toThrow("unreadable file");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("deleting a checker and its scan row still fails against the independent required set", () => {
+  const dir = fixture();
+  try {
+    rmSync(join(dir, "tools/check-github-ref-protection.sh"));
+    const manifest = join(dir, "instance/expected-mechanisms.tsv");
+    writeFileSync(manifest, readFileSync(manifest, "utf8").split("\n").filter((line) => !line.startsWith("checker:github-ref-protection\t")).join("\n"));
+    Bun.spawnSync(["git", "-C", dir, "add", "-A"]);
+    expect(check(dir)).toContain("mechanism inventory differs from independent required-mechanisms.tsv");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

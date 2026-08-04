@@ -95,11 +95,19 @@ on a graph reads as "we spent nothing" rather than "we did not look".
 ### Query path
 
 A read command sufficient for a time series, grouped by any of model / role / hour. It
-must be usable from the CLI so the operator can ask without a UI existing:
+must be usable from the CLI so the operator can ask without a UI existing.
 
-```
-bun core/mission-cli.ts usage --since <iso> --group-by model,role
-```
+Shape, described rather than shown as a runnable line: a **new** `mission-cli` action —
+proposed name `usage` — taking a `--since <iso>` window and a `--group-by` list drawn from
+`model`, `role`, `hour`. The implementer registers it in `core/mission-cli-actions` like
+any other action.
+
+It is deliberately not written here as an executable example.
+`tools/check-documented-mission-cli.ts` refuses documentation that names a `mission-cli`
+action which is not dispatchable, and it **caught the first draft of this spec doing
+exactly that** — the action does not exist yet, so writing it as a runnable command made
+the repository assert a capability it does not have. That check is the same class of guard
+this whole night has been about, and it earned its keep on its author.
 
 ## Configuration and dependencies
 

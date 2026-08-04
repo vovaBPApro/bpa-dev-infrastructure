@@ -13,12 +13,22 @@ phase:
   current: sole-mission            # instance/README + CLAUDE.md Mission (this repo is the sole current mission)
   # Predicate used by instruction `sunset:` frontmatter, per
   # migration-prep/INSTRUCTIONS_CONSILIUM_FINAL.md §2.1, §4.2.
-  active_scope: instruction-mechanics-only   # instance/decisions/HR-11570.md (Vova 11570): active work is ONLY the
-  # L1 instruction tooling/restructure in this repo (checker, frontmatter, generated
-  # index, compose/packs, inbox capture, scaffold), each with thorough tests and a
-  # real-repo run before landing. VM migration and stack Phase 0 are parked awaiting
-  # his go. This is the pack-visible home of the HR-11570 restriction (that row is
-  # state: routed, so it is provenance, not pack-delivered — see instruction-layers.md).
+  active_scope: v3-infrastructure-to-cutover   # instance/decisions/HR-2401.md (Vova 2401):
+  # active work is the v3 control plane and the orchestrator, bounded by HR-2369 (repair
+  # only what blocks the product), until the cutover gates A-G in
+  # instance/consilium-cutover-2026-08-04-evening-synthesis.md are green. Product work
+  # begins on his word (HR-2398), not by inference from this line.
+  #
+  # WAS instruction-mechanics-only, from HR-11570 (2026-07-29). That restriction bounded
+  # itself with "until the Human says otherwise" and he did — HR-1746/1749 (repo
+  # architecture), HR-2335 (cutover to a new server = HR-11570's parked item 2 by name),
+  # HR-2369, and 347 commits of v3 that were not instruction tooling. It stayed here for
+  # six days and was compiled into the INSTANCE FACTS header of every pack every lane
+  # received (compose.ts:434), so every agent was told the scope was instructions only.
+  # Nothing caught it because active_scope has no validated vocabulary — compose.ts
+  # requires the key and prints the value, and checks nothing.
+  #
+  # HR-11570's other half is NOT superseded: "дуууже ретельно все протестуй" stands.
 
 repos:
   control_plane: bpa-dev-infrastructure   # instructions/repo-layout.md (this repo, control plane only)

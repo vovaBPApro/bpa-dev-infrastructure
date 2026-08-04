@@ -49,3 +49,36 @@ This is the same lesson as the shared `refs/stash` collision (V3-0.7) and the sh
 lanes root in V3-1.9's review: **two writers on one piece of git state, where only one
 of them knows a transaction is in progress.** Each time it has looked like an unrelated
 new bug and each time it was this. Expect the next instance to look unrelated too.
+
+## Third instance, 2026-08-04: pushing to origin during a landing
+
+The same pattern, a different shared object. The orchestrator pushed a one-line
+`instance/review-items.tsv` registration to `origin/main` while a landing was in flight.
+The landing had already built its container and passed the rebuild proof; its push then
+failed:
+
+```
+! [rejected]        main -> main (fetch first)
+LAND step=push status=fail
+LAND verdict=aborted sha=none
+```
+
+Roughly four minutes of container work discarded for a one-line commit that could have
+waited.
+
+**What worked.** Two mechanisms landed hours earlier did their jobs: the push
+verification (V3-0.18) refused to report a landed SHA that never reached the remote, and
+the rollback restored local `main` to the pre-merge SHA with a clean tree. Compare the
+first instance, where the same class of interference destroyed a lane's merge and the
+gate reported `push status=pass` for a commit on no remote.
+
+**The rule, now stated plainly.** `origin/main` is shared state and a landing is a
+transaction against it. The orchestrator must not push while one is in flight — not even
+bookkeeping, not even one line. Check first, or batch registrations and workboard edits
+between landings.
+
+**Why this keeps happening.** Each instance looked like an unrelated new problem:
+`refs/stash` (V3-0.7), a `git reset --hard` in the gate's clone, a leftover fixture ref
+(V3-0.20), and now a push. The shape is always the same — two writers on one piece of
+git state where only one knows a transaction is open — and the fourth instance will look
+unrelated too.

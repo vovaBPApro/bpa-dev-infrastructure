@@ -6,6 +6,10 @@ root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 land="${LAND_UNDER_TEST:-$root/gate/land.sh}"
 fixture_root=$(mktemp -d)
 trap 'rm -rf "$fixture_root"' EXIT
+mkdir -p "$fixture_root/fake-bin"
+printf '#!/usr/bin/env bash\ntest "$1" = info\n' > "$fixture_root/fake-bin/docker"
+chmod +x "$fixture_root/fake-bin/docker"
+export PATH="$fixture_root/fake-bin:$PATH"
 
 assert() {
   if ! "$@"; then
@@ -45,7 +49,33 @@ make_fixture() {
   git -C "$repo" config user.name Land
   printf 'base\n' > "$repo/base.txt"
   printf 'import { test, expect } from "bun:test"; test("fixture", () => expect(true).toBe(true));\n' > "$repo/base.test.ts"
-  git -C "$repo" add base.txt base.test.ts
+  mkdir -p "$repo/meteorite"
+  cat > "$repo/meteorite/prove-candidate.sh" <<'EOF'
+# BEGIN TRUSTED TEST PROVER
+#!/usr/bin/env bash
+sha="$2"
+cat > "$METEORITE_REPORT" <<REPORT
+- requested SHA: \`$sha\`
+- tested SHA: \`$sha\`
+- result: clean
+- blocker: none
+## Stages
+- container-start: PASS
+- prerequisites: PASS
+- clone: PASS
+- sha-verification: PASS
+- bootstrap-test-prerequisites: PASS
+- bootstrap-dry-run: PASS
+- bootstrap-install: PASS
+- bootstrap-verify-source: PASS
+- test-prerequisites: PASS
+- full-test-suite: PASS
+- unit-drift: PASS
+REPORT
+# END TRUSTED TEST PROVER
+EOF
+  chmod +x "$repo/meteorite/prove-candidate.sh"
+  git -C "$repo" add base.txt base.test.ts meteorite/prove-candidate.sh
   git -C "$repo" commit -m base >/dev/null
   git -C "$repo" push -u origin main >/dev/null
   printf 'ref: refs/heads/main\n' > "$bare/HEAD"
@@ -914,5 +944,31 @@ git -C "$fixture_root/executable-shell-repo" checkout main >/dev/null
 report "$fixture_root/executable-shell-report.md" "$executable_shell_sha"
 "$land" --branch ag-executable-shell --item-id ag-executable-shell --report "$fixture_root/executable-shell-report.md" --repo "$fixture_root/executable-shell-repo" --no-push >"$fixture_root/executable-shell-output.txt" 2>&1
 assert_output_has "$fixture_root/executable-shell-output.txt" 'LAND step=payload-guard status=pass'
+
+# A meteorite refusal is a post-merge abort boundary: both the target ref and
+# its worktree must return to the exact pre-merge state.
+make_fixture meteorite-refusal
+mkdir -p "$fixture_root/meteorite-refusal-repo/meteorite" "$fixture_root/meteorite-fake-bin"
+printf '#!/usr/bin/env bash\nexit 42\n' > "$fixture_root/meteorite-refusal-repo/meteorite/prove-candidate.sh"
+chmod +x "$fixture_root/meteorite-refusal-repo/meteorite/prove-candidate.sh"
+git -C "$fixture_root/meteorite-refusal-repo" add meteorite/prove-candidate.sh
+git -C "$fixture_root/meteorite-refusal-repo" commit -m trusted-refusing-prover >/dev/null
+git -C "$fixture_root/meteorite-refusal-repo" push origin main >/dev/null
+meteorite_before=$(git -C "$fixture_root/meteorite-refusal-repo" rev-parse main)
+meteorite_sha=$(make_lane "$fixture_root/meteorite-refusal-repo" ag-meteorite-refusal)
+report "$fixture_root/meteorite-refusal-report.md" "$meteorite_sha"
+printf '#!/usr/bin/env bash\ntest "$1" = info\n' > "$fixture_root/meteorite-fake-bin/docker"
+chmod +x "$fixture_root/meteorite-fake-bin/docker"
+meteorite_output="$fixture_root/meteorite-refusal-output.txt"
+if PATH="$fixture_root/meteorite-fake-bin:$PATH" "$land" --branch ag-meteorite-refusal --item-id ag-meteorite-refusal \
+    --report "$fixture_root/meteorite-refusal-report.md" --repo "$fixture_root/meteorite-refusal-repo" --no-push >"$meteorite_output" 2>&1; then
+  sed -n '/LAND step=merge/,$p' "$meteorite_output" >&2
+  echo 'meteorite refusal unexpectedly landed' >&2; exit 1
+fi
+assert_output_has "$meteorite_output" 'LAND step=meteorite status=fail'
+assert_output_has "$meteorite_output" 'LAND verdict=aborted sha=none'
+assert test "$(git -C "$fixture_root/meteorite-refusal-repo" rev-parse main)" = "$meteorite_before"
+assert test "$(git -C "$fixture_root/meteorite-refusal-repo" rev-parse HEAD)" = "$meteorite_before"
+assert test -z "$(git -C "$fixture_root/meteorite-refusal-repo" status --porcelain)"
 
 echo "land tests: pass"

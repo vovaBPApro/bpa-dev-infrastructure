@@ -269,6 +269,133 @@ land_run_declared_checks() {
   rm -f "$scripts_file"
 }
 
+# The meteorite installs this repository in a clean Ubuntu container and runs
+# every tracked test. Consequently every tracked change can affect that proof.
+# Only retained report artifacts and .gitignore are excluded: neither a Markdown
+# suffix nor a rename is evidence that a file is content-only.
+land_meteorite_required() {
+  local repo="$1" branch="$2" base path
+  base=$(land_changed_base "$repo" "$branch") || return 2
+  while IFS= read -r path; do
+    case "$path" in
+      reports/*|.gitignore) ;;
+      *) return 0 ;;
+    esac
+  done < <(git -C "$repo" diff --name-only "$base...$branch")
+  return 1
+}
+
+land_validate_meteorite_report() {
+  local report="$1" sha="$2"
+  [ -s "$report" ] || return 1
+  awk -v expected_sha="${sha,,}" '
+    BEGIN {
+      required["container-start"] = 1
+      required["prerequisites"] = 1
+      required["clone"] = 1
+      required["sha-verification"] = 1
+      required["bootstrap-test-prerequisites"] = 1
+      required["bootstrap-dry-run"] = 1
+      required["bootstrap-install"] = 1
+      required["bootstrap-verify-source"] = 1
+      required["test-prerequisites"] = 1
+      required["full-test-suite"] = 1
+      required["unit-drift"] = 1
+    }
+    /^- requested SHA: `/ {
+      requested_count++
+      value = $0; sub(/^- requested SHA: `/, "", value); sub(/`$/, "", value)
+      requested = tolower(value)
+      next
+    }
+    /^- tested SHA: `/ {
+      tested_count++
+      value = $0; sub(/^- tested SHA: `/, "", value); sub(/`$/, "", value)
+      tested = tolower(value)
+      next
+    }
+    /^- result: / { result_count++; result = substr($0, 11); next }
+    /^- blocker: / { blocker_count++; blocker = substr($0, 12); next }
+    /^## Stages$/ { stages_heading_count++; in_stages = 1; next }
+    /^## / { in_stages = 0; next }
+    in_stages && /^- [a-z0-9-]+: / {
+      line = substr($0, 3)
+      split(line, parts, ": ")
+      stage_count[parts[1]]++
+      stage_result[parts[1]] = parts[2]
+    }
+    END {
+      if (requested_count != 1 || tested_count != 1 || result_count != 1 || blocker_count != 1 || stages_heading_count != 1) exit 1
+      if (requested != expected_sha || tested != expected_sha || result != "clean" || blocker != "none") exit 1
+      for (stage in required) if (stage_count[stage] != 1 || stage_result[stage] != "PASS") exit 1
+    }
+  ' "$report"
+}
+
+land_run_meteorite() {
+  local repo="$1" sha="$2" trusted_sha="${3:-}" report docker_bin timeout_seconds prover_status trusted_tree
+  docker_bin=$(command -v docker 2>/dev/null || true)
+  if [ -z "$docker_bin" ]; then
+    echo "LAND meteorite blocker=docker-binary-unavailable" >&2
+    return 1
+  fi
+  if ! "$docker_bin" info >/dev/null 2>&1; then
+    echo "LAND meteorite blocker=docker-daemon-unavailable" >&2
+    return 1
+  fi
+  if [[ ! "$trusted_sha" =~ ^[0-9a-fA-F]{40}$ ]] ||
+     [ "$(git -C "$repo" rev-parse "$trusted_sha^{commit}" 2>/dev/null || true)" != "${trusted_sha,,}" ]; then
+    echo "LAND meteorite blocker=trusted-prover-sha-invalid" >&2
+    return 1
+  fi
+  report=$(mktemp "${TMPDIR:-/tmp}/bpa-land-meteorite.XXXXXX.md") || {
+    echo "LAND meteorite blocker=report-allocation-failed" >&2
+    return 1
+  }
+  timeout_seconds="${LAND_METEORITE_TIMEOUT_SECONDS:-900}"
+  if [[ ! "$timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
+    rm -f "$report"
+    echo "LAND meteorite blocker=invalid-timeout" >&2
+    return 1
+  fi
+  echo "LAND meteorite status=running sha=$sha"
+  trusted_tree=$(mktemp -d "${TMPDIR:-/tmp}/bpa-land-meteorite-trusted.XXXXXX") || {
+    rm -f "$report"
+    echo "LAND meteorite blocker=trusted-prover-allocation-failed" >&2
+    return 1
+  }
+  if ! git -C "$repo" worktree add --detach "$trusted_tree" "$trusted_sha" >/dev/null 2>&1 ||
+     [ ! -r "$trusted_tree/meteorite/prove-candidate.sh" ]; then
+    git -C "$repo" worktree remove --force "$trusted_tree" >/dev/null 2>&1 || true
+    rm -rf "$trusted_tree"
+    rm -f "$report"
+    echo "LAND meteorite blocker=trusted-prover-unavailable" >&2
+    return 1
+  fi
+  prover_status=0
+  METEORITE_REPORT="$report" timeout --foreground --kill-after=10 "$timeout_seconds" \
+    bash "$trusted_tree/meteorite/prove-candidate.sh" --ref "$sha" || prover_status=$?
+  git -C "$repo" worktree remove --force "$trusted_tree" >/dev/null 2>&1 || true
+  rm -rf "$trusted_tree"
+  if [ "$prover_status" -eq 124 ] || [ "$prover_status" -eq 137 ]; then
+    rm -f "$report"
+    echo "LAND meteorite blocker=rebuild-proof-timeout" >&2
+    return 1
+  fi
+  if [ "$prover_status" -ne 0 ]; then
+    rm -f "$report"
+    echo "LAND meteorite blocker=rebuild-proof-failed" >&2
+    return 1
+  fi
+  if ! land_validate_meteorite_report "$report" "$sha"; then
+    rm -f "$report"
+    echo "LAND meteorite blocker=rebuild-proof-evidence-invalid" >&2
+    return 1
+  fi
+  rm -f "$report"
+  echo "LAND meteorite status=pass sha=$sha"
+}
+
 land_review_check() {
   local repo="$1" branch="$2" report="$3" policy_file="$4" skip_review="$5"
   local merge_base candidate_path policy_prefix change_status old_path new_path diff_file diff_fd

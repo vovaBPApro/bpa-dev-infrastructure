@@ -3,15 +3,41 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 image="${SERVICE_USER_TEST_IMAGE:-debian:12-slim}"
-command -v docker >/dev/null || { echo 'ERROR: missing required binary: docker' >&2; exit 1; }
 
-docker run --rm -e PATH=/usr/bin:/bin -v "$repo_root:/src:ro" "$image" /bin/bash -ceu '
+# The meteorite already supplies the disposable clean container. Requiring a
+# second Docker daemon there made the honest environment fail before exercising
+# the provisioner. Host runs still create their own disposable container and
+# can never touch the host account database.
+if [[ "${SERVICE_USER_TEST_ISOLATED:-0}" != 1 ]]; then
+  if [[ -f /.dockerenv ]]; then
+    exec env SERVICE_USER_TEST_ISOLATED=1 bash "$0"
+  fi
+  command -v docker >/dev/null || { echo 'ERROR: missing required binary: docker' >&2; exit 1; }
+  exec docker run --rm -e PATH=/usr/bin:/bin -e SERVICE_USER_TEST_ISOLATED=1 \
+    -v "$repo_root:/src:ro" "$image" /bin/bash /src/bootstrap/provision-service-user.test.sh
+fi
+
+if ! command -v useradd >/dev/null || ! command -v loginctl >/dev/null; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update >/dev/null
   apt-get install -y --no-install-recommends passwd systemd >/dev/null
-  cp -a /src /work
-  cd /work
+fi
+cd "$repo_root"
   export LANE_PROVISION_STATE_ROOT=/var/lib/provision-test
+  cleanup() {
+    if [[ -e /usr/sbin/useradd.hidden && ! -e /usr/sbin/useradd ]]; then
+      mv /usr/sbin/useradd.hidden /usr/sbin/useradd
+    fi
+    for test_user in laneproof outsider unownedhome; do
+      getent passwd "$test_user" >/dev/null 2>&1 && /usr/sbin/userdel --force --remove "$test_user" >/dev/null 2>&1 || true
+    done
+    rm -rf /home/laneproof /home/outsider /home/unowned-home /var/lib/provision-test
+  }
+  trap cleanup EXIT
+  # A clean rebuild intentionally runs the complete suite twice (during
+  # install and again as an explicit proof). Recover test-only debris even if
+  # the prior invocation was interrupted before its EXIT trap completed.
+  cleanup
   cat >/usr/local/bin/loginctl <<"EOF"
 #!/bin/bash
 set -eu
@@ -75,5 +101,6 @@ EOF
   grep -Fq "missing required binary: useradd" /tmp/missing.out
   ! grep -Fq "command not found" /tmp/missing.out
   echo "MISSING=$(cat /tmp/missing.out)"
-'
+cleanup
+trap - EXIT
 printf 'service-user container proof: PASS\n'

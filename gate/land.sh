@@ -311,6 +311,20 @@ while IFS=$'\t' read -r unpark_sha unpark_ref; do
   rm -rf "$unpark_tmp"
 done <<< "$unpark_refs"
 
+# Second operator authority: a decision file tracked on the integration branch.
+# The signature path above stays available because HR-2109 gives the eventual
+# administrator bot a signing role; this one exists because the operator is
+# usually not at a computer (HR-2103) and decides over Telegram, and because the
+# repository already has a trust root of exactly the right shape --
+# instance/decisions/ reaches origin only through this gate, which requires an
+# independent review for gate-policy paths. The item id passed here is the same
+# tracked-authority id the review-item guard already bound above, and the target
+# is read from the remote-tracking ref, never from the working tree or $branch.
+if ! "$BUN_BIN" "$script_dir/review-rounds.ts" operator-unpark-decision \
+    --state "$review_round_state" --item-id "$item_id" --repo "$repo" --target-branch "$default_branch"; then
+  land_fail review-rounds 2
+fi
+
 export LAND_DEFAULT_BRANCH="$default_branch"
 guard_args=("$script_dir/completion-guard.ts" --report "$report" --repo "$repo" --branch "$branch")
 if [ "$run_verify" = true ]; then guard_args+=(--defer-verify); fi
@@ -373,6 +387,20 @@ if ! git -C "$repo" diff --quiet "$payload_base..$branch" -- "$operator_unpark_c
   echo "LAND step=payload-guard status=fail detail=reserved-path path=$operator_unpark_candidate_trust_rel" >&2
   land_fail payload-guard 2
 fi
+# A candidate may still record decisions -- that is ordinary governance work --
+# but it may not land one that carries an unpark authorization, because that is
+# the authorization this same gate reads back as authority. The directory and
+# marker below are the pair review-rounds.ts scans; they must stay identical.
+operator_unpark_decision_dir="instance/decisions"
+operator_unpark_decision_marker="^operator-unpark: v2 "
+while IFS= read -r decision_path; do
+  [ -n "$decision_path" ] || continue
+  if git -C "$repo" cat-file -e "$branch:$decision_path" 2>/dev/null &&
+     git -C "$repo" show "$branch:$decision_path" | grep -qE "$operator_unpark_decision_marker"; then
+    echo "LAND step=payload-guard status=fail detail=reserved-path path=$decision_path" >&2
+    land_fail payload-guard 2
+  fi
+done < <(git -C "$repo" diff --name-only "$payload_base..$branch" -- "$operator_unpark_decision_dir/")
 if ! land_payload_guard "$repo" "$branch"; then
   echo "LAND verdict=aborted sha=$merge_sha" >&2
   exit 2

@@ -23,6 +23,11 @@ v3
 # Park record: instance/parked/V3-1.1-stage2-2026-08-03.md
 ag-s3-2-r3
 
+# V3-3.5 round 3 — explained decision options (HR-1752). PARKED at the HR-1726 cap:
+# the wiring is built and verified, but round 3's own delta has no behavioural
+# red-before. Park record: instance/parked/V3-3.5-decision-options-2026-08-04.md
+ag-s5-10-r3
+
 # V3-2.1 round 3 — unattended orchestrator restart. PARKED at the HR-1726 cap: the
 # capability-exclusion lock is false-green when a tracked exclusion disappears.
 # Park record: instance/parked/V3-2.1-unattended-restart-2026-08-04.md

@@ -10,7 +10,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-async function fixture(failStage = "", checkedOutSha = "") {
+async function fixture(failStage = "", checkedOutSha = "", failOutput = "") {
   const root = await mkdtemp(join(tmpdir(), "meteorite-test-"));
   roots.push(root);
   const bin = join(root, "bin");
@@ -23,7 +23,10 @@ case "$1" in
   run) printf 'container-id\\n' ;;
   exec)
     command="\${*:3}"
-    if [[ "$command" == *"$FAIL_STAGE"* && -n "$FAIL_STAGE" ]]; then exit 19; fi
+    if [[ "$command" == *"$FAIL_STAGE"* && -n "$FAIL_STAGE" ]]; then
+      if [[ -n "$FAIL_OUTPUT" ]]; then printf '%s\\n' "$FAIL_OUTPUT"; fi
+      exit 19
+    fi
     if [[ "$command" == *"git -C /work/"*" rev-parse HEAD"* ]]; then printf '%s\\n' "$EXPECTED_SHA"; fi
     ;;
   stop|rm) ;;
@@ -40,6 +43,7 @@ esac
     METEORITE_REPORT: report,
     DOCKER_TRACE: trace,
     FAIL_STAGE: failStage,
+    FAIL_OUTPUT: failOutput,
     EXPECTED_SHA: checkedOutSha || sha,
     METEORITE_DONOR_SHA: sha,
     METEORITE_DONOR_REF: `refs/meteorite-candidates/1700000000-123-${sha}/v2-deprecated`,
@@ -196,5 +200,66 @@ describe("meteorite runner", () => {
     expect(report).toContain("blocker: full-test-suite command failed");
     expect(report).toContain("Telegram transport —");
     expect(await readFile(f.trace, "utf8")).toContain("rm -f container-id");
+  });
+
+  // V3-0.55 regression lock. Three landing attempts were spent on the blocker
+  // "bootstrap-install command failed", which named a stage that runs the whole
+  // suite and therefore excluded nothing. The failing test was in the run log
+  // the whole time; the durable report did not carry it, so two wrong
+  // hypotheses (the merge commit, accumulated host state) were investigated
+  // before the log was diffed. The blocker must name the concrete failure.
+  const suiteFailure = [
+    "tools/check-mechanism-reachability.test.ts:",
+    "(pass) repository mechanism inventory has only named, bidirectional exclusions",
+    "",
+    "1 tests failed:",
+    "(fail) the production executor each reachable mechanism rests on is named exactly",
+    "",
+    " 602 pass",
+    " 1 fail",
+  ].join("\n");
+
+  test("a stage that runs a suite names the failing test in the durable blocker", async () => {
+    // REPO_BRANCH=meteorite-target appears only in the bootstrap-install stage.
+    const f = await fixture("REPO_BRANCH=meteorite-target", "", suiteFailure);
+    const run = Bun.spawnSync(["bash", runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    expect(run.exitCode).not.toBe(0);
+    const report = await readFile(f.report, "utf8");
+    expect(report).toContain("bootstrap-install: NO-GO");
+    expect(report).toContain("blocker: bootstrap-install command failed");
+    expect(report).toContain("(fail) the production executor each reachable mechanism rests on is named exactly");
+    expect(report).not.toContain("bootstrap-verify-source: PASS");
+  });
+
+  test("the named failure stays inside the single blocker field", async () => {
+    const f = await fixture("REPO_BRANCH=meteorite-target", "", suiteFailure);
+    Bun.spawnSync(["bash", runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    const report = await readFile(f.report, "utf8");
+    const blockerLines = report.split("\n").filter((line) => line.startsWith("- blocker:"));
+    expect(blockerLines).toHaveLength(1);
+    expect(blockerLines[0]).toContain("(fail) the production executor");
+    // Bounded: one report field, never the whole suite transcript.
+    expect(blockerLines[0]!.length).toBeLessThanOrEqual(512);
+  });
+
+  test("a stage failure is not laundered by the capture that records it", async () => {
+    // The output capture is a pipe. Without pipefail the successful tee would
+    // mask a failing (or killed) stage command and the run would report clean.
+    const f = await fixture("REPO_BRANCH=meteorite-target", "", suiteFailure);
+    const run = Bun.spawnSync(["bash", runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    expect(run.exitCode).not.toBe(0);
+    const report = await readFile(f.report, "utf8");
+    expect(report).toContain("result: NO-GO");
+    expect(report).not.toContain("result: clean");
+    // The full output still reaches the run log, not only the bounded blocker.
+    expect(run.stdout.toString()).toContain("602 pass");
+  });
+
+  test("a stage that fails with no output says so instead of naming nothing", async () => {
+    const f = await fixture("REPO_BRANCH=meteorite-target");
+    const run = Bun.spawnSync(["bash", runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    expect(run.exitCode).not.toBe(0);
+    const report = await readFile(f.report, "utf8");
+    expect(report).toContain("blocker: bootstrap-install command failed: stage produced no output");
   });
 });

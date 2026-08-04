@@ -118,3 +118,42 @@ that v2 already had and v3 dropped.
 Until then **autonomy is off**: nothing wakes the orchestrator when the fleet goes idle,
 and nothing tells the operator if it stops. That is a known, accepted, time-boxed gap and
 not a silent one.
+
+### Closed the same night, 22:21 CEST
+
+V3-2.11 landed (`1fd31cc`) and the watchdog is armed again. Autonomy was off for roughly
+four and a half hours, deliberately.
+
+What was deployed, and the one deliberate deviation:
+
+- `bootstrap/install.sh` was **not** run. Its `hygiene` step installs an hourly
+  `hygiene/reap.sh worktrees --apply` cron, and lane worktrees live under
+  `/root/.cache/infra-lanes`, which the operator has ruled off-limits (Telegram 2132/2134;
+  message 1839: *"не треба прибирати, ми все одно все вичистимо і почнемо з нуля коли в3
+  буде готова"*). Arming automatic worktree reaping was doubly wrong on the night this
+  row proved lane `failed` statuses are unreliable — the reaper would have been deleting
+  evidence that is mislabelled.
+- Only the installer's `render_units` behaviour was mirrored: the four templates rendered
+  with `envsubst` over `INSTALL_ROOT` and `ENV_FILE`, installed `0600` into
+  `/etc/systemd/system`, then `daemon-reload`.
+- The hand-edited 120-line `/root/.local/bin/orch-fleet-nudge.sh` and the two previous unit
+  files were backed up to `/root/oldorch-breakglass/pre-v3-2.11-backup/` before anything
+  was written. They are the rollback artifact and are not in git.
+- **Step 2 of the reviewer's sequence was dropped entirely**, correctly: the units now run
+  from `${INSTALL_ROOT}`, so there is no second copy to install and no drift to detect.
+  `git pull` is the deploy.
+- The abort gate ran before anything was armed: `fleet-nudge.sh --count-open` against the
+  real workboard, which is side-effect free — exit 0, 59 open rows, identical under gawk
+  and mawk. Had it exited 2, arming would have restarted the storm.
+- Watchdog armed first, verified (`Result=success`, heartbeat `status=0` and current, no
+  alert-state file, nobody paged), then the liveness alarm armed second. Both timers
+  active; the liveness alarm has never run on this host before tonight.
+
+Rollback, if needed: `systemctl disable --now orch-fleet-nudge.timer
+orch-fleet-nudge-liveness.timer`, restore from `/root/oldorch-breakglass/pre-v3-2.11-backup/`.
+
+**Still open from this incident:** the launcher itself is unchanged. `preflight-cli-auth.sh`
+is still absent from `HEAD`, `mission-cli.ts` still implements neither `reap` nor `lease`,
+and the orchestrator still runs only because of two lines in the gitignored
+`orchestrator/runtime.env`. The watchdog being alive does not make the host rebuildable —
+it only means the machine can now tell someone when it stops.

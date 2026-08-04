@@ -86,3 +86,35 @@ The real fixes are three, and they are lane work, not orchestrator work:
 
 Item 3 is the one that turns this from a bug into a class. Until it exists, the meteorite
 proof can stay green through exactly this failure again.
+
+## Addendum, same evening — the watchdog timer was stopped, and must be restored
+
+`orch-fleet-nudge.timer` was **stopped** at ~19:15 CEST:
+
+```sh
+systemctl stop orch-fleet-nudge.timer   # -> inactive; `systemctl list-timers 'orch-fleet*'` lists none
+```
+
+Why: the watchdog had been failing every ten minutes since ~17:53 and, on each failure,
+correctly notifying the operator that it could not read the workboard. The notification
+path works — he received every one of them. So a broken watchdog was paging him every ten
+minutes, at night, while he was trying to sleep, and he said so.
+
+This was the orchestrator's fault twice over. It knew the watchdog was dead, and it left
+the timer armed anyway while dispatching a lane to repair it — so the orchestrator was the
+thing keeping him awake. A failing unit that alerts on every failure is not harmless just
+because its alerts are accurate.
+
+**It is stopped, not disabled**, so a reboot re-arms it — which would resume the paging.
+That is a deliberate trade: leaving it enabled keeps the recovery path honest, and the fix
+is expected within hours. If the fix does not land, the next orchestrator must either
+finish it or disable the unit properly rather than rediscover this at 03:00.
+
+**Restore condition:** once `ag-v3-fleet-nudge-restore` lands the tracked units and the
+adapted parser, deploy from the tracked copy and `systemctl start orch-fleet-nudge.timer`
+again — with `fleet-nudge-liveness` alongside it, which is the watchdog-for-the-watchdog
+that v2 already had and v3 dropped.
+
+Until then **autonomy is off**: nothing wakes the orchestrator when the fleet goes idle,
+and nothing tells the operator if it stops. That is a known, accepted, time-boxed gap and
+not a silent one.

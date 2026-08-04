@@ -757,10 +757,48 @@ printf "commit: %s fixture\nverify: printf '162 pass\\\\n6 fail\\\\n'\nverify-co
 verify_count_output="$fixture_root/verify-count-mismatch-output.txt"
 if "$land" --branch ag-verify-count-mismatch --item-id ag-verify-count-mismatch --report "$fixture_root/verify-count-mismatch-report.md" --repo "$fixture_root/verify-count-mismatch-repo" --run-verify >"$verify_count_output" 2>&1; then exit 1; fi
 assert_output_has "$verify_count_output" 'LAND verify-count mismatch report=168/168 actual=162/6'
-assert_output_has "$verify_count_output" 'LAND step=post-merge-verify status=fail'
+assert_output_has "$verify_count_output" 'LAND step=reviewed-verify status=fail'
 assert_output_lacks "$verify_count_output" 'LAND step=push status=pass'
 assert test "$(git -C "$fixture_root/verify-count-mismatch-repo" rev-parse HEAD)" = "$verify_count_before"
 assert git -C "$fixture_root/verify-count-mismatch-repo" show-ref --verify --quiet refs/heads/ag-verify-count-mismatch
+
+# V3-0.25 regression lock: two reviewed candidates were both measured at two
+# tests. Landing the first raises the merged count for the second to three, but
+# does not change the second candidate's reviewed diff or exact-SHA measurement.
+make_fixture verify-count-reviewed-queue
+queue_repo="$fixture_root/verify-count-reviewed-queue-repo"
+count_command="count=\$(find . -name '*.test.ts' -type f | wc -l); printf '%s pass\\n0 fail\\n' \"\$count\""
+for queue_lane in ag-queue-a ag-queue-b; do
+  git -C "$queue_repo" checkout -b "$queue_lane" main >/dev/null
+  mkdir -p "$queue_repo/gate"
+  printf 'policy\n' > "$queue_repo/gate/$queue_lane.txt"
+  printf 'import { test, expect } from "bun:test"; test("%s", () => expect(true).toBe(true));\n' "$queue_lane" > "$queue_repo/$queue_lane.test.ts"
+  git -C "$queue_repo" add "gate/$queue_lane.txt" "$queue_lane.test.ts"
+  git -C "$queue_repo" commit -m "$queue_lane" >/dev/null
+  queue_sha=$(git -C "$queue_repo" rev-parse HEAD)
+  printf "commit: %s fixture\nverify: %s\nverify-count: 2/0\nresult: clean\nsecret-scan: clean\nremaining: none\n" "$queue_sha" "$count_command" > "$fixture_root/$queue_lane-report.md"
+  review "$fixture_root/$queue_lane.review.md" ACCEPT independent-reviewer "$queue_sha" separate-session
+  git -C "$queue_repo" checkout main >/dev/null
+done
+for queue_lane in ag-queue-a ag-queue-b; do
+  queue_output="$fixture_root/$queue_lane-output.txt"
+  "$land" --branch "$queue_lane" --item-id "$queue_lane" --report "$fixture_root/$queue_lane-report.md" --repo "$queue_repo" --run-verify >"$queue_output" 2>&1
+  assert_output_has "$queue_output" 'LAND step=reviewed-verify status=pass'
+  assert_output_has "$queue_output" 'review=accepted'
+  assert_output_has "$queue_output" 'LAND verdict=landed sha='
+done
+assert_output_has "$fixture_root/ag-queue-a-output.txt" 'LAND verify-count carried report=2/0 actual=2/0'
+assert_output_has "$fixture_root/ag-queue-b-output.txt" 'LAND verify-count carried report=2/0 actual=3/0'
+
+# A fabricated low count is refused by the gate's exact reviewed-SHA run even
+# though it would be a valid lower bound for the post-merge tree.
+make_fixture verify-count-fabricated
+fabricated_sha=$(make_lane "$fixture_root/verify-count-fabricated-repo" ag-verify-count-fabricated)
+printf "commit: %s fixture\nverify: printf '2 pass\\\\n0 fail\\\\n'\nverify-count: 1/0\nresult: clean\nsecret-scan: clean\nremaining: none\n" "$fabricated_sha" > "$fixture_root/verify-count-fabricated-report.md"
+fabricated_output="$fixture_root/verify-count-fabricated-output.txt"
+if "$land" --branch ag-verify-count-fabricated --item-id ag-verify-count-fabricated --report "$fixture_root/verify-count-fabricated-report.md" --repo "$fixture_root/verify-count-fabricated-repo" --run-verify >"$fabricated_output" 2>&1; then exit 1; fi
+assert_output_has "$fabricated_output" 'LAND verify-count mismatch report=1/0 actual=2/0'
+assert_output_has "$fabricated_output" 'LAND step=reviewed-verify status=fail'
 
 make_fixture reap-fail
 reap_fail_sha=$(make_lane "$fixture_root/reap-fail-repo" ag-reap-fail)

@@ -706,7 +706,7 @@ land_assert_reap_safe() {
 # Compare an optional report claim with the output of the verify command that
 # the gate itself just ran. The completion guard validates the claim's syntax.
 land_verify_count() {
-  local report="$1" output_file="$2" claim passed failed
+  local report="$1" output_file="$2" mode="${3:-exact}" claim passed failed claimed_passed claimed_failed
   claim=$(sed -n 's/^verify-count:[[:space:]]*//p' "$report")
   [ -n "$claim" ] || return 0
   passed=$(awk 'BEGIN { IGNORECASE=1 } /^[0-9]+ pass(ed)?$/ { count++; value=$1 } END { if (count == 1) print value }' "$output_file")
@@ -715,11 +715,44 @@ land_verify_count() {
     echo "LAND verify-count output=missing-unambiguous-pass/fail-count" >&2
     return 1
   fi
-  if [ "$claim" != "$passed/$failed" ]; then
-    echo "LAND verify-count mismatch report=$claim actual=$passed/$failed" >&2
-    return 1
+  case "$mode" in
+    exact)
+      if [ "$claim" != "$passed/$failed" ]; then
+        echo "LAND verify-count mismatch report=$claim actual=$passed/$failed" >&2
+        return 1
+      fi
+      echo "LAND verify-count match=$passed/$failed"
+      ;;
+    carry)
+      claimed_passed=${claim%/*}
+      claimed_failed=${claim#*/}
+      if [ "$failed" != "$claimed_failed" ] || [ "$passed" -lt "$claimed_passed" ]; then
+        echo "LAND verify-count carry-mismatch report=$claim actual=$passed/$failed" >&2
+        return 1
+      fi
+      echo "LAND verify-count carried report=$claim actual=$passed/$failed"
+      ;;
+    *)
+      echo "LAND verify-count invalid-mode mode=$mode" >&2
+      return 2
+      ;;
+  esac
+}
+
+# Run the candidate-authored verify command on the exact reviewed commit in a
+# detached, disposable worktree. The gate, not the candidate, produces the
+# measurement used to authenticate the report's count.
+land_verify_reviewed_sha() {
+  local repo="$1" sha="$2" verify_command="$3" output_file="$4" verify_tree status=0
+  verify_tree=$(mktemp -d "${TMPDIR:-/tmp}/bpa-land-reviewed.XXXXXX") || return 2
+  rmdir "$verify_tree" || return 2
+  if ! git -C "$repo" worktree add --quiet --detach "$verify_tree" "$sha"; then
+    rm -rf -- "$verify_tree"
+    return 2
   fi
-  echo "LAND verify-count match=$passed/$failed"
+  (cd "$verify_tree" && sh -c "$verify_command") >"$output_file" 2>&1 || status=$?
+  git -C "$repo" worktree remove --force "$verify_tree" >/dev/null 2>&1 || status=2
+  return "$status"
 }
 
 land_payload_guard() {

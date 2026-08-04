@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Real systemd regression lock for V3-2.1. Runs only in a disposable container;
-# it never addresses the host manager. The fixture service mirrors the tracked
-# orchestrator unit's Restart/RestartSec/StartLimit contract, while activation
-# is performed by bootstrap/install.sh's real activate_units function.
+# it never addresses the host manager. The service is rendered from the tracked
+# production template; only RestartSec is shortened by an explicit test drop-in.
+# Activation is performed by bootstrap/install.sh's real activate_units function.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -12,30 +12,29 @@ NAME="bpa-systemd-recovery-${BASHPID}"
 FIXTURE="$(mktemp -d)"
 trap 'docker rm -f "$NAME" >/dev/null 2>&1 || true; rm -rf "$FIXTURE"' EXIT
 
-mkdir -p "$FIXTURE/root/bootstrap" "$FIXTURE/bin" "$FIXTURE/systemd"
+mkdir -p "$FIXTURE/root/bootstrap" "$FIXTURE/root/orchestrator" \
+  "$FIXTURE/systemd/bpa-orchestrator.service.d"
 cp "$SCRIPT_DIR/install.sh" "$FIXTURE/root/bootstrap/install.sh"
+: > "$FIXTURE/root/.env"
+INSTALL_ROOT=/fixture/root ENV_FILE=/fixture/root/.env \
+  envsubst < "$SCRIPT_DIR/units/bpa-orchestrator.service.in" > \
+  "$FIXTURE/systemd/bpa-orchestrator.service"
 printf '%s\n' '#!/usr/bin/env bash' \
   'set -euo pipefail' \
+  '[[ "${1:-}" == supervise || "${1:-}" == stop ]]' \
+  '[[ "${1:-}" != stop ]] || exit 0' \
   'state=/run/bpa-orchestrator-generation' \
   'generation=0; [[ ! -f "$state" ]] || read -r generation < "$state"' \
   '((generation += 1)); printf "%s\n" "$generation" > "$state"' \
   'printf "%s %s\n" "$generation" "$BASHPID" >> /run/bpa-orchestrator-starts' \
   '[[ ! -e /run/bpa-force-failure ]] || exit 42' \
-  'exec sleep infinity' > "$FIXTURE/bin/orchestrator"
-chmod 755 "$FIXTURE/bin/orchestrator"
+  'exec sleep infinity' > "$FIXTURE/root/orchestrator/launch.sh"
+chmod 755 "$FIXTURE/root/orchestrator/launch.sh"
 
 printf '%s\n' \
-  '[Unit]' \
-  'Description=Disposable BPA orchestrator recovery proof' \
-  'StartLimitIntervalSec=20' \
-  'StartLimitBurst=3' \
   '[Service]' \
-  'Type=simple' \
-  'ExecStart=/fixture/bin/orchestrator' \
-  'Restart=on-failure' \
-  'RestartSec=1' \
-  '[Install]' \
-  'WantedBy=multi-user.target' > "$FIXTURE/systemd/bpa-orchestrator.service"
+  'RestartSec=1' > \
+  "$FIXTURE/systemd/bpa-orchestrator.service.d/recovery-test.conf"
 printf '%s\n' \
   '[Unit]' \
   'Description=Disposable armed watchdog timer' \
@@ -56,7 +55,9 @@ for _ in {1..50}; do
   sleep 0.1
 done
 docker exec "$NAME" bash -c \
-  'cp /fixture/systemd/* /etc/systemd/system/; export BOOTSTRAP_LIB_ONLY=true SYSTEMCTL_CMD=systemctl; source /fixture/root/bootstrap/install.sh; activate_units'
+  'cp -R /fixture/systemd/* /etc/systemd/system/; export BOOTSTRAP_LIB_ONLY=true SYSTEMCTL_CMD=systemctl; source /fixture/root/bootstrap/install.sh; activate_units'
+[[ "$(docker exec "$NAME" systemctl show -p ExecStart --value bpa-orchestrator.service)" == \
+  *'/fixture/root/orchestrator/launch.sh supervise'* ]]
 docker exec "$NAME" systemctl is-enabled --quiet bpa-orchestrator.service
 docker exec "$NAME" systemctl is-enabled --quiet bpa-orchestrator-watchdog.timer
 docker exec "$NAME" systemctl is-active --quiet bpa-orchestrator-watchdog.timer

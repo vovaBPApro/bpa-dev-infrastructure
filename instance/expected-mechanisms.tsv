@@ -26,3 +26,4 @@ cron:reap	cron	hygiene/install-cron.sh
 tier:shell	shell-tier	tools/shell-test-tier.test.ts
 gate:landing	gate	gate/land.sh
 runner:meteorite	runner	meteorite/run.sh
+gate:bookkeeping-fence	fence	gate/bookkeeping-push.sh

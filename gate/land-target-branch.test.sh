@@ -193,10 +193,22 @@ assert_output_has "$wrong_checkout_output" 'LAND step=default-branch status=fail
 assert test "$(git -C "$fixture_root/target-wrong-checkout-repo" rev-parse main)" = "$main_before"
 
 # --- 4. The flag cannot be used to bypass the freshness check. -------------
-# origin/v3 advances after clone (peer push); main stays fresh throughout.
-# A landing with --target-branch v3 must still fail on freshness even though
-# the (unused) default main is perfectly up to date -- proving the flag
-# retargets the guard instead of skipping it.
+# origin/v3 advances after clone (peer push) AND the local v3 carries a commit
+# origin does not have, so the two have genuinely DIVERGED; main stays fresh
+# throughout. A landing with --target-branch v3 must still fail on freshness
+# even though the (unused) default main is perfectly up to date -- proving the
+# flag retargets the guard instead of skipping it.
+#
+# Retargeted under V3-0.47, deliberately and without weakening the property
+# this case exists to protect. It used to make local v3 strictly BEHIND
+# origin/v3, which the gate now absorbs by fast-forward for every target alike
+# (see land_refresh_target, and case 5 below, which locks that the flag
+# retargets the ABSORPTION in lockstep too). Divergence is the state that is
+# still refused, and it is the state that actually matters: a target carrying
+# an unpushed commit is one a landing could publish without any gate having
+# walked it. Asserting on divergence therefore keeps the original claim --
+# "--target-branch cannot skip the freshness guard" -- against the strictest
+# case, rather than replacing it with a weaker one.
 make_fixture target-stale
 stale_sha=$(make_lane "$fixture_root/target-stale-repo" ag-target-stale v3)
 git clone "$fixture_root/target-stale-origin.git" "$fixture_root/target-stale-peer" >/dev/null
@@ -209,14 +221,52 @@ git -C "$fixture_root/target-stale-peer" commit -m remote-advance >/dev/null
 git -C "$fixture_root/target-stale-peer" push origin v3 >/dev/null
 main_before=$(git -C "$fixture_root/target-stale-repo" rev-parse main)
 git -C "$fixture_root/target-stale-repo" checkout v3 >/dev/null
+printf 'local unpushed\n' > "$fixture_root/target-stale-repo/local-unpushed.txt"
+git -C "$fixture_root/target-stale-repo" add local-unpushed.txt
+git -C "$fixture_root/target-stale-repo" commit -m local-unpushed >/dev/null
+v3_before=$(git -C "$fixture_root/target-stale-repo" rev-parse v3)
 report "$fixture_root/target-stale-report.md" "$stale_sha"
 stale_output="$fixture_root/target-stale-output.txt"
 "$land" --branch ag-target-stale --item-id ag-target-stale --report "$fixture_root/target-stale-report.md" --repo "$fixture_root/target-stale-repo" --target-branch v3 --no-push >"$stale_output" 2>&1
 stale_status=$?
 assert test "$stale_status" -eq 2
+assert_output_has "$stale_output" 'LAND freshness diverged target=v3'
 assert_output_has "$stale_output" 'LAND step=freshness status=fail'
+assert test "$(git -C "$fixture_root/target-stale-repo" rev-parse v3)" = "$v3_before"
 assert test "$(git -C "$fixture_root/target-stale-repo" rev-parse v3)" != "$(git -C "$fixture_root/target-stale-repo" rev-parse origin/v3)"
 assert test "$(git -C "$fixture_root/target-stale-repo" rev-parse main)" = "$main_before"
 assert git -C "$fixture_root/target-stale-repo" show-ref --verify --quiet refs/heads/ag-target-stale
+
+# --- 5. The flag retargets the freshness ABSORPTION, not just the refusal. --
+# The claim in gate/land.sh's --target-branch comment is that substituting
+# $default_branch retargets every guard in lockstep, with no per-guard opt-out.
+# V3-0.47 added a new behavior to that guard -- fast-forwarding a target that
+# is strictly behind a published origin -- so this locks that the new behavior
+# followed the substitution too: a behind v3 is absorbed and landed onto, while
+# main is never touched.
+make_fixture target-behind
+behind_sha=$(make_lane "$fixture_root/target-behind-repo" ag-target-behind v3)
+git clone "$fixture_root/target-behind-origin.git" "$fixture_root/target-behind-peer" >/dev/null
+git -C "$fixture_root/target-behind-peer" config user.email peer@example.test
+git -C "$fixture_root/target-behind-peer" config user.name Peer
+git -C "$fixture_root/target-behind-peer" checkout v3 >/dev/null
+printf 'remote advance\n' > "$fixture_root/target-behind-peer/remote.txt"
+git -C "$fixture_root/target-behind-peer" add remote.txt
+git -C "$fixture_root/target-behind-peer" commit -m remote-advance >/dev/null
+git -C "$fixture_root/target-behind-peer" push origin v3 >/dev/null
+behind_remote=$(git -C "$fixture_root/target-behind-peer" rev-parse HEAD)
+main_before=$(git -C "$fixture_root/target-behind-repo" rev-parse main)
+git -C "$fixture_root/target-behind-repo" checkout v3 >/dev/null
+report "$fixture_root/target-behind-report.md" "$behind_sha"
+behind_output="$fixture_root/target-behind-output.txt"
+"$land" --branch ag-target-behind --item-id ag-target-behind --report "$fixture_root/target-behind-report.md" --repo "$fixture_root/target-behind-repo" --target-branch v3 --no-push >"$behind_output" 2>&1
+behind_status=$?
+assert test "$behind_status" -eq 0
+assert_output_has "$behind_output" 'LAND freshness advanced target=v3'
+assert_output_has "$behind_output" 'LAND verdict=landed sha='
+behind_landed=$(git -C "$fixture_root/target-behind-repo" rev-parse v3)
+assert git -C "$fixture_root/target-behind-repo" merge-base --is-ancestor "$behind_remote" "$behind_landed"
+assert git -C "$fixture_root/target-behind-repo" merge-base --is-ancestor "$behind_sha" "$behind_landed"
+assert test "$(git -C "$fixture_root/target-behind-repo" rev-parse main)" = "$main_before"
 
 echo "land target-branch tests: pass"

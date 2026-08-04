@@ -933,6 +933,19 @@ assert_output_has "$no_push_remote_retained_output" 'LAND verdict=landed-local-r
 assert_output_lacks "$no_push_remote_retained_output" 'LAND step=reap status=pass'
 assert git --git-dir="$fixture_root/no-push-remote-retained-origin.git" show-ref --verify --quiet refs/heads/ag-no-push-remote-retained
 
+# A DIVERGED canonical checkout -- one carrying a commit origin does not have,
+# such as an unpushed merge a previous landing left behind -- is refused. That
+# is the state in which a landing could publish something no gate walked, and
+# it stays fail-closed.
+#
+# Retargeted under V3-0.47. This case used to make local main strictly BEHIND
+# origin/main, which the gate now absorbs by fast-forward: that state is just a
+# shared checkout left behind a published origin by a bookkeeping push between
+# landings, and refusing it bought nothing except an operator hand-running the
+# same fast-forward. The absorbed direction is locked positively in
+# gate/bookkeeping-fence.test.sh case 1 (which also proves the landed tip
+# really contains the commit that moved origin); the refused direction is here,
+# so neither half can be deleted without a test going red.
 make_fixture stale-main
 stale_main_sha=$(make_lane "$fixture_root/stale-main-repo" ag-stale-main)
 report "$fixture_root/stale-main-report.md" "$stale_main_sha"
@@ -943,9 +956,15 @@ printf 'remote advance\n' > "$fixture_root/stale-main-peer/remote.txt"
 git -C "$fixture_root/stale-main-peer" add remote.txt
 git -C "$fixture_root/stale-main-peer" commit -m remote-advance >/dev/null
 git -C "$fixture_root/stale-main-peer" push origin main >/dev/null
+printf 'local unpushed\n' > "$fixture_root/stale-main-repo/local-unpushed.txt"
+git -C "$fixture_root/stale-main-repo" add local-unpushed.txt
+git -C "$fixture_root/stale-main-repo" commit -m local-unpushed >/dev/null
+stale_main_before=$(git -C "$fixture_root/stale-main-repo" rev-parse main)
 stale_main_output="$fixture_root/stale-main-output.txt"
 if "$land" --branch ag-stale-main --item-id ag-stale-main --report "$fixture_root/stale-main-report.md" --repo "$fixture_root/stale-main-repo" >"$stale_main_output" 2>&1; then exit 1; fi
+assert_output_has "$stale_main_output" 'LAND freshness diverged target=main'
 assert_output_has "$stale_main_output" 'LAND step=freshness status=fail'
+assert test "$(git -C "$fixture_root/stale-main-repo" rev-parse main)" = "$stale_main_before"
 assert test "$(git -C "$fixture_root/stale-main-repo" rev-parse main)" != "$(git -C "$fixture_root/stale-main-repo" rev-parse origin/main)"
 
 make_fixture lock

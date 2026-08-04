@@ -244,10 +244,15 @@ if [ -n "$origin_pushurls" ]; then
   echo "LAND freshness origin-pushurl-refused pushurl=$(printf '%s' "$origin_pushurls" | tr '\n' ' ')" >&2
   land_fail freshness 2
 fi
-if ! git -C "$repo" fetch origin; then land_fail freshness 2; fi
-if [ "$(git -C "$repo" rev-parse "$default_branch")" != "$(git -C "$repo" rev-parse "origin/$default_branch")" ]; then
-  land_fail freshness 2
-fi
+# Freshness is measured, not demanded. A canonical checkout left behind a
+# published origin (the normal state after any bookkeeping push between
+# landings) is fast-forwarded onto the published tip and the landing proceeds
+# against THAT tip; a diverged or dirty target is refused exactly as before.
+# See land_refresh_target for why absorbing here weakens nothing and why the
+# push fence below is deliberately not given the same treatment. The fetch the
+# function performs is the one this step used to do inline; the origin URL it
+# reaches is the single verified one enforced immediately above.
+if ! land_refresh_target "$repo" "$default_branch"; then land_fail freshness 2; fi
 pre_merge_sha=$(git -C "$repo" rev-parse "$default_branch")
 # The one commit origin actually holds, asked of origin at the single verified
 # URL. Local refs -- including refs/remotes/origin/* -- are writable by any lane
@@ -435,6 +440,28 @@ if [ "$skip_review" = true ]; then echo "LAND review=SKIPPED reason=$skip_review
 # the canonical signature scan has accepted it.
 if ! land_secret_scan "$repo" "$branch"; then land_fail secret-scan 2; fi
 land_pass secret-scan
+
+# Refuse a target that moved BEFORE the attempt is recorded, not after. The
+# attempt refs pushed below live on origin and are replayed by every later
+# landing of this item, so an abort past that point durably consumes one of the
+# item's three review rounds; the existing post-push check caught this case,
+# but only once the round was already spent.
+#
+# This is also the fence-bypass position. The landing has held the repository
+# landing lock since before freshness, so a write that reached
+# origin/$default_branch since then did not come through
+# gate/bookkeeping-push.sh. That -- not "something unrelated moved" -- is the
+# stated reason: the fence was bypassed. Nothing is consumed, and the retry
+# absorbs the move at freshness.
+#
+# Read at the single verified "$origin_url", not the `origin` remote name, for
+# the reason stated at the freshness step: `remote.origin.url` is shared
+# mutable state, so a name-resolved read is a read this landing did not pin.
+mid_walk_target_sha=$(git -C "$repo" ls-remote --refs "$origin_url" "refs/heads/$default_branch" 2>/dev/null | awk 'NR == 1 { print $1 }')
+if [ "$mid_walk_target_sha" != "$pre_merge_sha" ]; then
+  echo "LAND freshness fence-bypassed target=$default_branch measured=$pre_merge_sha found=${mid_walk_target_sha:-missing} detail=write-outside-landing-lock-use-gate/bookkeeping-push.sh" >&2
+  land_fail freshness 2
+fi
 
 # The item identity is supplied by durable mission/acceptance identity, never
 # inferred from the disposable branch name. The repository-wide landing lock
@@ -679,6 +706,16 @@ if [ "$no_push" = false ]; then
       rollback_sha=$(git -C "$repo" rev-parse "origin/$default_branch")
     else
       rollback_sha="$pre_merge_sha"
+    fi
+    # Name the cause instead of leaving a bare "push failed". If the target
+    # advanced while this landing held the lock, some write bypassed
+    # gate/bookkeeping-push.sh. Unlike the two pre-merge positions this one
+    # CANNOT be absorbed: fast-forwarding and re-pushing here would publish a
+    # merge whose parent no check ever walked, which is the false green Hard
+    # Floor 7 forbids. Fail-closed is the only correct answer, and the retry
+    # absorbs the move at freshness.
+    if [ "$rollback_sha" != "$pre_merge_sha" ]; then
+      echo "LAND push target-advanced-during-landing target=$default_branch measured=$pre_merge_sha found=$rollback_sha detail=write-outside-landing-lock-use-gate/bookkeeping-push.sh" >&2
     fi
     if ! land_force_reset "$repo" "$rollback_sha"; then
       land_fail_rollback push "$rollback_sha" "$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)"

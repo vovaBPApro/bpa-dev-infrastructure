@@ -129,6 +129,108 @@ land_force_reset() {
   [ -z "$status_output" ]
 }
 
+# Bring $repo's checked-out target branch level with origin/$target by
+# FAST-FORWARD ONLY. Returns 0 when the local ref provably equals the remote
+# ref afterwards, 1 otherwise; the caller decides which step name to fail on.
+#
+# Why this exists (V3-0.47). The gate has TWO reasons to care that origin has
+# moved, and they are not the same requirement:
+#
+#   * BEFORE any expensive or durable work, "origin moved" costs nothing to
+#     absorb. Nothing has been merged, tested, or published that depends on the
+#     old tip, so advancing to the published remote tip and measuring THAT is
+#     exactly as strict as refusing -- and it is precisely the fast-forward an
+#     operator was running by hand on the shared canonical checkout before
+#     every landing. A discipline a human has to remember is a host-only
+#     mechanism (Hard Floor 5), so the gate performs it itself.
+#   * AT PUSH TIME, "origin moved" is fatal and stays fatal: the tree that
+#     passed the checks would no longer be the tree that lands. That fence is
+#     deliberately untouched by this function.
+#
+# Fast-forward ONLY is what keeps this from weakening freshness. The single
+# case newly absorbed is "local is strictly behind a published origin". A local
+# target that has DIVERGED from origin -- an unpushed merge a previous landing
+# left behind, a hand-edited canonical checkout -- is still refused, because
+# that is the state in which a landing could publish something no gate walked.
+# A dirty tree is refused for the same reason. Every guard after this point
+# (merge, meteorite, declared checks, verify, push) then measures the NEW tip,
+# so a landing is never merged onto a target it did not measure.
+#
+# Shared-checkout note: this only ever moves the local ref FORWARD onto a
+# commit that is already published on origin, so a concurrent reader of the
+# canonical checkout can never observe an unpublished state produced here.
+land_refresh_target() {
+  local repo="$1" target="$2" prefix="${3:-LAND}" local_sha remote_sha actual_sha
+  if ! git -C "$repo" fetch origin; then
+    echo "$prefix freshness fetch-failed target=$target" >&2
+    return 1
+  fi
+  local_sha=$(git -C "$repo" rev-parse --verify -q "${target}^{commit}") || {
+    echo "$prefix freshness local-ref-missing target=$target" >&2
+    return 1
+  }
+  remote_sha=$(git -C "$repo" rev-parse --verify -q "origin/${target}^{commit}") || {
+    echo "$prefix freshness origin-ref-missing target=origin/$target" >&2
+    return 1
+  }
+  if [ "$local_sha" = "$remote_sha" ]; then return 0; fi
+  if ! git -C "$repo" merge-base --is-ancestor "$local_sha" "$remote_sha"; then
+    echo "$prefix freshness diverged target=$target local=$local_sha origin=$remote_sha" >&2
+    return 1
+  fi
+  if [ -n "$(git -C "$repo" status --porcelain)" ]; then
+    echo "$prefix freshness dirty-tree target=$target" >&2
+    return 1
+  fi
+  if [ "$(git -C "$repo" branch --show-current)" != "$target" ]; then
+    echo "$prefix freshness not-checked-out target=$target" >&2
+    return 1
+  fi
+  if ! git -C "$repo" merge --ff-only "$remote_sha" >/dev/null 2>&1; then
+    echo "$prefix freshness fast-forward-failed target=$target local=$local_sha origin=$remote_sha" >&2
+    return 1
+  fi
+  actual_sha=$(git -C "$repo" rev-parse --verify -q "${target}^{commit}") || actual_sha=unknown
+  if [ "$actual_sha" != "$remote_sha" ]; then
+    echo "$prefix freshness fast-forward-unverified target=$target expected=$remote_sha actual=$actual_sha" >&2
+    return 1
+  fi
+  echo "$prefix freshness advanced target=$target from=$local_sha to=$remote_sha"
+}
+
+# The worst case, in seconds, that ONE landing can hold the repository landing
+# lock -- derived from the bounds this repository tracks, not guessed.
+# gate/land.sh runs the project suite at five points inside a single walk
+# (completion-guard verify, baseline declared checks, post-merge declared
+# checks, reviewed-verify in a detached worktree, post-merge verify) and runs
+# the meteorite in a clean container under its own timeout.
+#
+# Why this is derived rather than written down (V3-0.47 round-2 review, F5):
+# the round-1 fence defaulted its lock wait to a literal 1800, which sits
+# INSIDE this range -- about 86 % of it -- which is exactly the shape
+# lane-capabilities.md names as the worst kind of bound, one that falls inside
+# the measured range of a routine command. A literal also stops tracking the
+# moment LAND_METEORITE_TIMEOUT_SECONDS is raised, silently. Derived, raising
+# the meteorite bound raises the fence's patience with it, and
+# gate/bookkeeping-fence.test.sh goes red if that relationship is broken.
+LAND_LANDING_SUITE_RUNS="${LAND_LANDING_SUITE_RUNS:-5}"
+LAND_SUITE_BUDGET_SECONDS="${LAND_SUITE_BUDGET_SECONDS:-300}"
+land_landing_hold_seconds() {
+  echo $(( ${LAND_METEORITE_TIMEOUT_SECONDS:-900} + LAND_LANDING_SUITE_RUNS * LAND_SUITE_BUDGET_SECONDS ))
+}
+
+# How long a bookkeeping write should be willing to wait: TWO landing holds.
+# One for the landing already in flight when the fence arrives, one for a
+# landing that takes the lock ahead of the waiter -- `flock -w` is not FIFO, so
+# an arriving `flock -n` landing can and does jump the queue.
+#
+# This bounds patience, and deliberately does not claim to prevent starvation:
+# a continuous stream of landings can still time the fence out. That outcome is
+# a named refusal (`detail=lock-wait-timeout`), never an unfenced push.
+land_bookkeeping_wait_default() {
+  echo $(( $(land_landing_hold_seconds) * 2 ))
+}
+
 land_resolve_bun() {
   local name candidate resolved trusted_path='/usr/local/bin:/usr/bin:/bin'
   if [ -n "${BUN_BIN:-}" ]; then

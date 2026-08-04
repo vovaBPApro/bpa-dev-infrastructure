@@ -10,10 +10,11 @@ referenced, never copied.
 
 ## Instruction Routing
 
-Instructions live in three layers — L1 infra, L2 framework, L3 agent — plus L1
-`instance/` for installation facts. One instruction has one home; reference,
-never copy. Full routing rule (Step 0 + Q1–Q4, delivery, capture) lives in L1:
-`instructions/instruction-layers.md`.
+Instructions live in three layers — L1 infra, L2 framework, L3 agent — plus the
+L1 instance layer for installation facts. One instruction has one home;
+reference, never copy. Full routing rule (Step 0 + Q1–Q4, delivery, capture)
+lives in L1 under the id `instruction-layers` — cite the id, not a path into
+another repository's tree.
 
 <!-- hard-floor:begin -->
 ## Hard Floor

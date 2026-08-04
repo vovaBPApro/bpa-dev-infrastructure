@@ -12,6 +12,10 @@ NAME="bpa-systemd-recovery-${BASHPID}"
 FIXTURE="$(mktemp -d)"
 trap 'docker rm -f "$NAME" >/dev/null 2>&1 || true; rm -rf "$FIXTURE"' EXIT
 
+capability_forced_missing() {
+  [[ ",${INFRA_TEST_FORCE_MISSING_CAPABILITIES:-}," == *",$1,"* ]]
+}
+
 mkdir -p "$FIXTURE/root/bootstrap" "$FIXTURE/root/orchestrator" \
   "$FIXTURE/systemd/bpa-orchestrator.service.d"
 cp "$SCRIPT_DIR/install.sh" "$FIXTURE/root/bootstrap/install.sh"
@@ -19,6 +23,25 @@ cp "$SCRIPT_DIR/install.sh" "$FIXTURE/root/bootstrap/install.sh"
 INSTALL_ROOT=/fixture/root ENV_FILE=/fixture/root/.env \
   envsubst < "$SCRIPT_DIR/units/bpa-orchestrator.service.in" > \
   "$FIXTURE/systemd/bpa-orchestrator.service"
+
+# These are shipped-file facts and need no running manager. Keep them live in
+# the clean meteorite container even though that environment cannot launch the
+# nested privileged systemd fixture used by the observations below.
+grep -Fxq 'Restart=on-failure' "$FIXTURE/systemd/bpa-orchestrator.service"
+grep -Fxq 'RestartSec=10' "$FIXTURE/systemd/bpa-orchestrator.service"
+grep -Fxq 'StartLimitIntervalSec=60' "$FIXTURE/systemd/bpa-orchestrator.service"
+grep -Fxq 'StartLimitBurst=3' "$FIXTURE/systemd/bpa-orchestrator.service"
+grep -Fxq 'ExecStart=/fixture/root/orchestrator/launch.sh supervise' \
+  "$FIXTURE/systemd/bpa-orchestrator.service"
+printf '%s\n' 'systemd-recovery: RAN case=shipped-recovery-contract'
+
+if capability_forced_missing privileged-systemd-container || \
+    ! command -v docker >/dev/null 2>&1 || \
+    ! docker info >/dev/null 2>&1; then
+  printf '%s\n' 'systemd-recovery: EXCLUDED case=live-restart-observation capability=privileged-systemd-container'
+  exit 0
+fi
+
 printf '%s\n' '#!/usr/bin/env bash' \
   'set -euo pipefail' \
   '[[ "${1:-}" == supervise || "${1:-}" == stop ]]' \

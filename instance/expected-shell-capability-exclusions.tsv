@@ -1,4 +1,5 @@
 # test-file	case	capability
+bootstrap/systemd-recovery.test.sh	live-restart-observation	privileged-systemd-container
 orchestrator/singleton-failclosed.test.sh	stale-ofd-recovery	proc-lock-observability
 gate/land-rollback.test.sh	unrecoverable-lock	immutable-file
 gate/land-rollback.test.sh	live-lock	proc-lock-observability

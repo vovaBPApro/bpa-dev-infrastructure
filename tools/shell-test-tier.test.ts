@@ -89,7 +89,7 @@ test(
       const env = { ...process.env };
       delete env.BUN_BIN;
       env.INFRA_TEST_FORCE_MISSING_CAPABILITIES =
-        "immutable-file,proc-lock-observability,pid-mount-namespace";
+        "immutable-file,proc-lock-observability,pid-mount-namespace,privileged-systemd-container";
       const result = spawnSync("bash", [file], { cwd: repoRoot, encoding: "utf8", env });
       expect(result.status, `${file}: ${result.stdout}${result.stderr}`).toBe(0);
       for (const line of result.stdout.split("\n")) {

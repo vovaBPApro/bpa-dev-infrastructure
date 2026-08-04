@@ -53,6 +53,11 @@ case "$role" in coder|reviewer|orchestrator|manager) ;; *) die '--role is missin
 repo="$(cd "$repo" && pwd)"
 agent_command_file="${agent_command_file:-$repo/instance/lane-agent-command.conf}"
 [[ -f "$agent_command_file" && -r "$agent_command_file" ]] || die "agent command file missing or unreadable: $agent_command_file"
+# The unit payload is a file so that systemd never parses its body; keeping it
+# beside the masker and the exit gate means a lane runs the target repository's
+# code throughout rather than mixing in the launcher's own copy.
+lane_payload="$repo/orchestrator/fleet/lane-payload.sh"
+[[ -f "$lane_payload" && -r "$lane_payload" ]] || die "lane payload missing or unreadable: $lane_payload"
 [[ -x "$BUN_BIN" ]] || die 'Bun is unavailable; install it with bootstrap/install.sh or set BUN_BIN'
 command -v systemd-run >/dev/null || die 'systemd-run is unavailable; lane launch requires systemd'
 
@@ -79,6 +84,22 @@ status="$lanes_dir/lane-$name.status"
 unit="lane-$name"
 tmp_root="${TMPDIR:-/tmp}/infra-lane-tmp-$UID"
 tmp_dir="$tmp_root/$name"
+unit_path="$(dirname "$BUN_BIN"):$(dirname "${agent_argv[0]}"):/usr/local/bin:/usr/bin:/bin"
+
+# systemd expands `$VAR` and `${VAR}` in the command line it is handed, before
+# the shell sees any of it, and substitutes an EMPTY STRING for anything that
+# is not a valid environment variable name. That is what silently ate this
+# launcher's tenth argument -- lane-payload.sh carries the full account. The
+# payload body is now a file systemd never parses, but these VALUES still cross
+# that expander, so refuse a dollar sign rather than let one vanish in transit.
+# Checked here, before any artifact exists, so a rejected launch leaves nothing.
+for systemd_value in "$prompt" "$BUN_BIN" "$repo/daemon/mask-stream.ts" "$log" "$report" \
+  "$status" "$repo/gate/lane-exit.sh" "$repo" "$branch" "$role" "$lane_payload" \
+  "$worktree" "$tmp_dir" "$HOME" "$unit_path" "${agent_argv[@]}"; do
+  if [[ "$systemd_value" == *'$'* ]]; then
+    die "refusing to launch: systemd would expand '\$' in a lane value: $systemd_value"
+  fi
+done
 
 mkdir -p "$lanes_dir"
 for artifact in "$worktree" "$pack_dir" "$prompt" "$log" "$report" "$status" "$tmp_dir"; do
@@ -124,44 +145,16 @@ chmod 0711 "$tmp_root"
 chmod 0700 "$tmp_dir"
 systemctl reset-failed "$unit" >/dev/null 2>&1 || true
 
-unit_path="$(dirname "$BUN_BIN"):$(dirname "${agent_argv[0]}"):/usr/local/bin:/usr/bin:/bin"
 # All command elements remain positional parameters; no configured value is
 # evaluated as shell source. Agent stdout reaches disk only through mask-stream.
-# shellcheck disable=SC2016
 if ! systemd-run --collect --unit "$unit" \
   --property=IPAddressDeny=localhost \
   --property=IPAddressAllow=127.0.0.53 \
   --setenv="HOME=$HOME" --setenv="TMPDIR=$tmp_dir" --setenv="PATH=$unit_path" \
   --setenv="LANE_REPORT_PATH=$report" \
   --working-directory="$worktree" \
-  /bin/bash -o pipefail -c '
-    prompt=$1; bun=$2; masker=$3; log=$4; report=$5; status=$6; gate=$7; repo=$8; branch=$9; role=${10}
-    shift 10
-    set +e
-    "$@" "$(cat "$prompt")" 2>&1 | "$bun" "$masker" >>"$log"
-    pipeline_status=("${PIPESTATUS[@]}")
-    agent_status=${pipeline_status[0]}
-    mask_status=${pipeline_status[1]}
-    if ((agent_status != 0)); then
-      printf "state: failed\nreason: payload-exit\nexit: %s\nreport: %s\n" "$agent_status" "$report" >"$status"
-      exit "$agent_status"
-    fi
-    if ((mask_status != 0)); then
-      printf "state: failed\nreason: log-masker-exit\nexit: %s\nreport: %s\n" "$mask_status" "$report" >"$status"
-      exit "$mask_status"
-    fi
-    # This gate runs inside callers such as gate/land.sh, which deliberately
-    # export their own trusted BUN_BIN. The nested gate must resolve its own
-    # interpreter instead of tripping the land_resolve_bun caller-override guard.
-    env -u BUN_BIN "$gate" --report "$report" --repo "$repo" --branch "$branch" --role "$role" >>"$log" 2>&1
-    guard_status=$?
-    if ((guard_status == 0 || guard_status == 3)); then
-      printf "state: terminal\nreason: report-valid\nexit: %s\nreport: %s\n" "$guard_status" "$report" >"$status"
-      exit 0
-    fi
-    printf "state: failed\nreason: report-invalid\nexit: %s\nreport: %s\n" "$guard_status" "$report" >"$status"
-    exit "$guard_status"
-  ' _ "$prompt" "$BUN_BIN" "$repo/daemon/mask-stream.ts" "$log" "$report" "$status" \
+  /bin/bash "$lane_payload" \
+  "$prompt" "$BUN_BIN" "$repo/daemon/mask-stream.ts" "$log" "$report" "$status" \
   "$repo/gate/lane-exit.sh" "$repo" "$branch" "$role" "${agent_argv[@]}" >/dev/null; then
   printf 'launch-lane: unit launch failed; cleaned lane artifacts: %s\n' "$name" >&2
   exit 1

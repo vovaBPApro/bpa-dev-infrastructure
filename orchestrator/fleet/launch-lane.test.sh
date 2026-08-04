@@ -105,6 +105,39 @@ grep -Fxq -- '--property=IPAddressDeny=localhost' "$SCRATCH/systemd.args"
 grep -Fq 'daemon/mask-stream.ts' "$SCRATCH/systemd.args"
 grep -Fq "TMPDIR=$SCRATCH/tmp-parent/infra-lane-tmp-$UID/proof" "$SCRATCH/systemd.args"
 grep -Fq "LANE_REPORT_PATH=$SCRATCH/lanes/proof.report.md" "$SCRATCH/systemd.args"
+
+# V3-0.44 r2, static half. systemd expands the ExecStart line before bash sees
+# it and replaces every name it cannot resolve -- `10`, `PIPESTATUS[@]`,
+# `pipeline_status[0]` -- with an empty string. Passing the wrapper as a FILE
+# is what makes that impossible, so lock the shape here: no inline `-c` body,
+# no `${...}` anywhere in the argv, and the payload named explicitly. This half
+# needs no systemd; the behavioural half, which does, lives in
+# orchestrator/fleet/lane-payload-systemd.test.sh.
+if grep -Fxq -- '-c' "$SCRATCH/systemd.args"; then
+  printf 'launcher still passes an inline shell body to systemd (-c)\n' >&2
+  exit 1
+fi
+if grep -Fq '${' "$SCRATCH/systemd.args"; then
+  printf 'launcher argv contains ${...}, which systemd would expand to an empty string:\n' >&2
+  grep -Fn '${' "$SCRATCH/systemd.args" >&2
+  exit 1
+fi
+grep -Fxq "$REPO_DIR/orchestrator/fleet/lane-payload.sh" "$SCRATCH/systemd.args"
+# The role must be its own argv element, not interpolated into a body.
+grep -Fxq 'coder' "$SCRATCH/systemd.args"
+
+# A value carrying a dollar sign still crosses systemd's expander, so the
+# launcher must refuse it loudly instead of letting it be silently emptied.
+if PATH="$SCRATCH/bin:$PATH" AGENT_COMMAND_FILE="$SCRATCH/agent.conf" \
+  MOCK_SYSTEMD_ARGS="$SCRATCH/dollar.systemd.args" TMPDIR="$SCRATCH/tmp-parent" \
+  "$SCRIPT_DIR/launch-lane.sh" --name dollar --role coder --task-file "$SCRATCH/task.md" \
+  --repo "$REPO_DIR" --lanes-dir "$SCRATCH/lanes" --base HEAD --branch 'ag-fleet-$USER-lane' \
+  >"$SCRATCH/dollar.output" 2>"$SCRATCH/dollar.error"; then
+  printf 'launcher accepted a lane value systemd would expand\n' >&2
+  exit 1
+fi
+grep -Fq "systemd would expand '\$' in a lane value" "$SCRATCH/dollar.error"
+test ! -e "$SCRATCH/dollar.systemd.args"
 test -f "$SCRATCH/agent.executed"
 grep -Fxq 'run-lane' "$SCRATCH/agent.args"
 grep -Fxq -- '--custom-safety-mode' "$SCRATCH/agent.args"

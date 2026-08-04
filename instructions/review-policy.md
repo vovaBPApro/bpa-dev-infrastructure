@@ -78,7 +78,38 @@ An item receives at most three review rounds. A fourth is refused and parked as
 concerns become executable fail-before and pass-after locks; if that cannot be
 done, the item remains parked for recut.
 
-An operator may release only a `no-progress` park with `gate/operator-unpark.sh`.
+An operator may release only a `no-progress` park, and only through one of two
+authorities. Both consume a decision exactly once, for exactly the item it names,
+through the same ledger.
+
+The primary authority is **a decision file tracked on the integration branch**.
+A file `instance/decisions/<decision-id>.md` carries exactly one line
+
+```text
+operator-unpark: v2 item=<item-id> decision=<decision-id> park=no-progress
+```
+
+whose `<decision-id>` must equal its own file name, so the audit record leads
+back to the operator's words in one step and a file cannot be padded with extra
+grants. The landing gate reads that directory from `refs/remotes/origin/<target>`
+and nowhere else: not the working tree, not a stash, not a local branch, and not
+a command-line file — the command accepts no authorization payload, trust root,
+or decision selector from its caller at all, and refuses an `ag-` branch as an
+authority root. The trust root is therefore the one the repository already
+enforces: `instance/decisions/` reaches origin only through this gate, gate paths
+require an independent ACCEPT, and the payload guard reserves any candidate file
+under that directory whose own content carries the marker — so a lane cannot land
+the authorization that would release it, while recording an ordinary decision
+stays ordinary lane work. Consumption is recorded in the target-branch
+review-round history and is durable only if the landing merges, so a failed
+landing does not burn a decision. A decision id, once spent, is bound to that
+item forever: retargeting the file at another item is refused, and reapplying it
+to the same item is a logged no-op. An authorization that meets no `no-progress`
+park is not consumed — it waits for one, and never fires against a `cap` park.
+
+The alternative authority is a signature, kept because HR-2109 gives the eventual
+administrator bot a signing role. An operator may release the same park with
+`gate/operator-unpark.sh`.
 The authorization is an exact, versioned statement signed in the
 `bpa-operator-unpark` SSH namespace by a principal pinned in the fixed
 `bpa-operator-unpark.allowed-signers` file in the repository's Git common
@@ -95,6 +126,15 @@ agent that replaces the Git-common-dir trust file, steals an available signing k
 namespaces. Keeping the private key off-host prevents supported agents from
 producing authority; paired immutable records make every supported use visible
 and detect one-sided suppression, matching the attempt-ref threat boundary.
+
+The decision authority has the same boundary and one addition of its own: it is
+only as strong as write access to the integration branch on origin. An agent that
+can push there directly, rather than through this gate, can write its own
+authorization — which is why direct pushes to the integration branch are outside
+lane authority, and why the review requirement on gate paths is the thing that
+makes a tracked decision mean anything. Calling the command outside a landing
+grants nothing, because the gate rebuilds review-round state from the target
+branch at the start of every landing.
 
 The counter is honest-but-not-tamper-resistant while lanes are root-equivalent.
 A root lane can coordinate the same rewrite or deletion across both remote

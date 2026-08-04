@@ -74,7 +74,40 @@ export type PathExemption = {
 // wrapping around it, it is a slash-separated path naming a file (a final
 // extension) or an explicit directory (a trailing slash). The rule is stated
 // once, here, and the same function serves docs, CLAUDE.md and params.yaml.
-export function normalizePathToken(raw: string): string | undefined {
+//
+// That shape requirement costs something in BOTH directions, and a narrowing
+// disclosed in only one direction is disclosed by half:
+//
+//   - It keeps the false POSITIVES out, and that is worth keeping. Dropping the
+//     requirement admits every slashed prose token: 76 of them in this corpus
+//     alone -- `origin/main`, `Europe/Warsaw`, `read/write`, `go/no-go`,
+//     `CI/CD`, `Bun/TypeScript` -- none a claim about a file.
+//   - It also creates false NEGATIVES: real citations, dropped silently.
+//     `instance/params.yaml:13` names `instance/README` -- the absent
+//     installation index that CLAUDE.md and HR-735 both route agents to (audit
+//     F9), asserted a second time in the one file session-load.ts pushes into
+//     the orchestrator's context verbatim. The identical span with `.md` on the
+//     end FAILs; without an extension it passed silently.
+//
+// So shape is not the only admission route. A token with neither extension nor
+// trailing slash is still a citation when its LEADING segment is a directory
+// this repository actually carries: `instance/`, `gate/`, `tools/` are
+// directories; `origin/`, `Europe/` and `go/` are not. That asks the repository
+// instead of guessing from shape, which is why the predicate is a parameter
+// here rather than a hard-coded list -- a fixture repo, a product repo and this
+// one each answer it about themselves.
+//
+// Measured over the surface this check actually scans (backticked spans in
+// binding docs and CLAUDE.md, bare tokens in params.yaml), the shape rule
+// rejects 16 slashed tokens and this route admits exactly 2 of them:
+// `instance/README`, the citation it exists to catch, and `instructions/*` from
+// CLAUDE.md, which resolves and so costs nothing. No prose token survives it.
+//
+// Omitting the predicate is the narrow, fail-closed direction: shape only.
+export function normalizePathToken(
+  raw: string,
+  isRepoDirectory?: (segment: string) => boolean,
+): string | undefined {
   let token = raw.trim();
   // Prose wrapping: parentheses, quotes, brackets, trailing sentence marks.
   token = token.replace(/^[("'«\[]+/, "").replace(/[.,;:!?)\]»"']+$/, "");
@@ -89,17 +122,20 @@ export function normalizePathToken(raw: string): string | undefined {
   // repository path citations.
   if (token.includes("..")) return undefined;
   if (!token.includes("/")) return undefined;
+  if (token.endsWith("/")) return token;
   const last = token.split("/").filter(Boolean).pop() ?? "";
-  if (!token.endsWith("/") && !/\.[A-Za-z0-9]{1,8}$/.test(last)) return undefined;
-  return token;
+  if (/\.[A-Za-z0-9]{1,8}$/.test(last)) return token;
+  // Neither shape. Ask the repository whether the leading segment is one of its
+  // directories; without that predicate this is the shape rule and nothing more.
+  return isRepoDirectory?.(token.split("/")[0]) ? token : undefined;
 }
 
 // Every path-like token in free text, whitespace-tokenized. Used for
 // instance/params.yaml, whose citations are bare rather than backticked.
-export function extractPathTokens(text: string): string[] {
+export function extractPathTokens(text: string, isRepoDirectory?: (segment: string) => boolean): string[] {
   const found = new Set<string>();
   for (const raw of text.split(/\s+/)) {
-    const token = normalizePathToken(raw);
+    const token = normalizePathToken(raw, isRepoDirectory);
     if (token) found.add(token);
   }
   return [...found].sort();
@@ -109,10 +145,13 @@ export function extractPathTokens(text: string): string[] {
 // in code spans; a span may hold a whole command, so each span is tokenized
 // rather than matched whole (`bun tools/instructions/check.ts --repo <path>`
 // yields exactly one candidate).
-export function extractBacktickedPathTokens(contents: string): string[] {
+export function extractBacktickedPathTokens(
+  contents: string,
+  isRepoDirectory?: (segment: string) => boolean,
+): string[] {
   const found = new Set<string>();
   for (const match of contents.matchAll(/`([^`\r\n]+)`/g)) {
-    for (const token of extractPathTokens(match[1])) found.add(token);
+    for (const token of extractPathTokens(match[1], isRepoDirectory)) found.add(token);
   }
   return [...found].sort();
 }
@@ -135,6 +174,10 @@ export function extractBacktickedPathTokens(contents: string): string[] {
 // so a path only this host has is exactly the thing that must not count.
 export type PathResolver = {
   satisfied: (token: string) => boolean;
+  // Does the repository carry this directory? Answers the match rule's
+  // extensionless route (see normalizePathToken), and is answered from the same
+  // source as `satisfied` so the two can never disagree about one tree.
+  isRepoDirectory: (segment: string) => boolean;
   mode: "git" | "filesystem";
 };
 
@@ -147,7 +190,11 @@ export function createPathResolver(repo: string): PathResolver {
     // Not a git repository (a fixture, an exported tree). Degrade to filesystem
     // existence rather than pass everything, and say so out loud at the call
     // site -- an unanswerable predicate is never a silent pass.
-    return { satisfied: (token) => existsOnDisk(repo, token), mode: "filesystem" };
+    return {
+      satisfied: (token) => existsOnDisk(repo, token),
+      isRepoDirectory: (segment) => isDirectoryOnDisk(repo, segment),
+      mode: "filesystem",
+    };
   }
   const files = new Set<string>();
   const directories = new Set<string>();
@@ -161,6 +208,7 @@ export function createPathResolver(repo: string): PathResolver {
   }
   return {
     mode: "git",
+    isRepoDirectory: (segment) => directories.has(segment),
     satisfied: (token) => {
       const probe = literalPrefix(token);
       if (probe === undefined) return true; // `*.md` names no directory to check
@@ -185,6 +233,14 @@ function literalPrefix(token: string): string | undefined {
   return literal.length === 0 ? undefined : literal.join("/");
 }
 
+function isDirectoryOnDisk(repo: string, segment: string): boolean {
+  try {
+    return statSync(join(repo, segment)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 function existsOnDisk(repo: string, token: string): boolean {
   const probe = literalPrefix(token);
   if (probe === undefined) return true;
@@ -202,7 +258,10 @@ function existsOnDisk(repo: string, token: string): boolean {
 // Reads the exemption ledger. A missing file is an empty set -- the fail-closed
 // direction, since every cited path then has to exist. A malformed row is a
 // FAIL naming the line, never a silently dropped entry.
-export function readPathExemptions(repo: string): {
+export function readPathExemptions(
+  repo: string,
+  resolver: PathResolver = createPathResolver(repo),
+): {
   rows: Map<string, PathExemption>;
   findings: PathFinding[];
 } {
@@ -247,7 +306,9 @@ export function readPathExemptions(repo: string): {
       });
       continue;
     }
-    if (normalizePathToken(path) !== path) {
+    // Same rule the scanner uses, same repository context -- otherwise an
+    // extensionless citation could be emitted and then rejected as unemittable.
+    if (normalizePathToken(path, resolver.isRepoDirectory) !== path) {
       findings.push({
         level: "FAIL",
         file: PATH_EXEMPTIONS_FILE,
@@ -276,18 +337,19 @@ type Source = { file: string; tokens: string[] };
 // Collects the sources whose path claims are binding on an agent: every
 // `status: binding` instruction doc, the root agent contract, and the instance
 // parameter file that reaches the orchestrator's context verbatim.
-function collectSources(repo: string, docs: InstructionDoc[]): {
+function collectSources(repo: string, docs: InstructionDoc[], resolver: PathResolver): {
   sources: Source[];
   findings: PathFinding[];
 } {
   const sources: Source[] = [];
   const findings: PathFinding[] = [];
+  const isRepoDirectory = resolver.isRepoDirectory;
 
   const claudePath = join(repo, CLAUDE_FILENAME);
   if (existsSync(claudePath)) {
     sources.push({
       file: CLAUDE_FILENAME,
-      tokens: extractBacktickedPathTokens(readFileSync(claudePath, "utf8")),
+      tokens: extractBacktickedPathTokens(readFileSync(claudePath, "utf8"), isRepoDirectory),
     });
   } else {
     findings.push({ level: "SKIP", file: CLAUDE_FILENAME, check: "path-exists", detail: "no CLAUDE.md at repo root" });
@@ -297,13 +359,16 @@ function collectSources(repo: string, docs: InstructionDoc[]): {
     if (!doc.valid || doc.valid.status !== "binding") continue;
     sources.push({
       file: join("instructions", doc.relative),
-      tokens: extractBacktickedPathTokens(doc.contents),
+      tokens: extractBacktickedPathTokens(doc.contents, isRepoDirectory),
     });
   }
 
   const paramsPath = join(repo, PARAMS_FILE);
   if (existsSync(paramsPath)) {
-    sources.push({ file: PARAMS_FILE, tokens: extractPathTokens(readFileSync(paramsPath, "utf8")) });
+    sources.push({
+      file: PARAMS_FILE,
+      tokens: extractPathTokens(readFileSync(paramsPath, "utf8"), isRepoDirectory),
+    });
   } else {
     findings.push({ level: "SKIP", file: PARAMS_FILE, check: "path-exists", detail: "no instance/params.yaml" });
   }
@@ -313,10 +378,12 @@ function collectSources(repo: string, docs: InstructionDoc[]): {
 
 // Runs the whole check: cited paths, then the exemption ledger's own health.
 export function runPathChecks(repo: string, docs: InstructionDoc[]): PathFinding[] {
-  const { rows, findings: exemptionFindings } = readPathExemptions(repo);
-  const { sources, findings } = collectSources(repo, docs);
-  findings.push(...exemptionFindings);
+  // One resolver, built once: the match rule, the ledger's own path validation
+  // and the existence predicate must all be answering about the same tree.
   const resolver = createPathResolver(repo);
+  const { rows, findings: exemptionFindings } = readPathExemptions(repo, resolver);
+  const { sources, findings } = collectSources(repo, docs, resolver);
+  findings.push(...exemptionFindings);
   if (resolver.mode === "filesystem") {
     findings.push({
       level: "WARN",

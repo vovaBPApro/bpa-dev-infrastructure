@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from 'bun:test';
+import { afterAll, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -21,23 +21,17 @@ process.env.TELEGRAM_STATE_DIR = stateDir;
 process.env.TELEGRAM_BOT_TOKEN = '123456:fixture-token';
 process.env.ORCH_SESSION = '';
 
-let dispatchTool: (name: string, args: Record<string, unknown>) => Promise<unknown>;
-let dispatchUpdate: (update: Record<string, unknown>) => Promise<void>;
-let bufferedDecisionContents: () => string[];
-
-beforeAll(async () => {
-  const server = await import('./server');
-  server.installBotApiStubForTest(async (method, payload) => {
-    calls.push({ method, payload });
-    const result = method === 'sendMessage'
-      ? { message_id: ++messageId, date: 1, chat: { id: 7, type: 'private' }, text: payload.text }
-      : true;
-    return { ok: true, result };
-  });
-  dispatchTool = server.dispatchRegisteredToolForTest;
-  dispatchUpdate = server.dispatchRegisteredTelegramUpdateForTest;
-  bufferedDecisionContents = server.bufferedDecisionContentsForTest;
+const server = await import('./server');
+server.installBotApiStubForTest(async (method, payload) => {
+  calls.push({ method, payload });
+  const result = method === 'sendMessage'
+    ? { message_id: ++messageId, date: 1, chat: { id: 7, type: 'private' }, text: payload.text }
+    : true;
+  return { ok: true, result };
 });
+const dispatchTool = server.dispatchRegisteredToolForTest;
+const dispatchUpdate = server.dispatchRegisteredTelegramUpdateForTest;
+const bufferedDecisionContents = server.bufferedDecisionContentsForTest;
 
 afterAll(() => {
   rmSync(stateDir, { recursive: true, force: true });

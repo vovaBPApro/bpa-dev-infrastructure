@@ -11,6 +11,7 @@ import {
   type RuntimeStatusDeps,
   type ShRunner,
 } from './status';
+import { formatVendorQuota, readVendorQuota, type VendorQuotaFs } from './vendor-quota';
 
 test('REGRESSION ML-4: dead or half-open transport is not connected', () => {
   expect(
@@ -51,13 +52,14 @@ test('REGRESSION W-14: normal status is human-readable and keeps unknowns honest
     ],
     lastLanded: 'abc1234 [CODER] previous change',
     claudeConnected: true,
+    vendorQuota: 'Квота: Codex 5h 21%, 7d 64%, вік 17хв; Claude невідомо',
   });
   expect(lines).toEqual([
     'Зараз: W-14 useful status — running',
     'Лейни: 2: status-human-useful (running), review-status (failed)',
     'Останнє landed: abc1234 [CODER] previous change',
     'Блокери: review-status: стан failed',
-    'Claude MCP: підключено',
+    'Квота: Codex 5h 21%, 7d 64%, вік 17хв; Claude невідомо; MCP підключено',
   ]);
   expect(lines.join('\n')).not.toContain('{"daemon"');
 
@@ -68,11 +70,70 @@ test('REGRESSION W-14: normal status is human-readable and keeps unknowns honest
     lastLanded: null,
     lastLandedError: 'git timeout',
     claudeConnected: false,
+    vendorQuota: 'Квота: Codex невідомо; Claude невідомо',
   }).join('\n');
   expect(unknown).toContain('Зараз: невідомо (state DB unreadable)');
   expect(unknown).toContain('Лейни: невідомо (state DB unreadable)');
   expect(unknown).toContain('Останнє landed: невідомо (git timeout)');
-  expect(unknown).toContain('Claude MCP: не підключено');
+  expect(unknown).toContain('Квота: Codex невідомо; Claude невідомо; MCP не підключено');
+});
+
+test('REGRESSION ML-6: status exercises the real quota read/parse/format boundary', () => {
+  const fixture = `${JSON.stringify({
+    type: 'event_msg',
+    timestamp: '2026-08-04T10:00:00Z',
+    payload: {
+      type: 'token_count',
+      rate_limits: {
+        primary: { used_percent: 21, window_minutes: 300 },
+        secondary: { used_percent: 64, window_minutes: 10080 },
+      },
+    },
+  })}\n`;
+  const fs: VendorQuotaFs = {
+    readdirSync: () => [{ name: 'session.jsonl', isDirectory: () => false, isFile: () => true }],
+    statSync: () => ({ mtimeMs: Date.parse('2026-08-04T10:00:00Z') }),
+    readFileSync: () => fixture,
+  };
+  const now = Date.parse('2026-08-04T10:17:00Z');
+  const vendorQuota = formatVendorQuota(readVendorQuota('/fixture', now, fs), now);
+  const lines = buildHumanStatus({
+    mission: { present: false, reason: 'fixture has no mission state' },
+    lanes: [],
+    lastLanded: null,
+    claudeConnected: false,
+    vendorQuota,
+  });
+  expect(lines.at(-1)).toBe(
+    'Квота: Codex 5h 21%, 7d 64%, вік 17хв; Claude невідомо (Claude CLI не надає квоту локально); MCP не підключено',
+  );
+});
+
+test('REGRESSION HR-302: final quota line stays bounded after every MCP suffix', () => {
+  const reason = 'x'.repeat(179);
+  const vendorQuota = formatVendorQuota({
+    codex: {
+      fiveHour: { state: 'unknown', reason },
+      sevenDay: { state: 'unknown', reason },
+      observedAt: null,
+    },
+    claude: { state: 'unknown', reason },
+  });
+  expect(vendorQuota.length).toBe(600);
+
+  for (const claudeConnected of [false, true]) {
+    const line = buildHumanStatus({
+      mission: { present: false, reason: 'fixture has no mission state' },
+      lanes: [],
+      lastLanded: null,
+      claudeConnected,
+      vendorQuota,
+    }).at(-1)!;
+    expect(line.length).toBeLessThanOrEqual(600);
+    expect(line).toBe(
+      `Квота: деталі перевищують ліміт; MCP ${claudeConnected ? 'підключено' : 'не підключено'}`,
+    );
+  }
 });
 
 test('REGRESSION: daemon health uses process-local honest field names and epochs', () => {

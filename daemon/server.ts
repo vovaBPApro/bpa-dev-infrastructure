@@ -116,6 +116,7 @@ import {
   type JsonReadResult,
 } from './status';
 import { installStderrSecretMasker } from './secret-masker';
+import { formatVendorQuota, readVendorQuota } from './vendor-quota';
 
 // Install before configuration and network startup: every daemon diagnostic
 // crosses this sink, including errors from future call sites.
@@ -2402,6 +2403,7 @@ async function handleSessionCommand(
         lastLanded: landed.value,
         lastLandedError: landed.reason,
         claudeConnected: daemonHealth.claude_connected,
+        vendorQuota: formatVendorQuota(readVendorQuota(homedir())),
       }),
     ].join('\n');
     await sendLong(chat_id, msg);

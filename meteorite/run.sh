@@ -23,6 +23,7 @@ source_mechanism="${METEORITE_SOURCE_MECHANISM:-tracked-remote}"
 donor_sha="${METEORITE_DONOR_SHA:-}"
 donor_ref="${METEORITE_DONOR_REF:-}"
 cid=""
+stage_log=""
 tested_sha="UNMEASURED"
 result="NO-GO"
 blocker="runner did not reach a measured stage"
@@ -90,6 +91,7 @@ write_report() {
 
 teardown() {
   local status=$?
+  if [[ -n "$stage_log" ]]; then rm -f "$stage_log"; fi
   if [[ -n "$cid" ]]; then
     if [[ "$keep" == "1" ]]; then
       printf '[meteorite] METEORITE_KEEP=1; container retained: %s\n' "$cid"
@@ -170,10 +172,35 @@ case "$repo_url" in
     ;;
 esac
 
+# A stage that fails must say WHAT failed, not only that it failed. Several
+# stages run whole suites — `bootstrap/install.sh` runs the complete `bun test`
+# sweep — so "bootstrap-install command failed" is true of any test in the
+# repository and sends a reader to the wrong hypothesis. This extracts the
+# concrete failure lines from the stage output into the durable blocker. It is
+# bounded (3 lines, 400 characters) because the blocker is one report field; the
+# stage's full output is still streamed to the run log above.
+stage_diagnostic() {
+  local log="$1" lines
+  if [[ ! -s "$log" ]]; then
+    printf 'stage produced no output'
+    return 0
+  fi
+  lines="$(LC_ALL=C grep -aE '^[[:space:]]*(\(fail\)|FAIL[[:space:]]|ERROR[[:space:]:]|error:)' "$log" | tail -3)"
+  if [[ -z "$lines" ]]; then
+    lines="$(LC_ALL=C grep -av '^[[:space:]]*$' "$log" | tail -3)"
+  fi
+  printf '%s\n' "$lines" | LC_ALL=C awk '
+    { gsub(/[[:cntrl:]]/, " "); gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+      if ($0 != "") out = (out == "" ? $0 : out " | " $0) }
+    END { print substr(out, 1, 400) }'
+}
+
 run_exec_stage() {
   local stage="$1" command="$2"
   printf '[meteorite] stage: %s\n' "$stage"
-  if docker exec "$cid" bash -lc "$command"; then
+  : > "$stage_log"
+  # pipefail is set: a failing docker exec is not laundered by a succeeding tee.
+  if docker exec "$cid" bash -lc "$command" 2>&1 | tee -a "$stage_log"; then
     record "$stage" "PASS"
     if [[ "$stage" == "clone" ]]; then
       tested_sha="$(docker exec "$cid" git -C /work/source rev-parse HEAD 2>/dev/null)" || {
@@ -189,9 +216,13 @@ run_exec_stage() {
     fi
     return 0
   fi
-  fail "$stage" "$stage command failed"
+  fail "$stage" "$stage command failed: $(stage_diagnostic "$stage_log")"
 }
 
+if ! stage_log="$(mktemp "${TMPDIR:-/tmp}/meteorite-stage.XXXXXX")"; then
+  fail "stage-log" "could not create the stage output capture file" || true
+  exit 1
+fi
 if ! cid="$(docker run -d --rm --network bridge "$image" sleep infinity)"; then
   fail "container-start" "docker could not start $image" || true
   exit 1

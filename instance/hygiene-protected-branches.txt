@@ -23,6 +23,12 @@ v3
 # Park record: instance/parked/V3-1.1-stage2-2026-08-03.md
 ag-s3-2-r3
 
+# V3-2.4 (orchestrator model pin), PARKED at the HR-1726 cap. Its record lives in
+# the workboard row rather than instance/parked/, which is why it was missed by the
+# first protection sweep and existed only on this host until 2026-08-04. See also
+# V3-2.8: its blocking defect is a test that depends on host state.
+ag-s5-5-r3
+
 # V3-0.23 round 3 — shell-tier concurrency. PARKED at the HR-1726 cap: the lock
 # validates a proxy (a variable) rather than the ref actually created, defeated in
 # three successive spellings. Park record:

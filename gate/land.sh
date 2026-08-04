@@ -423,6 +423,31 @@ if ! "$BUN_BIN" "$repo/hygiene/check-retained-branches.ts" --repo "$repo"; then
 fi
 land_pass retained-branches
 
+# Hard Floor 5 requires host state that stays out of git to be enumerated
+# instead. This is the fail-closed half of that: a change that teaches the
+# running system to write somewhere instance/host-state.tsv does not name
+# cannot land. Repository-level only -- it reads tracked sources and never the
+# live host, so it behaves identically inside the meteorite container.
+#
+# A candidate with no enumeration at all is skipped rather than failed, because
+# the gate also lands synthetic fixture repositories that have no installation
+# to enumerate. That is not a hole in this repository: deleting the manifest
+# fails one step earlier, where tools/check-host-state.test.ts reads it during
+# the declared framework checks.
+if [ -f "$repo/instance/host-state.tsv" ]; then
+  if ! "$BUN_BIN" "$repo/tools/check-host-state.ts" --repo "$repo"; then
+    if ! land_force_reset "$repo" "$pre_merge_sha"; then
+      land_fail_rollback host-state "$pre_merge_sha" "$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)"
+    fi
+    merged=false
+    merge_sha="none"
+    land_fail host-state
+  fi
+  land_pass host-state
+else
+  land_skip host-state
+fi
+
 if [ "$run_verify" = true ]; then
   # Trust model: report verify commands are coder-authored and guard-validated.
   verify_command=$(sed -n 's/^verify:[[:space:]]*//p' "$report" | head -n 1)

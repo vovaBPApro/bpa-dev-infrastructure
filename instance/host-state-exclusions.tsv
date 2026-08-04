@@ -1,0 +1,12 @@
+# Host paths the tracked code names that deliberately have no row in
+# instance/host-state.tsv. This file is part of the enumeration, not an escape
+# from it: every line is a location that was looked at and a reason it needs no
+# row. tools/check-host-state.ts rejects an entry that no tracked file names
+# any more, so a stale excuse cannot outlive the code that justified it.
+#
+# prefix<TAB>reason
+$XDG_STATE_HOME	Root-only reference: meteorite/run.sh names the root and composes the concrete path from a variable. The concrete path is enumerated as meteorite-evidence.
+$HOME/.claude/orchestrator-chat-$BOUND_CHAT_ID.lock	Per-chat singleton lock, ephemeral by construction, and its filename embeds the bound chat id -- an instance value that does not belong in a tracked manifest. Nothing restores it.
+$HOME/.bun/bin/bun	The interpreter inside the bun-toolchain row, not separate state.
+/root/.bun/bin	Same toolchain as the bun-toolchain row, spelled with /root hard-coded by bootstrap/units/bpa-telegram-daemon.service.in and meteorite/run.sh. FINDING F3, not a second location.
+/root/.claude/channels/telegram	Same directory as the telegram-state row, spelled with /root hard-coded by bootstrap/units/bpa-telegram-daemon.service.in. FINDING F3.

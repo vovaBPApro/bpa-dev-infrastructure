@@ -4,6 +4,13 @@
 # row V3-3.10 (per-provider consumption persisted across restarts); it is a hand-kept
 # ledger until that lands, and it is deliberately tracked so a rebuild keeps the history.
 #
+# Readings are OPERATOR-SUPPLIED, and that is a constraint rather than a preference:
+# daemon/vendor-quota.ts can read Codex quota from its JSONL, but returns Claude as
+# `{ state: 'unknown' }` -- there is no machine-readable Claude signal on this host. So the
+# orchestrator cannot take a reading by itself, and a delta between two rows only exists if
+# he sent a screenshot at both ends. A missing morning row means "not measured", not "no
+# consumption". This is the exact asymmetry V3-3.10 has to solve.
+#
 # Readings come from the Claude usage panel screenshot the operator sends. Percentages are
 # "used", not remaining. A field that was not visible in the source is recorded as
 # "unmeasured" and NEVER as 0 -- Hard Floor 7: absence of a reading is not a reading of

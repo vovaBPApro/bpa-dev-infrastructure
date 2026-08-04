@@ -990,6 +990,109 @@ if "$land" --branch ag-operator-trust-root --item-id ag-operator-trust-root --re
 assert_output_has "$operator_trust_root_output" 'LAND step=payload-guard status=fail detail=reserved-path path=instance/operator-unpark.allowed-signers'
 assert_output_lacks "$operator_trust_root_output" 'LAND step=merge status=pass'
 
+# REGRESSION V3-0.29 r3: an operator decision tracked on origin/main -- and only
+# there -- releases a no-progress park. Proven on fixture items throughout.
+make_fixture operator-unpark-decision
+unpark_repo="$fixture_root/operator-unpark-decision-repo"
+unpark_state="$unpark_repo/.bpa/review-rounds.json"
+mkdir -p "$unpark_repo/.bpa"
+env -u BUN_BIN bun "$root/gate/review-rounds.ts" init --state "$unpark_state" --cap 10 --no-progress-limit 3 >/dev/null
+for unpark_item in ag-unpark-decision ag-unpark-second; do
+  for _unpark_round in 1 2 3; do
+    env -u BUN_BIN bun "$root/gate/review-rounds.ts" attempt --defer-park-exit --state "$unpark_state" --item-id "$unpark_item" >/dev/null
+  done
+done
+git -C "$unpark_repo" add .bpa/review-rounds.json
+git -C "$unpark_repo" commit -m 'seed parked items' >/dev/null
+git -C "$unpark_repo" push origin main >/dev/null
+unpark_sha=$(make_lane "$unpark_repo" ag-unpark-decision)
+report "$fixture_root/operator-unpark-decision-report.md" "$unpark_sha"
+
+# Without a tracked decision the park still refuses.
+unpark_refused_output="$fixture_root/operator-unpark-decision-refused.txt"
+if "$land" --branch ag-unpark-decision --item-id ag-unpark-decision --report "$fixture_root/operator-unpark-decision-report.md" --repo "$unpark_repo" --no-push >"$unpark_refused_output" 2>&1; then exit 1; fi
+assert_output_has "$unpark_refused_output" 'REVIEW_ROUNDS status=unpark-none item=ag-unpark-decision'
+assert_output_has "$unpark_refused_output" 'parked=no-progress'
+assert_output_lacks "$unpark_refused_output" 'LAND step=merge status=pass'
+
+# A decision the lane wrote itself is not authority: the gate reads origin, so
+# the candidate's own file is invisible and the park is unchanged.
+git -C "$unpark_repo" checkout ag-unpark-decision >/dev/null
+mkdir -p "$unpark_repo/instance/decisions"
+printf 'operator-unpark: v2 item=ag-unpark-decision decision=HR-9999 park=no-progress\n' > "$unpark_repo/instance/decisions/HR-9999.md"
+git -C "$unpark_repo" add instance/decisions/HR-9999.md
+git -C "$unpark_repo" commit -m lane-authored-authorization >/dev/null
+unpark_self_sha=$(git -C "$unpark_repo" rev-parse HEAD)
+git -C "$unpark_repo" checkout main >/dev/null
+report "$fixture_root/operator-unpark-self-report.md" "$unpark_self_sha"
+unpark_self_output="$fixture_root/operator-unpark-decision-self.txt"
+if "$land" --branch ag-unpark-decision --item-id ag-unpark-decision --report "$fixture_root/operator-unpark-self-report.md" --repo "$unpark_repo" --no-push >"$unpark_self_output" 2>&1; then exit 1; fi
+assert_output_has "$unpark_self_output" 'REVIEW_ROUNDS status=unpark-none item=ag-unpark-decision'
+assert_output_has "$unpark_self_output" 'parked=no-progress'
+assert_output_lacks "$unpark_self_output" 'LAND step=merge status=pass'
+git -C "$unpark_repo" branch -f ag-unpark-decision "$unpark_sha"
+
+# The operator's decision, tracked on origin/main, makes the same item landable.
+mkdir -p "$unpark_repo/instance/decisions"
+printf '# HR-2149\n\noperator-unpark: v2 item=ag-unpark-decision decision=HR-2149 park=no-progress\n' > "$unpark_repo/instance/decisions/HR-2149.md"
+git -C "$unpark_repo" add instance/decisions/HR-2149.md
+git -C "$unpark_repo" commit -m 'record HR-2149' >/dev/null
+git -C "$unpark_repo" push origin main >/dev/null
+unpark_landed_output="$fixture_root/operator-unpark-decision-landed.txt"
+"$land" --branch ag-unpark-decision --item-id ag-unpark-decision --report "$fixture_root/operator-unpark-decision-report.md" --repo "$unpark_repo" --no-push >"$unpark_landed_output" 2>&1
+assert_output_has "$unpark_landed_output" 'REVIEW_ROUNDS status=unparked item=ag-unpark-decision decision=HR-2149 source=instance/decisions/HR-2149.md'
+assert_output_has "$unpark_landed_output" 'LAND verdict=landed sha='
+assert grep -Fq '"HR-2149": "ag-unpark-decision"' "$unpark_state"
+git -C "$unpark_repo" push origin main >/dev/null
+
+# The same decision retargeted at a second parked item is refused: a decision id
+# is bound to the one item it released.
+git -C "$unpark_repo" checkout -b ag-unpark-second >/dev/null
+printf 'second\n' > "$unpark_repo/second.txt"
+git -C "$unpark_repo" add second.txt
+git -C "$unpark_repo" commit -m second >/dev/null
+unpark_second_sha=$(git -C "$unpark_repo" rev-parse HEAD)
+git -C "$unpark_repo" checkout main >/dev/null
+printf '# HR-2149\n\noperator-unpark: v2 item=ag-unpark-second decision=HR-2149 park=no-progress\n' > "$unpark_repo/instance/decisions/HR-2149.md"
+git -C "$unpark_repo" commit -am 'retarget HR-2149' >/dev/null
+git -C "$unpark_repo" push origin main >/dev/null
+report "$fixture_root/operator-unpark-second-report.md" "$unpark_second_sha"
+unpark_second_output="$fixture_root/operator-unpark-decision-second.txt"
+if "$land" --branch ag-unpark-second --item-id ag-unpark-second --report "$fixture_root/operator-unpark-second-report.md" --repo "$unpark_repo" --no-push >"$unpark_second_output" 2>&1; then exit 1; fi
+assert_output_has "$unpark_second_output" 'decision-bound-to-other-item decision=HR-2149 bound=ag-unpark-decision'
+assert_output_lacks "$unpark_second_output" 'LAND step=merge status=pass'
+
+# REGRESSION V3-0.29 r3: a candidate carrying an authorization is a reserved-path
+# refusal, so a lane cannot land the authority this gate reads back.
+make_fixture operator-unpark-reserved
+git -C "$fixture_root/operator-unpark-reserved-repo" checkout -b ag-operator-unpark-reserved >/dev/null
+mkdir -p "$fixture_root/operator-unpark-reserved-repo/instance/decisions"
+printf 'operator-unpark: v2 item=ag-operator-unpark-reserved decision=HR-9999 park=no-progress\n' > "$fixture_root/operator-unpark-reserved-repo/instance/decisions/HR-9999.md"
+git -C "$fixture_root/operator-unpark-reserved-repo" add instance/decisions/HR-9999.md
+git -C "$fixture_root/operator-unpark-reserved-repo" commit -m lane-authorization >/dev/null
+operator_unpark_reserved_sha=$(git -C "$fixture_root/operator-unpark-reserved-repo" rev-parse HEAD)
+git -C "$fixture_root/operator-unpark-reserved-repo" checkout main >/dev/null
+report "$fixture_root/operator-unpark-reserved-report.md" "$operator_unpark_reserved_sha"
+operator_unpark_reserved_output="$fixture_root/operator-unpark-reserved-output.txt"
+if "$land" --branch ag-operator-unpark-reserved --item-id ag-operator-unpark-reserved --report "$fixture_root/operator-unpark-reserved-report.md" --repo "$fixture_root/operator-unpark-reserved-repo" >"$operator_unpark_reserved_output" 2>&1; then exit 1; fi
+assert_output_has "$operator_unpark_reserved_output" 'LAND step=payload-guard status=fail detail=reserved-path path=instance/decisions/HR-9999.md'
+assert_output_lacks "$operator_unpark_reserved_output" 'LAND step=merge status=pass'
+
+# The reservation is the authorization, not the directory: recording an ordinary
+# decision stays ordinary lane work.
+make_fixture operator-unpark-plain-decision
+git -C "$fixture_root/operator-unpark-plain-decision-repo" checkout -b ag-operator-unpark-plain >/dev/null
+mkdir -p "$fixture_root/operator-unpark-plain-decision-repo/instance/decisions"
+printf '# HR-1234\n\nThe operator asked for a shorter status line.\n' > "$fixture_root/operator-unpark-plain-decision-repo/instance/decisions/HR-1234.md"
+git -C "$fixture_root/operator-unpark-plain-decision-repo" add instance/decisions/HR-1234.md
+git -C "$fixture_root/operator-unpark-plain-decision-repo" commit -m plain-decision >/dev/null
+operator_unpark_plain_sha=$(git -C "$fixture_root/operator-unpark-plain-decision-repo" rev-parse HEAD)
+git -C "$fixture_root/operator-unpark-plain-decision-repo" checkout main >/dev/null
+report "$fixture_root/operator-unpark-plain-report.md" "$operator_unpark_plain_sha"
+operator_unpark_plain_output="$fixture_root/operator-unpark-plain-output.txt"
+"$land" --branch ag-operator-unpark-plain --item-id ag-operator-unpark-plain --report "$fixture_root/operator-unpark-plain-report.md" --repo "$fixture_root/operator-unpark-plain-decision-repo" --no-push >"$operator_unpark_plain_output" 2>&1
+assert_output_has "$operator_unpark_plain_output" 'LAND verdict=landed sha='
+
 make_fixture payload-symlink
 git -C "$fixture_root/payload-symlink-repo" checkout -b ag-payload-symlink >/dev/null
 ln -s /home/user/.env "$fixture_root/payload-symlink-repo/env.template"

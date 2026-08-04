@@ -8,13 +8,11 @@
 # crontab command so the test proves the script is correct without touching
 # any real crontab.
 #
-# It is deliberately NOT invoked against this host's real crontab by this
-# lane, and no systemd timer is wired either: bootstrap/ does not exist on v3
-# yet (that is V3-1.1), so there is no container to arm a timer inside, and a
-# coder lane mutating this host's live crontab is exactly the kind of
-# untracked, host-only mechanism CLAUDE.md's meteorite test forbids. Arming
-# the real schedule -- via this script on the host, or a systemd timer unit
-# once bootstrap/ lands -- is recorded as deferred in instance/workboard.md.
+# Bootstrap now calls this installer, but that stage and live cron arming remain
+# parked pending acceptance. Retained-branch durability therefore does not rely
+# on cron: gate/land.sh runs the check on every landing. That operational check
+# deliberately queries origin and fails closed while offline; its ordinary test
+# suite uses a local bare remote and does not depend on GitHub availability.
 set -euo pipefail
 
 usage() {

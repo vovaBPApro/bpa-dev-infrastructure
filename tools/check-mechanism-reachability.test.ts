@@ -37,9 +37,14 @@ function cutInvocation(dir: string, file: string, needle: string, replacement: (
   return line;
 }
 
+// The three tests below classify the REAL repository rather than a fixture, so
+// each one walks every tracked source. That takes 2-4s on an idle host and more
+// under load, which put them over bun's 5s default; they carry the same explicit
+// 30s budget as every fixture test in this file. The budget is plumbing, not the
+// assertion -- a checker that actually hung would still fail here.
 test("repository mechanism inventory has only named, bidirectional exclusions", () => {
   expect(check(root)).toEqual([]);
-});
+}, 30_000);
 
 // The accounting artifact for V3-0.28's reopening. Every mechanism's verdict is
 // pinned WITH the class it rests on, so a mechanism that quietly drops from a
@@ -77,7 +82,7 @@ test("every mechanism's reachability class is pinned and says where", () => {
     "runner:meteorite\tproduction",
   ]);
   for (const result of results.values()) expect(result.where.length, `${result.id} states no evidence`).toBeGreaterThan(0);
-});
+}, 30_000);
 
 test("the production executor each reachable mechanism rests on is named exactly", () => {
   const { results } = classify(root);
@@ -85,7 +90,7 @@ test("the production executor each reachable mechanism rests on is named exactly
   expect(results.get("cron:reap")!.where).toContain("bootstrap/install.sh:258");
   expect(results.get("runner:meteorite")!.where).toContain("meteorite/prove-candidate.sh");
   expect(results.get("checker:decision-ledger")!.where).toContain("tools/check-decision-ledger-drift.test.ts");
-});
+}, 30_000);
 
 // --- what "invoked" means, locked one property at a time -------------------
 //
@@ -134,15 +139,154 @@ test("an invocation buried in a shell function nothing calls is not an executor"
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }, 30_000);
 
+// The lock above can only fail while its function name is unique, so it proves
+// nothing about a tree with 11 `die`, 10 `usage` and 8 `cleanup` definitions.
+// This is the same property with a SHARED name, and it is two-sided on purpose:
+// `install_hygiene_cron` is defined and CALLED in bootstrap/install.sh, where it
+// carries cron:reap's only production edge. Burying gate/land.sh's invocation in
+// a second, never-called function of that same name must kill one and leave the
+// other -- keying liveness on the bare name reports both as live.
+test("a dead function is not resurrected by a live function of the same name elsewhere", () => {
+  const dir = fixture();
+  try {
+    const callers = readFileSync(join(dir, "bootstrap/install.sh"), "utf8");
+    expect(callers).toContain("install_hygiene_cron() {");
+    expect(callers.split("\n").some((line) => /^\s*install_hygiene_cron\s*$/.test(line))).toBe(true);
+    cutInvocation(dir, "gate/land.sh", "check-retained-branches.ts", (line) => `install_hygiene_cron() {\n${line}\n}`);
+    stage(dir);
+    const { results } = classify(dir);
+    expect(results.get("checker:retained-branches")!.cls).not.toBe("production");
+    expect(results.get("cron:reap")!.where).toContain("bootstrap/install.sh");
+    expect(named(check(dir), "unreachable mechanism: checker:retained-branches")).toHaveLength(1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}, 30_000);
+
+// The other side of scoping by file: a library function IS live when the script
+// that sources the library calls it. Scoping liveness to the defining file alone
+// would be a false negative here, and false negatives are what let an
+// exemption's exit condition go unnoticed.
+test("a function in a sourced library is live when the sourcing script calls it", () => {
+  const dir = fixture();
+  try {
+    const cut = cutInvocation(dir, "gate/land.sh", "check-retained-branches.ts", () => "  : # retained-branch check removed");
+    appendFileSync(join(dir, "gate/land-lib.sh"), `\nzz_lib_helper() {\n${cut}\n  :\n}\n`);
+    // Sourced but never called: the invocation is dead, exactly as in its own file.
+    stage(dir);
+    expect(readFileSync(join(dir, "gate/land.sh"), "utf8")).toContain('source "$script_dir/land-lib.sh"');
+    expect(named(check(dir), "unreachable mechanism: checker:retained-branches")).toHaveLength(1);
+    // Now the sourcing script calls it, and the same invocation is live again.
+    appendFileSync(join(dir, "gate/land.sh"), "\nzz_lib_helper\n");
+    stage(dir);
+    expect(classify(dir).results.get("checker:retained-branches")!.where).toContain("gate/land-lib.sh");
+    expect(named(check(dir), "unreachable mechanism: checker:retained-branches")).toHaveLength(0);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}, 30_000);
+
+// A heredoc body is a shell string literal, so the string-literal ruling above
+// applies to it unchanged: `cat > file <<EOD ... EOD` writes text, it does not
+// run it. Round 1 counted these as invocations while its own header said the
+// opposite; all three spellings are locked so neither can drift back.
+test("a heredoc body naming a mechanism is not an executor", () => {
+  const dir = fixture();
+  try {
+    cutInvocation(dir, "gate/land.sh", "check-retained-branches.ts", () => "  : # retained-branch check removed");
+    appendFileSync(join(dir, "hygiene/reap.sh"), [
+      "",
+      "cat > /tmp/plain <<EOD",
+      'bun hygiene/check-retained-branches.ts --repo "$PWD"',
+      "EOD",
+      "cat > /tmp/quoted <<'EOD'",
+      "bun hygiene/check-retained-branches.ts --repo .",
+      "EOD",
+      "cat > /tmp/dashed <<-EOD",
+      "\tbun hygiene/check-retained-branches.ts --repo .",
+      "\tEOD",
+      "",
+    ].join("\n"));
+    stage(dir);
+    expect(named(check(dir), "unreachable mechanism: checker:retained-branches")).toHaveLength(1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}, 30_000);
+
+// A heredoc must not swallow the rest of the file either: a real invocation
+// AFTER the terminator is still a real invocation.
+test("an invocation after a heredoc terminator is still an executor", () => {
+  const dir = fixture();
+  try {
+    appendFileSync(join(dir, "hygiene/reap.sh"), [
+      "",
+      "cat > /tmp/plain <<EOD",
+      "nothing to see",
+      "EOD",
+      'bash hygiene/check-shared-stash.sh "$PWD"',
+      "",
+    ].join("\n"));
+    stage(dir);
+    expect(named(check(dir), "stale exemption: checker:shared-stash")).toHaveLength(1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}, 30_000);
+
+// `timeout 60 bash x.sh` runs x.sh. Round 1 stopped at the wrapper, so a future
+// caller written in any of these forms would have satisfied an exemption's exit
+// condition ("delete this row once a tracked caller runs it") in silence.
+test("a mechanism invoked through a command wrapper is an executor", () => {
+  for (const [form, line] of [
+    ["timeout", 'timeout 60 bash hygiene/check-shared-stash.sh "$PWD"'],
+    ["timeout with --kill-after", 'timeout -k 5 60 bash hygiene/check-shared-stash.sh "$PWD"'],
+    ["xargs", "printf . | xargs -n1 bash hygiene/check-shared-stash.sh"],
+    ["find -exec", "find . -maxdepth 0 -exec bash hygiene/check-shared-stash.sh {} \\;"],
+    ["flock", 'flock /tmp/lock bash hygiene/check-shared-stash.sh "$PWD"'],
+  ] as const) {
+    const dir = fixture();
+    try {
+      appendFileSync(join(dir, "hygiene/reap.sh"), `\n${line}\n`);
+      stage(dir);
+      expect(named(check(dir), "stale exemption: checker:shared-stash"), form).toHaveLength(1);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+}, 120_000);
+
+// package.json scripts are how this repository already drives meteorite/run.sh.
+// A checker that answers "does anything run this?" while not reading the file
+// the repository runs things from is answering a narrower question than it says.
+test("a package.json script is an executor", () => {
+  const dir = fixture();
+  try {
+    const path = join(dir, "package.json");
+    const manifest = JSON.parse(readFileSync(path, "utf8")) as { scripts: Record<string, string> };
+    manifest.scripts["zz-shared-stash"] = "bash hygiene/check-shared-stash.sh .";
+    writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
+    stage(dir);
+    const stale = named(check(dir), "stale exemption: checker:shared-stash");
+    expect(stale).toHaveLength(1);
+    expect(stale[0]).toContain("package.json script zz-shared-stash");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}, 30_000);
+
 test("runner:meteorite is not satisfied by docker/whisper-proof-run.sh", () => {
   const dir = fixture();
   try {
-    // Eight tracked files contain the substring `run.sh`; exactly one invokes
-    // meteorite/run.sh. Remove that one and the Hard Floor 5 proof must go red
-    // rather than resting on an unrelated Whisper script.
+    // Eight tracked files contain the substring `run.sh`; exactly TWO invoke
+    // meteorite/run.sh -- meteorite/prove-candidate.sh and the `test:meteorite`
+    // package.json script. Remove both and the Hard Floor 5 proof must go red
+    // rather than resting on an unrelated Whisper script. Each removal is
+    // asserted on the way through, so an edge that silently stops being seen
+    // fails here instead of quietly shrinking what this lock proves.
     const cut = cutInvocation(dir, "meteorite/prove-candidate.sh", "meteorite/run.sh", () => "  : # runner call removed");
     expect(cut).toContain("bash");
     stage(dir);
+    expect(classify(dir).results.get("runner:meteorite")!.where).toContain("package.json script test:meteorite");
+
+    const path = join(dir, "package.json");
+    const manifest = JSON.parse(readFileSync(path, "utf8")) as { scripts: Record<string, string> };
+    expect(manifest.scripts["test:meteorite"]).toContain("meteorite/run.sh");
+    // The Whisper runner stays in package.json: it is the decoy, and it must not
+    // satisfy `run.sh` on its own.
+    expect(manifest.scripts["test:whisper-proof"]).toContain("docker/whisper-proof-run.sh");
+    delete manifest.scripts["test:meteorite"];
+    writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
+    stage(dir);
+
     const decoys = Bun.spawnSync(["git", "-C", dir, "ls-files"]).stdout.toString().split("\n").filter((file) => file.includes("run.sh"));
     expect(decoys).toContain("docker/whisper-proof-run.sh");
     expect(named(check(dir), "unreachable mechanism: runner:meteorite")).toHaveLength(1);

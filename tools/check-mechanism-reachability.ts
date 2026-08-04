@@ -101,8 +101,12 @@ export function classify(repo: string): { manifest: Row[]; results: Map<string, 
   const checkerRows = manifest.filter((r) => r.kind === "checker").map((r) => r.target).sort();
   if (JSON.stringify(checkerRows) !== JSON.stringify(trackedCheckers)) errors.push("checker inventory differs from tracked checker files");
 
+  // `package.json` scripts are tracked invocations too -- `bun run test:meteorite`
+  // is how this repository already drives meteorite/run.sh -- so the graph reads
+  // them alongside shell and TypeScript sources.
+  const manifests = tracked("*package.json").filter((file) => basename(file) === "package.json");
   const allText = new Map<string, string>();
-  for (const file of tracked("*.ts").concat(tracked("*.sh"), tracked("*.in"))) allText.set(file, read(join(repo, file)));
+  for (const file of tracked("*.ts").concat(tracked("*.sh"), tracked("*.in"), manifests)) allText.set(file, read(join(repo, file)));
   const parked = new Set(tracked("instance/parked/*.md"));
 
   // A unit template only carries an invocation edge once that unit is armed:

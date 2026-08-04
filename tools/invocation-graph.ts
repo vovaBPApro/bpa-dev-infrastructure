@@ -17,33 +17,51 @@
 // basename that is ambiguous (or is merely a substring of another basename)
 // satisfies nothing.
 //
-// Known boundaries, deliberately not covered: a command assembled at runtime
-// from concatenated fragments, dispatch through an associative array of command
-// names, and heredoc bodies (which are parsed as ordinary commands rather than
-// as generated data). Each would need a real shell parser; a false NEGATIVE
-// here surfaces as an `unreachable mechanism` error naming the target, which is
-// the fail-closed direction.
-//
 // One boundary is a decision rather than a limit: a command line that only ever
 // appears inside a string literal -- a crontab entry a script printf-s into a
 // file, say -- is NOT an invocation edge. Whether that line ever runs depends on
 // whether the crontab was installed on some host, which is exactly the host
 // state this repository-level checker cannot see. Counting it would be the
 // unarmed-timer mistake in another costume: text describing a run is not a run.
+// A HEREDOC BODY is a shell string literal, so the same ruling applies to it and
+// its lines are blanked before scanning (`stripHeredocs`). Round 1 shipped the
+// opposite behaviour and filed it under the false-negative boundaries below;
+// that was wrong in both places, and both are corrected here.
+//
+// Known boundaries, deliberately not covered. Each is stated WITH the direction
+// its failure runs, because that is what decides whether the boundary is safe:
+//
+//   FALSE NEGATIVE (fail-closed; a real invocation is missed, so the mechanism
+//   reads unreachable and the error names the target). Tolerable, but not free:
+//   an exemption whose exit condition is "delete this row once a tracked caller
+//   runs it" stays silent when that caller finally lands in one of these forms.
+//     - a command assembled at runtime from concatenated fragments;
+//     - dispatch through an associative array of command names;
+//     - a wrapper outside the WRAPPERS table below (`watch`, `script`, `runuser`,
+//       `strace`, and anything else that takes a command as its tail);
+//     - a `package.json` script whose body needs shell expansion to name the
+//       target, and any script manifest other than `package.json`;
+//     - late binding: a function defined in a script and called by a library
+//       that script sources. Liveness resolves a call to its own file and the
+//       files it sources, not back up into its callers.
+//
+//   FALSE POSITIVE (fail-open; a mention counts as a run). None known. This is
+//   the direction the V3-0.28 reopening was about, so anything discovered here
+//   is a defect to fix, not a boundary to document.
 
 const NUL = "\u0000";
 
 export type EdgeClass = "production" | "test-real" | "test-fixture";
 export type Edge = { from: string; line: number; cls: EdgeClass; how: string };
 
-type Cmd = { tokens: string[]; line: number; fn: string | null };
+type Cmd = { tokens: string[]; line: number; fn: string | null; label?: string; segments?: Segment[] };
 type Binding = { name: string; paths: string[]; init: string; interpreter: boolean };
 type CallSite = { line: number; args: string; direct: string };
 
 type Source = {
   file: string;
   test: boolean;
-  kind: "shell" | "unit" | "ts" | "other";
+  kind: "shell" | "unit" | "ts" | "manifest" | "other";
   commands: Cmd[];
   shellAliases: Map<string, string>;
   shellInterpreters: Set<string>;
@@ -63,6 +81,7 @@ export function isTestFile(file: string): boolean {
 }
 
 function sourceKind(file: string): Source["kind"] {
+  if (/(?:^|\/)package\.json$/.test(file)) return "manifest";
   if (/\/units\/[^/]+\.in$/.test(file) || /\.(?:service|timer|socket|path|mount)$/.test(file)) return "unit";
   if (/\.(?:sh|bash|in)$/.test(file)) return "shell";
   if (/\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(file)) return "ts";
@@ -87,6 +106,61 @@ export function stripShellComments(text: string): string {
     }
     return raw;
   }).join("\n");
+}
+
+// ----------------------------------------------------------------- heredocs
+
+type Heredoc = { tag: string; dash: boolean };
+
+// Heredoc operators opened on one line, in the order the shell will consume
+// their bodies. `<<<` is a herestring, not a heredoc, and an operator inside a
+// quoted word is text about a heredoc rather than one.
+function heredocTags(raw: string): Heredoc[] {
+  const found: Heredoc[] = [];
+  let quote: string | null = null;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i]!;
+    if (quote) {
+      if (c === "\\" && quote === '"') i++;
+      else if (c === quote) quote = null;
+      continue;
+    }
+    if (c === "\\") { i++; continue; }
+    if (c === "'" || c === '"') { quote = c; continue; }
+    if (c !== "<" || raw[i + 1] !== "<") continue;
+    if (raw[i + 2] === "<") { i += 2; continue; }
+    const opener = raw.slice(i + 2).match(/^(-?)\s*(?:"([^"]*)"|'([^']*)'|((?:\\.|[A-Za-z0-9_.\/-])+))/);
+    if (!opener) { i++; continue; }
+    const tag = (opener[2] ?? opener[3] ?? opener[4] ?? "").replace(/\\(.)/g, "$1");
+    if (tag) found.push({ tag, dash: opener[1] === "-" });
+    i += 1 + opener[0].length;
+  }
+  return found;
+}
+
+function closesHeredoc(line: string, doc: Heredoc): boolean {
+  return (doc.dash ? line.replace(/^[\t ]+/, "") : line).trimEnd() === doc.tag;
+}
+
+// A heredoc body is data the command consumes, not commands the shell runs:
+// `cat > /etc/cron.d/x <<EOD ... EOD` writes a crontab exactly as the `printf`
+// form does, and neither one runs anything. Bodies (and their terminators) are
+// blanked rather than removed so every line number this module reports still
+// points at the real line of the real file.
+export function stripHeredocs(text: string): string {
+  const lines = text.split("\n");
+  const out: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i]!;
+    out.push(line);
+    i++;
+    for (const doc of heredocTags(line)) {
+      while (i < lines.length && !closesHeredoc(lines[i]!, doc)) { out.push(""); i++; }
+      if (i < lines.length) { out.push(""); i++; }
+    }
+  }
+  return out.join("\n");
 }
 
 export function stripTsComments(text: string): string {
@@ -116,12 +190,25 @@ export function stripTsComments(text: string): string {
 
 // --------------------------------------------------------------- path parsing
 
+// `edgesTo` runs once per manifest row over every token in the tree, so the
+// same handful of words are reduced tens of thousands of times. The reduction
+// below is pure, so memoise it across graphs.
+const suffixes = new Map<string, string>();
+
+export function pathSuffix(word: string): string {
+  const cached = suffixes.get(word);
+  if (cached !== undefined) return cached;
+  const computed = reducePathSuffix(word);
+  suffixes.set(word, computed);
+  return computed;
+}
+
 // Reduce a shell word or a path expression to the longest LITERAL trailing run
 // of path components. `"$repo_root/meteorite/run.sh"` yields `meteorite/run.sh`
 // -- the variable half is unknowable, the literal half is what identifies the
 // file. Component-wise by construction: `docker/whisper-proof-run.sh` yields
 // the basename `whisper-proof-run.sh`, which is not `run.sh`.
-export function pathSuffix(word: string): string {
+function reducePathSuffix(word: string): string {
   let w = word.trim();
   for (let round = 0; round < 4; round++) {
     const next = w.replace(/\$\{[A-Za-z_][A-Za-z0-9_]*(?::?[-=+?])([^{}]*)\}/g, "$1");
@@ -246,9 +333,33 @@ function varName(token: string): string | null {
   return match ? match[1]! : null;
 }
 
+// Commands whose own tail IS another command. `timeout 60 bash x.sh` runs
+// x.sh every bit as much as `bash x.sh` does, so the wrapper and its own
+// arguments are skipped until the real command word is reached. `operands` is
+// how many non-flag words belong to the wrapper itself (timeout's duration,
+// flock's lock file); `flagArgs` are its flags that take a separate value.
+const WRAPPERS = new Map<string, { operands: number; flagArgs: Set<string> }>([
+  ["timeout", { operands: 1, flagArgs: new Set(["-k", "--kill-after", "-s", "--signal"]) }],
+  ["xargs", { operands: 0, flagArgs: new Set(["-I", "-i", "-n", "-L", "-P", "-a", "-d", "-E", "-s", "--replace", "--max-args", "--max-procs", "--max-lines", "--delimiter", "--arg-file", "--max-chars"]) }],
+  ["flock", { operands: 1, flagArgs: new Set(["-E", "--conflict-exit-code", "-w", "--timeout"]) }],
+  ["nice", { operands: 0, flagArgs: new Set(["-n", "--adjustment"]) }],
+  ["ionice", { operands: 0, flagArgs: new Set(["-c", "--class", "-n", "--classdata", "-p", "--pid"]) }],
+  ["chrt", { operands: 1, flagArgs: new Set([]) }],
+  ["setsid", { operands: 0, flagArgs: new Set([]) }],
+  ["stdbuf", { operands: 0, flagArgs: new Set(["-i", "--input", "-o", "--output", "-e", "--error"]) }],
+]);
+
+// `find . -exec bash x.sh {} \;` invokes x.sh from a second command position
+// inside the same token run.
+const FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
+
+// A token run can hold more than one command position. Each segment is a
+// half-open [start, end) range whose first token is a command word.
+type Segment = { start: number; end: number };
+
 // Drop leading words that are syntax rather than the command: keywords,
-// `VAR=value` prefixes, and `env`/`sudo` with their own flags.
-function commandHead(tokens: string[]): number {
+// `VAR=value` prefixes, `env`/`sudo` with their own flags, and command wrappers.
+function commandSegments(tokens: string[]): Segment[] {
   let i = 0;
   while (i < tokens.length) {
     const token = tokens[i]!;
@@ -263,9 +374,41 @@ function commandHead(tokens: string[]): number {
       }
       continue;
     }
+    const wrapper = WRAPPERS.get(bare(token)) ?? WRAPPERS.get(pathSuffix(bare(token)));
+    if (wrapper) {
+      i++;
+      let operands = wrapper.operands;
+      while (i < tokens.length) {
+        const word = tokens[i]!;
+        if (/^-/.test(word)) {
+          i++;
+          if (wrapper.flagArgs.has(word) && i < tokens.length && !/^-/.test(tokens[i]!)) i++;
+          continue;
+        }
+        if (operands > 0) { operands--; i++; continue; }
+        break;
+      }
+      continue;
+    }
     break;
   }
-  return i;
+  const head = bare(tokens[i] ?? "");
+  if (head === "find" || pathSuffix(head) === "find") {
+    const exec = tokens.findIndex((token, at) => at > i && FIND_EXEC.has(bare(token)));
+    if (exec >= 0) {
+      return [
+        { start: i, end: exec },
+        ...commandSegments(tokens.slice(exec + 1)).map((s) => ({ start: s.start + exec + 1, end: s.end + exec + 1 })),
+      ];
+    }
+  }
+  return [{ start: i, end: tokens.length }];
+}
+
+// Segments depend only on the token run, while `edgesTo` is called once per
+// manifest row over every command in the tree. Compute each run once.
+function segmentsOf(cmd: Cmd): Segment[] {
+  return (cmd.segments ??= commandSegments(cmd.tokens));
 }
 
 // ------------------------------------------------------------- TS expressions
@@ -378,8 +521,30 @@ function identifiers(text: string): string[] {
 
 // ------------------------------------------------------------- source parsing
 
+// `package.json` scripts are real entry points: `bun run test:meteorite` runs
+// `bash meteorite/run.sh`, and a future caller written that way has to satisfy
+// an exemption's exit condition exactly as a shell caller does. Each script
+// body is scanned as the shell line it is, at the line its key sits on.
+function parseManifest(text: string): Partial<Source> {
+  const commands: Cmd[] = [];
+  let scripts: unknown;
+  try { scripts = (JSON.parse(text) as { scripts?: unknown }).scripts; }
+  catch { return { commands }; }
+  if (typeof scripts !== "object" || scripts === null) return { commands };
+  const lines = text.split("\n");
+  for (const [name, body] of Object.entries(scripts as Record<string, unknown>)) {
+    if (typeof body !== "string") continue;
+    const key = new RegExp(`"${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"\\s*:`);
+    const at = lines.findIndex((line) => key.test(line));
+    const from = commands.length;
+    scanShell(body, at >= 0 ? at + 1 : 1, commands);
+    for (let i = from; i < commands.length; i++) commands[i]!.label = `package.json script ${name}`;
+  }
+  return { commands };
+}
+
 function parseShell(file: string, text: string): Partial<Source> {
-  const stripped = stripShellComments(text);
+  const stripped = stripHeredocs(stripShellComments(text));
   const prepared = sourceKind(file) === "unit"
     ? stripped.split("\n").map((line) => line.replace(/^\s*Exec[A-Za-z]*\s*=/, "")).join("\n")
     : stripped;
@@ -560,58 +725,95 @@ export function buildGraph(files: Map<string, string>, unitArmed: (file: string)
       shellTainted: new Set(), functions: [], bindings: new Map(), tainted: new Set(), imports: [],
       calls: new Map(), spawns: [],
     };
-    sources.push(Object.assign(base, kind === "ts" ? parseTs(file, text) : parseShell(file, text)));
+    const parsed = kind === "ts" ? parseTs(file, text) : kind === "manifest" ? parseManifest(text) : parseShell(file, text);
+    sources.push(Object.assign(base, parsed));
   }
 
-  // A shell function is live when some command anywhere in the tracked tree
-  // names it in command position, from top level or from another live function.
-  const definedFunctions = new Map<string, Source[]>();
-  for (const source of sources)
-    for (const fn of source.functions) definedFunctions.set(fn.name, [...(definedFunctions.get(fn.name) ?? []), source]);
+  // Which tracked files a script pulls functions in from. `source lib.sh` is
+  // already an invocation edge; here it also decides which definitions a call
+  // in that script can reach.
+  const sourced = new Map<string, Set<string>>();
+  for (const source of sources) {
+    const set = new Set<string>();
+    for (const cmd of source.commands) {
+      let i = 0;
+      while (i < cmd.tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(cmd.tokens[i]!)) i++;
+      if (cmd.tokens[i] !== "source" && cmd.tokens[i] !== ".") continue;
+      const word = cmd.tokens[i + 1];
+      if (word === undefined) continue;
+      const suffix = pathSuffix(word);
+      const set1 = suffix ? owners.get(suffix) : undefined;
+      if (set1 && set1.size === 1) set.add([...set1][0]!);
+    }
+    sourced.set(source.file, set);
+  }
+  const scopeOf = (file: string): Set<string> => {
+    const seen = new Set<string>([file]);
+    const queue = [file];
+    while (queue.length) for (const next of sourced.get(queue.pop()!) ?? []) if (!seen.has(next)) { seen.add(next); queue.push(next); }
+    return seen;
+  };
+  const scopes = new Map(sources.map((source) => [source.file, scopeOf(source.file)]));
+
+  // A shell function is identified by WHERE it is defined, not by its bare
+  // name. This repository has 11 `die`, 10 `usage` and 8 `cleanup` definitions;
+  // keying liveness on the name alone let a call in any one file mark a
+  // never-called function live in every other file that reuses the name, which
+  // is the reap-cron defect surviving one level of indirection. A call reaches
+  // a definition in its own file or in a file it sources -- the set bash itself
+  // would search -- and a live function's own commands then keep resolving.
+  const key = (file: string, fn: string) => `${file}::${fn}`;
+  const definedIn = new Map<string, Set<string>>();
+  for (const source of sources) definedIn.set(source.file, new Set(source.functions.map((fn) => fn.name)));
   const live = new Set<string>();
   for (let round = 0; round < 12; round++) {
     const before = live.size;
     for (const source of sources) {
       for (const cmd of source.commands) {
-        if (cmd.fn !== null && !live.has(cmd.fn)) continue;
-        const head = cmd.tokens[commandHead(cmd.tokens)];
-        if (head && definedFunctions.has(head) && !live.has(head)) live.add(head);
+        if (cmd.fn !== null && !live.has(key(source.file, cmd.fn))) continue;
+        for (const segment of segmentsOf(cmd)) {
+          const head = cmd.tokens[segment.start];
+          if (head === undefined) continue;
+          for (const file of scopes.get(source.file) ?? [source.file])
+            if (definedIn.get(file)?.has(head)) live.add(key(file, head));
+        }
       }
     }
     if (live.size === before) break;
   }
-  const liveAt = (cmd: Cmd) => cmd.fn === null || live.has(cmd.fn);
+  const liveAt = (source: Source, cmd: Cmd) => cmd.fn === null || live.has(key(source.file, cmd.fn));
 
   const classOf = (source: Source, tainted: boolean): EdgeClass =>
     source.test ? (tainted ? "test-fixture" : "test-real") : "production";
 
   function shellEdges(source: Source, target: string, out: Edge[]): void {
     for (const cmd of source.commands) {
-      if (!liveAt(cmd)) continue;
-      const start = commandHead(cmd.tokens);
-      const head = cmd.tokens[start];
-      if (head === undefined) continue;
-      const aliasHead = varName(head);
-      const direct = resolves(head, target)
-        || (aliasHead !== undefined && aliasHead !== null && source.shellAliases.get(aliasHead) !== undefined
-          && owners.get(source.shellAliases.get(aliasHead)!)?.size === 1
-          && owners.get(source.shellAliases.get(aliasHead)!)!.has(target));
-      let how = direct ? (resolves(head, target) ? "command word" : "command word via $" + aliasHead) : "";
-      if (!direct && isInterpreterToken(head, source.shellInterpreters)) {
-        for (const token of cmd.tokens.slice(start + 1)) {
-          if (token.startsWith("-")) continue;
-          const alias = varName(token);
-          const aliasPath = alias ? source.shellAliases.get(alias) : undefined;
-          if (resolves(token, target) || (aliasPath && owners.get(aliasPath)?.size === 1 && owners.get(aliasPath)!.has(target))) {
-            how = `argument to ${bare(head)}`;
-            break;
+      if (!liveAt(source, cmd)) continue;
+      for (const segment of segmentsOf(cmd)) {
+        const head = cmd.tokens[segment.start];
+        if (head === undefined) continue;
+        const aliasHead = varName(head);
+        const direct = resolves(head, target)
+          || (aliasHead !== undefined && aliasHead !== null && source.shellAliases.get(aliasHead) !== undefined
+            && owners.get(source.shellAliases.get(aliasHead)!)?.size === 1
+            && owners.get(source.shellAliases.get(aliasHead)!)!.has(target));
+        let how = direct ? (resolves(head, target) ? "command word" : "command word via $" + aliasHead) : "";
+        if (!direct && isInterpreterToken(head, source.shellInterpreters)) {
+          for (const token of cmd.tokens.slice(segment.start + 1, segment.end)) {
+            if (token.startsWith("-")) continue;
+            const alias = varName(token);
+            const aliasPath = alias ? source.shellAliases.get(alias) : undefined;
+            if (resolves(token, target) || (aliasPath && owners.get(aliasPath)?.size === 1 && owners.get(aliasPath)!.has(target))) {
+              how = `argument to ${bare(head)}`;
+              break;
+            }
           }
         }
+        if (!how) continue;
+        const tainted = cmd.tokens.some((token) =>
+          /\bmktemp\b/.test(token) || [...token.matchAll(/\$\{?([A-Za-z_][A-Za-z0-9_]*)/g)].some((m) => source.shellTainted.has(m[1]!)));
+        out.push({ from: source.file, line: cmd.line, cls: classOf(source, tainted), how: cmd.label ? `${cmd.label}, ${how}` : how });
       }
-      if (!how) continue;
-      const tainted = cmd.tokens.some((token) =>
-        /\bmktemp\b/.test(token) || [...token.matchAll(/\$\{?([A-Za-z_][A-Za-z0-9_]*)/g)].some((m) => source.shellTainted.has(m[1]!)));
-      out.push({ from: source.file, line: cmd.line, cls: classOf(source, tainted), how });
     }
   }
 
@@ -642,6 +844,8 @@ export function buildGraph(files: Map<string, string>, unitArmed: (file: string)
     }
   }
 
+  const armCache: { parked: Set<string> | null; hits: Map<string, { file: string; line: number } | null> } = { parked: null, hits: new Map() };
+
   return {
     edgesTo(target: string): Edge[] {
       const out: Edge[] = [];
@@ -653,23 +857,37 @@ export function buildGraph(files: Map<string, string>, unitArmed: (file: string)
       }
       return out;
     },
+    // `edgesTo` consults `unitArmed` for every unit source it walks, and there
+    // is one `edgesTo` call per manifest row, so an unmemoised scan here is run
+    // hundreds of times over the same unchanging tree. Keyed on the parked set
+    // as well, since that is the only other input.
     armEdges(unit: string, parked: Set<string>) {
-      for (const source of sources) {
-        if (source.test || parked.has(source.file) || source.kind === "unit") continue;
-        for (const cmd of source.commands) {
-          if (!liveAt(cmd)) continue;
-          const start = commandHead(cmd.tokens);
-          const head = cmd.tokens[start];
+      if (armCache.parked !== parked) { armCache.parked = parked; armCache.hits.clear(); }
+      const cached = armCache.hits.get(unit);
+      if (cached !== undefined) return cached;
+      const found = scanArm(unit, parked);
+      armCache.hits.set(unit, found);
+      return found;
+    },
+  };
+
+  function scanArm(unit: string, parked: Set<string>): { file: string; line: number } | null {
+    for (const source of sources) {
+      if (source.test || parked.has(source.file) || source.kind === "unit") continue;
+      for (const cmd of source.commands) {
+        if (!liveAt(source, cmd)) continue;
+        for (const segment of segmentsOf(cmd)) {
+          const head = cmd.tokens[segment.start];
           if (!head || bare(head) !== "systemctl" && pathSuffix(bare(head)) !== "systemctl") continue;
-          const rest = cmd.tokens.slice(start + 1).map(bare);
+          const rest = cmd.tokens.slice(segment.start + 1, segment.end).map(bare);
           if (rest.includes("enable") && rest.some((token) => token === unit || token.endsWith(`/${unit}`))) {
             return { file: source.file, line: cmd.line };
           }
         }
       }
-      return null;
-    },
-  };
+    }
+    return null;
+  }
 }
 
 function normalize(path: string): string {

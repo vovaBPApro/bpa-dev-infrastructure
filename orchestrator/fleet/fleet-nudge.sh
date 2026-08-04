@@ -142,7 +142,21 @@ count_open_rows() { # board
         if (hasstate) statetables++
         next
       }
-      if (cell[1] ~ /^:?-{2,}:?$/) next
+      # `--+` and not `-{2,}`: mawk does not enable regex intervals by default,
+      # and this awk program IS the watchdog. Under mawk the interval matched
+      # nothing, so the `|---|---|` separator row of every table fell through to
+      # the id recognizer below, failed it, and made EVERY board read as
+      # structurally damaged — a fail-closed refusal of a perfectly good board,
+      # forever. This host has gawk and a clean Ubuntu 24.04 has mawk, so the
+      # defect was invisible here and total on the machine the operator is
+      # rebuilding onto. Keep this program POSIX-clean; awk-portability.sh locks
+      # it under mawk by name.
+      #
+      # NOTE: this whole awk program is a single-quoted bash string, so no
+      # comment in it may contain an apostrophe. One would close the quote and
+      # break the script at parse time, which bash reports as an error on this
+      # line rather than on the comment that caused it.
+      if (cell[1] ~ /^:?--+:?$/) next
       if (!intable) next
 
       rows++

@@ -3,12 +3,22 @@
 # to the v3 markdown-table workboard.
 set -euo pipefail
 
-SCRIPT=$(cd "$(dirname "$0")" && pwd)/fleet-nudge.sh
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+DIR=$(cd "$(dirname "$0")" && pwd)
+SCRIPT="$DIR/fleet-nudge.sh"
+REPO=$(cd "$DIR/../.." && pwd)
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+# shellcheck source=orchestrator/fleet/awk-portability.sh
+. "$DIR/awk-portability.sh"
+
+# Which awk implementation the current replay of the parser locks is running
+# under. A failure must name the interpreter: "the parser refused a valid board"
+# and "the parser refused a valid board under mawk" are different bug reports,
+# and round 2 shipped because only the first one was ever printed.
+AWK_LABEL=default
+
+fail() { printf 'FAIL [awk=%s]: %s\n' "$AWK_LABEL" "$*" >&2; exit 1; }
 
 # The operator-facing strings are Ukrainian and reach the mock JSON-escaped, so
 # assertions compare against the same escaping the script produces.
@@ -57,6 +67,10 @@ open_forms=(
   '| O-16 | row | acc | not started — awaiting operator restatement |'
   '| O-17 | row | acc | |'
 )
+
+# Everything the parser itself is held to, as one replayable block: it is run
+# once under this machine's awk and once under mawk (see the replay below).
+parser_locks() {
 
 board "$TMP/closed.md" "${closed_forms[@]}"
 expect_count "$TMP/closed.md" 0
@@ -169,11 +183,44 @@ real_rows=$(awk '
   { l = $0; gsub(/\\\|/, "\034", l); sub(/^[[:space:]]*\|/, "", l); sub(/\|[[:space:]]*$/, "", l)
     split(l, c, "|"); id = c[1]; gsub(/^[[:space:]]+|[[:space:]]+$/, "", id)
     if (tolower(id) == "id") { t = 1; next }
-    if (id ~ /^:?-{2,}:?$/) next
+    # POSIX-clean for the same reason the parser is: under mawk `-{2,}` matches
+    # nothing, so this counter would have swallowed every separator row into
+    # `real_rows` and inflated the very number the assertion below leans on.
+    if (id ~ /^:?--+:?$/) next
     if (t) n++ }
   END { print n + 0 }' "$real")
 [ "$real_open" -lt "$real_rows" ] ||
   fail "every one of the $real_rows real rows counted open — the classifier is not discriminating"
+
+}
+
+# ── awk portability: the parser must behave identically under mawk ───────────
+# The whole block above, replayed through a shim directory whose only entry is
+# `awk -> mawk`. The parser IS the watchdog, so an awk-specific parse is not a
+# test-portability nuisance: on the rebuilt server it is the watchdog refusing
+# every board and paging the operator forever.
+parser_locks
+mawk_shim=$(awk_portability_shim "$TMP")
+if [ -n "$mawk_shim" ]; then
+  awk_portability=mawk
+  # A subshell, so the replay cannot leak its PATH or its label into the timer
+  # locks below. `set -e` still propagates a failure out of it.
+  (
+    PATH="$mawk_shim:$PATH"
+    AWK_LABEL=mawk
+    # Prove the replay actually took before trusting anything it reports. A shim
+    # that silently failed to shadow `awk` would run the whole block under gawk
+    # again and print a green that means nothing — the round-2 failure exactly.
+    # Compared without a pipe: these suites run under `pipefail`.
+    resolved=$(command -v awk)
+    [ "$resolved" = "$mawk_shim/awk" ] ||
+      fail "the mawk replay did not take: awk resolves to $resolved"
+    parser_locks
+  )
+else
+  awk_portability=SKIPPED
+  awk_portability_skip_notice 'fleet-nudge.test.sh'
+fi
 
 # ── Timer path, through mocked process boundaries ───────────────────────────
 mkdir "$TMP/bin"
@@ -412,5 +459,8 @@ done
 grep -q '^unit:orch-fleet-nudge.timer' "$REPO/instance/expected-mechanisms.tsv" ||
   fail "the watchdog timer is not registered in expected-mechanisms.tsv"
 
-printf 'fleet-nudge watchdog regression locks: PASS (real workboard open rows=%s of %s)\n' \
-  "$real_open" "$real_rows"
+# The awk-portability verdict is part of the recorded result, not only a stderr
+# notice: a reader of this line must be able to tell a proven parser from one
+# that was merely never contradicted on the dev box.
+printf 'fleet-nudge watchdog regression locks: PASS (real workboard open rows=%s of %s; awk-portability=%s)\n' \
+  "$real_open" "$real_rows" "$awk_portability"

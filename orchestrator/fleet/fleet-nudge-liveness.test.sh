@@ -12,6 +12,9 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 mkdir "$TMP/bin"
 
+# shellcheck source=orchestrator/fleet/awk-portability.sh
+. "$DIR/awk-portability.sh"
+
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 # Operator-facing strings are Ukrainian and reach the mock JSON-escaped, so
@@ -52,6 +55,36 @@ test "$watchdog_status" -ne 0
 grep -Fxq "status=$watchdog_status" "$FLEET_NUDGE_HEARTBEAT"
 FLEET_NUDGE_BOARD="$TMP/board.md" "$WATCHDOG" >/dev/null 2>&1
 grep -Fxq 'status=0' "$FLEET_NUDGE_HEARTBEAT"
+
+# The same pair under mawk. This suite's own round-2 failure was inherited — the
+# watchdog exited 2 on the valid board above and `set -e` carried that code out
+# as the suite's — but it is worth locking on its own terms, because the two
+# heartbeat values this alarm reads are exactly what an awk-specific parse
+# corrupts: a healthy board must write `status=0`, or every downstream assertion
+# here is proving the wrong thing. This is the cheap end-to-end half; the parser
+# itself is replayed exhaustively under mawk in fleet-nudge.test.sh.
+mawk_shim=$(awk_portability_shim "$TMP")
+if [ -n "$mawk_shim" ]; then
+  awk_portability=mawk
+  (
+    PATH="$mawk_shim:$PATH"
+    set +e
+    FLEET_NUDGE_BOARD="$TMP/missing-board" "$WATCHDOG" >/dev/null 2>&1
+    mawk_broken_status=$?
+    set -e
+    test "$mawk_broken_status" -ne 0 ||
+      fail "under mawk an unreadable board was reported healthy"
+    grep -Fxq "status=$mawk_broken_status" "$FLEET_NUDGE_HEARTBEAT" ||
+      fail "under mawk a failed run did not record its status in the heartbeat"
+    FLEET_NUDGE_BOARD="$TMP/board.md" "$WATCHDOG" >/dev/null 2>&1 ||
+      fail "under mawk the watchdog refused a valid board"
+    grep -Fxq 'status=0' "$FLEET_NUDGE_HEARTBEAT" ||
+      fail "under mawk a valid board did not produce a successful heartbeat"
+  )
+else
+  awk_portability=SKIPPED
+  awk_portability_skip_notice 'fleet-nudge-liveness.test.sh'
+fi
 
 # The query flag must NOT refresh the heartbeat. `--count-open` is a diagnostic
 # anyone may run at any time; if it counted as a heartbeat it would keep this
@@ -166,4 +199,5 @@ grep -Fq 'AccuracySec=5s' "$TIMER"
 grep -q '^ExecStart=\$INSTALL_ROOT/orchestrator/fleet/fleet-nudge-liveness.sh$' \
   "$REPO/bootstrap/units/orch-fleet-nudge-liveness.service.in" ||
   fail "the liveness unit does not run the alarm from the checkout"
-printf 'fleet-nudge liveness regression locks: PASS (detection <= 12m05s; recovery clears; a failing watchdog is detected)\n'
+printf 'fleet-nudge liveness regression locks: PASS (detection <= 12m05s; recovery clears; a failing watchdog is detected; awk-portability=%s)\n' \
+  "$awk_portability"

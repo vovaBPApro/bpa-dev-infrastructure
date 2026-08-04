@@ -764,28 +764,33 @@ land_verify_reviewed_sha() {
 land_payload_guard() {
   local repo="$1" branch="$2" merge_base raw_entry changed_file diff_file diff_fd
   local old_mode new_mode change_status
+  LAND_PAYLOAD_FAILURE_DETAIL=changed-base-unreadable
   merge_base=$(land_changed_base "$repo" "$branch") || return 2
+  LAND_PAYLOAD_FAILURE_DETAIL=diff-temp-unavailable
   diff_file=$(mktemp "${TMPDIR:-/tmp}/bpa-land-payload-diff.XXXXXX") || return 2
   if ! git -C "$repo" -c core.quotepath=false diff --raw -z --no-renames --diff-filter=AMT "$merge_base..$branch" > "$diff_file"; then
     rm -f "$diff_file"
+    LAND_PAYLOAD_FAILURE_DETAIL=diff-unreadable
     echo "LAND step=payload-guard status=fail detail=diff-unreadable branch=$branch" >&2
     return 2
   fi
   exec {diff_fd}< "$diff_file"
   rm -f "$diff_file"
   while IFS= read -r -d '' raw_entry; do
-    IFS= read -r -d '' changed_file || { exec {diff_fd}<&-; return 2; }
+    IFS= read -r -d '' changed_file || { LAND_PAYLOAD_FAILURE_DETAIL=path-unreadable; exec {diff_fd}<&-; return 2; }
     read -r old_mode new_mode _ _ change_status <<< "${raw_entry#:}"
     case "$change_status" in
       A|M|T)
         case "$new_mode" in
           120000|160000)
+            LAND_PAYLOAD_FAILURE_DETAIL=mode-$new_mode
             echo "LAND step=payload-guard status=fail detail=mode-$new_mode path=$changed_file" >&2
             exec {diff_fd}<&-
             return 1
             ;;
           100755)
             if [ "$old_mode" != "100755" ] && [[ "$changed_file" != *.sh ]] && ! git -C "$repo" show "$branch:$changed_file" | head -c 2 | grep -Fqx '#!'; then
+              LAND_PAYLOAD_FAILURE_DETAIL=unexpected-executable
               echo "LAND step=payload-guard status=fail detail=unexpected-executable path=$changed_file" >&2
               exec {diff_fd}<&-
               return 1
@@ -796,4 +801,5 @@ land_payload_guard() {
     esac
   done <&"$diff_fd"
   exec {diff_fd}<&-
+  LAND_PAYLOAD_FAILURE_DETAIL=""
 }

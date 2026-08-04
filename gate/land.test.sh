@@ -972,9 +972,15 @@ payload_symlink_sha=$(git -C "$fixture_root/payload-symlink-repo" rev-parse HEAD
 git -C "$fixture_root/payload-symlink-repo" checkout main >/dev/null
 report "$fixture_root/payload-symlink-report.md" "$payload_symlink_sha"
 payload_symlink_output="$fixture_root/payload-symlink-output.txt"
-if "$land" --branch ag-payload-symlink --item-id ag-payload-symlink --report "$fixture_root/payload-symlink-report.md" --repo "$fixture_root/payload-symlink-repo" >"$payload_symlink_output" 2>&1; then exit 1; fi
-assert_output_has "$payload_symlink_output" 'LAND step=payload-guard status=fail detail=mode-120000'
-assert_output_lacks "$payload_symlink_output" 'LAND step=merge status=pass'
+for payload_symlink_attempt in 1 2 3; do
+  payload_symlink_output="$fixture_root/payload-symlink-output-$payload_symlink_attempt.txt"
+  if "$land" --branch ag-payload-symlink --item-id ag-payload-symlink --report "$fixture_root/payload-symlink-report.md" --repo "$fixture_root/payload-symlink-repo" >"$payload_symlink_output" 2>&1; then exit 1; fi
+  assert_output_has "$payload_symlink_output" 'LAND step=payload-guard status=fail detail=mode-120000'
+  assert_output_lacks "$payload_symlink_output" 'LAND step=merge status=pass'
+done
+# V3-0.26 round-2 regression lock: a counted third-attempt payload refusal
+# must name its gate step and reason in the no-progress park record.
+assert_output_has "$payload_symlink_output" 'REVIEW_ROUNDS status=parked item=ag-payload-symlink parked=no-progress blocker-step=payload-guard blocker-detail=mode-120000'
 
 make_fixture payload-gitlink
 git -C "$fixture_root/payload-gitlink-repo" checkout -b ag-payload-gitlink >/dev/null

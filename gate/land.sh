@@ -71,6 +71,9 @@ land_fail() {
 # for the case where the ref provably did not move; this path exists so the
 # gate never prints that word when it cannot back it up.
 land_fail_rollback() {
+  if [ "$review_round_park_pending" = true ]; then
+    echo "REVIEW_ROUNDS status=parked item=$item_id parked=no-progress blocker-step=$1 blocker-detail=rollback-failed" >&2
+  fi
   echo "LAND step=$1 status=fail" >&2
   echo "LAND rollback-failed target=$default_branch expected=$2 actual=$3" >&2
   echo "LAND verdict=rollback-failed sha=$merge_sha" >&2
@@ -345,8 +348,8 @@ if ! git -C "$repo" diff --quiet "$payload_base..$branch" -- "$review_round_hist
   land_fail payload-guard 2
 fi
 if ! land_payload_guard "$repo" "$branch"; then
-  echo "LAND verdict=aborted sha=$merge_sha" >&2
-  exit 2
+  land_failure_detail=${LAND_PAYLOAD_FAILURE_DETAIL:-unspecified}
+  land_fail payload-guard 2
 fi
 land_pass payload-guard
 

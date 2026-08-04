@@ -8,16 +8,14 @@ type Item = { rounds: number; noProgress: number; landedSha: string | null; park
 type State = { version: 1; cap: number; noProgressLimit: number; items: Record<string, Item>; decisions?: Record<string, string> };
 
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-// The tracked-decision authority. `instance/decisions/` reaches the integration
-// branch only through this gate, and gate/land.sh reserves that directory
-// against any candidate branch whose own version of a file there carries this
-// marker in its frontmatter -- so a lane cannot land the authorization that
-// would release it. The directory scanned here and the directory reserved there
-// are the same one, and "carries an authorization" means the same thing in both
-// (see frontmatterGrants below and the awk in land.sh's reserved-path loop);
-// changing either without the other either opens the self-authorization hole
-// that reserved path exists to close, or blocks the operator's verbatim words
-// from landing whenever they quote the format back.
+// The tracked-decision authority. gate/land.sh reserves this directory against
+// any candidate branch whose own version of a file there carries the marker in
+// its frontmatter -- so a lane cannot land, through the gate, the authorization
+// that would release it. "Carries an authorization" is decided by exactly one
+// function, decisionBlobVerdict below: the payload guard asks it through the
+// `reserved-blob` command and the authority reader calls it directly, over the
+// same raw bytes. It used to be decided twice, in two languages, over two I/O
+// paths, and the gap between the two implementations was one NUL byte wide.
 const DECISION_DIR = "instance/decisions";
 const DECISION_MARKER = "operator-unpark: v2 ";
 const DECISION_LINE = /^operator-unpark: v2 item=([^ ]+) decision=([^ ]+) park=no-progress$/;
@@ -47,6 +45,23 @@ function frontmatterGrants(body: string): string[] {
   // An unterminated frontmatter block is not a frontmatter block, so it carries
   // no authority. Under-accepting here is safe; over-accepting is the defect.
   return [];
+}
+// ONE predicate, two consumers. "Does this blob carry an authorization in its
+// frontmatter" is asked by the payload guard in gate/land.sh (is this candidate
+// file reserved?) and by the authority reader below (does this tracked file
+// grant?). Round 4 answered it with two implementations over two I/O paths, and
+// the escalated review split them with a single NUL byte: bash command
+// substitution deletes NUL bytes, so a fake close line `-\0--` ended the
+// frontmatter for the guard's copy of the blob while the reader saw an
+// unterminated line and kept the grant inside the block -- and a lane landed
+// its own authorization through the ordinary gate. Both sides now get their
+// answer here, from the raw bytes. A blob containing a NUL is not text: it
+// GRANTS nothing, and it IS reserved, because a file this predicate cannot
+// certify inert must not be landable by a lane. Over-reserving is the one
+// deliberate asymmetry, and it lives in this function and nowhere else.
+function decisionBlobVerdict(blob: Uint8Array): { binary: boolean; grants: string[] } {
+  if (blob.includes(0)) return { binary: true, grants: [] };
+  return { binary: false, grants: frontmatterGrants(Buffer.from(blob).toString("utf8")) };
 }
 function arg(name: string): string {
   const index = Bun.argv.indexOf(name);
@@ -129,6 +144,16 @@ function load(path: string): State {
       if ((state.decisions ?? {})[entry.decisionId] !== id) die(`unpark-ledger-missing file=${path} item=${id} decision=${entry.decisionId}`);
     }
   }
+  // And the reverse direction: every ledger entry must still have its event.
+  // The chain is verified forward from the events, so deleting the NEWEST
+  // event while keeping its ledger entry used to load cleanly -- the audit
+  // record was append-only in one direction only (round-4 review, F6).
+  for (const [decisionId, boundItem] of Object.entries(state.decisions ?? {})) {
+    const bound = state.items[boundItem];
+    if (!bound || !(bound.unparks ?? []).some((entry) => entry.decisionId === decisionId)) {
+      die(`unpark-event-missing file=${path} decision=${decisionId} item=${boundItem}`);
+    }
+  }
   return state;
 }
 function save(path: string, state: State): void {
@@ -170,6 +195,21 @@ function applyUnpark(grant: { decisionId: string; authorizedBy: string; at: stri
 }
 
 const command = Bun.argv[2];
+if (command === "reserved-blob") {
+  // The payload-guard half of the shared predicate. gate/land.sh writes the
+  // candidate blob to a file with a redirect -- bytes never pass through a
+  // shell substitution -- and asks here. Exit 3: reserved (carries a grant, or
+  // is binary and cannot be certified inert). Exit 0: inert, landable.
+  let blob: Buffer;
+  try { blob = readFileSync(resolve(arg("--blob"))); } catch { die("blob-unreadable"); }
+  const verdict = decisionBlobVerdict(blob);
+  if (verdict.binary || verdict.grants.length > 0) {
+    console.log(`REVIEW_ROUNDS status=reserved-blob binary=${verdict.binary} grants=${verdict.grants.length}`);
+    process.exit(3);
+  }
+  console.log("REVIEW_ROUNDS status=inert-blob");
+  process.exit(0);
+}
 const path = resolve(arg("--state"));
 if (command === "init") {
   const cap = natural(arg("--cap"), "cap");
@@ -272,6 +312,29 @@ if (command === "round") {
   const repo = resolve(arg("--repo"));
   const targetSha = arg("--target-sha").toLowerCase();
   if (!/^[0-9a-f]{40}$/.test(targetSha)) die("invalid-target-sha");
+  // The one candidate fact the caller may supply: which rev is landing. It can
+  // only make a decision file INERT -- a file the candidate DELETES will not
+  // exist once this landing merges, so it has nothing left to grant or to
+  // refuse -- never make one grant. Without it, a malformed file naming an item
+  // bricked that item including the branch that would delete the file, so the
+  // only repair ran around the gate instead of through it (round-4 review, F4).
+  //
+  // "Deletes" is measured against the merge-base, not against the candidate
+  // alone: a lane cut before a decision was published does not carry that file
+  // either, and merging such a lane keeps the file. Treating absence as
+  // deletion would silently disarm every grant published after a lane branched.
+  const candidate = Bun.argv.includes("--candidate") ? arg("--candidate") : null;
+  let candidateBase: string | null = null;
+  if (candidate !== null) {
+    const based = git(repo, ["merge-base", targetSha, candidate]);
+    if (based.exitCode !== 0) die(`candidate-unmergeable candidate=${candidate}`);
+    candidateBase = based.stdout.toString().trim();
+    if (!/^[0-9a-f]{40}$/.test(candidateBase)) die(`candidate-unmergeable candidate=${candidate}`);
+  }
+  const deletedByCandidate = (source: string): boolean =>
+    candidate !== null && candidateBase !== null &&
+    git(repo, ["cat-file", "-e", `${candidateBase}:${source}`]).exitCode === 0 &&
+    git(repo, ["cat-file", "-e", `${candidate}:${source}`]).exitCode !== 0;
   if (git(repo, ["rev-parse", "--verify", "--quiet", `${targetSha}^{tree}`]).exitCode !== 0) die(`origin-target-missing sha=${targetSha}`);
   const scan = git(repo, ["grep", "-l", "-z", "-E", "-e", `^${DECISION_MARKER}`, targetSha, "--", `${DECISION_DIR}/`]);
   if (scan.exitCode !== 0 && scan.exitCode !== 1) die(`decision-scan-failed sha=${targetSha}`);
@@ -285,7 +348,9 @@ if (command === "round") {
     const source = entry.startsWith(`${targetSha}:`) ? entry.slice(targetSha.length + 1) : die(`decision-scan-failed sha=${targetSha}`);
     const shown = git(repo, ["show", `${targetSha}:${source}`]);
     if (shown.exitCode !== 0) { warn(`decision-unreadable path=${source}`); continue; }
-    const shaped = frontmatterGrants(shown.stdout.toString());
+    const verdict = decisionBlobVerdict(shown.stdout);
+    if (verdict.binary) { warn(`decision-ignored-binary path=${source}`); continue; }
+    const shaped = verdict.grants;
     if (shaped.length === 0) continue;
     // Filter by item BEFORE any strict check. A decision file that does not
     // name this item is not this item's business: it is skipped, never a die.
@@ -295,6 +360,16 @@ if (command === "round") {
     // through the gate at all. A bad decision must fail that decision only.
     if (!shaped.some((line) => line.includes(` item=${itemId} `))) {
       if (shaped.length !== 1 || !DECISION_LINE.test(shaped[0]!)) warn(`decision-ignored-not-this-item path=${source}`);
+      continue;
+    }
+    // A file the landing candidate deletes is inert for this landing, grant
+    // and refusal alike: deletion is retraction, and refusing the deletion
+    // branch would protect an authorization that is being removed. Skipping a
+    // file this way never grants anything, so the caller-supplied rev cannot
+    // be used to mint authority -- only to stop a bad file from also bricking
+    // its own repair.
+    if (deletedByCandidate(source)) {
+      warn(`decision-ignored-deleted-by-candidate path=${source}`);
       continue;
     }
     // From here the file DOES name this item, so it is held to the whole

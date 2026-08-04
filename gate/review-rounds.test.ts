@@ -59,6 +59,12 @@ function originSha(repo: string, target = "main") {
 function unpark(state: string, repo: string, item = "V3-3.4", extra: string[] = []) {
   return run(state, "operator-unpark-decision", item, ["--repo", repo, "--target-sha", originSha(repo), ...extra]);
 }
+function reservedBlob(body: string | Uint8Array) {
+  const root = mkdtempSync(resolve(tmpdir(), "reserved-blob-")); roots.push(root);
+  const blob = resolve(root, "blob");
+  writeFileSync(blob, body);
+  return Bun.spawnSync([process.execPath, cli, "reserved-blob", "--blob", blob], { stdout: "pipe", stderr: "pipe" });
+}
 function parkNoProgress(state: string, item = "V3-3.4", rounds = 3) {
   for (let index = 0; index < rounds; index++) run(state, "attempt", item);
   expect(text(run(state, "attempt", item))).toContain("parked=no-progress");
@@ -203,7 +209,7 @@ describe("durable review round enforcement", () => {
     expect(JSON.parse(readFileSync(state, "utf8")).items["V3-9.9"]).toMatchObject({ park: "no-progress" });
   });
 
-  test("REGRESSION V3-0.29 r3: authority is read from origin only, never from a caller or a local ref", () => {
+  test("REGRESSION V3-0.29 r3: authority is read from a resolved SHA, never from a ref name or a caller-supplied selector", () => {
     const state = fixture(3, 3);
     parkNoProgress(state);
     const repo = decisionRepo();
@@ -409,6 +415,143 @@ describe("durable review round enforcement", () => {
     expect(unpark(state, repo).exitCode).toBe(0);
     expect(run(state, "attempt").exitCode).toBe(0);
     expect(JSON.parse(readFileSync(state, "utf8")).items["V3-3.4"]).toMatchObject({ rounds: 5, park: null, unparkCredits: 0 });
+  });
+
+  // The r4 review's central finding: "does this file carry a grant in its
+  // frontmatter" was answered by two implementations over two I/O paths, and
+  // one NUL byte made them disagree -- the reader granted, the guard read the
+  // NUL-stripped copy and saw an inert file, so a lane landed its own
+  // authorization through the ordinary gate. The lock is differential and runs
+  // over a corpus rather than one example: for EVERY blob, the reader granting
+  // must imply the guard reserving. A single shared predicate is what makes
+  // that hold, so this test fails the moment anyone forks it again.
+  test("REGRESSION V3-0.29 r5 F8: guard and reader never disagree over a corpus of hostile blobs", () => {
+    const grant = (item: string, decision: string) => `operator-unpark: v2 item=${item} decision=${decision} park=no-progress`;
+    const corpus: Array<[string, string | Uint8Array]> = [
+      ["nul-fake-close", Buffer.from(`---\nid: HR-7777\n-\0--\n${grant("V3-3.4", "HR-7777")}\n---\n`, "utf8")],
+      ["nul-inside-grant", Buffer.from(`---\n${grant("V3-3.4", "HR-7777")}\0\n---\n`, "utf8")],
+      ["nul-leading", Buffer.from(`\0---\n${grant("V3-3.4", "HR-7777")}\n---\n`, "utf8")],
+      ["nul-trailing", Buffer.from(`---\n${grant("V3-3.4", "HR-7777")}\n---\n\0`, "utf8")],
+      ["plain-grant", `---\nid: HR-7777\n${grant("V3-3.4", "HR-7777")}\n---\n`],
+      ["fenced-quotation", `# HR-7777\n\n\`\`\`text\n${grant("V3-3.4", "HR-7777")}\n\`\`\`\n`],
+      ["below-frontmatter", `---\nid: HR-7777\n---\n\n${grant("V3-3.4", "HR-7777")}\n`],
+      ["unterminated-frontmatter", `---\nid: HR-7777\n${grant("V3-3.4", "HR-7777")}\n`],
+      ["crlf-delimiters", `---\r\n${grant("V3-3.4", "HR-7777")}\r\n---\r\n`],
+      ["second-block", `---\nid: HR-7777\n---\n\n---\n${grant("V3-3.4", "HR-7777")}\n---\n`],
+      ["dots-closer", `---\nid: HR-7777\n${grant("V3-3.4", "HR-7777")}\n...\n`],
+    ];
+    for (const [name, body] of corpus) {
+      const state = fixture(10, 3);
+      parkNoProgress(state);
+      const repo = decisionRepo({ "HR-7777.md": body as string });
+      const reader = unpark(state, repo);
+      const granted = text(reader).includes("status=unparked");
+      const guard = reservedBlob(body);
+      const reserved = guard.exitCode === 3;
+      // The only forbidden combination, and the exact one the exploit needed.
+      expect({ case: name, granted, reserved }).not.toMatchObject({ granted: true, reserved: false });
+      // Same predicate, so agreement is exact except where the guard
+      // deliberately over-reserves an uncertifiable (binary) blob.
+      if (granted) expect(reserved).toBe(true);
+      const binary = typeof body !== "string" || body.includes("\0");
+      if (binary) {
+        expect(reserved).toBe(true);
+        expect(granted).toBe(false);
+        expect(text(reader)).toContain("status=warn detail=decision-ignored-binary path=instance/decisions/HR-7777.md");
+      }
+    }
+  });
+
+  test("REGRESSION V3-0.29 r5 F6: a ledger entry whose event was deleted fails closed", () => {
+    const state = fixture(10, 3);
+    parkNoProgress(state);
+    const repo = decisionRepo({ "HR-2149.md": authorization("V3-3.4", "HR-2149") });
+    expect(unpark(state, repo).exitCode).toBe(0);
+    const good = readFileSync(state, "utf8");
+
+    // The chain is verified forward from the events, so dropping the NEWEST
+    // event used to load cleanly while the ledger still claimed it was spent:
+    // the audit record was append-only in one direction only.
+    const truncated = JSON.parse(good);
+    expect(truncated.items["V3-3.4"].unparks).toHaveLength(1);
+    truncated.items["V3-3.4"].unparks = [];
+    writeFileSync(state, `${JSON.stringify(truncated, null, 2)}\n`);
+    expect(text(run(state, "round"))).toContain("unpark-event-missing file=");
+    expect(run(state, "round").exitCode).toBe(2);
+
+    // A ledger entry naming an item that no longer exists is caught too.
+    const orphaned = JSON.parse(good);
+    orphaned.decisions["HR-9999"] = "V3-nonexistent";
+    writeFileSync(state, `${JSON.stringify(orphaned, null, 2)}\n`);
+    expect(text(run(state, "round"))).toContain("unpark-event-missing file=");
+    writeFileSync(state, good);
+    expect(run(state, "round").exitCode).toBe(0);
+  });
+
+  test("REGRESSION V3-0.29 r5 F4: a candidate deleting a hostile file is not bricked by it", () => {
+    const state = fixture(10, 3);
+    parkNoProgress(state);
+    // The realistic operator typo: `park=cap` in a file naming this very item.
+    // It refuses every landing of the item it names -- including the branch
+    // that would delete it, which left the repair outside the gate entirely.
+    const repo = decisionRepo({ "HR-6000.md": "---\nid: HR-6000\noperator-unpark: v2 item=V3-3.4 decision=HR-6000 park=cap\n---\n" });
+    const bricked = unpark(state, repo);
+    expect(bricked.exitCode).toBe(2);
+    expect(text(bricked)).toContain("malformed-authorization path=instance/decisions/HR-6000.md");
+
+    const git = (...args: string[]) => expect(Bun.spawnSync(["git", "-C", repo, ...args], { stdout: "pipe", stderr: "pipe" }).exitCode).toBe(0);
+    git("checkout", "-b", "ag-repair");
+    git("rm", "-q", "instance/decisions/HR-6000.md");
+    git("commit", "-m", "delete the malformed decision");
+    const repair = unpark(state, repo, "V3-3.4", ["--candidate", "ag-repair"]);
+    expect(repair.exitCode).toBe(0);
+    expect(text(repair)).toContain("status=warn detail=decision-ignored-deleted-by-candidate path=instance/decisions/HR-6000.md");
+    expect(text(repair)).toContain("status=unpark-none");
+    // Inert means inert in both directions: the candidate rev can retract a
+    // decision for this landing, never mint one. A branch that deletes a VALID
+    // grant does not get to spend it on the way out.
+    git("checkout", "main");
+    mkdirSync(resolve(repo, "instance/decisions"), { recursive: true });
+    publish(repo, "HR-2149.md", authorization("V3-3.4", "HR-2149"));
+    git("checkout", "-b", "ag-repair-2", "origin/main");
+    git("rm", "-q", "instance/decisions/HR-2149.md", "instance/decisions/HR-6000.md");
+    git("commit", "-m", "delete the valid grant and the malformed one");
+    const deletedGrant = unpark(state, repo, "V3-3.4", ["--candidate", "ag-repair-2"]);
+    expect(deletedGrant.exitCode).toBe(0);
+    expect(text(deletedGrant)).toContain("status=unpark-none");
+    const data = JSON.parse(readFileSync(state, "utf8"));
+    expect(data.items["V3-3.4"]).toMatchObject({ park: "no-progress" });
+    expect(data.decisions ?? {}).toEqual({});
+    // Scoped to what the candidate actually removes: a candidate deleting only
+    // the malformed file still meets the valid grant, and spends it.
+    git("checkout", "-b", "ag-repair-3", "origin/main");
+    git("rm", "-q", "instance/decisions/HR-6000.md");
+    git("commit", "-m", "delete only the malformed decision");
+    const scoped = unpark(state, repo, "V3-3.4", ["--candidate", "ag-repair-3"]);
+    expect(scoped.exitCode).toBe(0);
+    expect(text(scoped)).toContain("status=unparked item=V3-3.4 decision=HR-2149");
+  });
+
+  test("REGRESSION V3-0.29 r5 F4: a lane that never carried a grant is not treated as deleting it", () => {
+    const state = fixture(10, 3);
+    parkNoProgress(state);
+    const repo = decisionRepo();
+    const git = (...args: string[]) => expect(Bun.spawnSync(["git", "-C", repo, ...args], { stdout: "pipe", stderr: "pipe" }).exitCode).toBe(0);
+    // The ordinary case, and the one that makes "the candidate does not have
+    // this file" the wrong test: the lane is cut FIRST, the operator publishes
+    // the grant afterwards. Merging that lane keeps the file, so absence in the
+    // lane is not retraction -- reading it as one would silently disarm every
+    // decision published after a lane branched, which is most of them.
+    git("checkout", "-b", "ag-late-grant");
+    writeFileSync(resolve(repo, "lane.txt"), "lane\n");
+    git("add", "-A"); git("commit", "-m", "ordinary lane work");
+    git("checkout", "main");
+    publish(repo, "HR-2149.md", authorization("V3-3.4", "HR-2149"));
+
+    const late = unpark(state, repo, "V3-3.4", ["--candidate", "ag-late-grant"]);
+    expect(late.exitCode).toBe(0);
+    expect(text(late)).toContain("status=unparked item=V3-3.4 decision=HR-2149");
+    expect(text(late)).not.toContain("decision-ignored-deleted-by-candidate");
   });
 
   test("operator unpark does not clear a cap park", () => {

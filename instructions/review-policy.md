@@ -83,29 +83,69 @@ authorities. Both consume a decision exactly once, for exactly the item it names
 through the same ledger.
 
 The primary authority is **a decision file tracked on the integration branch**.
-A file `instance/decisions/<decision-id>.md` carries exactly one line
+A file `instance/decisions/<decision-id>.md` carries exactly one line, **inside
+its YAML frontmatter**:
 
 ```text
+---
+id: <decision-id>
 operator-unpark: v2 item=<item-id> decision=<decision-id> park=no-progress
+---
 ```
 
-whose `<decision-id>` must equal its own file name, so the audit record leads
-back to the operator's words in one step and a file cannot be padded with extra
-grants. The landing gate reads that directory from `refs/remotes/origin/<target>`
-and nowhere else: not the working tree, not a stash, not a local branch, and not
-a command-line file — the command accepts no authorization payload, trust root,
-or decision selector from its caller at all, and refuses an `ag-` branch as an
-authority root. The trust root is therefore the one the repository already
-enforces: `instance/decisions/` reaches origin only through this gate, gate paths
-require an independent ACCEPT, and the payload guard reserves any candidate file
-under that directory whose own content carries the marker — so a lane cannot land
-the authorization that would release it, while recording an ordinary decision
-stays ordinary lane work. Consumption is recorded in the target-branch
-review-round history and is durable only if the landing merges, so a failed
-landing does not burn a decision. A decision id, once spent, is bound to that
-item forever: retargeting the file at another item is refused, and reapplying it
-to the same item is a logged no-op. An authorization that meets no `no-progress`
+Its `<decision-id>` must equal its own file name, so the audit record leads back
+to the operator's words in one step and a file cannot be padded with extra
+grants.
+
+The frontmatter requirement is not decoration. This directory is where the
+operator's words are stored verbatim (Hard Rule 16), and those words routinely
+quote this format back — including in the fenced block two paragraphs up. A
+marker matched anywhere in the file cannot tell a quotation from a grant, so
+capturing his message about this feature would silently unpark whatever item it
+quoted. Below the closing `---`, the line is text about an authorization and
+grants nothing; a file with no frontmatter, or an unterminated block, grants
+nothing either.
+
+The landing gate reads that directory from **the commit SHA `git ls-remote`
+returns for the target branch on origin** — never from a ref name. That
+distinction is the whole trust root. A remote-tracking ref such as
+`refs/remotes/origin/main` is a local branch ref in another namespace: lane
+worktrees share one Git common directory, so any lane can point one at a commit
+origin has never held with an ordinary `git update-ref`, needing no push access,
+no signing key, and nothing the permission surface treats as privileged. The
+command therefore refuses a ref name outright and accepts only an immutable SHA,
+and the gate refuses to proceed at all when its local view of the target
+disagrees with what origin answers. It equally accepts no authorization payload,
+trust root, or decision selector from its caller; a lane branch is refused as a
+target before any of this runs.
+
+The trust root is therefore the one the repository already enforces:
+`instance/decisions/` reaches origin only through this gate, gate paths require
+an independent ACCEPT, and the payload guard reserves any candidate file under
+that directory carrying the marker in its frontmatter — so a lane cannot land the
+authorization that would release it, while recording an ordinary decision, or
+quoting the format inside one, stays ordinary lane work. What the guard reserves
+and what the authority reads are the same definition on purpose: reserving less
+would let a lane land its own authority, and reserving more would block the
+operator's verbatim words.
+
+Consumption is recorded in the target-branch review-round history and is durable
+only if the landing merges, so a failed landing does not burn a decision — and
+does not strand one either. An authorised landing that publishes its attempt ref
+and then aborts leaves that ref permanent while the release goes unrecorded; the
+gate replays such a ref as a reconstruction rather than a fresh admission, so the
+park it rebuilds is the one the target branch recorded and the decision still
+applies on the next attempt. A decision id, once spent, is bound to that item
+forever: retargeting the file at another item is refused, and reapplying it to
+the same item is a logged no-op. An authorization that meets no `no-progress`
 park is not consumed — it waits for one, and never fires against a `cap` park.
+
+A malformed, archived, or hostile file in that directory fails **that decision**
+and never the gate. Files are filtered to the item being landed before any strict
+check, so one bad file cannot abort landings for items it does not name — which
+is what leaves a repair path through the gate rather than around it. A file that
+does name the item is still held to the whole contract, so an authorization-shaped
+line for that item is never silently ignored.
 
 The alternative authority is a signature, kept because HR-2109 gives the eventual
 administrator bot a signing role. An operator may release the same park with
@@ -135,6 +175,25 @@ lane authority, and why the review requirement on gate paths is the thing that
 makes a tracked decision mean anything. Calling the command outside a landing
 grants nothing, because the gate rebuilds review-round state from the target
 branch at the start of every landing.
+
+The recorded events are hash-chained, and the chain is verified on every read:
+each digest is recomputed from the event's own fields, so editing a decision id,
+an authorizer, a source path, a timestamp, or the order of events is a
+fail-closed refusal rather than a value the next event chains onto. That makes it
+tamper-**evident** against edits to the state file, which is the claim it can
+support. It is not tamper-proof: the file is a reserved path rebuilt from the
+target branch each landing, so an agent that can push to the integration branch
+directly can still rewrite history and the chain with it — the same boundary as
+everything else on this page.
+
+One property here is deliberately left open for the operator rather than decided
+in the mechanism: an authorization that arrives before its park **waits
+indefinitely**, and will fire at the first `no-progress` park the item reaches,
+possibly much later and for a different reason than the one he was asked about.
+A one-time go-ahead and a standing condition are not the same thing. The grant
+already carries the commit date of the commit that published it, so bounding its
+age — or requiring it to name the round it authorises — would close this by
+construction. Both change what the operator has to write, so the choice is his.
 
 The counter is honest-but-not-tamper-resistant while lanes are root-equivalent.
 A root lane can coordinate the same rewrite or deletion across both remote

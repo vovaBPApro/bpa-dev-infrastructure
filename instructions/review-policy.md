@@ -92,3 +92,14 @@ no progress. Reaching the configured limit parks the item as `no-progress`.
 Every successful landing records its SHA and resets only this consecutive
 no-progress measure; it does not erase the total review-round count. Missing,
 unreadable, non-regular, symlinked, or malformed state fails landing closed.
+
+The gate does not exempt a refusal merely because its failing step can also be
+affected by the environment. Candidate-controlled inputs can deliberately fail
+`review-item`, payload, review, secret, declared-check, framework-check, and
+verification paths, including a fabricated `verify-count` mismatch. Excluding
+any such step would let a lane evade the limit. When the limit is reached, the
+gate therefore finishes measuring the refused attempt and emits the failing
+step and reason in the park record. This makes an external or neighbouring
+blocker visible without trusting an agent-steerable category to weaken the cap.
+Pre-attempt freshness, working-tree, and lock failures do not count because the
+gate has not accepted or mirrored a reviewed attempt at that point.

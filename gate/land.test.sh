@@ -754,11 +754,23 @@ make_fixture verify-count-mismatch
 verify_count_sha=$(make_lane "$fixture_root/verify-count-mismatch-repo" ag-verify-count-mismatch)
 verify_count_before=$(git -C "$fixture_root/verify-count-mismatch-repo" rev-parse HEAD)
 printf "commit: %s fixture\nverify: printf '162 pass\\\\n6 fail\\\\n'\nverify-count: 168/168\nresult: clean\nsecret-scan: clean\nremaining: none\n" "$verify_count_sha" > "$fixture_root/verify-count-mismatch-report.md"
-verify_count_output="$fixture_root/verify-count-mismatch-output.txt"
-if "$land" --branch ag-verify-count-mismatch --item-id ag-verify-count-mismatch --report "$fixture_root/verify-count-mismatch-report.md" --repo "$fixture_root/verify-count-mismatch-repo" --run-verify >"$verify_count_output" 2>&1; then exit 1; fi
-assert_output_has "$verify_count_output" 'LAND verify-count mismatch report=168/168 actual=1/0'
-assert_output_has "$verify_count_output" 'LAND step=reviewed-verify status=fail'
-assert_output_lacks "$verify_count_output" 'LAND step=push status=pass'
+for verify_count_attempt in 1 2 3; do
+  verify_count_output="$fixture_root/verify-count-mismatch-output-$verify_count_attempt.txt"
+  if "$land" --branch ag-verify-count-mismatch --item-id ag-verify-count-mismatch --report "$fixture_root/verify-count-mismatch-report.md" --repo "$fixture_root/verify-count-mismatch-repo" --run-verify >"$verify_count_output" 2>&1; then exit 1; fi
+  assert_output_has "$verify_count_output" 'LAND verify-count mismatch report=168/168 actual=1/0'
+  assert_output_has "$verify_count_output" 'LAND step=reviewed-verify status=fail'
+  assert_output_lacks "$verify_count_output" 'LAND step=push status=pass'
+done
+# V3-0.26 regression and attack lock: a neighbouring change can make this
+# mismatch external, but the candidate can fabricate the same mismatch. The
+# third refusal therefore names the blocker while still parking at the limit.
+assert_output_has "$verify_count_output" 'REVIEW_ROUNDS status=parked item=ag-verify-count-mismatch parked=no-progress blocker-step=reviewed-verify blocker-detail=verify-count-mismatch'
+verify_count_key=$(printf '%s' ag-verify-count-mismatch | git -C "$fixture_root/verify-count-mismatch-repo" hash-object --stdin)
+assert test "$(git -C "$fixture_root/verify-count-mismatch-origin.git" for-each-ref --format='%(refname)' "refs/bpa-review-attempts/$verify_count_key/" | wc -l)" -eq 3
+assert test "$(git -C "$fixture_root/verify-count-mismatch-origin.git" for-each-ref --format='%(refname)' "refs/bpa-review-attempt-mirrors/$verify_count_key/" | wc -l)" -eq 3
+verify_count_parked_output="$fixture_root/verify-count-mismatch-output-parked.txt"
+if "$land" --branch ag-verify-count-mismatch --item-id ag-verify-count-mismatch --report "$fixture_root/verify-count-mismatch-report.md" --repo "$fixture_root/verify-count-mismatch-repo" --run-verify >"$verify_count_parked_output" 2>&1; then exit 1; fi
+assert_output_has "$verify_count_parked_output" 'parked=no-progress'
 assert test "$(git -C "$fixture_root/verify-count-mismatch-repo" rev-parse HEAD)" = "$verify_count_before"
 assert git -C "$fixture_root/verify-count-mismatch-repo" show-ref --verify --quiet refs/heads/ag-verify-count-mismatch
 

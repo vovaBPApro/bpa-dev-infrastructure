@@ -61,7 +61,11 @@ const item = state.items[itemId] ?? { rounds: 0, noProgress: 0, landedSha: null,
 if (command === "round") {
   console.log(item.rounds);
 } else if (command === "check") {
-  if (item.park) die(`item=${itemId} parked=${item.park}`);
+  if (item.park && !Bun.argv.includes("--defer-park-exit")) die(`item=${itemId} parked=${item.park}`);
+  if (item.park) {
+    console.log(`REVIEW_ROUNDS status=pending item=${itemId} parked=${item.park}`);
+    process.exit(0);
+  }
   console.log(`REVIEW_ROUNDS status=admissible item=${itemId} round=${item.rounds}`);
 } else if (command === "attempt") {
   if (item.park) die(`item=${itemId} parked=${item.park}`);

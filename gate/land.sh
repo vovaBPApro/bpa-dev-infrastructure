@@ -24,6 +24,8 @@ pushed=false
 landing_complete=false
 review_verdict="not-required"
 pre_merge_sha=""
+review_round_park_pending=false
+land_failure_detail=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -57,6 +59,9 @@ if [ "$skip_review" = true ] && [[ -z "${skip_review_reason//[[:space:]]/}" ]]; 
 land_pass() { echo "LAND step=$1 status=pass"; }
 land_skip() { echo "LAND step=$1 status=skipped"; }
 land_fail() {
+  if [ "$review_round_park_pending" = true ]; then
+    echo "REVIEW_ROUNDS status=parked item=$item_id parked=no-progress blocker-step=$1 blocker-detail=${land_failure_detail:-unspecified}" >&2
+  fi
   echo "LAND step=$1 status=fail" >&2
   echo "LAND verdict=aborted sha=$merge_sha" >&2
   exit "${2:-1}"
@@ -320,9 +325,10 @@ if [ "$persisted_attempt_sha" != "$branch_sha" ] || [ "$persisted_attempt_mirror
   echo "LAND review-rounds attempt-persist-mismatch ref=$attempt_ref found=${persisted_attempt_sha:-missing} target=${remote_target_sha:-missing} expected-target=$pre_merge_sha" >&2
   land_fail review-rounds 2
 fi
-if ! "$BUN_BIN" "$script_dir/review-rounds.ts" check --state "$review_round_state" --item-id "$item_id" >/dev/null; then
+review_round_check=$("$BUN_BIN" "$script_dir/review-rounds.ts" check --defer-park-exit --state "$review_round_state" --item-id "$item_id") || {
   land_fail review-rounds 2
-fi
+}
+if [[ "$review_round_check" == *"status=pending"* ]]; then review_round_park_pending=true; fi
 land_pass review-rounds
 
 report_sha=$(sed -n 's/^commit:[[:space:]]*\([0-9a-fA-F]\{40\}\).*/\1/p' "$report" | head -n 1)
@@ -426,6 +432,7 @@ if [ "$run_verify" = true ]; then
       merge_sha="none"
       land_fail reviewed-verify
     fi
+    land_failure_detail=verify-count-mismatch
     if ! land_verify_count "$report" "$reviewed_verify_output" exact; then
       rm -f "$reviewed_verify_output"
       if ! land_force_reset "$repo" "$pre_merge_sha"; then
@@ -435,8 +442,15 @@ if [ "$run_verify" = true ]; then
       merge_sha="none"
       land_fail reviewed-verify
     fi
+    land_failure_detail=""
     rm -f "$reviewed_verify_output"
     land_pass reviewed-verify
+  fi
+  # A pending no-progress park may continue only far enough to capture the
+  # gate-owned exact-SHA refusal. It can never be pushed or become a reset.
+  if [ "$review_round_park_pending" = true ]; then
+    land_failure_detail=no-refusal-at-reviewed-boundary
+    land_fail no-progress 2
   fi
   verify_output=$(mktemp)
   if [ -z "$verify_command" ] || ! (cd "$repo" && sh -c "$verify_command") >"$verify_output" 2>&1; then
@@ -465,6 +479,11 @@ if [ "$run_verify" = true ]; then
   land_pass post-merge-verify
 else
   land_skip post-merge-verify
+fi
+
+if [ "$review_round_park_pending" = true ]; then
+  land_failure_detail=no-refusal-before-push
+  land_fail no-progress 2
 fi
 
 if [ "$no_push" = false ]; then

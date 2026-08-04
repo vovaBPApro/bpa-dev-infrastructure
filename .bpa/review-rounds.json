@@ -62,6 +62,12 @@
       "noProgress": 0,
       "landedSha": "38159ff5b6fefb54b3bddb9b34d291f37f3fd413",
       "park": null
+    },
+    "V3-0.51": {
+      "rounds": 1,
+      "noProgress": 0,
+      "landedSha": "866f0e08e190fcd72ace0857392ae490ac728be7",
+      "park": null
     }
   }
 }

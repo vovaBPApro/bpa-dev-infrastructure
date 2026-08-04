@@ -23,6 +23,10 @@ bpa-deploy-drift-guard.service	generic
 bpa-deploy-drift-guard.timer	generic
 orch-morning-report.service	generic
 orch-morning-report.timer	generic
+orch-fleet-nudge.service	generic
+orch-fleet-nudge.timer	generic
+orch-fleet-nudge-liveness.service	generic
+orch-fleet-nudge-liveness.timer	generic
 agentic-bpa-db-grants.service	instance
 agentic-bpa-db-grants.timer	instance
 agentic-bpa-staleness.service	instance

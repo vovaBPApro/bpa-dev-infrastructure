@@ -11,6 +11,10 @@ unit:bpa-deploy-drift-guard.service	systemd	bootstrap/units/bpa-deploy-drift-gua
 unit:bpa-deploy-drift-guard.timer	systemd	bootstrap/units/bpa-deploy-drift-guard.timer.in
 unit:orch-morning-report.service	systemd	bootstrap/units/orch-morning-report.service.in
 unit:orch-morning-report.timer	systemd	bootstrap/units/orch-morning-report.timer.in
+unit:orch-fleet-nudge.service	systemd	bootstrap/units/orch-fleet-nudge.service.in
+unit:orch-fleet-nudge.timer	systemd	bootstrap/units/orch-fleet-nudge.timer.in
+unit:orch-fleet-nudge-liveness.service	systemd	bootstrap/units/orch-fleet-nudge-liveness.service.in
+unit:orch-fleet-nudge-liveness.timer	systemd	bootstrap/units/orch-fleet-nudge-liveness.timer.in
 unit:agentic-bpa-db-grants.service	systemd	instance/units/agentic-bpa-db-grants.service.in
 unit:agentic-bpa-db-grants.timer	systemd	instance/units/agentic-bpa-db-grants.timer.in
 unit:agentic-bpa-staleness.service	systemd	instance/units/agentic-bpa-staleness.service.in

@@ -1,0 +1,11 @@
+[Unit]
+Description=Check the fleet watchdog heartbeat independently every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=5s
+Unit=orch-fleet-nudge-liveness.service
+
+[Install]
+WantedBy=timers.target

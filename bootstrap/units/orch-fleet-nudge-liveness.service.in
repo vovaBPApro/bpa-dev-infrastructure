@@ -1,0 +1,12 @@
+[Unit]
+Description=Alert when the fleet watchdog stops firing or starts failing
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=$INSTALL_ROOT
+EnvironmentFile=-$ENV_FILE
+ExecStart=$INSTALL_ROOT/orchestrator/fleet/fleet-nudge-liveness.sh
+NoNewPrivileges=true
+PrivateTmp=true

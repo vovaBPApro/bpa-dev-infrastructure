@@ -217,6 +217,8 @@ land_run_declared_checks() {
       return 1
     fi
     LAND_FRAMEWORK_TEST_COUNT="$test_count"
+    LAND_FRAMEWORK_PASS_COUNT="$pass_count"
+    LAND_FRAMEWORK_FAIL_COUNT=0
     if [ "$test_count" -lt "$minimum_test_count" ]; then
       echo "$prefix framework-check=test status=fail tests=$test_count baseline=$minimum_test_count detail=test-count-regressed" >&2
       return 1
@@ -706,7 +708,7 @@ land_assert_reap_safe() {
 # Compare an optional report claim with the output of the verify command that
 # the gate itself just ran. The completion guard validates the claim's syntax.
 land_verify_count() {
-  local report="$1" output_file="$2" claim passed failed
+  local report="$1" output_file="$2" mode="${3:-exact}" claim passed failed claimed_passed claimed_failed
   claim=$(sed -n 's/^verify-count:[[:space:]]*//p' "$report")
   [ -n "$claim" ] || return 0
   passed=$(awk 'BEGIN { IGNORECASE=1 } /^[0-9]+ pass(ed)?$/ { count++; value=$1 } END { if (count == 1) print value }' "$output_file")
@@ -715,11 +717,48 @@ land_verify_count() {
     echo "LAND verify-count output=missing-unambiguous-pass/fail-count" >&2
     return 1
   fi
-  if [ "$claim" != "$passed/$failed" ]; then
-    echo "LAND verify-count mismatch report=$claim actual=$passed/$failed" >&2
-    return 1
+  case "$mode" in
+    exact)
+      if [ "$claim" != "$passed/$failed" ]; then
+        echo "LAND verify-count mismatch report=$claim actual=$passed/$failed" >&2
+        return 1
+      fi
+      echo "LAND verify-count match=$passed/$failed"
+      ;;
+    carry)
+      claimed_passed=${claim%/*}
+      claimed_failed=${claim#*/}
+      if [ "$failed" != "$claimed_failed" ] || [ "$passed" -lt "$claimed_passed" ]; then
+        echo "LAND verify-count carry-mismatch report=$claim actual=$passed/$failed" >&2
+        return 1
+      fi
+      echo "LAND verify-count carried report=$claim actual=$passed/$failed"
+      ;;
+    *)
+      echo "LAND verify-count invalid-mode mode=$mode" >&2
+      return 2
+      ;;
+  esac
+}
+
+# Run the gate-owned tracked-test inventory on the exact reviewed commit in a
+# detached, disposable worktree. This function and its inventory rules were
+# loaded from the independently accepted pre-merge gate; the candidate is only
+# the subject of the measurement and cannot select the command or parser.
+land_verify_reviewed_sha() {
+  local repo="$1" sha="$2" output_file="$3" verify_tree status=0
+  verify_tree=$(mktemp -d "${TMPDIR:-/tmp}/bpa-land-reviewed.XXXXXX") || return 2
+  rmdir "$verify_tree" || return 2
+  if ! git -C "$repo" worktree add --quiet --detach "$verify_tree" "$sha"; then
+    rm -rf -- "$verify_tree"
+    return 2
   fi
-  echo "LAND verify-count match=$passed/$failed"
+  (
+    land_run_declared_checks "$verify_tree" 'LAND REVIEWED'
+    printf '%s pass\n%s fail\n' "$LAND_FRAMEWORK_PASS_COUNT" "$LAND_FRAMEWORK_FAIL_COUNT"
+  ) >"$output_file" 2>&1 || status=$?
+  git -C "$repo" worktree remove --force "$verify_tree" >/dev/null 2>&1 || status=2
+  return "$status"
 }
 
 land_payload_guard() {

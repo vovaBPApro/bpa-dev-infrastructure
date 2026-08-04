@@ -413,6 +413,31 @@ land_pass declared-checks
 if [ "$run_verify" = true ]; then
   # Trust model: report verify commands are coder-authored and guard-validated.
   verify_command=$(sed -n 's/^verify:[[:space:]]*//p' "$report" | head -n 1)
+  verify_count_claim=$(sed -n 's/^verify-count:[[:space:]]*//p' "$report")
+  if [ -n "$verify_count_claim" ]; then
+    reviewed_verify_output=$(mktemp)
+    if ! land_verify_reviewed_sha "$repo" "$branch_sha" "$reviewed_verify_output"; then
+      cat "$reviewed_verify_output"
+      rm -f "$reviewed_verify_output"
+      if ! land_force_reset "$repo" "$pre_merge_sha"; then
+        land_fail_rollback reviewed-verify "$pre_merge_sha" "$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)"
+      fi
+      merged=false
+      merge_sha="none"
+      land_fail reviewed-verify
+    fi
+    if ! land_verify_count "$report" "$reviewed_verify_output" exact; then
+      rm -f "$reviewed_verify_output"
+      if ! land_force_reset "$repo" "$pre_merge_sha"; then
+        land_fail_rollback reviewed-verify "$pre_merge_sha" "$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)"
+      fi
+      merged=false
+      merge_sha="none"
+      land_fail reviewed-verify
+    fi
+    rm -f "$reviewed_verify_output"
+    land_pass reviewed-verify
+  fi
   verify_output=$(mktemp)
   if [ -z "$verify_command" ] || ! (cd "$repo" && sh -c "$verify_command") >"$verify_output" 2>&1; then
     cat "$verify_output"
@@ -426,7 +451,7 @@ if [ "$run_verify" = true ]; then
     land_fail post-merge-verify
   fi
   cat "$verify_output"
-  if ! land_verify_count "$report" "$verify_output"; then
+  if ! land_verify_count "$report" "$verify_output" carry; then
     rm -f "$verify_output"
     if ! land_force_reset "$repo" "$pre_merge_sha"; then
       land_fail_rollback post-merge-verify "$pre_merge_sha" "$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)"

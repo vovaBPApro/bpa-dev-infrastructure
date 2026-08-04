@@ -2,17 +2,34 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+HOST_REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SCRATCH="$(mktemp -d)"
 cleanup() {
-  for lane in proof race retry valid invalid crashed; do
-    git -C "$REPO_DIR" worktree remove --force "$SCRATCH/lanes/$lane" >/dev/null 2>&1 || true
-    git -C "$REPO_DIR" branch -D "ag-fleet-launch-$lane" >/dev/null 2>&1 || true
-  done
   rm -rf "$SCRATCH"
 }
 trap cleanup EXIT
 mkdir -p "$SCRATCH/bin" "$SCRATCH/lanes"
+
+# This fixture needs the complete repository because launch-lane composes and
+# validates a real instruction pack. It does not need the host repository's
+# refs, so keep every fixture worktree and branch inside a disposable clone.
+git clone --quiet --no-hardlinks "$HOST_REPO" "$SCRATCH/repo"
+REPO_DIR="$SCRATCH/repo"
+REAL_GIT="$(command -v git)"
+export REAL_GIT HOST_REPO
+cat >"$SCRATCH/bin/git" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ " $* " == *" -C $HOST_REPO "* ]]; then
+  case " $* " in
+    *" branch "*|*" worktree add "*|*" worktree remove "*|*" update-ref "*|*" symbolic-ref "*)
+      printf 'fixture attempted host-global git mutation: %s\n' "$*" >&2
+      exit 97
+      ;;
+  esac
+fi
+exec "$REAL_GIT" "$@"
+EOF
 
 cat >"$SCRATCH/task.md" <<'EOF'
 # Dispatch proof
@@ -56,6 +73,21 @@ done
 exit 0
 EOF
 chmod +x "$SCRATCH/bin/"*
+
+# Red proof for the isolation guard: a fixture command aimed at a host-global
+# ref must be rejected before git can create it.
+if PATH="$SCRATCH/bin:$PATH" git -C "$HOST_REPO" update-ref \
+  refs/heads/ag-fixture-isolation-red-proof HEAD \
+  >"$SCRATCH/host-global.output" 2>"$SCRATCH/host-global.error"; then
+  printf 'host-global fixture mutation escaped isolation guard\n' >&2
+  exit 1
+fi
+grep -Fq 'fixture attempted host-global git mutation:' "$SCRATCH/host-global.error"
+if "$REAL_GIT" -C "$HOST_REPO" show-ref --verify --quiet \
+  refs/heads/ag-fixture-isolation-red-proof; then
+  printf 'isolation red proof created a host-global ref\n' >&2
+  exit 1
+fi
 
 PATH="$SCRATCH/bin:$PATH" AGENT_COMMAND_FILE="$SCRATCH/agent.conf" \
   MOCK_SYSTEMD_ARGS="$SCRATCH/systemd.args" MOCK_AGENT_ARGS="$SCRATCH/agent.args" \

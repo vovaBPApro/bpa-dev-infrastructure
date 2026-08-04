@@ -13,6 +13,14 @@ orchestrator/runtime/
 # id or token. The tracked contract is runtime.env.example; defaults that must
 # survive a fresh clone belong in launch.sh, not here.
 orchestrator/runtime.env
+# Backups of the above. Recovery on 2026-08-04 left runtime.env.bak-oldorch-20260804
+# beside it; the exact-path rule did not cover it, so `git add -A` would have staged a
+# copy of the one file this list exists to keep out. Same content, same risk, so the
+# same rule must cover every backup of it.
+orchestrator/runtime.env.*
+# ...except the tracked contract. Broad rule plus this negation, rather than a narrow
+# bak-only glob, so a backup named .old/.save/.2 is covered too.
+!orchestrator/runtime.env.example
 
 # Harness-created git worktrees for isolated agent lanes. They hold checkouts of
 # this same repo, so leaving them untracked made `git status` dirty for the whole

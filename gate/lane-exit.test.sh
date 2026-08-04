@@ -162,4 +162,138 @@ rm -rf "$fixture_root"/repo "$fixture_root"/*.out
 echo "PASS: a report committed into its own branch can never match the tip, and is rejected"
 echo
 
+# A reviewer lane's terminal artifact is its review record. The four fields
+# below are the contract gate/land-lib.sh has always required of a review
+# artifact; this writes them in the same shape real reviewer lanes on this
+# installation produce, which is what the guard is checked against.
+review_record() {
+  # $1 verdict, $2 reviewed sha, $3 out file
+  verdict="$1"
+  sha="$2"
+  out="$3"
+  {
+    printf 'verdict: %s\n' "$verdict"
+    printf 'reviewer: independent-reviewer <rev@example.test>\n'
+    printf 'reviewed-sha: %s\n' "$sha"
+    printf 'independence: separate session; did not author the change\n'
+  } > "$out"
+}
+
+echo "== scenario: reviewer lane with a contract-valid ACCEPT record exits 0 =="
+make_repo
+subject=$(git -C "$repo" rev-parse HEAD)
+record="$fixture_root/rev-accept.report.md"
+review_record ACCEPT "$subject" "$record"
+out="$fixture_root/rev-accept.out"
+"$lane_exit" --report "$record" --repo "$repo" --branch ag-lane-1 --role reviewer >"$out" 2>&1
+status=$?
+cat "$out"
+assert [ "$status" -eq 0 ]
+assert_output_has "$out" "LANE-EXIT verdict=clear"
+assert_output_has "$out" "PASS review-contract verdict=ACCEPT"
+rm -rf "$fixture_root"/repo "$fixture_root"/*.md "$fixture_root"/*.out
+echo "PASS: a reviewer that produced a valid ACCEPT is terminal, not failed"
+echo
+
+echo "== scenario: reviewer lane with a REJECT record also exits 0 (review completed) =="
+# A REJECT is a finished review. Landing refuses it; lane exit must not, or the
+# status signal calls a working reviewer 'failed' all over again.
+make_repo
+subject=$(git -C "$repo" rev-parse HEAD)
+record="$fixture_root/rev-reject.report.md"
+review_record REJECT "$subject" "$record"
+out="$fixture_root/rev-reject.out"
+"$lane_exit" --report "$record" --repo "$repo" --branch ag-lane-1 --role reviewer >"$out" 2>&1
+status=$?
+cat "$out"
+assert [ "$status" -eq 0 ]
+assert_output_has "$out" "PASS review-contract verdict=REJECT"
+rm -rf "$fixture_root"/repo "$fixture_root"/*.md "$fixture_root"/*.out
+echo "PASS: a completed REJECT review ends terminal"
+echo
+
+echo "== scenario: reviewer lane with no record at all fails closed and NAMES it =="
+make_repo
+out="$fixture_root/rev-missing.out"
+"$lane_exit" --report "$fixture_root/absent.md" --repo "$repo" --branch ag-lane-1 --role reviewer >"$out" 2>&1
+status=$?
+cat "$out"
+assert [ "$status" -eq 2 ]
+assert_output_has "$out" "LANE-EXIT verdict=blocked"
+assert_output_has "$out" "missing=no-review-record-written"
+rm -rf "$fixture_root"/repo "$fixture_root"/*.out
+echo "PASS: a reviewer with no artifact fails closed, naming what is absent"
+echo
+
+echo "== scenario: truncated record fails closed naming the MISSING FIELD, not 'invalid' =="
+# Truncation is the real failure mode: a reviewer killed mid-write leaves a
+# prefix of a valid record. Each cut must name the first field it lost.
+make_repo
+subject=$(git -C "$repo" rev-parse HEAD)
+full="$fixture_root/rev-full.md"
+review_record ACCEPT "$subject" "$full"
+for cut in 1:reviewer 2:reviewed-sha 3:independence; do
+  lines=${cut%%:*}
+  expect=${cut##*:}
+  trunc="$fixture_root/rev-trunc.report.md"
+  head -n "$lines" "$full" > "$trunc"
+  out="$fixture_root/rev-trunc-$lines.out"
+  "$lane_exit" --report "$trunc" --repo "$repo" --branch ag-lane-1 --role reviewer >"$out" 2>&1
+  status=$?
+  assert [ "$status" -eq 2 ]
+  assert_output_has "$out" "missing=$expect"
+  echo "  truncated to $lines line(s) -> names missing '$expect'"
+  rm -f "$trunc" "$out"
+done
+rm -rf "$fixture_root"/repo "$fixture_root"/*.md
+echo "PASS: every truncation names the field it lost"
+echo
+
+echo "== scenario: the coder contract is NOT relaxed for a coder lane =="
+# The trap this fix must not fall into: trading a false 'failed' for a false
+# 'pass'. A review record is not a coder report and must still be rejected
+# when the lane is a coder.
+make_repo
+subject=$(git -C "$repo" rev-parse HEAD)
+record="$fixture_root/coder-given-review.report.md"
+review_record ACCEPT "$subject" "$record"
+out="$fixture_root/coder-given-review.out"
+"$lane_exit" --report "$record" --repo "$repo" --branch ag-lane-1 --role coder >"$out" 2>&1
+status=$?
+cat "$out"
+assert [ "$status" -eq 2 ]
+assert_output_has "$out" "FAIL report-shape"
+rm -rf "$fixture_root"/repo "$fixture_root"/*.md "$fixture_root"/*.out
+echo "PASS: a review record still fails the coder contract"
+echo
+
+echo "== scenario: a coder report is NOT accepted under the reviewer contract =="
+make_repo
+tip=$(git -C "$repo" rev-parse HEAD)
+report="$fixture_root/coder.report.md"
+valid_report "$tip" "$report"
+out="$fixture_root/reviewer-given-coder.out"
+"$lane_exit" --report "$report" --repo "$repo" --branch ag-lane-1 --role reviewer >"$out" 2>&1
+status=$?
+cat "$out"
+assert [ "$status" -eq 2 ]
+assert_output_has "$out" "missing=verdict"
+rm -rf "$fixture_root"/repo "$fixture_root"/*.md "$fixture_root"/*.out
+echo "PASS: the two contracts do not accept each other's artifacts"
+echo
+
+echo "== scenario: default role stays coder when --role is absent =="
+make_repo
+tip=$(git -C "$repo" rev-parse HEAD)
+report="$fixture_root/default.report.md"
+valid_report "$tip" "$report"
+out="$fixture_root/default.out"
+"$lane_exit" --report "$report" --repo "$repo" --branch ag-lane-1 >"$out" 2>&1
+status=$?
+assert [ "$status" -eq 0 ]
+assert_output_has "$out" "role=coder"
+rm -rf "$fixture_root"/repo "$fixture_root"/*.md "$fixture_root"/*.out
+echo "PASS: omitting --role is unchanged, pre-existing coder behaviour"
+echo
+
 echo "ALL PASS"

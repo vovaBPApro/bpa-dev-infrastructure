@@ -135,8 +135,8 @@ if ! systemd-run --collect --unit "$unit" \
   --setenv="LANE_REPORT_PATH=$report" \
   --working-directory="$worktree" \
   /bin/bash -o pipefail -c '
-    prompt=$1; bun=$2; masker=$3; log=$4; report=$5; status=$6; gate=$7; repo=$8; branch=$9
-    shift 9
+    prompt=$1; bun=$2; masker=$3; log=$4; report=$5; status=$6; gate=$7; repo=$8; branch=$9; role=${10}
+    shift 10
     set +e
     "$@" "$(cat "$prompt")" 2>&1 | "$bun" "$masker" >>"$log"
     pipeline_status=("${PIPESTATUS[@]}")
@@ -153,7 +153,7 @@ if ! systemd-run --collect --unit "$unit" \
     # This gate runs inside callers such as gate/land.sh, which deliberately
     # export their own trusted BUN_BIN. The nested gate must resolve its own
     # interpreter instead of tripping the land_resolve_bun caller-override guard.
-    env -u BUN_BIN "$gate" --report "$report" --repo "$repo" --branch "$branch" >>"$log" 2>&1
+    env -u BUN_BIN "$gate" --report "$report" --repo "$repo" --branch "$branch" --role "$role" >>"$log" 2>&1
     guard_status=$?
     if ((guard_status == 0 || guard_status == 3)); then
       printf "state: terminal\nreason: report-valid\nexit: %s\nreport: %s\n" "$guard_status" "$report" >"$status"
@@ -162,7 +162,7 @@ if ! systemd-run --collect --unit "$unit" \
     printf "state: failed\nreason: report-invalid\nexit: %s\nreport: %s\n" "$guard_status" "$report" >"$status"
     exit "$guard_status"
   ' _ "$prompt" "$BUN_BIN" "$repo/daemon/mask-stream.ts" "$log" "$report" "$status" \
-  "$repo/gate/lane-exit.sh" "$repo" "$branch" "${agent_argv[@]}" >/dev/null; then
+  "$repo/gate/lane-exit.sh" "$repo" "$branch" "$role" "${agent_argv[@]}" >/dev/null; then
   printf 'launch-lane: unit launch failed; cleaned lane artifacts: %s\n' "$name" >&2
   exit 1
 fi

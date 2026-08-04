@@ -398,8 +398,158 @@ land_run_meteorite() {
   echo "LAND meteorite status=pass sha=$sha"
 }
 
+land_normalize_identity() {
+  tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]][[:space:]]*/ /g'
+}
+
+# THE definition of a review artifact's required shape.
+#
+# One contract, two readers: gate/land.sh reaches it through land_review_check
+# below, and the lane-exit guard reaches it through gate/review-artifact-check.sh,
+# which gate/completion-guard.ts spawns for a `--role reviewer` lane. A second
+# copy of these field rules is precisely the defect V3-0.39 and V3-0.50 record --
+# two implementations of one contract that were never executed against each
+# other -- so callers translate the codes below into their own wording and never
+# restate the rules themselves.
+#
+# Checks run in a fixed order and the first violation wins. The ordering is part
+# of the contract, not an accident: an artifact that both names its own branch as
+# reviewer and omits `independence:` must keep reporting the reviewer problem,
+# because gate/land.sh's message vocabulary already promises that.
+#
+#   $1 artifact    path to the review record
+#   $2 mode        landing | exit
+#   $3 repo        repository (landing mode only, for the authorship check)
+#   $4 branch      reviewed branch (landing mode only)
+#   $5 report_sha  the report's commit SHA (landing mode only)
+#
+# Publishes the first violation as LAND_REVIEW_CONTRACT_CODE and returns 2;
+# returns 0 when the artifact satisfies the contract. Field values are published
+# as LAND_REVIEW_FIELD_* for callers that must quote them. The result travels in
+# globals rather than on stdout so callers do NOT need a command substitution:
+# `$(...)` would run this in a subshell and strip every field value back off.
+land_review_artifact_contract() {
+  local artifact="$1" mode="$2" repo="${3:-}" branch="${4:-}" report_sha="${5:-}"
+  local verdict_value reviewer_value reviewed_sha_value independence_value
+  local verdict_count reviewer_count reviewed_sha_count independence_count nul_status
+  local commit_author_name commit_author_email reviewer_name reviewer_email
+  local reviewer_normalized author_name_normalized author_email_normalized
+  local reviewer_name_tokens author_name_tokens reviewer_name_sorted author_name_sorted
+  LAND_REVIEW_CONTRACT_CODE=""
+
+  if [ -L "$artifact" ] || { [ -e "$artifact" ] && [ ! -f "$artifact" ]; }; then
+    LAND_REVIEW_CONTRACT_CODE="non-regular-file"
+    return 2
+  fi
+  if [ ! -r "$artifact" ]; then
+    LAND_REVIEW_CONTRACT_CODE="missing-artifact"
+    return 2
+  fi
+  # Check raw bytes before command substitution can discard a NUL from any field.
+  if LC_ALL=C grep -aqP '\x00' "$artifact"; then
+    LAND_REVIEW_CONTRACT_CODE="nul-byte"
+    return 2
+  else
+    nul_status=$?
+    if [ "$nul_status" -ne 1 ]; then
+      LAND_REVIEW_CONTRACT_CODE="unreadable"
+      return 2
+    fi
+  fi
+
+  verdict_value=$(sed -n 's/^verdict:[[:space:]]*//p' "$artifact" | land_normalize_identity)
+  reviewer_value=$(sed -n 's/^reviewer:[[:space:]]*//p' "$artifact" | land_normalize_identity)
+  reviewed_sha_value=$(sed -n 's/^reviewed-sha:[[:space:]]*//p' "$artifact" | land_normalize_identity)
+  independence_value=$(sed -n 's/^independence:[[:space:]]*//p' "$artifact" | land_normalize_identity)
+  verdict_count=$(grep -c '^verdict:' "$artifact" || true)
+  reviewer_count=$(grep -c '^reviewer:' "$artifact" || true)
+  reviewed_sha_count=$(grep -c '^reviewed-sha:' "$artifact" || true)
+  independence_count=$(grep -c '^independence:' "$artifact" || true)
+  export LAND_REVIEW_FIELD_VERDICT="$verdict_value"
+  export LAND_REVIEW_FIELD_REVIEWER="$reviewer_value"
+  export LAND_REVIEW_FIELD_REVIEWED_SHA="$reviewed_sha_value"
+  export LAND_REVIEW_FIELD_INDEPENDENCE="$independence_value"
+
+  # Landing refuses a REJECT. Lane exit accepts one: a reviewer that reached a
+  # REJECT did its job, so its lane is terminal, not failed.
+  if [ "$mode" = landing ] && [ "$verdict_value" = "REJECT" ]; then
+    LAND_REVIEW_CONTRACT_CODE="rejected"
+    return 2
+  fi
+
+  if [ "$verdict_count" -ne 1 ]; then
+    LAND_REVIEW_CONTRACT_CODE="malformed-verdict"
+    return 2
+  fi
+  if [ "$mode" = landing ]; then
+    if [ "$verdict_value" != "ACCEPT" ]; then
+      LAND_REVIEW_CONTRACT_CODE="malformed-verdict"
+      return 2
+    fi
+  else
+    case "$verdict_value" in
+      ACCEPT|REJECT|NO-GO) ;;
+      *) LAND_REVIEW_CONTRACT_CODE="malformed-verdict"; return 2 ;;
+    esac
+  fi
+  if [ "$reviewer_count" -ne 1 ] || [ -z "$reviewer_value" ]; then
+    LAND_REVIEW_CONTRACT_CODE="malformed-reviewer"
+    return 2
+  fi
+  # Only the landing gate knows the reviewed branch; a reviewer lane at exit
+  # does not, so the self-naming check is skipped when no branch is supplied.
+  if [ -n "$branch" ] && [ "$reviewer_value" = "$branch" ]; then
+    LAND_REVIEW_CONTRACT_CODE="self-named-reviewer"
+    return 2
+  fi
+
+  # Reviewer and independence fields are restricted to printable ASCII to make identity checks unambiguous.
+  if printf '%s' "$reviewer_value" | LC_ALL=C grep -q '[^ -~]' || printf '%s' "$independence_value" | LC_ALL=C grep -q '[^ -~]'; then
+    LAND_REVIEW_CONTRACT_CODE="unsafe-identity-field"
+    return 2
+  fi
+
+  if [ "$mode" = landing ]; then
+    commit_author_name=$(git -C "$repo" log -1 --format='%an' "$branch" | land_normalize_identity) || { LAND_REVIEW_CONTRACT_CODE="author-unreadable"; return 2; }
+    commit_author_email=$(git -C "$repo" log -1 --format='%ae' "$branch" | land_normalize_identity) || { LAND_REVIEW_CONTRACT_CODE="author-unreadable"; return 2; }
+    reviewer_name=$(printf '%s' "$reviewer_value" | sed -E 's/[[:space:]]*<[^<>]*>[[:space:]]*$//' | land_normalize_identity)
+    reviewer_email=$(printf '%s' "$reviewer_value" | sed -nE 's/^.*<([^<>]*)>[[:space:]]*$/\1/p' | land_normalize_identity)
+    if [ -z "$reviewer_email" ] && [[ "$reviewer_value" == *'@'* ]]; then reviewer_email="$reviewer_value"; fi
+    reviewer_normalized=${reviewer_value,,}
+    author_name_normalized=${commit_author_name,,}
+    author_email_normalized=${commit_author_email,,}
+    reviewer_name_tokens=$(printf '%s' "$reviewer_normalized" | LC_ALL=C sed 's/[^[:alnum:] ]/ /g; s/[[:space:]][[:space:]]*/ /g')
+    author_name_tokens=$(printf '%s' "$author_name_normalized" | LC_ALL=C sed 's/[^[:alnum:] ]/ /g; s/[[:space:]][[:space:]]*/ /g')
+    reviewer_name_sorted=$(printf '%s\n' "${reviewer_name,,}" | tr ' ' '\n' | LC_ALL=C sort | paste -sd ' ' -)
+    author_name_sorted=$(printf '%s\n' "$author_name_normalized" | tr ' ' '\n' | LC_ALL=C sort | paste -sd ' ' -)
+    if [ "${reviewer_name,,}" = "$author_name_normalized" ] || { [ -n "$author_name_sorted" ] && [ "$reviewer_name_sorted" = "$author_name_sorted" ]; } || { [ -n "$reviewer_email" ] && [ "${reviewer_email,,}" = "$author_email_normalized" ]; } || [[ "$reviewer_normalized" == *"$author_email_normalized"* ]] || { [ -n "$author_name_tokens" ] && [[ " $reviewer_name_tokens " == *" $author_name_tokens "* ]]; }; then
+      LAND_REVIEW_CONTRACT_CODE="self-authored"
+      return 2
+    fi
+  fi
+
+  if [ "$reviewed_sha_count" -ne 1 ] || ! [[ "$reviewed_sha_value" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    LAND_REVIEW_CONTRACT_CODE="missing-reviewed-sha"
+    return 2
+  fi
+  # Equality against the report's commit is a landing concern: a reviewer lane's
+  # own report is the review, so there is no second SHA to reconcile at exit.
+  if [ "$mode" = landing ]; then
+    if [ -z "$report_sha" ] || [ "${reviewed_sha_value,,}" != "${report_sha,,}" ]; then
+      LAND_REVIEW_CONTRACT_CODE="reviewed-sha-mismatch"
+      return 2
+    fi
+  fi
+  if [ "$independence_count" -ne 1 ] || [ -z "$independence_value" ]; then
+    LAND_REVIEW_CONTRACT_CODE="missing-independence"
+    return 2
+  fi
+  return 0
+}
+
 land_review_check() {
   local repo="$1" branch="$2" report="$3" policy_file="$4" skip_review="$5"
+  local contract_code
   local merge_base candidate_path policy_prefix change_status old_path new_path diff_file diff_fd
   local review_artifact review_verdict_value reviewer_value reviewed_sha_value independence_value
   local review_verdict_count reviewer_count reviewed_sha_count independence_count report_sha
@@ -449,72 +599,40 @@ land_review_check() {
     if [ "$skip_review" = true ]; then
       export LAND_REVIEW_VERDICT="skipped"
       echo "WARN review-skipped branch=$branch artifact=$review_artifact" >&2
-    elif [ -L "$review_artifact" ] || { [ -e "$review_artifact" ] && [ ! -f "$review_artifact" ]; }; then
-      echo "ERROR review-required invalid-artifact non-regular-file file=$review_artifact" >&2
-      return 2
-    elif [ ! -r "$review_artifact" ]; then
-      echo "ERROR review-required missing-artifact file=$review_artifact" >&2
-      return 2
     else
-      # Check raw bytes before command substitution can discard a NUL from any field.
-      if LC_ALL=C grep -aqP '\x00' "$review_artifact"; then
-        echo "ERROR review-required invalid-artifact nul-byte file=$review_artifact" >&2
-        return 2
-      else
-        nul_status=$?
-        if [ "$nul_status" -ne 1 ]; then
-          echo "ERROR review-required invalid-artifact unreadable file=$review_artifact" >&2
-          return 2
-        fi
-      fi
-      land_normalize_identity() {
-        tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]][[:space:]]*/ /g'
-      }
-      review_verdict_value=$(sed -n 's/^verdict:[[:space:]]*//p' "$review_artifact" | land_normalize_identity)
-      reviewer_value=$(sed -n 's/^reviewer:[[:space:]]*//p' "$review_artifact" | land_normalize_identity)
-      reviewed_sha_value=$(sed -n 's/^reviewed-sha:[[:space:]]*//p' "$review_artifact" | land_normalize_identity)
-      independence_value=$(sed -n 's/^independence:[[:space:]]*//p' "$review_artifact" | land_normalize_identity)
-      review_verdict_count=$(grep -c '^verdict:' "$review_artifact" || true)
-      reviewer_count=$(grep -c '^reviewer:' "$review_artifact" || true)
-      reviewed_sha_count=$(grep -c '^reviewed-sha:' "$review_artifact" || true)
-      independence_count=$(grep -c '^independence:' "$review_artifact" || true)
-      if [ "$review_verdict_value" = "REJECT" ]; then echo "ERROR review-rejected file=$review_artifact" >&2; return 2; fi
-      if [ "$review_verdict_count" -ne 1 ] || [ "$review_verdict_value" != "ACCEPT" ] || [ "$reviewer_count" -ne 1 ] || [ -z "$reviewer_value" ] || [ "$reviewer_value" = "$branch" ]; then
-        echo "ERROR review-required malformed-artifact file=$review_artifact" >&2
-        return 2
-      fi
-      # Reviewer and independence fields are restricted to printable ASCII to make identity checks unambiguous.
-      if printf '%s' "$reviewer_value" | LC_ALL=C grep -q '[^ -~]' || printf '%s' "$independence_value" | LC_ALL=C grep -q '[^ -~]'; then
-        echo "ERROR review-required malformed-artifact unsafe-identity-field file=$review_artifact" >&2
-        return 2
-      fi
-      commit_author_name=$(git -C "$repo" log -1 --format='%an' "$branch" | land_normalize_identity) || return 2
-      commit_author_email=$(git -C "$repo" log -1 --format='%ae' "$branch" | land_normalize_identity) || return 2
-      reviewer_name=$(printf '%s' "$reviewer_value" | sed -E 's/[[:space:]]*<[^<>]*>[[:space:]]*$//' | land_normalize_identity)
-      reviewer_email=$(printf '%s' "$reviewer_value" | sed -nE 's/^.*<([^<>]*)>[[:space:]]*$/\1/p' | land_normalize_identity)
-      if [ -z "$reviewer_email" ] && [[ "$reviewer_value" == *'@'* ]]; then reviewer_email="$reviewer_value"; fi
-      reviewer_normalized=${reviewer_value,,}
-      author_name_normalized=${commit_author_name,,}
-      author_email_normalized=${commit_author_email,,}
-      reviewer_name_tokens=$(printf '%s' "$reviewer_normalized" | LC_ALL=C sed 's/[^[:alnum:] ]/ /g; s/[[:space:]][[:space:]]*/ /g')
-      author_name_tokens=$(printf '%s' "$author_name_normalized" | LC_ALL=C sed 's/[^[:alnum:] ]/ /g; s/[[:space:]][[:space:]]*/ /g')
-      reviewer_name_sorted=$(printf '%s\n' "${reviewer_name,,}" | tr ' ' '\n' | LC_ALL=C sort | paste -sd ' ' -)
-      author_name_sorted=$(printf '%s\n' "$author_name_normalized" | tr ' ' '\n' | LC_ALL=C sort | paste -sd ' ' -)
-      if [ "${reviewer_name,,}" = "$author_name_normalized" ] || { [ -n "$author_name_sorted" ] && [ "$reviewer_name_sorted" = "$author_name_sorted" ]; } || { [ -n "$reviewer_email" ] && [ "${reviewer_email,,}" = "$author_email_normalized" ]; } || [[ "$reviewer_normalized" == *"$author_email_normalized"* ]] || { [ -n "$author_name_tokens" ] && [[ " $reviewer_name_tokens " == *" $author_name_tokens "* ]]; }; then
-        echo "ERROR review-required self-authored-review file=$review_artifact" >&2
-        return 2
-      fi
-      if [ "$reviewed_sha_count" -ne 1 ] || ! [[ "$reviewed_sha_value" =~ ^[0-9a-fA-F]{40}$ ]]; then
-        echo "ERROR review-required stale-artifact missing-reviewed-sha line='reviewed-sha: <40-hex>' file=$review_artifact" >&2
-        return 2
-      fi
       report_sha=$(sed -n 's/^commit:[[:space:]]*\([0-9a-fA-F]\{40\}\).*/\1/p' "$report" | head -n 1)
-      if [ -z "$report_sha" ] || [ "${reviewed_sha_value,,}" != "${report_sha,,}" ]; then
-        echo "ERROR review-required stale-artifact reviewed-sha-mismatch line='reviewed-sha: <40-hex>' expected=${report_sha:-missing-report-sha} actual=$reviewed_sha_value file=$review_artifact" >&2
-        return 2
-      fi
-      if [ "$independence_count" -ne 1 ] || [ -z "$independence_value" ]; then
-        echo "ERROR review-required malformed-artifact missing-independence line='independence: <text>' file=$review_artifact" >&2
+      # The shape rules live in land_review_artifact_contract and nowhere else;
+      # this block only renders its codes in the gate's message vocabulary.
+      # Called directly, NOT through $(...): a command substitution would run the
+      # contract in a subshell and discard the field values its message needs.
+      if ! land_review_artifact_contract "$review_artifact" landing "$repo" "$branch" "$report_sha"; then
+        contract_code="$LAND_REVIEW_CONTRACT_CODE"
+        case "$contract_code" in
+          non-regular-file)
+            echo "ERROR review-required invalid-artifact non-regular-file file=$review_artifact" >&2 ;;
+          missing-artifact)
+            echo "ERROR review-required missing-artifact file=$review_artifact" >&2 ;;
+          nul-byte)
+            echo "ERROR review-required invalid-artifact nul-byte file=$review_artifact" >&2 ;;
+          unreadable)
+            echo "ERROR review-required invalid-artifact unreadable file=$review_artifact" >&2 ;;
+          rejected)
+            echo "ERROR review-rejected file=$review_artifact" >&2 ;;
+          unsafe-identity-field)
+            echo "ERROR review-required malformed-artifact unsafe-identity-field file=$review_artifact" >&2 ;;
+          self-authored)
+            echo "ERROR review-required self-authored-review file=$review_artifact" >&2 ;;
+          author-unreadable)
+            echo "ERROR review-required author-unreadable branch=$branch file=$review_artifact" >&2 ;;
+          missing-reviewed-sha)
+            echo "ERROR review-required stale-artifact missing-reviewed-sha line='reviewed-sha: <40-hex>' file=$review_artifact" >&2 ;;
+          reviewed-sha-mismatch)
+            echo "ERROR review-required stale-artifact reviewed-sha-mismatch line='reviewed-sha: <40-hex>' expected=${report_sha:-missing-report-sha} actual=$LAND_REVIEW_FIELD_REVIEWED_SHA file=$review_artifact" >&2 ;;
+          missing-independence)
+            echo "ERROR review-required malformed-artifact missing-independence line='independence: <text>' file=$review_artifact" >&2 ;;
+          *)
+            echo "ERROR review-required malformed-artifact file=$review_artifact" >&2 ;;
+        esac
         return 2
       fi
       export LAND_REVIEW_VERDICT="accepted"

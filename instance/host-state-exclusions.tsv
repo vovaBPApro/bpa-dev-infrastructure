@@ -1,12 +1,84 @@
-# Host paths the tracked code names that deliberately have no row in
-# instance/host-state.tsv. This file is part of the enumeration, not an escape
-# from it: every line is a location that was looked at and a reason it needs no
-# row. tools/check-host-state.ts rejects an entry that no tracked file names
-# any more, so a stale excuse cannot outlive the code that justified it.
+# Locations that deliberately have no row in instance/host-state.tsv. This file
+# is part of the enumeration, not an escape from it: every line is a place that
+# was looked at and a reason it needs no row of its own.
 #
-# prefix<TAB>reason
-$XDG_STATE_HOME	Root-only reference: meteorite/run.sh names the root and composes the concrete path from a variable. The concrete path is enumerated as meteorite-evidence.
-$HOME/.claude/orchestrator-chat-$BOUND_CHAT_ID.lock	Per-chat singleton lock, ephemeral by construction, and its filename embeds the bound chat id -- an instance value that does not belong in a tracked manifest. Nothing restores it.
-$HOME/.bun/bin/bun	The interpreter inside the bun-toolchain row, not separate state.
-/root/.bun/bin	Same toolchain as the bun-toolchain row, spelled with /root hard-coded by bootstrap/units/bpa-telegram-daemon.service.in and meteorite/run.sh. FINDING F3, not a second location.
-/root/.claude/channels/telegram	Same directory as the telegram-state row, spelled with /root hard-coded by bootstrap/units/bpa-telegram-daemon.service.in. FINDING F3.
+# prefix<TAB>scope<TAB>reason
+#
+# prefix  a path template. `*` matches one path segment, and so does a $VAR this
+#         host has no value for -- which is how one line covers per-run scratch
+#         like review-dispatch.<mktemp suffix> without an edit per run.
+# scope   WHICH scan the excuse applies to, and getting this wrong is how the
+#         blind spot comes back:
+#           source  the drift scan only -- a path literal in tracked code that
+#                   needs no row. Checked closed: tools/check-host-state.ts
+#                   rejects one no tracked file names any more, so a stale
+#                   excuse cannot outlive the code that justified it.
+#           host    the sweep only -- something that exists on this filesystem
+#                   and is not this control plane's state. A host excuse that
+#                   matches nothing is REPORTED, not failed: a host getting
+#                   cleaner must never turn the sweep red.
+#           both    true of the literal and of the file.
+#
+# $XDG_STATE_HOME below is exactly why the column exists. It is excused as a
+# source literal because meteorite/run.sh names the bare root and composes the
+# real path from a variable. Letting that excuse reach the host sweep would make
+# the whole of ~/.local/state invisible -- which is precisely where the
+# reviewer's unlisted fixture sat when round 1 reported clean.
+$XDG_STATE_HOME	source	Root-only reference: meteorite/run.sh names the root and composes the concrete path from a variable. The concrete path is enumerated as meteorite-evidence.
+$HOME/.claude/orchestrator-chat-$BOUND_CHAT_ID.lock	both	Per-chat singleton lock, ephemeral by construction, and its filename embeds the bound chat id -- an instance value that does not belong in a tracked manifest. Nothing restores it.
+$HOME/.bun/bin/bun	source	The interpreter inside the bun-toolchain row, not separate state.
+/root/.bun/bin	source	Same toolchain as the bun-toolchain row, spelled with /root hard-coded by bootstrap/units/bpa-telegram-daemon.service.in and meteorite/run.sh. FINDING F3, not a second location.
+/root/.claude/channels/telegram	source	Same directory as the telegram-state row, spelled with /root hard-coded by bootstrap/units/bpa-telegram-daemon.service.in. FINDING F3.
+/root/.bash_history	host	Interactive shell history of the root account. Deliberately not in git and deliberately not restored: the improvised SCRIPTS Hard Floor 5 warns about get their own rows (orch-recover and siblings) rather than being excused through this line.
+/root/.bashrc	host	Login shell configuration owned by the OS account, shipped by the distribution's skeleton.
+/root/.profile	host	Login shell configuration owned by the OS account, shipped by the distribution's skeleton.
+/root/.cloud-locale-test.skip	host	Cloud-image locale marker written by the distribution.
+/root/.npm	host	npm's own cache. Third-party tooling state; npm rebuilds it.
+/root/.pki	host	NSS certificate database created by the distribution's TLS tooling.
+/root/.step	host	step-cli's own state. Third-party tooling, not driven by anything here.
+/root/.local/bin	host	Per-user binaries installed by third-party tooling. The one this repository pins is $HOME/.bun, which has its own row.
+/root/.local/share	host	XDG data root holding only third-party tooling state on this host; nothing here writes to it.
+/root/.local/state/pnpm	host	pnpm's own state. Third-party tooling.
+/root/.config/btop	host	Third-party tool configuration.
+/root/.config/caddy	host	Caddy's own configuration, belonging to the v2 product's edge, not to this control plane. Same domain boundary as the /var/lib/bpa-previews line.
+/root/.config/chromium	host	Browser profile created by headless-browser tooling.
+/root/.config/mimeapps.list	host	Desktop MIME association file written by the distribution.
+/root/.config/procps	host	Third-party tool configuration.
+/root/.config/pulse	host	Audio daemon state written by the distribution.
+/root/.config/systemd	host	Per-user systemd units. This repository installs system units only; /etc/systemd/system is the systemd-dir row.
+$XDG_CACHE_HOME/claude-cli-nodejs	host	The provider CLI's own cache. Rebuilt on demand.
+$XDG_CACHE_HOME/dconf	host	Distribution settings cache.
+$XDG_CACHE_HOME/ms-playwright	host	Downloaded browser binaries. Re-downloadable and large; a rebuild refetches them.
+$XDG_CACHE_HOME/pnpm	host	pnpm's package store cache. Rebuilt from the lockfile.
+$XDG_CACHE_HOME/motd.legal-displayed	host	Login banner marker written by the distribution.
+$XDG_CACHE_HOME/ci-*	host	FINDING F12: per-investigation CI reproduction trees (ci-now, ci-repro, ci-repro.<suffix>). Discardable by the XDG cache contract and read by nothing; their accumulation is the reap gap F5 names, not state a rebuild restores.
+$XDG_CACHE_HOME/*-repro	host	FINDING F12: per-investigation reproduction trees (rev-repro, w31-repro). Same class as the ci-* line.
+$XDG_CACHE_HOME/review-dispatch.*	host	FINDING F12: per-run review dispatch scratch with a mktemp suffix. Same class.
+$XDG_CACHE_HOME/watchdog-*	host	FINDING F12: per-run watchdog landing scratch. Same class.
+$XDG_CACHE_HOME/product-*	host	FINDING F12: product archaeology and recovery scratch from earlier investigations. Same class.
+$XDG_CACHE_HOME/verify-ci	host	FINDING F12: verification scratch from an earlier investigation. Same class.
+$XDG_CACHE_HOME/sprint02.md	host	FINDING F12: a sprint note left in the cache root. Same class.
+/root/consilium-scratch	host	FINDING F12: agent scratch directory, empty. Same class.
+/root/_scratch-archive-20260730	host	FINDING F12: an archive of earlier agent scratch, 39 entries. Same class.
+/root/deliv-baseline.json	host	FINDING F12: a delivery-baseline snapshot left by an earlier agent run. Read by nothing tracked.
+/root/claude-orch.debug	host	FINDING F12: provider debug output left beside orch-claude-debug.sh. The SCRIPT is a row; its output is residue.
+/root/codex-test.err	host	FINDING F12: captured stderr from a provider test. Same class.
+$HOME/.claude/backups	host	Harness-internal backup cache, rebuilt by the harness.
+$HOME/.claude/cache	host	Harness-internal cache.
+$HOME/.claude/paste-cache	host	Harness-internal cache.
+$HOME/.claude/plugins	host	Harness plugin install directory, reinstallable.
+$HOME/.claude/session-env	host	Per-session environment scratch, dead with the session.
+$HOME/.claude/shell-snapshots	host	Per-session shell snapshots, dead with the session.
+$HOME/.claude/.last-cleanup	host	Harness housekeeping marker.
+$HOME/.claude/.last-update-result.json	host	Harness self-update marker.
+/home/bpa-shell/.bash_logout	host	Login shell configuration owned by the OS account.
+/home/bpa-shell/.bashrc	host	Login shell configuration owned by the OS account.
+/home/bpa-shell/.profile	host	Login shell configuration owned by the OS account.
+/home/bpa-shell/.cloud-locale-test.skip	host	Cloud-image locale marker written by the distribution.
+/home/bpa-shell/.npm	host	npm's own cache under the second account.
+/home/bpa-shell/.config	host	Third-party tool configuration under the second account; nothing here writes to it.
+/home/bpa-shell/.local	host	XDG data/state root under the second account, holding third-party tooling state only.
+/var/lib/agentic-bpa	host	Runtime state of the v2 PRODUCT (the agentic-bpa units), not of this control plane. Enumerating the product's state is the product repository's obligation; the boundary is instance/params.yaml phase=sole-mission.
+/var/lib/bpa-edge-last-good	host	Same domain boundary as agentic-bpa: the v2 product's edge rollback marker.
+/var/lib/bpa-previews	host	Same domain boundary as agentic-bpa: the v2 product's preview builds.
+/var/lib/bpa-authority-test-*	host	Per-run authority fixtures left by bootstrap/provision-service-user.test.sh, named bpa-authority-test-<pid>-<n>. Disposable by construction -- a rebuild needs none of them. That ten survive is the reap gap F5 names; the non-test root is the lane-provision-root row (F11).

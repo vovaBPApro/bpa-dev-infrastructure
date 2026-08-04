@@ -34,6 +34,7 @@ const runnableShellTests = [
   "orchestrator/watchdog-supervision.test.sh",
   "orchestrator/fleet/launch-lane.test.sh",
   "orchestrator/watchdog.test.sh",
+  "gate/land-host-state.test.sh",
 ] as const;
 
 const excludedShellTests = {} as const;
@@ -41,7 +42,7 @@ const excludedShellTests = {} as const;
 const allShellTests = [...runnableShellTests, ...Object.keys(excludedShellTests)];
 
 test("the independently pinned shell-test inventory still exists", () => {
-  expect(allShellTests).toHaveLength(12);
+  expect(allShellTests).toHaveLength(13);
   for (const relativePath of allShellTests) {
     expect(existsSync(join(repoRoot, relativePath)), `${relativePath} is missing`).toBe(true);
   }

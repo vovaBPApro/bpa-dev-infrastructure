@@ -35,6 +35,12 @@ ask for a routine “go” when the work is outside the irreversible set.
 - **A reviewer is a lane.** Count review slots against the cap. At a cap of
   three that means at most two coder lanes plus one review slot, and a row on an
   escalated review tier consumes two of the three.
+- **The cap is per repository; the host limit is not.** Each repository may run
+  up to the cap (`instance/decisions/HR-2398.md`), because concentrating lanes on
+  one repository buys merge work rather than progress. Caps do **not** sum across
+  repositories: the total stays inside measured host capacity, and when the two
+  rules conflict the host wins and the orchestrator says so rather than quietly
+  exceeding it.
 - **Working single-threaded is a violation of this rule, not diligence.** The
   orchestrator doing implementation work inline, one item at a time, while other
   open rows sit idle is the failure this section exists to prevent. Parallelism

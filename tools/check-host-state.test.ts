@@ -1,10 +1,11 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, copyFileSync, existsSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, copyFileSync, existsSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   check, manifest, normalize, probe, resolvePath, scanFile, snapshot, sweep,
   coveragePattern, selfExemption, SELF_WRITE_APIS,
+  execTarget, observeUnits, scanUnits, unitManifest, deployedUnits,
 } from "./check-host-state.ts";
 
 const REPO = join(import.meta.dir, "..");
@@ -426,5 +427,248 @@ describe("the manifest is the documentation", () => {
     // Long unbroken high-entropy-looking runs are what a pasted credential looks
     // like in a manifest of paths and prose.
     expect(text).not.toMatch(/[A-Za-z0-9+/]{40,}={0,2}/);
+  });
+});
+
+// ── Deployed systemd units ────────────────────────────────────────────────────
+//
+// The blind spot round 2 shipped with. Every scan it had read either tracked
+// sources or the filesystem, and an armed root timer firing every ten minutes is
+// visible to neither: the unit file is a config file like any other and the fact
+// that makes it matter -- that systemd will run it again after a reboot -- lives
+// in the unit graph. These lock the direction, not the specific finding.
+
+// A scratch unit directory, so an assertion never depends on what this host
+// happens to have deployed.
+function unitDir(units: Record<string, string>, wants: Record<string, string[]> = {}): string {
+  const dir = scratch("units");
+  for (const [name, body] of Object.entries(units)) writeFileSync(join(dir, name), body);
+  for (const [target, links] of Object.entries(wants)) {
+    mkdirSync(join(dir, target), { recursive: true });
+    for (const link of links) symlinkSync(join(dir, link), join(dir, target, link));
+  }
+  return dir;
+}
+
+function unitRepo(rows: string[], templates: string[] = []): string {
+  const dir = scratch("unit-repo");
+  mkdirSync(join(dir, "instance"), { recursive: true });
+  mkdirSync(join(dir, "bootstrap/units"), { recursive: true });
+  for (const template of templates) writeFileSync(join(dir, `bootstrap/units/${template}.in`), "rendered\n");
+  writeFileSync(join(dir, "instance/host-units.tsv"),
+    ["# unit\tmanager\tstate\texec\tdisposition\tnote", ...rows].join("\n") + "\n");
+  return dir;
+}
+
+const NUDGE_TIMER = "[Timer]\nOnCalendar=*:0/10\n\n[Install]\nWantedBy=timers.target\n";
+const NUDGE_SERVICE = "[Service]\nType=oneshot\nExecStart=/root/.local/bin/orch-fleet-nudge.sh\n";
+
+describe("ExecStart targets", () => {
+  test("an interpreter wrapper resolves through to the script it runs", () => {
+    // Recording /usr/bin/bash would enumerate the distribution's shell instead
+    // of the untracked script that is the actual finding.
+    expect(execTarget("[Service]\nExecStart=/usr/bin/bash /root/orch-fleet-nudge.sh apply\n"))
+      .toBe("/root/orch-fleet-nudge.sh");
+  });
+
+  test("a bare program is its own target", () => {
+    expect(execTarget(NUDGE_SERVICE)).toBe("/root/.local/bin/orch-fleet-nudge.sh");
+  });
+
+  test("systemd's prefix characters are syntax, not part of the path", () => {
+    expect(execTarget("[Service]\nExecStart=-+/opt/thing.sh\n")).toBe("/opt/thing.sh");
+  });
+
+  test("an interpreter with nothing after it IS the target", () => {
+    expect(execTarget("[Service]\nExecStart=/usr/local/bin/bun\n")).toBe("/usr/local/bin/bun");
+  });
+
+  test("ExecStartPre is not ExecStart", () => {
+    expect(execTarget("[Service]\nExecStartPre=/opt/pre.sh\nExecStart=/opt/main.sh\n")).toBe("/opt/main.sh");
+  });
+
+  test("a unit with no ExecStart reports none", () => {
+    expect(execTarget(NUDGE_TIMER)).toBe("-");
+  });
+});
+
+describe("armed is derived from the unit graph, not from is-active", () => {
+  test("a wants symlink arms a unit and its absence does not", () => {
+    const dir = unitDir(
+      { "armed.service": "[Service]\nExecStart=/bin/true\n", "idle.service": "[Service]\nExecStart=/bin/true\n" },
+      { "multi-user.target.wants": ["armed.service"] },
+    );
+    const observed = observeUnits(dir);
+    expect(observed.get("armed.service")?.state).toBe("armed");
+    expect(observed.get("idle.service")?.state).toBe("installed");
+  });
+
+  test("an armed timer arms the static service it activates", () => {
+    // orch-fleet-nudge.service exactly: `static`, so is-enabled calls it neither
+    // enabled nor disabled, and it runs every ten minutes regardless. A checker
+    // that read is-enabled would have called this one installed.
+    const dir = unitDir(
+      { "orch-fleet-nudge.timer": NUDGE_TIMER, "orch-fleet-nudge.service": NUDGE_SERVICE },
+      { "timers.target.wants": ["orch-fleet-nudge.timer"] },
+    );
+    expect(observeUnits(dir).get("orch-fleet-nudge.service")?.state).toBe("armed");
+  });
+
+  test("an explicit Unit= is followed instead of the basename default", () => {
+    const dir = unitDir(
+      { "a.timer": "[Timer]\nUnit=b.service\n", "b.service": "[Service]\nExecStart=/bin/true\n" },
+      { "timers.target.wants": ["a.timer"] },
+    );
+    expect(observeUnits(dir).get("b.service")?.state).toBe("armed");
+  });
+
+  test("a disabled timer does not arm its service", () => {
+    const dir = unitDir({ "orch-fleet-nudge.timer": NUDGE_TIMER, "orch-fleet-nudge.service": NUDGE_SERVICE });
+    expect(observeUnits(dir).get("orch-fleet-nudge.service")?.state).toBe("installed");
+  });
+
+  test("a symlink into the distribution is not a unit deployed here", () => {
+    // /etc/systemd/system is full of them -- that is systemd's enable
+    // mechanism. Following them would drag ~200 distro units into an
+    // enumeration that is about this installation.
+    const dir = unitDir({ "real.service": "[Service]\nExecStart=/bin/true\n" });
+    const distro = join(scratch("distro"), "far.service");
+    writeFileSync(distro, "[Service]\nExecStart=/bin/true\n");
+    symlinkSync(distro, join(dir, "far.service"));
+    expect(deployedUnits(dir).map((u) => u.unit)).toEqual(["real.service"]);
+  });
+});
+
+describe("the units scan", () => {
+  const armedNudge = () => unitDir(
+    { "orch-fleet-nudge.timer": NUDGE_TIMER, "orch-fleet-nudge.service": NUDGE_SERVICE },
+    { "timers.target.wants": ["orch-fleet-nudge.timer"] },
+  );
+  const at = (dir: string) => [{ path: dir, manager: "system" }];
+
+  test("an armed unit with no row is UNLISTED -- the round-2 blind spot", () => {
+    const repo = unitRepo(["other.service\tsystem\tinstalled\t/bin/true\torphan\tn"]);
+    const result = scanUnits(repo, process.env, at(armedNudge()));
+    expect(result.unlisted).toEqual(expect.arrayContaining([
+      expect.stringContaining("system/orch-fleet-nudge.timer"),
+      expect.stringContaining("system/orch-fleet-nudge.service"),
+    ]));
+  });
+
+  test("a row calling an armed unit installed is DRIFT", () => {
+    // The V3-0.28 failure: an enumeration asserting a distinction it does not
+    // hold is worse than no enumeration, because it reads as checked.
+    const repo = unitRepo([
+      "orch-fleet-nudge.timer\tsystem\tinstalled\t-\tunresolved\tn",
+      "orch-fleet-nudge.service\tsystem\tarmed\t/root/.local/bin/orch-fleet-nudge.sh\tunresolved\tn",
+    ]);
+    const result = scanUnits(repo, process.env, at(armedNudge()));
+    expect(result.drift).toEqual([expect.stringContaining("state: manifest says installed, host says armed")]);
+  });
+
+  test("a changed ExecStart is DRIFT", () => {
+    const repo = unitRepo([
+      "orch-fleet-nudge.timer\tsystem\tarmed\t-\tunresolved\tn",
+      "orch-fleet-nudge.service\tsystem\tarmed\t/root/.local/bin/moved.sh\tunresolved\tn",
+    ]);
+    expect(scanUnits(repo, process.env, at(armedNudge())).drift)
+      .toEqual([expect.stringContaining("exec: manifest says /root/.local/bin/moved.sh")]);
+  });
+
+  test("`rebuildable` without a tracked template is DRIFT", () => {
+    // The delegation bootstrap/check-unit-drift.sh never made. `rebuildable` is
+    // an affirmative claim that a rebuild reproduces the unit; the claim is only
+    // true if something tracked renders it.
+    const repo = unitRepo([
+      "orch-fleet-nudge.timer\tsystem\tarmed\t-\trebuildable\tn",
+      "orch-fleet-nudge.service\tsystem\tarmed\t/root/.local/bin/orch-fleet-nudge.sh\trebuildable\tn",
+    ]);
+    const result = scanUnits(repo, process.env, at(armedNudge()));
+    expect(result.drift).toEqual(expect.arrayContaining([
+      expect.stringContaining("rebuildable but no tracked template"),
+    ]));
+  });
+
+  test("a template makes `rebuildable` true and `unresolved` stale", () => {
+    const rows = [
+      "orch-fleet-nudge.timer\tsystem\tarmed\t-\trebuildable\tn",
+      "orch-fleet-nudge.service\tsystem\tarmed\t/root/.local/bin/orch-fleet-nudge.sh\trebuildable\tn",
+    ];
+    const templates = ["orch-fleet-nudge.timer", "orch-fleet-nudge.service"];
+    expect(scanUnits(unitRepo(rows, templates), process.env, at(armedNudge())).drift).toEqual([]);
+    // And the reverse: a row still claiming `unresolved` once a template exists
+    // is a row nobody retired.
+    const resolved = rows.map((row) => row.replace("rebuildable", "unresolved"));
+    expect(scanUnits(unitRepo(resolved, templates), process.env, at(armedNudge())).drift)
+      .toEqual(expect.arrayContaining([expect.stringContaining("the row is stale, resolve it")]));
+  });
+
+  test("an armed unit whose ExecStart target is gone is reported", () => {
+    // bpa-db-network-boundary.service on this host: enabled, RemainAfterExit so
+    // it still reads `active`, and its script went away with a reaped lane
+    // worktree. It cannot run again, and a reboot would not reapply the boundary.
+    const dir = unitDir(
+      { "boundary.service": "[Service]\nExecStart=/usr/bin/bash /gone/db-network-boundary.sh apply\n" },
+      { "multi-user.target.wants": ["boundary.service"] },
+    );
+    const repo = unitRepo(["boundary.service\tsystem\tarmed\t/gone/db-network-boundary.sh\torphan\tn"]);
+    expect(scanUnits(repo, process.env, at(dir)).drift)
+      .toEqual([expect.stringContaining("is armed but its ExecStart target does not exist")]);
+  });
+
+  test("a known-unresolved breach stays out of DRIFT", () => {
+    // DRIFT means the manifest is wrong and someone must fix it; UNRESOLVED
+    // means the manifest is right and the host has a breach awaiting a decision.
+    // Folding the second into the first is how a permanently-red check stops
+    // being read, and then real drift arrives into noise nobody looks at.
+    const dir = unitDir(
+      { "boundary.service": "[Service]\nExecStart=/gone/db-network-boundary.sh\n" },
+      { "multi-user.target.wants": ["boundary.service"] },
+    );
+    const repo = unitRepo(["boundary.service\tsystem\tarmed\t/gone/db-network-boundary.sh\tunresolved\tundecided"]);
+    const result = scanUnits(repo, process.env, at(dir));
+    expect(result.drift).toEqual([]);
+    expect(result.unresolved).toEqual([expect.stringContaining("exec-target-absent=/gone/db-network-boundary.sh")]);
+  });
+
+  test("a row for a unit that is gone is reported, never failed", () => {
+    // Same contract as the sweep's stale exclusions: a host getting CLEANER must
+    // never turn a check red, or the operator learns to ignore it.
+    const repo = unitRepo(["retired.service\tsystem\tarmed\t/bin/true\torphan\tn"]);
+    const result = scanUnits(repo, process.env, at(unitDir({})));
+    expect(result.stale).toEqual(["system/retired.service"]);
+    expect(result.unlisted).toEqual([]);
+    expect(result.drift).toEqual([]);
+  });
+});
+
+describe("this installation's own unit enumeration", () => {
+  test("the manifest lints and every row is decidable", () => {
+    expect(check(REPO)).toEqual([]);
+    for (const row of unitManifest(REPO)) {
+      expect(["armed", "installed"]).toContain(row.state);
+      expect(["rebuildable", "unresolved", "orphan", "off-scope"]).toContain(row.disposition);
+      expect(row.note.trim().length).toBeGreaterThan(0);
+    }
+  });
+
+  test("the armed root timer that operates this fleet is named", () => {
+    // The round-2 finding, locked. This row existing is what makes the
+    // difference between an enumeration and a claim of one.
+    const rows = unitManifest(REPO);
+    const timer = rows.find((row) => row.unit === "orch-fleet-nudge.timer" && row.manager === "system");
+    expect(timer).toBeDefined();
+    expect(timer!.state).toBe("armed");
+    expect(timer!.disposition).toBe("unresolved");
+    const service = rows.find((row) => row.unit === "orch-fleet-nudge.service" && row.manager === "system");
+    expect(service!.exec).toBe("/root/.local/bin/orch-fleet-nudge.sh");
+    expect(service!.state).toBe("armed");
+  });
+
+  test("no `rebuildable` row claims a template this repository does not carry", () => {
+    for (const row of unitManifest(REPO).filter((r) => r.disposition === "rebuildable")) {
+      const templates = [`bootstrap/units/${row.unit}.in`, `instance/units/${row.unit}.in`];
+      expect(templates.some((path) => existsSync(join(REPO, path)))).toBe(true);
+    }
   });
 });

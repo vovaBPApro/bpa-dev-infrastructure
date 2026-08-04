@@ -1,0 +1,52 @@
+# Systemd units DEPLOYED on this installation. Hard Floor 5 asks whether the repository alone
+# could rebuild this host; a unit that exists here and is rendered from nothing tracked is a
+# direct answer of "no", and until this file existed nothing enumerated one.
+#
+# This is the REVERSE of bootstrap/check-unit-drift.sh. That script loops over tracked templates
+# and asks "is every tracked unit deployed and identical?". It never enumerates what is deployed,
+# so a unit with no template is invisible to it -- which is how an armed root timer firing every
+# ten minutes stayed unnamed while the enumeration reported itself complete.
+#
+# unit<TAB>manager<TAB>state<TAB>exec<TAB>disposition<TAB>note
+#
+# manager  system = /etc/systemd/system, user = $HOME/.config/systemd/user. The distribution's
+#          own /lib/systemd/system is out of scope, exactly as /usr is for the sweep.
+# state    armed     a .wants/.requires symlink arms it, or an armed timer/socket/path activates
+#                    it. This is the reboot-surviving reading and the one Hard Floor 5 asks
+#                    about -- NOT `systemctl is-active`, which says nothing about a rebuilt host.
+#          installed the unit file is deployed but nothing arms it.
+# exec     the ExecStart program, with an interpreter wrapper resolved through to the script it
+#          runs. `-` for a unit with no ExecStart of its own (every timer). $INSTALL_ROOT and
+#          $XDG_CACHE_HOME are resolved at check time; `*` matches one path segment.
+# disposition rebuildable | unresolved | orphan | off-scope
+#          rebuildable a tracked template under bootstrap/units or instance/units renders it,
+#                      and tools/check-host-state.ts --units VERIFIES that template exists.
+#          unresolved  deployed here and reproduced by nothing tracked. Reported on every run
+#                      until the operator decides; the decision is not this file's to make.
+#          off-scope   belongs to the v2 PRODUCT, not to this control plane (same boundary as
+#                      the /var/lib/agentic-bpa exclusion, instance/params.yaml phase).
+orch-fleet-nudge.timer	system	armed	-	unresolved	FINDING F16: the sharpest live Hard Floor 5 breach on this host. Armed, root, fires every ten minutes, and neither it nor its service nor its script is tracked. instance/decisions/HR-309.md:66 records this script as ALREADY captured under orchestrator/fleet/ -- it is not there, so the ledger records a fix that does not exist.
+orch-fleet-nudge.service	system	armed	/root/.local/bin/orch-fleet-nudge.sh	unresolved	FINDING F16: what the timer runs. `static`, so systemctl is-enabled calls it neither enabled nor disabled -- it is armed because an enabled timer activates it, which is why this file derives armed from the unit graph rather than from is-enabled. The script is untracked, 5198 bytes, mode 755. It wakes the orchestrator over tmux and pings the operator, so it is the fleet's only stall detector.
+bpa-db-network-boundary.service	system	armed	$XDG_CACHE_HOME/infra-lanes/database-loopback-boundary-r5-1581/orchestrator/fleet/db-network-boundary.sh	unresolved	FINDING F17: enabled, and its ExecStart points into a LANE WORKTREE that no longer exists. It is Type=oneshot RemainAfterExit=yes and last succeeded 2026-08-03 11:03:30, so it reads `active` while being unable to run: the boundary is installed in the running kernel and would NOT be reapplied on reboot. It is ordered Before= the orchestrator and telegram daemon. A network boundary for the payload database is a security control, and the only copy of its implementation went away with a reaped worktree.
+orch-morning-report.timer	system	armed	-	rebuildable	bootstrap/units/orch-morning-report.timer.in. The tracked counter-example that makes F16 undeniable: two timers side by side, both armed, one rendered from the repository and one from nothing.
+orch-morning-report.service	system	armed	$INSTALL_ROOT/orchestrator/morning.sh	rebuildable	bootstrap/units/orch-morning-report.service.in. Armed via its timer. NOTE: `systemctl is-active` reports it `failed` on this host today -- out of scope for this row, which enumerates rather than repairs, but recorded because a rebuild that reproduces it reproduces a failing unit.
+bpa-telegram-daemon.service	system	armed	/usr/local/bin/bun	rebuildable	bootstrap/units/bpa-telegram-daemon.service.in. The exec is the pinned interpreter; what it runs is `server.ts` relative to WorkingDirectory, which the template sets from the install root.
+bpa-orchestrator.service	system	installed	$INSTALL_ROOT/orchestrator/launch.sh	rebuildable	bootstrap/units/bpa-orchestrator.service.in. Deployed and disabled: the orchestrator is launched by hand on this host, not by systemd.
+bpa-full-suite.service	system	installed	$INSTALL_ROOT/orchestrator/full-suite.sh	rebuildable	bootstrap/units/bpa-full-suite.service.in. `static`, and its timer is disabled, so nothing arms it.
+bpa-full-suite.timer	system	installed	-	rebuildable	bootstrap/units/bpa-full-suite.timer.in. Deployed and disabled. This is the timer instance/host-state.md's honest-limits section means when it says no bpa timer is armed to run the sweep automatically.
+agentic-bpa.service	system	armed	/bin/sh	off-scope	The v2 PRODUCT's application service. Its ExecStart is a shell wrapper that execs node under $APP_ROOT (/srv/projects/agentic-bpa), outside every scan root here. Enumerating the product's units is the product repository's obligation; this row exists so the boundary is a recorded decision rather than an omission.
+bpa-edge.service	system	armed	/usr/bin/caddy	off-scope	The v2 product's edge proxy, reading /etc/bpa-edge/Caddyfile. Same domain boundary as agentic-bpa and as the /root/.config/caddy exclusion.
+orch-memory-sweep.timer	user	armed	-	unresolved	FINDING F18: the only unit enabled in the user manager (a timers.target.wants symlink, mode 600). No tracked template renders it. The user manager is NOT running on this host -- `systemctl --user` fails with "Failed to connect to bus" -- so it is armed on paper and fires nothing today. That makes it worse to leave unenumerated, not better: a rebuild that starts a user manager would begin running it.
+orch-memory-sweep.service	user	armed	$INSTALL_ROOT/tools/instructions/memory-sweep.ts	unresolved	FINDING F18: what that timer activates. Its TARGET is tracked, unlike F16's -- the gap here is the unit, not the script, so a rebuild reproduces the sweep tool but not the schedule that runs it.
+orch-runtime-watchdog.service	user	installed	$INSTALL_ROOT/orchestrator/watchdog.sh	unresolved	FINDING F18: same class, mode 600, not armed. Tracked target, untracked unit.
+orch-runtime-watchdog.timer	user	installed	-	unresolved	FINDING F18: same class, mode 600, not armed.
+bpa-orchestrator-watchdog.service	user	installed	$XDG_CACHE_HOME/lane-tmp/*/root/orchestrator/watchdog.sh	orphan	FINDING F19: residue of a lane test that installed units into the user manager and never removed them. Its ExecStart points into $XDG_CACHE_HOME/lane-tmp, a per-lane scratch tree that is already gone -- the lane-tmp row (F12) is the same unreaped root. Not armed, so nothing runs; a tracked template exists for this unit name, but what is DEPLOYED here was not rendered from it.
+bpa-orchestrator-watchdog.timer	user	installed	-	orphan	FINDING F19: same lane-test residue.
+bpa-orchestrator.service	user	installed	$XDG_CACHE_HOME/lane-tmp/*/root/orchestrator/launch.sh	orphan	FINDING F19: same lane-test residue, pointing into the deleted scratch tree.
+bpa-full-suite.service	user	installed	$XDG_CACHE_HOME/lane-tmp/*/root/orchestrator/full-suite.sh	orphan	FINDING F19: same lane-test residue.
+bpa-full-suite.timer	user	installed	-	orphan	FINDING F19: same lane-test residue.
+bpa-telegram-daemon.service	user	installed	$XDG_CACHE_HOME/lane-tmp/*/bin/bun	orphan	FINDING F19: same lane-test residue, pointing at an interpreter inside the deleted scratch tree.
+orch-morning-report.service	user	installed	$XDG_CACHE_HOME/lane-tmp/*/root/orchestrator/morning.sh	orphan	FINDING F19: same lane-test residue. A second, dead copy of a unit that is also deployed and armed at system scope.
+orch-morning-report.timer	user	installed	-	orphan	FINDING F19: same lane-test residue.
+orch-fleet-nudge.service	user	installed	$XDG_CACHE_HOME/lane-tmp/*/root/orchestrator/fleet/fleet-nudge.sh	orphan	FINDING F19: lane-test residue, and the most informative line in this file. Its ExecStart names orchestrator/fleet/fleet-nudge.sh -- exactly the path instance/decisions/HR-309.md:66 claims the nudge script was captured to. A lane rendered this unit from a tree where that file existed; the repository has no such file today, and the live system unit (F16) runs an untracked copy from /root/.local/bin instead.
+orch-fleet-nudge.timer	user	installed	-	orphan	FINDING F19: same lane-test residue.

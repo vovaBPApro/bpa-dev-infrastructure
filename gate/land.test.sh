@@ -756,7 +756,7 @@ verify_count_before=$(git -C "$fixture_root/verify-count-mismatch-repo" rev-pars
 printf "commit: %s fixture\nverify: printf '162 pass\\\\n6 fail\\\\n'\nverify-count: 168/168\nresult: clean\nsecret-scan: clean\nremaining: none\n" "$verify_count_sha" > "$fixture_root/verify-count-mismatch-report.md"
 verify_count_output="$fixture_root/verify-count-mismatch-output.txt"
 if "$land" --branch ag-verify-count-mismatch --item-id ag-verify-count-mismatch --report "$fixture_root/verify-count-mismatch-report.md" --repo "$fixture_root/verify-count-mismatch-repo" --run-verify >"$verify_count_output" 2>&1; then exit 1; fi
-assert_output_has "$verify_count_output" 'LAND verify-count mismatch report=168/168 actual=162/6'
+assert_output_has "$verify_count_output" 'LAND verify-count mismatch report=168/168 actual=1/0'
 assert_output_has "$verify_count_output" 'LAND step=reviewed-verify status=fail'
 assert_output_lacks "$verify_count_output" 'LAND step=push status=pass'
 assert test "$(git -C "$fixture_root/verify-count-mismatch-repo" rev-parse HEAD)" = "$verify_count_before"
@@ -790,11 +790,17 @@ done
 assert_output_has "$fixture_root/ag-queue-a-output.txt" 'LAND verify-count carried report=2/0 actual=2/0'
 assert_output_has "$fixture_root/ag-queue-b-output.txt" 'LAND verify-count carried report=2/0 actual=3/0'
 
-# A fabricated low count is refused by the gate's exact reviewed-SHA run even
-# though it would be a valid lower bound for the post-merge tree.
+# A colluding report and candidate-authored command both fabricate the same low
+# count. The gate-owned inventory still measures two tests and refuses them.
 make_fixture verify-count-fabricated
-fabricated_sha=$(make_lane "$fixture_root/verify-count-fabricated-repo" ag-verify-count-fabricated)
-printf "commit: %s fixture\nverify: printf '2 pass\\\\n0 fail\\\\n'\nverify-count: 1/0\nresult: clean\nsecret-scan: clean\nremaining: none\n" "$fabricated_sha" > "$fixture_root/verify-count-fabricated-report.md"
+fabricated_repo="$fixture_root/verify-count-fabricated-repo"
+git -C "$fabricated_repo" checkout -b ag-verify-count-fabricated main >/dev/null
+printf 'import { test, expect } from "bun:test"; test("second", () => expect(true).toBe(true));\n' > "$fabricated_repo/second.test.ts"
+git -C "$fabricated_repo" add second.test.ts
+git -C "$fabricated_repo" commit -m fabricated >/dev/null
+fabricated_sha=$(git -C "$fabricated_repo" rev-parse HEAD)
+git -C "$fabricated_repo" checkout main >/dev/null
+printf "commit: %s fixture\nverify: printf '1 pass\\\\n0 fail\\\\n'\nverify-count: 1/0\nresult: clean\nsecret-scan: clean\nremaining: none\n" "$fabricated_sha" > "$fixture_root/verify-count-fabricated-report.md"
 fabricated_output="$fixture_root/verify-count-fabricated-output.txt"
 if "$land" --branch ag-verify-count-fabricated --item-id ag-verify-count-fabricated --report "$fixture_root/verify-count-fabricated-report.md" --repo "$fixture_root/verify-count-fabricated-repo" --run-verify >"$fabricated_output" 2>&1; then exit 1; fi
 assert_output_has "$fabricated_output" 'LAND verify-count mismatch report=1/0 actual=2/0'

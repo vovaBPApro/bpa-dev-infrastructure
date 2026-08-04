@@ -416,7 +416,7 @@ if [ "$run_verify" = true ]; then
   verify_count_claim=$(sed -n 's/^verify-count:[[:space:]]*//p' "$report")
   if [ -n "$verify_count_claim" ]; then
     reviewed_verify_output=$(mktemp)
-    if [ -z "$verify_command" ] || ! land_verify_reviewed_sha "$repo" "$branch_sha" "$verify_command" "$reviewed_verify_output"; then
+    if ! land_verify_reviewed_sha "$repo" "$branch_sha" "$reviewed_verify_output"; then
       cat "$reviewed_verify_output"
       rm -f "$reviewed_verify_output"
       if ! land_force_reset "$repo" "$pre_merge_sha"; then

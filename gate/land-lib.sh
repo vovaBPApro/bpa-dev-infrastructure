@@ -217,6 +217,8 @@ land_run_declared_checks() {
       return 1
     fi
     LAND_FRAMEWORK_TEST_COUNT="$test_count"
+    LAND_FRAMEWORK_PASS_COUNT="$pass_count"
+    LAND_FRAMEWORK_FAIL_COUNT=0
     if [ "$test_count" -lt "$minimum_test_count" ]; then
       echo "$prefix framework-check=test status=fail tests=$test_count baseline=$minimum_test_count detail=test-count-regressed" >&2
       return 1
@@ -739,18 +741,22 @@ land_verify_count() {
   esac
 }
 
-# Run the candidate-authored verify command on the exact reviewed commit in a
-# detached, disposable worktree. The gate, not the candidate, produces the
-# measurement used to authenticate the report's count.
+# Run the gate-owned tracked-test inventory on the exact reviewed commit in a
+# detached, disposable worktree. This function and its inventory rules were
+# loaded from the independently accepted pre-merge gate; the candidate is only
+# the subject of the measurement and cannot select the command or parser.
 land_verify_reviewed_sha() {
-  local repo="$1" sha="$2" verify_command="$3" output_file="$4" verify_tree status=0
+  local repo="$1" sha="$2" output_file="$3" verify_tree status=0
   verify_tree=$(mktemp -d "${TMPDIR:-/tmp}/bpa-land-reviewed.XXXXXX") || return 2
   rmdir "$verify_tree" || return 2
   if ! git -C "$repo" worktree add --quiet --detach "$verify_tree" "$sha"; then
     rm -rf -- "$verify_tree"
     return 2
   fi
-  (cd "$verify_tree" && sh -c "$verify_command") >"$output_file" 2>&1 || status=$?
+  (
+    land_run_declared_checks "$verify_tree" 'LAND REVIEWED'
+    printf '%s pass\n%s fail\n' "$LAND_FRAMEWORK_PASS_COUNT" "$LAND_FRAMEWORK_FAIL_COUNT"
+  ) >"$output_file" 2>&1 || status=$?
   git -C "$repo" worktree remove --force "$verify_tree" >/dev/null 2>&1 || status=2
   return "$status"
 }

@@ -1,4 +1,11 @@
 # mechanism<TAB>reason. Rows are invalid as soon as the mechanism becomes reachable.
+#
+# An exemption is a DECISION to ship a mechanism that nothing runs against the
+# real subject -- it is not a way to make the check pass. Every row states what
+# a future reader must land to delete it. Adding a row without that sentence is
+# the defect this manifest exists to make visible.
+checker:shared-stash	V3-0.28: the only caller is hygiene/check-shared-stash.test.sh, which drives it against a mktemp fixture, so no tracked run ever asks whether THIS repository has a shared refs/stash across its ~100 live worktrees. Delete this row once a tracked non-test caller (landing gate step or the hygiene cron) runs hygiene/check-shared-stash.sh against the working repository.
+checker:github-ref-protection	V3-0.28: every tracked drive is tools/check-github-ref-protection.test.ts, which puts a stub curl on PATH and points GITHUB_REF_PROTECTION_SPEC at a temp fixture, so the live GitHub API is never queried and real ref protection is never measured. Delete this row once a credentialed scheduled job runs tools/check-github-ref-protection.sh against the real remote and its result is retained as evidence.
 unit:bpa-orchestrator.service	activation is parked pending accepted bootstrap stage
 unit:bpa-orchestrator-watchdog.service	only reachable through the unarmed watchdog timer
 unit:bpa-orchestrator-watchdog.timer	2026-08-01 regression; activation row V3-2.1 is parked without ACCEPT

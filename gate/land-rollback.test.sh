@@ -78,10 +78,14 @@ make_fixture() {
   git -C "$repo" config user.name Land
   printf 'base\n' > "$repo/base.txt"
   printf 'import { test, expect } from "bun:test"; test("fixture", () => expect(true).toBe(true));\n' > "$repo/base.test.ts"
+  mkdir -p "$repo/hygiene" "$repo/instance/parked"
+  cp "$root/hygiene/check-retained-branches.ts" "$repo/hygiene/check-retained-branches.ts"
+  printf 'main\n' > "$repo/instance/hygiene-protected-branches.txt"
+  printf '| row | active |\n' > "$repo/instance/workboard.md"
   mkdir -p "$repo/meteorite"
   sed -n '/^# BEGIN TRUSTED TEST PROVER$/,/^# END TRUSTED TEST PROVER$/p' "$root/gate/land.test.sh" | sed '1d;$d' > "$repo/meteorite/prove-candidate.sh"
   chmod +x "$repo/meteorite/prove-candidate.sh"
-  git -C "$repo" add base.txt base.test.ts meteorite/prove-candidate.sh
+  git -C "$repo" add base.txt base.test.ts hygiene/check-retained-branches.ts instance meteorite/prove-candidate.sh
   git -C "$repo" commit -m base >/dev/null
   git -C "$repo" push -u origin main >/dev/null
   printf 'ref: refs/heads/main\n' > "$bare/HEAD"

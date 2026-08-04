@@ -410,6 +410,19 @@ if ! land_run_declared_checks "$repo" LAND "$baseline_test_count"; then
 fi
 land_pass declared-checks
 
+# Retained evidence must reach origin before another landing can succeed. This
+# intentionally favors durability over offline landing availability: ls-remote
+# is operational evidence, while unit tests use a local bare remote.
+if ! "$BUN_BIN" "$repo/hygiene/check-retained-branches.ts" --repo "$repo"; then
+  if ! land_force_reset "$repo" "$pre_merge_sha"; then
+    land_fail_rollback retained-branches "$pre_merge_sha" "$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)"
+  fi
+  merged=false
+  merge_sha="none"
+  land_fail retained-branches
+fi
+land_pass retained-branches
+
 if [ "$run_verify" = true ]; then
   # Trust model: report verify commands are coder-authored and guard-validated.
   verify_command=$(sed -n 's/^verify:[[:space:]]*//p' "$report" | head -n 1)

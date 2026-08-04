@@ -2,9 +2,11 @@
 Description=BPA orchestrator tmux session
 After=network-online.target bpa-telegram-daemon.service
 Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
 
 [Service]
-Type=oneshot
+Type=simple
 User=root
 Group=root
 WorkingDirectory=$INSTALL_ROOT
@@ -12,9 +14,10 @@ Environment=HOME=/root
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Environment=ORCH_CONFIG_FILE=$ENV_FILE
 EnvironmentFile=$ENV_FILE
-ExecStart=$INSTALL_ROOT/orchestrator/launch.sh start
+ExecStart=$INSTALL_ROOT/orchestrator/launch.sh supervise
 ExecStop=$INSTALL_ROOT/orchestrator/launch.sh stop
-RemainAfterExit=yes
+Restart=on-failure
+RestartSec=10
 TimeoutStartSec=60
 TimeoutStopSec=30
 [Install]

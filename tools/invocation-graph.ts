@@ -28,6 +28,23 @@
 // opposite behaviour and filed it under the false-negative boundaries below;
 // that was wrong in both places, and both are corrected here.
 //
+// WHAT THE HEREDOC PARSER GUARANTEES. Round 2's fix for the above opened a worse
+// hole than the one it closed -- `zz=$(( 1 << 2 ))` was read as an opener with the
+// tag `2`, which nothing closes, so the rest of that file was blanked and every
+// command below it went unseen. So the parser's promise is stated, not implied:
+//
+//   - `<<` inside arithmetic -- `$(( … ))`, `(( … ))`, `$[ … ]`, at any paren
+//     depth -- is the shift operator and opens nothing.
+//   - `<<<` is a herestring and consumes no body.
+//   - `<<` inside a quoted word is text about a heredoc, not one.
+//   - `<<TAG`, `<<'TAG'`, `<<"TAG"`, `<<-TAG` with a tab-indented terminator, and
+//     several openers on one line, all consume their bodies in the shell's order.
+//   - An opener whose terminator never arrives blanks NOTHING (see
+//     `stripHeredocs`), so no single line can blind the scanner past itself.
+//
+// The load-bearing property is the last one: it bounds the damage of every
+// misparse this list has not anticipated, including the next one.
+//
 // Known boundaries, deliberately not covered. Each is stated WITH the direction
 // its failure runs, because that is what decides whether the boundary is safe:
 //
@@ -45,9 +62,19 @@
 //       that script sources. Liveness resolves a call to its own file and the
 //       files it sources, not back up into its callers.
 //
-//   FALSE POSITIVE (fail-open; a mention counts as a run). None known. This is
-//   the direction the V3-0.28 reopening was about, so anything discovered here
-//   is a defect to fix, not a boundary to document.
+//   FALSE POSITIVE (fail-open; a mention counts as a run). This is the direction
+//   the V3-0.28 reopening was about, so the bar for adding to this list is a
+//   demonstrated reason the fix would cost more than the boundary:
+//     - a function body appended AFTER the last call site of a function of that
+//       name in the same file carries an edge, though it can never run. Deciding
+//       it needs definition-order and flow analysis, and bash genuinely does
+//       rebind, so the cheap fixes here are all wrong in the other direction.
+//     - the body of an UNTERMINATED heredoc is scanned rather than blanked. This
+//       one is chosen, not conceded: see `stripHeredocs` for why bounded noise
+//       beats unbounded silence.
+//     - `$((cmd) …)` -- a subshell opening a command substitution -- is read as
+//       arithmetic, as bash also reads it, so a heredoc opened inside it is
+//       missed and its body is scanned.
 
 const NUL = "\u0000";
 
@@ -112,12 +139,22 @@ export function stripShellComments(text: string): string {
 
 type Heredoc = { tag: string; dash: boolean };
 
+// Arithmetic contexts -- `$(( … ))`, `(( … ))`, and the deprecated `$[ … ]` --
+// where `<<` is the left-shift OPERATOR and can never open a heredoc. Depth is
+// tracked rather than pattern-matched, so `$(( (1 + 1) << 2 ))` ends at the right
+// paren and a heredoc opened later on the same line is still seen. `$((` is read
+// as arithmetic in preference to a subshell inside command substitution, which
+// is the same way bash resolves that ambiguity.
+type Ctx = "arith" | "bracket" | "paren";
+
 // Heredoc operators opened on one line, in the order the shell will consume
-// their bodies. `<<<` is a herestring, not a heredoc, and an operator inside a
-// quoted word is text about a heredoc rather than one.
+// their bodies. `<<<` is a herestring, not a heredoc; an operator inside a
+// quoted word is text about a heredoc rather than one; and an operator inside
+// arithmetic is a shift.
 function heredocTags(raw: string): Heredoc[] {
   const found: Heredoc[] = [];
   let quote: string | null = null;
+  const ctx: Ctx[] = [];
   for (let i = 0; i < raw.length; i++) {
     const c = raw[i]!;
     if (quote) {
@@ -127,6 +164,19 @@ function heredocTags(raw: string): Heredoc[] {
     }
     if (c === "\\") { i++; continue; }
     if (c === "'" || c === '"') { quote = c; continue; }
+    if (c === "$" && raw[i + 1] === "(" && raw[i + 2] === "(") { ctx.push("arith"); i += 2; continue; }
+    if (c === "$" && raw[i + 1] === "[") { ctx.push("bracket"); i += 1; continue; }
+    if (c === "(" && raw[i + 1] === "(" && ctx.length === 0) { ctx.push("arith"); i += 1; continue; }
+    if (ctx.length > 0) {
+      if (c === "(") { ctx.push("paren"); continue; }
+      if (c === ")") {
+        if (ctx[ctx.length - 1] === "paren") ctx.pop();
+        else if (ctx[ctx.length - 1] === "arith") { ctx.pop(); if (raw[i + 1] === ")") i++; }
+        continue;
+      }
+      if (c === "]" && ctx[ctx.length - 1] === "bracket") { ctx.pop(); continue; }
+      if (c === "<" && raw[i + 1] === "<") { i++; continue; }
+    }
     if (c !== "<" || raw[i + 1] !== "<") continue;
     if (raw[i + 2] === "<") { i += 2; continue; }
     const opener = raw.slice(i + 2).match(/^(-?)\s*(?:"([^"]*)"|'([^']*)'|((?:\\.|[A-Za-z0-9_.\/-])+))/);
@@ -147,6 +197,15 @@ function closesHeredoc(line: string, doc: Heredoc): boolean {
 // form does, and neither one runs anything. Bodies (and their terminators) are
 // blanked rather than removed so every line number this module reports still
 // points at the real line of the real file.
+//
+// An opener whose terminator never arrives blanks NOTHING, rather than blanking
+// to end of file. Both readings are wrong for some input, so the choice is which
+// way to be wrong: blanking to EOF makes a single misparsed line delete every
+// command below it, silently and without bound -- for an exempt mechanism the
+// stale-exemption detector simply goes quiet. Blanking nothing costs at most the
+// body of a heredoc that bash itself warns about ("delimited by end-of-file"),
+// and it is bounded to that one body. A checker that goes quiet is worse than a
+// checker that shouts, so the unbounded silent failure is the one ruled out.
 export function stripHeredocs(text: string): string {
   const lines = text.split("\n");
   const out: string[] = [];
@@ -156,8 +215,12 @@ export function stripHeredocs(text: string): string {
     out.push(line);
     i++;
     for (const doc of heredocTags(line)) {
-      while (i < lines.length && !closesHeredoc(lines[i]!, doc)) { out.push(""); i++; }
-      if (i < lines.length) { out.push(""); i++; }
+      let end = i;
+      while (end < lines.length && !closesHeredoc(lines[end]!, doc)) end++;
+      // Unterminated. No later opener on this line can be satisfied either, since
+      // the shell would still be reading this one's body at EOF.
+      if (end >= lines.length) break;
+      while (i <= end) { out.push(""); i++; }
     }
   }
   return out.join("\n");

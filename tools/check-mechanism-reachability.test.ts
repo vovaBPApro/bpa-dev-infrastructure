@@ -3,6 +3,7 @@ import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { check, classify } from "./check-mechanism-reachability";
+import { stripHeredocs, stripShellComments } from "./invocation-graph";
 
 const root = join(import.meta.dir, "..");
 
@@ -221,6 +222,75 @@ test("an invocation after a heredoc terminator is still an executor", () => {
       'bash hygiene/check-shared-stash.sh "$PWD"',
       "",
     ].join("\n"));
+    stage(dir);
+    expect(named(check(dir), "stale exemption: checker:shared-stash")).toHaveLength(1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}, 30_000);
+
+// The heredoc stripper fails in BOTH directions, and round 2 proved the dangerous
+// one alternates: round 1 was rejected for scanning heredoc bodies (fail-open),
+// and its fix was rejected for reading `$(( 1 << 2 ))` as an opener whose tag
+// nothing closes, which blanked the rest of the file (fail-closed, silent, and
+// unbounded). So every construct is pinned in both directions at once: what the
+// stripper must BLANK, and -- the half round 2 lost -- what must SURVIVE below it.
+//
+// Asserted against `stripHeredocs` directly, because that is where the header's
+// guarantee is written and because a `check()` call costs ~4s; the two locks
+// after this one bind the guarantee to the harm it exists to prevent.
+const KEEP = 'bash hygiene/check-shared-stash.sh "$PWD"';
+const BODY = "bun hygiene/check-retained-branches.ts";
+const STRIPPER: readonly (readonly [string, string[], string[]])[] = [
+  ["plain tag", [`cat > /tmp/x <<EOD`, BODY, "EOD", KEEP], ["cat > /tmp/x <<EOD", KEEP]],
+  ["single-quoted tag", [`cat > /tmp/x <<'EOD'`, BODY, "EOD", KEEP], ["cat > /tmp/x <<'EOD'", KEEP]],
+  ["double-quoted tag", [`cat > /tmp/x <<"EOD"`, BODY, "EOD", KEEP], ['cat > /tmp/x <<"EOD"', KEEP]],
+  ["dash tag, tab-indented terminator", ["cat > /tmp/x <<-EOD", `\t${BODY}`, "\tEOD", KEEP], ["cat > /tmp/x <<-EOD", KEEP]],
+  // Not fixed by banning digits: `cat <<2 … 2` is a real, if perverse, heredoc.
+  ["numeric tag", ["cat > /tmp/x <<2", BODY, "2", KEEP], ["cat > /tmp/x <<2", KEEP]],
+  ["two openers on one line", ["cat <<A <<B", BODY, "A", BODY, "B", KEEP], ["cat <<A <<B", KEEP]],
+  ["herestring consumes no body", [`cat <<< "${BODY}"`, KEEP], [`cat <<< "${BODY}"`, KEEP]],
+  ["operator inside a quoted word", [`echo "a <<EOD b"`, KEEP], ['echo "a <<EOD b"', KEEP]],
+  ["arithmetic shift", ["zz=$(( 1 << 2 ))", KEEP], ["zz=$(( 1 << 2 ))", KEEP]],
+  ["arithmetic command", ["(( zz = 1 << 2 ))", KEEP], ["(( zz = 1 << 2 ))", KEEP]],
+  ["arithmetic with nested parens", ["zz=$(( (1 + 1) << 2 ))", KEEP], ["zz=$(( (1 + 1) << 2 ))", KEEP]],
+  ["deprecated $[ ] arithmetic", ["zz=$[ 1 << 2 ]", KEEP], ["zz=$[ 1 << 2 ]", KEEP]],
+  ["arithmetic shifting by a variable", ["zz=$(( 1 << width ))", KEEP], ["zz=$(( 1 << width ))", KEEP]],
+  ["arithmetic in a condition", ["if (( 1 << 2 > 3 )); then :; fi", KEEP], ["if (( 1 << 2 > 3 )); then :; fi", KEEP]],
+  // Arithmetic must not disarm a genuine heredoc opened later on the same line.
+  ["arithmetic then a real opener, one line", ["zz=$(( 1 << 2 )); cat <<EOD", BODY, "EOD", KEEP], ["zz=$(( 1 << 2 )); cat <<EOD", KEEP]],
+  // The ruling: an opener with no terminator blanks nothing. Bounded fail-open,
+  // deliberately chosen over the unbounded silent blanking it replaces.
+  ["unterminated tag at end of file", ["cat > /tmp/x <<NEVERCLOSED", KEEP], ["cat > /tmp/x <<NEVERCLOSED", KEEP]],
+];
+
+test("no construct the heredoc stripper handles blinds it to the lines below", () => {
+  for (const [name, input, survives] of STRIPPER) {
+    const out = stripHeredocs(stripShellComments(input.join("\n"))).split("\n");
+    // Line numbers must stay true: bodies are blanked in place, never removed.
+    expect(out, `${name}: line count`).toHaveLength(input.length);
+    expect(out.map((line) => line.trim()).filter(Boolean), name).toEqual(survives);
+  }
+});
+
+// The end-to-end lock for the defect round 2 introduced, at the boundary that
+// matters: the checker itself. One arithmetic line above a real invocation made
+// `checker:shared-stash` read clean instead of stale. `checker:shared-stash` is
+// exempt and driven by other tests in this file, so a fixture that degenerated
+// to an unused name would stop producing this error entirely and fail here.
+test("shell arithmetic does not hide an invocation from the checker", () => {
+  const dir = fixture();
+  try {
+    appendFileSync(join(dir, "hygiene/reap.sh"), `\nzz=$(( 1 << 2 ))\n${KEEP}\n`);
+    stage(dir);
+    expect(named(check(dir), "stale exemption: checker:shared-stash")).toHaveLength(1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}, 30_000);
+
+// Same lock for the other way a tag goes unclosed. Whatever misparse produces it,
+// the blast radius must stop at the opener rather than reaching end of file.
+test("an unterminated heredoc tag does not hide the invocations below it", () => {
+  const dir = fixture();
+  try {
+    appendFileSync(join(dir, "hygiene/reap.sh"), `\ncat > /tmp/x <<NEVERCLOSED\n${KEEP}\n`);
     stage(dir);
     expect(named(check(dir), "stale exemption: checker:shared-stash")).toHaveLength(1);
   } finally { rmSync(dir, { recursive: true, force: true }); }

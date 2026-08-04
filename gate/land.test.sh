@@ -51,6 +51,7 @@ make_fixture() {
   printf 'import { test, expect } from "bun:test"; test("fixture", () => expect(true).toBe(true));\n' > "$repo/base.test.ts"
   mkdir -p "$repo/hygiene" "$repo/instance/parked"
   cp "$root/hygiene/check-retained-branches.ts" "$repo/hygiene/check-retained-branches.ts"
+  cp "$root/hygiene/check-workboard-integrity.ts" "$repo/hygiene/check-workboard-integrity.ts"
   printf 'main\n' > "$repo/instance/hygiene-protected-branches.txt"
   printf '| row | active |\n' > "$repo/instance/workboard.md"
   mkdir -p "$repo/meteorite"
@@ -79,7 +80,7 @@ REPORT
 # END TRUSTED TEST PROVER
 EOF
   chmod +x "$repo/meteorite/prove-candidate.sh"
-  git -C "$repo" add base.txt base.test.ts hygiene/check-retained-branches.ts instance meteorite/prove-candidate.sh
+  git -C "$repo" add base.txt base.test.ts hygiene/check-retained-branches.ts hygiene/check-workboard-integrity.ts instance meteorite/prove-candidate.sh
   git -C "$repo" commit -m base >/dev/null
   git -C "$repo" push -u origin main >/dev/null
   printf 'ref: refs/heads/main\n' > "$bare/HEAD"
@@ -539,6 +540,7 @@ good_output="$fixture_root/good-output.txt"
 "$land" --branch ag-good --item-id ag-good --report "$fixture_root/good-report.md" --repo "$fixture_root/good-repo" --run-verify >"$good_output" 2>&1
 assert_output_has "$good_output" 'LAND step=review-rounds status=pass'
 assert_output_has "$good_output" 'LAND step=retained-branches status=pass'
+assert_output_has "$good_output" 'LAND step=workboard-integrity status=pass'
 assert_output_has "$good_output" 'REVIEW_ROUNDS status=landed item=ag-good'
 assert_output_has "$good_output" 'LAND reap remote=absent branch=ag-good detail=never-on-origin-nothing-to-delete'
 assert_output_has "$good_output" 'LAND step=reap status=pass'
@@ -564,6 +566,27 @@ assert_output_has "$retained_output" 'RETAINED-BRANCHES FAIL cause=absent-from-r
 assert_output_has "$retained_output" 'LAND step=retained-branches status=fail'
 assert test "$(git -C "$retained_repo" rev-parse main)" = "$retained_before"
 assert test -z "$(git -C "$retained_repo" status --porcelain)"
+
+# Regression lock (V3-0.43): a landing that corrupts the tracked workboard --
+# the exact e0cd52b shape, a duplicated row id -- must be refused and rolled
+# back, not merged through a checker that is present but never invoked.
+make_fixture workboard-corrupted
+workboard_repo="$fixture_root/workboard-corrupted-repo"
+workboard_before=$(git -C "$workboard_repo" rev-parse main)
+workboard_sha=$(make_lane "$workboard_repo" ag-workboard-corrupted)
+git -C "$workboard_repo" checkout ag-workboard-corrupted >/dev/null
+printf '| id | row | acceptance | state |\n|---|---|---|---|\n| V3-9.1 | first filing | acceptance text | **done** |\n| V3-9.1 | a stale duplicate | acceptance text | **open** |\n' > "$workboard_repo/instance/workboard.md"
+git -C "$workboard_repo" add instance/workboard.md
+git -C "$workboard_repo" commit -m corrupt-workboard >/dev/null
+workboard_sha=$(git -C "$workboard_repo" rev-parse HEAD)
+git -C "$workboard_repo" checkout main >/dev/null
+report "$fixture_root/workboard-corrupted-report.md" "$workboard_sha"
+workboard_output="$fixture_root/workboard-corrupted-output.txt"
+if "$land" --branch ag-workboard-corrupted --item-id ag-workboard-corrupted --report "$fixture_root/workboard-corrupted-report.md" --repo "$workboard_repo" --no-push >"$workboard_output" 2>&1; then exit 1; fi
+assert_output_has "$workboard_output" 'WORKBOARD-INTEGRITY FAIL duplicate-row-id id=V3-9.1'
+assert_output_has "$workboard_output" 'LAND step=workboard-integrity status=fail'
+assert test "$(git -C "$workboard_repo" rev-parse main)" = "$workboard_before"
+assert test -z "$(git -C "$workboard_repo" status --porcelain)"
 
 make_fixture declared-check-fail
 declared_before=$(git -C "$fixture_root/declared-check-fail-repo" rev-parse main)

@@ -133,6 +133,7 @@ const STATE_DIR =
   join(homedir(), '.claude', 'channels', 'telegram');
 const ENV_FILE = join(STATE_DIR, '.env');
 const LOG_PREFIX = '[telegram-daemon]';
+const DAEMON_TEST_MODE = process.env.TELEGRAM_DAEMON_TEST_MODE === '1';
 
 // Load .env before deriving config values from process.env. launchd passes
 // instance-level basics (such as TELEGRAM_STATE_DIR), while .env owns secrets
@@ -1299,6 +1300,68 @@ function createMcpServer(): Server {
   });
 
   return server;
+}
+
+/**
+ * Execute the registered MCP tool handler used by the daemon. This narrow seam
+ * keeps integration tests on the production registration and adapter wiring;
+ * it does not replace the handler with a helper-shaped test double.
+ */
+export async function dispatchRegisteredToolForTest(
+  name: string,
+  args: Record<string, unknown>,
+): Promise<unknown> {
+  if (!DAEMON_TEST_MODE) throw new Error('daemon test mode is disabled');
+  const server = createMcpServer() as unknown as {
+    _requestHandlers: Map<
+      string,
+      (request: Record<string, unknown>, extra: Record<string, unknown>) => Promise<unknown>
+    >;
+  };
+  const handler = server._requestHandlers.get('tools/call');
+  if (!handler) throw new Error('registered tools/call handler is missing');
+  return handler(
+    { method: 'tools/call', params: { name, arguments: args } },
+    {},
+  );
+}
+
+export function installBotApiStubForTest(
+  stub: (method: string, payload: Record<string, unknown>) => unknown | Promise<unknown>,
+): void {
+  if (!DAEMON_TEST_MODE) throw new Error('daemon test mode is disabled');
+  bot.api.config.use(async (_previous, method, payload) =>
+    stub(method, payload as Record<string, unknown>) as never,
+  );
+}
+
+/** Execute an update through grammY's registered middleware/listener chain. */
+export async function dispatchRegisteredTelegramUpdateForTest(
+  update: Record<string, unknown>,
+): Promise<void> {
+  if (!DAEMON_TEST_MODE) throw new Error('daemon test mode is disabled');
+  bot.botInfo = {
+    id: 99,
+    is_bot: true,
+    first_name: 'Fixture',
+    username: 'fixture_bot',
+    can_join_groups: true,
+    can_read_all_group_messages: false,
+    supports_inline_queries: false,
+    can_manage_bots: false,
+    can_connect_to_business: false,
+    has_main_web_app: false,
+    has_topics_enabled: false,
+    allows_users_to_create_topics: false,
+  };
+  await bot.handleUpdate(update as never);
+}
+
+export function bufferedDecisionContentsForTest(): string[] {
+  if (!DAEMON_TEST_MODE) throw new Error('daemon test mode is disabled');
+  return msgBuffer
+    .filter((message) => message.meta.decision_response === 'true')
+    .map((message) => message.content);
 }
 
 // ── tmux session control ──────────────────────────────────────────────────────
@@ -3252,8 +3315,8 @@ bot.on('callback_query:data', async (ctx) => {
   if (decMatch) {
     const [, sid, idxStr] = decMatch;
     const idx = parseInt(idxStr, 10);
-    const pending = pendingDecisions.get(sid);
-    if (!pending) {
+    const pendingEntry = pendingDecisions.get(sid);
+    if (!pendingEntry) {
       await ctx
         .answerCallbackQuery({ text: 'Decision expired or already answered.' })
         .catch(() => {});
@@ -4012,7 +4075,7 @@ process.on('uncaughtException', (err) => {
 mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
 writeFileSync(PID_FILE, String(process.pid));
 
-httpServer.listen(PORT, '127.0.0.1', () => {
+if (!DAEMON_TEST_MODE) httpServer.listen(PORT, '127.0.0.1', () => {
   process.stderr.write(
     `${LOG_PREFIX} MCP SSE endpoint: http://127.0.0.1:${PORT}/sse\n`,
   );
@@ -4254,7 +4317,7 @@ void fleetTimerTick().catch((err) => {
 // gets reset to 0 even on sessions that will immediately hit 409 on the first
 // poll. We use a separate conflict counter to track consecutive 409s so the
 // backoff actually grows instead of staying at 0.
-void (async () => {
+if (!DAEMON_TEST_MODE) void (async () => {
   let conflictCount = 0;
   for (let attempt = 1; ; attempt++) {
     try {

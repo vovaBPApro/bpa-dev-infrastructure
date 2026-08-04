@@ -5,8 +5,8 @@ import {
   acquireShellTierGuard,
   collectStream,
   drain,
-  resolveLockWaitMs,
-  resolveStallMs,
+  lockAcquireTimeoutMs,
+  watchedTestTimeoutMs,
   type ShellTierGuard,
 } from "./shell-test-guard";
 
@@ -18,11 +18,14 @@ import {
 const repoRoot = join(import.meta.dir, "..");
 let tierGuard: ShellTierGuard;
 
-// The hook's own timeout must exceed the lock wait, or bun would abort the wait
-// as a hook failure and the tier would be back to losing the round on contention.
+// Every bun timeout in this file is derived by the guard from the bounds it is
+// enforcing, never written here as a constant. A constant added locally is how
+// round 2 came to arm a 390 s per-test timeout around a watchdog whose worst-case
+// detection was 396 s: bun then decided a genuine hang first, with no named
+// reason and a `stalled=no` release record. See watchedTestTimeoutMs.
 beforeAll(async () => {
   tierGuard = await acquireShellTierGuard(repoRoot);
-}, resolveLockWaitMs() + 30_000);
+}, lockAcquireTimeoutMs());
 
 afterAll(async () => {
   await tierGuard?.release();
@@ -94,7 +97,7 @@ for (const relativePath of runnableShellTests) {
       if (stall) throw new Error(`${stall} test=${relativePath}\n${output}`);
       expect(status, `${relativePath} exited ${status}\n${output}`).toBe(0);
     },
-    resolveStallMs() + 30_000,
+    watchedTestTimeoutMs(),
   );
 }
 
@@ -152,5 +155,5 @@ test(
     }
     expect(observed.sort()).toEqual(inventory);
   },
-  resolveStallMs() + 30_000,
+  watchedTestTimeoutMs(),
 );

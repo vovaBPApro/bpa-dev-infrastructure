@@ -71,12 +71,14 @@ test("restart reconstruction exposes the full executable v3 contract", async () 
   expect(snapshot.outbox[0]).toMatchObject({id:"msg-1",dedupeKey:"corr-1:terminal",deliveryState:"pending",payload:{kind:"terminal"}});
 });
 
-test("CLI preserves fencing across restarts", async()=>{ const database=await db(); const c=await invoke(database,"mission","create","corr","accept"); const m=/id=([^ ]+)/.exec(c.stdout)![1]!; await invoke(database,"manager","create",m,"mgr"); await invoke(database,"lane","create",m,"mgr","lane","accept","1"); const first=await invoke(database,"lane","claim","lane","one","500"); expect(first.exitCode).toBe(0); expect((await invoke(database,"lane","claim","lane","two","500")).stderr).toBe("ERROR FENCED"); });
+test("CLI preserves fencing across restarts", async()=>{ const database=await db(); const c=await invoke(database,"mission","create","corr","accept"); const m=/id=([^ ]+)/.exec(c.stdout)![1]!; await invoke(database,"manager","create",m,"mgr"); await invoke(database,"lane","create",m,"mgr","lane","accept","1"); const first=await invoke(database,"lane","claim","lane","one","500"); expect(first.exitCode).toBe(0); expect((await invoke(database,"lane","claim","lane","two","500")).stderr).toBe("ERROR FENCED lane has a live owner: lane"); });
 
 test("mission complete fails closed until every lane is clean, then persists terminal state", async () => {
   const database=await db();
   const {mission,token}=await readyLane(database,"lane-mission-close");
-  expect(await invoke(database,"mission","complete",mission)).toMatchObject({exitCode:1,stderr:`ERROR FENCED`});
+  // The refusal must NAME the blocking lane and its state, not just fail
+  // closed: exact equality, so dropping the reason or the lane name is red.
+  expect(await invoke(database,"mission","complete",mission)).toMatchObject({exitCode:1,stderr:`ERROR FENCED mission has non-clean lanes: ${mission} (lane-mission-close=running)`});
   const repo=await gitRepo(); const sha=tip(repo); const reportPath=join(repo,"..","mission-close.report.md");
   await writeFile(reportPath,validReport(sha));
   expect(await invokeWithRepo(database,repo,"lane","complete","lane-mission-close","owner-1",token,sha,reportPath,"clean","ag-lane-1")).toMatchObject({exitCode:0});
@@ -85,6 +87,31 @@ test("mission complete fails closed until every lane is clean, then persists ter
   expect(snapshot.missions[0].state).toBe("clean");
   expect(snapshot.managers[0].state).toBe("clean");
   expect(await invoke(database,"mission","complete",mission)).toMatchObject({exitCode:0});
+});
+
+// instance/workboard.md V3-0.15 F8: failing closed without saying why is
+// correct behaviour delivered uselessly. Each refusal shape must be
+// distinguishable from the others by its message alone, and the non-clean
+// case must name the lane the operator has to go and look at.
+test("mission complete distinguishes its refusal shapes and names only the lanes that block", async () => {
+  const database=await db();
+  const created=await invoke(database,"mission","create","corr-shapes","accept");
+  const mission=/id=([^ ]+)/.exec(created.stdout)![1]!;
+  expect(await invoke(database,"mission","complete",mission)).toMatchObject({exitCode:1,stderr:`ERROR FENCED mission has no lanes: ${mission}`});
+  await invoke(database,"manager","create",mission,"mgr-shapes");
+  await invoke(database,"lane","create",mission,"mgr-shapes","lane-done","accept","3");
+  await invoke(database,"lane","create",mission,"mgr-shapes","lane-blocking","accept","3");
+  const claim=await invoke(database,"lane","claim","lane-done","owner-1","60000");
+  const token=/token=(\d+)/.exec(claim.stdout)![1]!;
+  const repo=await gitRepo(); const sha=tip(repo);
+  const reportPath=join(repo,"..","shapes.report.md");
+  await writeFile(reportPath,validReport(sha));
+  expect(await invokeWithRepo(database,repo,"lane","complete","lane-done","owner-1",token,sha,reportPath,"clean","ag-lane-1")).toMatchObject({exitCode:0});
+  const blocked=await invoke(database,"mission","complete",mission);
+  expect(blocked.exitCode).toBe(1);
+  expect(blocked.stderr).toContain("lane-blocking");
+  expect(blocked.stderr).not.toContain("lane-done");
+  expect(await invoke(database,"mission","complete","does-not-exist")).toMatchObject({exitCode:1,stderr:"ERROR unknown mission: does-not-exist"});
 });
 
 // instance/workboard.md V3-0.5: `lane complete` must not be able to record a

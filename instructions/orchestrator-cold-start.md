@@ -41,6 +41,8 @@ Set the values used below:
 REPO="$(pwd)"
 CORRELATION_ID='replace-with-durable-correlation-id'
 MISSION_ACCEPTANCE_ID='replace-with-mission-acceptance-id'
+# Also the landing gate's --item-id at step 4; it must be registered against
+# this lane's stable branch root in instance/review-items.tsv.
 LANE_ACCEPTANCE_ID='replace-with-lane-acceptance-id'
 MANAGER_ID='replace-with-manager-id'
 OWNER='replace-with-lane-owner'
@@ -190,6 +192,15 @@ secret-scan: clean
 remaining: none
 ```
 
+`--item-id` is mandatory — the gate exits 2 with its usage line without it —
+and it is bound to tracked authority on the target branch, not to the caller.
+When the target branch carries `instance/review-items.tsv`, that file must hold
+exactly one row mapping `$LANE_ACCEPTANCE_ID` to this lane's stable branch root
+(`$BRANCH` with any `-rN` recut suffix removed); otherwise the gate refuses with
+`LAND review-item unknown-or-mismatched`. Register that row on the target branch
+before landing. A repository without the registry falls back to requiring
+`--item-id` to equal `$BRANCH`.
+
 Push the accepted lane branch before landing. Then use a fresh clone as the
 canonical integration tree, fetch the fixed branch, copy no worktree state
 into it, and invoke the gate with its actual flags:
@@ -203,6 +214,7 @@ git clone "$ORIGIN_URL" "$LAND_REPO"
 git -C "$LAND_REPO" fetch origin "$BRANCH:$BRANCH"
 "$LAND_REPO/gate/land.sh" \
   --branch "$BRANCH" \
+  --item-id "$LANE_ACCEPTANCE_ID" \
   --report "$REPORT_FILE" \
   --repo "$LAND_REPO" \
   --run-verify

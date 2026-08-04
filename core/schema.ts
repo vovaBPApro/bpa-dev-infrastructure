@@ -67,9 +67,13 @@ export class DurableStore {
       const mission = this.db.query("SELECT state FROM missions WHERE id=?").get(id) as { state: string } | null;
       if (!mission) throw new SchemaError(`unknown mission: ${id}`);
       if (mission.state === "clean") return;
-      const lanes = this.db.query("SELECT state FROM lanes WHERE mission_id=?").all(id) as { state: string }[];
+      const lanes = this.db.query("SELECT id, state FROM lanes WHERE mission_id=? ORDER BY id").all(id) as { id: string; state: string }[];
       if (lanes.length === 0) throw new FencedTransitionError(`mission has no lanes: ${id}`);
-      if (lanes.some(({ state }) => state !== "clean")) throw new FencedTransitionError(`mission has non-clean lanes: ${id}`);
+      // Name the lanes that block, not just the mission: the operator's next
+      // action is to go look at a specific lane, and a reason that omits it
+      // sends them to debug the mission row instead.
+      const blocking = lanes.filter(({ state }) => state !== "clean");
+      if (blocking.length) throw new FencedTransitionError(`mission has non-clean lanes: ${id} (${blocking.map(({ id: lane, state }) => `${lane}=${state}`).join(", ")})`);
       const at = this.now();
       this.db.query("UPDATE managers SET state='clean', updated_at=? WHERE mission_id=?").run(at, id);
       this.db.query("UPDATE missions SET state='clean', updated_at=? WHERE id=?").run(at, id);

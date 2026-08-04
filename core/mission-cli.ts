@@ -113,4 +113,7 @@ function run(args: string[]): void {
 }
 
 try { run(Bun.argv.slice(2)); }
-catch (error) { console.error(`ERROR ${error instanceof FencedTransitionError ? "FENCED" : error instanceof Error ? error.message : String(error)}`); process.exitCode = 1; }
+// A fenced refusal keeps its stable `FENCED` class token AND carries the
+// reason the store constructed. Failing closed without saying why is correct
+// behaviour delivered uselessly: the operator debugs the wrong thing.
+catch (error) { console.error(`ERROR ${error instanceof FencedTransitionError ? `FENCED ${error.message}` : error instanceof Error ? error.message : String(error)}`); process.exitCode = 1; }

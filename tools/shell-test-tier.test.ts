@@ -33,6 +33,7 @@ const runnableShellTests = [
   "gate/land-rollback.test.sh",
   "orchestrator/watchdog-supervision.test.sh",
   "orchestrator/fleet/launch-lane.test.sh",
+  "orchestrator/fleet/lane-payload-systemd.test.sh",
   "orchestrator/watchdog.test.sh",
   "orchestrator/fleet/fleet-nudge.test.sh",
   "orchestrator/fleet/fleet-nudge-liveness.test.sh",
@@ -43,7 +44,7 @@ const excludedShellTests = {} as const;
 const allShellTests = [...runnableShellTests, ...Object.keys(excludedShellTests)];
 
 test("the independently pinned shell-test inventory still exists", () => {
-  expect(allShellTests).toHaveLength(14);
+  expect(allShellTests).toHaveLength(15);
   for (const relativePath of allShellTests) {
     expect(existsSync(join(repoRoot, relativePath)), `${relativePath} is missing`).toBe(true);
   }
@@ -101,7 +102,7 @@ test(
       const env = { ...process.env };
       delete env.BUN_BIN;
       env.INFRA_TEST_FORCE_MISSING_CAPABILITIES =
-        "immutable-file,proc-lock-observability,pid-mount-namespace";
+        "immutable-file,proc-lock-observability,pid-mount-namespace,systemd-transient-unit";
       const result = spawnSync("bash", [file], { cwd: repoRoot, encoding: "utf8", env });
       expect(result.status, `${file}: ${result.stdout}${result.stderr}`).toBe(0);
       for (const line of result.stdout.split("\n")) {

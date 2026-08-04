@@ -106,3 +106,51 @@ evening.
 
 Until it lands, a lane reporting `failed` means nothing on its own. Collect
 `$LANE_REPORT_PATH` and run `gate/lane-exit.sh` by hand with an explicit `--role`.
+
+## Same class, found while fixing this (2026-08-04, V3-0.44 r2)
+
+The fix required sweeping the repository for anything else a variable expander
+would silently empty. Nothing else passes a shell body through `systemd-run`,
+and no *rendered* unit reaches systemd carrying a `${...}` — but the renderer
+itself has the identical failure signature one layer earlier, and it is live.
+
+`bootstrap/install.sh` renders every unit template with `envsubst`, exporting
+**four** variables:
+
+```sh
+INSTALL_ROOT=… ENV_FILE=… BUN_BIN=… BASH_BIN=… envsubst < "$template"
+```
+
+`bootstrap/check-unit-drift.sh:75-80` renders the same templates with **six**,
+supplying `FULL_SUITE_ON_CALENDAR` (default `*-*-* 03:30:00`) and
+`ORCH_WATCHDOG_INTERVAL` (default `60`). Two templates use exactly those two:
+
+| template | `install.sh` renders | `check-unit-drift.sh` renders |
+|---|---|---|
+| `bpa-full-suite.timer.in` | `OnCalendar=` | `OnCalendar=*-*-* 03:30:00` |
+| `bpa-orchestrator-watchdog.timer.in` | `OnUnitActiveSec=s` | `OnUnitActiveSec=60s` |
+
+`envsubst` substitutes every `$VAR` it finds, not only the ones exported, and
+replaces an unset one with an empty string without any diagnostic — the same
+silent-empty behaviour as systemd's, from a different tool. There is no
+residual-`$` check, no empty-value check, and no `systemd-analyze verify` on the
+staged output, so nothing between the template and `/etc/systemd/system` would
+notice. `OnCalendar=` with an empty value is systemd's documented way to *clear*
+the schedule, so that timer would never fire; `OnUnitActiveSec=s` does not parse
+at all. These are the nightly full-suite timer and the orchestrator watchdog
+timer — the two mechanisms whose whole purpose is to notice when something
+stopped.
+
+Reproduce without deploying anything:
+
+```sh
+INSTALL_ROOT=/opt/r ENV_FILE=/e BUN_BIN=/usr/bin/bun BASH_BIN=/bin/bash \
+  envsubst < bootstrap/units/bpa-full-suite.timer.in | grep OnCalendar
+```
+
+Deliberately **not** fixed in V3-0.44 r2: it is the install/deploy path, not the
+launcher, and it needs its own regression lock (render every tracked template
+with `install.sh`'s exact export set and fail closed on any empty or residual
+`$` value) plus its own review. Filed here so the finding is not lost with the
+lane. The two timers were unarmed on this host at the time of writing, which is
+why the effect had not yet been observed.

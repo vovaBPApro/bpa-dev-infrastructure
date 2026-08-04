@@ -5,11 +5,10 @@
 # Ported from v2-deprecated (bootstrap/install.sh, 598 lines, ten stages) for
 # workboard row S3-2 / V3-1.1. Stage 2 adds hygiene-cron installation, the
 # repository's complete Bun test gate, manifest-driven unit rendering, and
-# the verify rows those stages need. Unit activation and the watchdog
-# arm/disarm pair remain explicitly out of scope. activate_units runs
-# `systemctl enable --now bpa-orchestrator.service`, which would restart the
-# live orchestrator on this host; HR-1720 defers all host deployment, and that
-# hazard is exactly what this render-only stage avoids. Later rows add it.
+# the verify rows those stages need. The final stage reloads systemd, arms the
+# orchestrator and watchdog, and verifies their observed enabled/active state.
+# Container tests exercise that stage; HR-1720 still forbids invoking this
+# installer against the lane host.
 #
 # workspace_status (donor) is dropped outright: v3 has no workspace/ tree.
 # telegram-transport-preflight.sh is not sourced: its token and activation
@@ -34,6 +33,7 @@ ENV_FILE="${ENV_FILE:-/root/.config/bpa/orchestrator.env}"
 BUN_BIN="${BUN_BIN:-/usr/local/bin/bun}"
 BASH_BIN="${BASH_BIN:-/usr/bin/bash}"
 SYSTEMD_SYSTEM_DIR="${SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
+SYSTEMCTL_CMD="${SYSTEMCTL_CMD:-systemctl}"
 RUNTIME_DIR="${RUNTIME_DIR:-$INSTALL_ROOT/runtime}"
 STATE_DB="${INFRA_STATE_DB:-$RUNTIME_DIR/state.db}"
 CRONTAB_CMD="${CRONTAB_CMD:-crontab}"
@@ -43,17 +43,16 @@ usage() {
   cat <<'EOF'
 Usage: bootstrap/install.sh [--dry-run | --verify-source]
 
-Stage 2: prerequisites, Bun, repository sync, environment, state database,
-hygiene cron, repository test gate, and systemd unit rendering. This stage
-does not enable, start, restart, or reload units.
+Bootstrap: prerequisites, Bun, repository sync, environment, state database,
+hygiene cron, repository test gate, systemd unit rendering, and verified
+activation of the orchestrator recovery path.
 
 Environment overrides: INSTALL_ROOT, REPO_URL, REPO_BRANCH (default: main),
 BUN_VERSION, ENV_FILE, BUN_BIN, BASH_BIN, RUNTIME_DIR, INFRA_STATE_DB,
 TEST_GATE_ORIGIN_URL,
 CRONTAB_CMD, SYSTEMD_SYSTEM_DIR, EXPECTED_UNITS_FILE.
---verify-source checks only the boundaries a source/container test can prove
-and reports explicit SKIPs where a live host would be required; there is no
---verify mode in this row.
+--verify-source checks only source-visible boundaries; the disposable systemd
+container test proves activation and recovery without touching the host.
 The Telegram token is never accepted as an argument. Paste it into ENV_FILE
 locally once a later row uses it.
 EOF
@@ -84,7 +83,8 @@ print_plan() {
   plan "state-db" "initialize $STATE_DB with core/mission-cli.ts status"
   plan "hygiene" "install the tracked hygiene cron using $CRONTAB_CMD"
   plan "test-gate" "run the repository's complete Bun test suite"
-  plan "units" "render every manifest-listed unit into $SYSTEMD_SYSTEM_DIR (render only)"
+  plan "units" "render every manifest-listed unit into $SYSTEMD_SYSTEM_DIR"
+  plan "activation" "reload systemd and enable/start the orchestrator plus its watchdog timer"
 }
 
 result=0
@@ -440,6 +440,24 @@ render_units() {
   trap - RETURN
 }
 
+activate_units() {
+  local unit
+  local -a armed_units=(bpa-orchestrator.service bpa-orchestrator-watchdog.timer)
+  "$SYSTEMCTL_CMD" daemon-reload
+  "$SYSTEMCTL_CMD" enable --now "${armed_units[@]}"
+  for unit in "${armed_units[@]}"; do
+    if ! "$SYSTEMCTL_CMD" is-enabled --quiet "$unit"; then
+      echo "ERROR: unit was installed but is not enabled: $unit" >&2
+      return 1
+    fi
+    if ! "$SYSTEMCTL_CMD" is-active --quiet "$unit"; then
+      echo "ERROR: unit was enabled but is not active: $unit" >&2
+      return 1
+    fi
+  done
+  echo "ACTIVATION armed units=${armed_units[*]}"
+}
+
 if [[ "${BOOTSTRAP_LIB_ONLY:-false}" != true ]]; then
   ensure_prerequisites
   install_bun
@@ -449,6 +467,6 @@ if [[ "${BOOTSTRAP_LIB_ONLY:-false}" != true ]]; then
   install_hygiene_cron
   run_install_test_gate
   render_units
-  echo "Bootstrap stage 2 completed: prerequisites, Bun, repository, environment, state database, hygiene cron, test gate, and unit rendering."
-  echo "Remaining before a full install: unit activation and the watchdog arm/disarm pair (later rows)."
+  activate_units
+  echo "Bootstrap completed: prerequisites, Bun, repository, environment, state database, hygiene cron, test gate, unit rendering, and verified activation."
 fi

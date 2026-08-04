@@ -70,29 +70,28 @@ grep -Fxq 'INSTALL_ROOT="${INSTALL_ROOT:-/root/bpa-dev-infrastructure}"' "$INSTA
 # document why they were left out), so the scan first drops comment-only
 # lines and checks only what is left -- code, not prose about code.
 installer_code_only="$(grep -v '^[[:space:]]*#' "$INSTALLER")"
-for absent in workspace_status activate_units \
+for absent in workspace_status \
   '--verify)' '--arm-watchdog' '--disarm-watchdog' '--no-cron'; do
   if grep -Fq -- "$absent" <<<"$installer_code_only"; then
     echo "ERROR: out-of-scope donor surface present in install.sh CODE: $absent" >&2
     exit 1
   fi
 done
-echo 'PASS static shape (INSTALL_ROOT default present, out-of-scope surface absent)'
+grep -Fq 'activate_units()' "$INSTALLER"
+echo 'PASS static shape (INSTALL_ROOT default and activation stage present)'
 
 # ── --dry-run / --help / argument validation ─────────────────────────────
 dry_run="$($INSTALLER --dry-run)"
 for expected in 'PLAN apt' 'PLAN bun' 'PLAN repository' 'PLAN environment' 'PLAN state-db' \
-  'PLAN hygiene' 'PLAN test-gate' 'PLAN units'; do
+  'PLAN hygiene' 'PLAN test-gate' 'PLAN units' 'PLAN activation'; do
   grep -Fq "$expected" <<<"$dry_run"
 done
 # Trimmed-scope proof: the donor's later-stage plan rows must NOT appear.
-for dropped in 'PLAN workspace' 'PLAN activate'; do
-  if grep -Fq "$dropped" <<<"$dry_run"; then
-    echo "ERROR: --dry-run printed an out-of-scope plan row: $dropped" >&2
-    exit 1
-  fi
-done
-echo 'PASS --dry-run plan (stage-2 rows present, activation absent)'
+if grep -Fq 'PLAN workspace' <<<"$dry_run"; then
+  echo 'ERROR: --dry-run printed an out-of-scope workspace row' >&2
+  exit 1
+fi
+echo 'PASS --dry-run plan (all bootstrap rows including activation present)'
 
 "$INSTALLER" --help >/dev/null
 "$INSTALLER" -h >/dev/null

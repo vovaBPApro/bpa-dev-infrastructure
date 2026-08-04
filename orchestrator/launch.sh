@@ -95,7 +95,7 @@ BOUND_CHAT_ID="${TELEGRAM_BOUND_CHAT_ID:-${TELEGRAM_CHAT_ID:-}}"
 INSTANCE_LOCK_FILE="${ORCH_INSTANCE_LOCK_FILE:-${BOUND_CHAT_ID:+$HOME/.claude/orchestrator-chat-$BOUND_CHAT_ID.lock}}"
 
 usage() {
-  printf '%s\n' 'Usage: launch.sh [start|stop|status|model|identity|--help]'
+  printf '%s\n' 'Usage: launch.sh [start|stop|supervise|status|model|identity|--help]'
 }
 
 # Machine-readable resolved model state, for the Telegram /model command.
@@ -174,6 +174,25 @@ stop() {
   fi
   rm -f "$LEASE_FILE"
   [[ -z "$INSTANCE_LOCK_FILE" ]] || rm -f "$INSTANCE_LOCK_FILE"
+}
+
+# Keep systemd attached to the real tmux lifecycle. Previously `start` exited
+# successfully and RemainAfterExit left the unit "active" after an abrupt pane
+# death, so systemd had nothing to restart. A normal unit stop is translated to
+# a clean shutdown; an unexpected disappearance is a failure and therefore
+# enters systemd's bounded Restart=/StartLimit path.
+supervise() {
+  local stopping=0
+  supervised_stop() {
+    stopping=1
+    stop
+  }
+  trap supervised_stop TERM INT HUP
+  start
+  while session_exists; do sleep "${ORCH_SUPERVISOR_POLL_SECONDS:-1}" & wait $! || true; done
+  (( stopping == 1 )) && return 0
+  echo "ERROR: supervised orchestrator session disappeared: $SESSION" >&2
+  return 1
 }
 
 # Claude blocks on an interactive "Is this a project you trust?" prompt before it
@@ -695,6 +714,7 @@ start() {
 case "${1:-start}" in
   start) start ;;
   stop) stop ;;
+  supervise) supervise ;;
   status) status ;;
   model) model_report ;;
   identity) identity_report ;;

@@ -100,8 +100,24 @@ this host. `UNKNOWN` is not green.
   `land-main`; any check whose inputs are absent reports `UNKNOWN`, never `PASS`.
 - **F.** Every piece of non-git host state is enumerated with the command that verifies
   it, and no ACCEPTed work exists only on this host.
+- **G.** The runtime models the product depends on come up on the clean server — Whisper
+  first, since speech-to-text is on the operator's path every day.
 
 F is currently *closer* than it was this morning: the six stranded branches are pushed.
+
+**G was added after this file was first written**, and not by a consilium member. It came
+out of triaging the operator's inbox on his instruction: message 1760 (2026-08-03) says
+the clean server must bring Whisper up — *"сервак буде чистий і пустий. мені треба, щоб
+все працювало як слід"* — and message 1767 asks, in his words, for an analysis to find
+**other** requirements missed the same way, because Whisper was in the requirements and
+implemented on both v2 and v3 and was still overlooked.
+
+Both had sat untriaged for two days. That is worth stating plainly: a definition of
+cutover-readiness written by five independent members, from the tracked record, missed a
+requirement the operator had already given directly — because the place his words land is
+not part of the tracked record the members read. **Running the 1767 analysis is therefore
+in the programme, at Wave 2**, since the honest assumption is that Whisper is not the only
+one.
 
 ## The programme — 3 lanes, 10–12 hours
 

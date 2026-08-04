@@ -5,15 +5,24 @@ import { isMissionCliAction } from "../core/mission-cli-actions";
 
 export type DocumentedInvocation = { file: string; line: number; group: string; action?: string };
 
-// Match executable single-line shell calls containing `bun ...mission-cli.ts
-// <group> [action]`, including quoted/variable paths and leading env settings.
-// Prose mentions and wrapped commands are deliberately not treated as calls.
+// Match executable shell calls containing `bun ...mission-cli.ts <group>
+// [action]`, including quoted/variable paths, leading env settings, and the
+// explicit backslash continuations used by the repository's shell examples.
+// Plain prose and soft-wrapped text without a shell continuation are excluded.
 export function documentedInvocations(repo: string, files: string[]): DocumentedInvocation[] {
   const found: DocumentedInvocation[] = [];
   const command = /\bbun\s+(?:"[^"]*mission-cli\.ts"|'[^']*mission-cli\.ts'|\S*mission-cli\.ts)\s+([a-z][a-z-]*)(?:\s+([a-z][a-z-]*))?/;
-  for (const file of files) for (const [index, line] of readFileSync(join(repo, file), "utf8").split("\n").entries()) {
-    const match = line.match(command);
-    if (match) found.push({ file, line: index + 1, group: match[1]!, action: match[2] });
+  for (const file of files) {
+    const lines = readFileSync(join(repo, file), "utf8").split("\n");
+    for (let index = 0; index < lines.length; index++) {
+      const start = index;
+      let logical = lines[index]!;
+      while (/\\\s*$/.test(logical) && index + 1 < lines.length) {
+        logical = `${logical.replace(/\\\s*$/, " ")}${lines[++index]!.trimStart()}`;
+      }
+      const match = logical.match(command);
+      if (match) found.push({ file, line: start + 1, group: match[1]!, action: match[2] });
+    }
   }
   return found;
 }

@@ -49,6 +49,10 @@ function run(args: string[]): void {
       const id = crypto.randomUUID(); store.createMission({ id, correlationId: required(v[0], "correlation id"), acceptanceId: required(v[1], "acceptance id") });
       console.log(`MISSION id=${id} state=queued`); return;
     }
+    if (group === "mission" && action === "complete" && v.length === 1) {
+      store.completeMission(required(v[0], "mission id"));
+      console.log(`MISSION id=${v[0]} state=clean`); return;
+    }
     if (group === "manager" && action === "create" && v.length === 2) {
       store.createManager({ id: required(v[1], "manager id"), missionId: required(v[0], "mission id"), parentId: v[0]!, depth: 1 });
       console.log(`MANAGER id=${v[1]} mission=${v[0]} state=ready`); return;
@@ -104,7 +108,7 @@ function run(args: string[]): void {
     }
     if (group === "outbox" && action === "enqueue" && v.length === 4) { store.enqueueOutbox({ id:v[0]!, channel:v[1]!, dedupeKey:v[2]!, payload:JSON.parse(v[3]!) }); console.log("OUTBOX"); return; }
     if (group === "status" && action === undefined) { console.log(JSON.stringify(store.reconstruct())); return; }
-    throw new Error("usage: mission create <correlation> <acceptance> | manager create <mission> <manager> | lane create <mission> <manager> <lane> <acceptance> <retries> | lane claim <lane> <owner> <lease-ms> | lane ack <lane> <owner> <token> | lane progress <lane> <owner> <token> <evidence> | lane complete <lane> <owner> <token> <sha> <report-path> <clean|NO-GO> <branch> | outbox enqueue ... | status");
+    throw new Error("usage: mission create <correlation> <acceptance> | mission complete <mission> | manager create <mission> <manager> | lane create <mission> <manager> <lane> <acceptance> <retries> | lane claim <lane> <owner> <lease-ms> | lane ack <lane> <owner> <token> | lane progress <lane> <owner> <token> <evidence> | lane complete <lane> <owner> <token> <sha> <report-path> <clean|NO-GO> <branch> | outbox enqueue ... | status");
   } finally { store.close(); }
 }
 

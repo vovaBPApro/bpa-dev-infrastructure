@@ -242,9 +242,16 @@ git -C "$REPO" show "$MERGE_SHA" --stat
 ```
 
 The lane terminal record was written at step 2.5 against the reviewed lane SHA.
-The CLI has no mission terminal transition; do not invent one or imply that the
-mission itself has been durably closed. Treat that missing lifecycle operation
-as an explicit `NO-GO` row if mission-terminal state is required by the caller.
+Close the mission only after the accepted change is landed and every lane in the
+mission has a `clean` terminal record. The command fails closed when the mission
+has no lanes or any lane is ready, running, or `NO-GO`:
+
+```sh
+INFRA_STATE_DB="$REPO/runtime/state.db" bun "$REPO/core/mission-cli.ts" \
+  mission complete "$MISSION_ID"
+```
+
+Re-run `status` and require the mission and its managers to report `state=clean`.
 
 Report the exact merge SHA, the verification command actually run at that SHA,
 and `result: clean` only when every condition in

@@ -1,5 +1,5 @@
 export const missionCliActions = [
-  ["mission", "create"], ["manager", "create"], ["lane", "create"],
+  ["mission", "create"], ["mission", "complete"], ["manager", "create"], ["lane", "create"],
   ["lane", "claim"], ["lane", "ack"], ["lane", "progress"],
   ["lane", "complete"], ["outbox", "enqueue"], ["status", undefined],
 ] as const;

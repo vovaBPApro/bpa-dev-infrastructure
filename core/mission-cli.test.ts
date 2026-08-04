@@ -73,6 +73,20 @@ test("restart reconstruction exposes the full executable v3 contract", async () 
 
 test("CLI preserves fencing across restarts", async()=>{ const database=await db(); const c=await invoke(database,"mission","create","corr","accept"); const m=/id=([^ ]+)/.exec(c.stdout)![1]!; await invoke(database,"manager","create",m,"mgr"); await invoke(database,"lane","create",m,"mgr","lane","accept","1"); const first=await invoke(database,"lane","claim","lane","one","500"); expect(first.exitCode).toBe(0); expect((await invoke(database,"lane","claim","lane","two","500")).stderr).toBe("ERROR FENCED"); });
 
+test("mission complete fails closed until every lane is clean, then persists terminal state", async () => {
+  const database=await db();
+  const {mission,token}=await readyLane(database,"lane-mission-close");
+  expect(await invoke(database,"mission","complete",mission)).toMatchObject({exitCode:1,stderr:`ERROR FENCED`});
+  const repo=await gitRepo(); const sha=tip(repo); const reportPath=join(repo,"..","mission-close.report.md");
+  await writeFile(reportPath,validReport(sha));
+  expect(await invokeWithRepo(database,repo,"lane","complete","lane-mission-close","owner-1",token,sha,reportPath,"clean","ag-lane-1")).toMatchObject({exitCode:0});
+  expect(await invoke(database,"mission","complete",mission)).toMatchObject({exitCode:0,stdout:`MISSION id=${mission} state=clean`});
+  const snapshot=JSON.parse((await invoke(database,"status")).stdout);
+  expect(snapshot.missions[0].state).toBe("clean");
+  expect(snapshot.managers[0].state).toBe("clean");
+  expect(await invoke(database,"mission","complete",mission)).toMatchObject({exitCode:0});
+});
+
 // instance/workboard.md V3-0.5: `lane complete` must not be able to record a
 // lane as terminal when its report fails gate/lane-exit.sh's contract check
 // -- the same three shapes gate/lane-exit.test.sh locks at the gate level,

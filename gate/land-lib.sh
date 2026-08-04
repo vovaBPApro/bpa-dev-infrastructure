@@ -708,11 +708,31 @@ land_assert_reap_safe() {
 # Compare an optional report claim with the output of the verify command that
 # the gate itself just ran. The completion guard validates the claim's syntax.
 land_verify_count() {
-  local report="$1" output_file="$2" mode="${3:-exact}" claim passed failed claimed_passed claimed_failed
+  local report="$1" output_file="$2" mode="${3:-exact}" claim passed failed claimed_passed claimed_failed indent
   claim=$(sed -n 's/^verify-count:[[:space:]]*//p' "$report")
   [ -n "$claim" ] || return 0
-  passed=$(awk 'BEGIN { IGNORECASE=1 } /^[0-9]+ pass(ed)?$/ { count++; value=$1 } END { if (count == 1) print value }' "$output_file")
-  failed=$(awk 'BEGIN { IGNORECASE=1 } /^[0-9]+ fail(ed)?$/ { count++; value=$1 } END { if (count == 1) print value }' "$output_file")
+  # The two modes parse output from two different producers, so they need two
+  # different anchors.
+  #
+  # `exact` reads land_verify_reviewed_sha's file, which is the framework's own
+  # output followed by the gate's unindented `%s pass` summary. Bun indents its
+  # summary, and the strict anchor is what keeps the gate's line the only match
+  # in that file -- tolerating the indent here would make BOTH lines match, the
+  # count ambiguous, and an honest mismatch unreportable.
+  #
+  # `carry` reads the CODER's command output, where Bun's leading space is all
+  # there is. That is the V3-0.38 anchor bug on the landing side: it made a
+  # landing that declared `verify: bun test` with a truthful count claim
+  # unlandable, which is exactly the pressure that produces the output-reshaping
+  # pipelines V3-0.40 is about. Tolerating the indent accepts more input but
+  # compares no less -- the claim is still matched below, the line must still be
+  # nothing but the count and its word, and two matches are still refused.
+  case "$mode" in
+    carry) indent='[[:space:]]*' ;;
+    *) indent='' ;;
+  esac
+  passed=$(awk -v re="^${indent}[0-9]+ pass(ed)?[[:space:]]*$" 'BEGIN { IGNORECASE=1 } $0 ~ re { count++; value=$1 } END { if (count == 1) print value }' "$output_file")
+  failed=$(awk -v re="^${indent}[0-9]+ fail(ed)?[[:space:]]*$" 'BEGIN { IGNORECASE=1 } $0 ~ re { count++; value=$1 } END { if (count == 1) print value }' "$output_file")
   if [ -z "$passed" ] || [ -z "$failed" ]; then
     echo "LAND verify-count output=missing-unambiguous-pass/fail-count" >&2
     return 1

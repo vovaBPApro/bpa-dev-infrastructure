@@ -830,6 +830,31 @@ done
 assert_output_has "$fixture_root/ag-queue-a-output.txt" 'LAND verify-count carried report=2/0 actual=2/0'
 assert_output_has "$fixture_root/ag-queue-b-output.txt" 'LAND verify-count carried report=2/0 actual=3/0'
 
+# V3-0.38 regression lock, landing half: land_verify_count's `carry` mode parses
+# the CODER's command output, and its anchor did not tolerate the leading space
+# Bun puts before its summary. So a lane that declared the repository's own test
+# command with an honest count claim was refused with
+# `output=missing-unambiguous-pass/fail-count` -- fail-closed, but on a report
+# that was telling the truth, which is what drives authors to reshape output
+# with the pipelines V3-0.40 is about. The indented command output below is the
+# only difference from the queue fixture above.
+make_fixture verify-count-indented
+indented_repo="$fixture_root/verify-count-indented-repo"
+git -C "$indented_repo" checkout -b ag-verify-count-indented main >/dev/null
+printf 'import { test, expect } from "bun:test"; test("indented", () => expect(true).toBe(true));\n' > "$indented_repo/indented.test.ts"
+git -C "$indented_repo" add indented.test.ts
+git -C "$indented_repo" commit -m indented >/dev/null
+indented_sha=$(git -C "$indented_repo" rev-parse HEAD)
+git -C "$indented_repo" checkout main >/dev/null
+printf "commit: %s fixture\nverify: printf '  2 pass\\\\n  0 fail\\\\n'\nverify-count: 2/0\nresult: clean\nsecret-scan: clean\nremaining: none\n" "$indented_sha" > "$fixture_root/verify-count-indented-report.md"
+review "$fixture_root/ag-verify-count-indented.review.md" ACCEPT independent-reviewer "$indented_sha" separate-session
+indented_output="$fixture_root/verify-count-indented-output.txt"
+"$land" --branch ag-verify-count-indented --item-id ag-verify-count-indented --report "$fixture_root/verify-count-indented-report.md" --repo "$indented_repo" --run-verify >"$indented_output" 2>&1
+assert_output_lacks "$indented_output" 'LAND verify-count output=missing-unambiguous-pass/fail-count'
+assert_output_has "$indented_output" 'LAND verify-count carried report=2/0 actual=2/0'
+assert_output_has "$indented_output" 'LAND step=post-merge-verify status=pass'
+assert_output_has "$indented_output" 'LAND verdict=landed sha='
+
 # A colluding report and candidate-authored command both fabricate the same low
 # count. The gate-owned inventory still measures two tests and refuses them.
 make_fixture verify-count-fabricated

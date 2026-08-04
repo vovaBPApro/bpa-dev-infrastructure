@@ -14,7 +14,8 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 image="${METEORITE_IMAGE:-ubuntu:24.04}"
-report="${METEORITE_REPORT:-$repo_root/reports/meteorite-latest.md}"
+state_home="${XDG_STATE_HOME:-${HOME:?HOME must be set when XDG_STATE_HOME is unset}/.local/state}"
+report="${METEORITE_REPORT:-$state_home/bpa-dev-infrastructure/evidence/meteorite-latest.md}"
 keep="${METEORITE_KEEP:-0}"
 ref=""
 repo_url="${METEORITE_REPO_URL:-}"
@@ -97,7 +98,11 @@ teardown() {
       docker rm -f "$cid" >/dev/null 2>&1 || true
     fi
   fi
-  write_report || printf 'ERROR: could not write report: %s\n' "$report" >&2
+  if write_report; then
+    printf '[meteorite] report: %s\n' "$report"
+  else
+    printf 'ERROR: could not write report: %s\n' "$report" >&2
+  fi
   return "$status"
 }
 trap teardown EXIT

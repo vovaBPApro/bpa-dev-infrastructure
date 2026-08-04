@@ -54,7 +54,9 @@ donor_ref="refs/meteorite-candidates/$publication_id/v2-deprecated"
 published_refs=("$temp_ref" "$donor_ref")
 
 revise_report_for_leak() {
-  local leaked="$1" report="${METEORITE_REPORT:-$repo_root/reports/meteorite-latest.md}" tmp
+  local leaked="$1" state_home report tmp
+  state_home="${XDG_STATE_HOME:-${HOME:?HOME must be set when XDG_STATE_HOME is unset}/.local/state}"
+  report="${METEORITE_REPORT:-$state_home/bpa-dev-infrastructure/evidence/meteorite-latest.md}"
   [[ -f "$report" ]] || return 0
   tmp="$(mktemp "$(dirname "$report")/.meteorite-cleanup.XXXXXX")" || return 1
   awk -v leaked="$leaked" '

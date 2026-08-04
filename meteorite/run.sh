@@ -80,7 +80,7 @@ write_report() {
       printf -- '- %s: %s\n' "${entry%%|*}" "${entry#*|}"
     done
     printf '\n## Explicitly not proven\n\n'
-    printf -- '- unit activation — bootstrap stage 1 renders or activates no systemd units.\n'
+    printf -- '- unit activation — source installation renders units but explicitly excludes activation because the rebuild container has no systemd PID 1.\n'
     printf -- '- watchdog arm — bootstrap stage 1 has no watchdog arm/disarm boundary.\n'
     printf -- '- Telegram transport — no credential is supplied and no authenticated transport is started.\n'
     printf -- '- shell capability exclusions — the cases pinned in `instance/expected-shell-capability-exclusions.tsv` remain unproven when their named kernel capability is absent.\n'
@@ -210,7 +210,7 @@ commands=(
   # rather than accidentally relying on a donor ref already present on the host.
   "bootstrap-test-prerequisites|test -n '$donor_sha' && test -n '$donor_ref' && ln -sfn /root/.bun/bin/bun /usr/local/bin/bun && git -C /work/source fetch origin '$donor_ref':refs/heads/v2-deprecated && test \"\$(git -C /work/source rev-parse refs/heads/v2-deprecated)\" = '$donor_sha'"
   "bootstrap-dry-run|cd /work/source && bash bootstrap/install.sh --dry-run"
-  "bootstrap-install|cd /work/source && INSTALL_ROOT=/work/install REPO_URL=/work/source REPO_BRANCH=meteorite-target TEST_GATE_ORIGIN_URL='$repo_url' ENV_FILE=/work/config/orchestrator.env BUN_BIN=/root/.bun/bin/bun RUNTIME_DIR=/work/runtime INFRA_STATE_DB=/work/runtime/state.db FULL_SUITE_ON_CALENDAR='*-*-* 03:30:00' ORCH_WATCHDOG_INTERVAL=60 bash bootstrap/install.sh"
+  "bootstrap-install|cd /work/source && INSTALL_ROOT=/work/install REPO_URL=/work/source REPO_BRANCH=meteorite-target TEST_GATE_ORIGIN_URL='$repo_url' ENV_FILE=/work/config/orchestrator.env BUN_BIN=/root/.bun/bin/bun RUNTIME_DIR=/work/runtime INFRA_STATE_DB=/work/runtime/state.db FULL_SUITE_ON_CALENDAR='*-*-* 03:30:00' ORCH_WATCHDOG_INTERVAL=60 bash bootstrap/install.sh --without-activation"
   "bootstrap-verify-source|cd /work/source && INSTALL_ROOT=/work/install ENV_FILE=/work/config/orchestrator.env BUN_BIN=/root/.bun/bin/bun RUNTIME_DIR=/work/runtime INFRA_STATE_DB=/work/runtime/state.db bash bootstrap/install.sh --verify-source"
   "test-prerequisites|test -n '$donor_sha' && test -n '$donor_ref' && test -x /usr/local/bin/bun && test \"\$(git -C /work/install rev-parse refs/remotes/origin/v2-deprecated)\" = '$donor_sha'"
   "full-test-suite|cd /work/install && PATH=/root/.bun/bin:\$PATH /root/.bun/bin/bun test"

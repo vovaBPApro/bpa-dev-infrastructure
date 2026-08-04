@@ -107,6 +107,13 @@ if "$INSTALLER" --dry-run --verify-source >/dev/null 2>&1; then
   echo 'ERROR: --dry-run and --verify-source were accepted together' >&2
   exit 1
 fi
+if "$INSTALLER" --without-activation --verify-source >/dev/null 2>&1; then
+  echo 'ERROR: --without-activation and --verify-source were accepted together' >&2
+  exit 1
+fi
+grep -Fq 'if "$WITHOUT_ACTIVATION"' "$INSTALLER"
+grep -Fq "ACTIVATION EXCLUDED capability=systemd-pid1 mode=without-activation" "$INSTALLER"
+grep -Fq 'bash bootstrap/install.sh --without-activation' "$REPO_ROOT/meteorite/run.sh"
 echo 'PASS argument validation (--help, unknown flag, --verify, combined flags)'
 
 # ══════════════════════════════════════════════════════════════════════════

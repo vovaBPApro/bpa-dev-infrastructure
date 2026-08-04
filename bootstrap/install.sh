@@ -26,6 +26,7 @@ BUN_VERSION="${BUN_VERSION:-1.3.14}"
 INSTALL_ROOT="${INSTALL_ROOT:-/root/bpa-dev-infrastructure}"
 DRY_RUN=false
 VERIFY_SOURCE=false
+WITHOUT_ACTIVATION=false
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -41,7 +42,7 @@ EXPECTED_UNITS_FILE="${EXPECTED_UNITS_FILE:-$INSTALL_ROOT/instance/expected-unit
 
 usage() {
   cat <<'EOF'
-Usage: bootstrap/install.sh [--dry-run | --verify-source]
+Usage: bootstrap/install.sh [--dry-run | --verify-source | --without-activation]
 
 Bootstrap: prerequisites, Bun, repository sync, environment, state database,
 hygiene cron, repository test gate, systemd unit rendering, and verified
@@ -53,6 +54,8 @@ TEST_GATE_ORIGIN_URL,
 CRONTAB_CMD, SYSTEMD_SYSTEM_DIR, EXPECTED_UNITS_FILE.
 --verify-source checks only source-visible boundaries; the disposable systemd
 container test proves activation and recovery without touching the host.
+--without-activation completes source installation and unit rendering but
+declines activation for a PID-1-less rebuild container.
 The Telegram token is never accepted as an argument. Paste it into ENV_FILE
 locally once a later row uses it.
 EOF
@@ -62,6 +65,7 @@ while (($#)); do
   case "$1" in
     --dry-run) DRY_RUN=true ;;
     --verify-source) VERIFY_SOURCE=true ;;
+    --without-activation) WITHOUT_ACTIVATION=true ;;
     -h|--help) usage; exit 0 ;;
     *) echo "ERROR: unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -70,6 +74,10 @@ done
 
 if "$DRY_RUN" && "$VERIFY_SOURCE"; then
   echo "ERROR: --dry-run and --verify-source are mutually exclusive" >&2
+  exit 2
+fi
+if "$WITHOUT_ACTIVATION" && { "$DRY_RUN" || "$VERIFY_SOURCE"; }; then
+  echo "ERROR: --without-activation cannot be combined with another mode" >&2
   exit 2
 fi
 
@@ -467,6 +475,11 @@ if [[ "${BOOTSTRAP_LIB_ONLY:-false}" != true ]]; then
   install_hygiene_cron
   run_install_test_gate
   render_units
-  activate_units
-  echo "Bootstrap completed: prerequisites, Bun, repository, environment, state database, hygiene cron, test gate, unit rendering, and verified activation."
+  if "$WITHOUT_ACTIVATION"; then
+    echo 'ACTIVATION EXCLUDED capability=systemd-pid1 mode=without-activation'
+    echo "Bootstrap completed: prerequisites, Bun, repository, environment, state database, hygiene cron, test gate, and unit rendering; activation excluded."
+  else
+    activate_units
+    echo "Bootstrap completed: prerequisites, Bun, repository, environment, state database, hygiene cron, test gate, unit rendering, and verified activation."
+  fi
 fi

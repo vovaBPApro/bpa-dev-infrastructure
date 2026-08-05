@@ -38,7 +38,7 @@ import { Database } from "bun:sqlite";
 import { collectDocs, type InstructionDoc } from "./docs.ts";
 import { admitsAudience } from "./compose.ts";
 import { latestHandoffPath } from "./handoff.ts";
-import { capturedMsgIds, isHrOpen } from "./ledger.ts";
+import { capturedMsgIds, hrDisposition, isHrOpen, parseHrFields } from "./ledger.ts";
 
 // The role a SessionStart load targets. Orchestrator is the only session that
 // gets a SessionStart hook (§2.3); factored out so the checker and tests share
@@ -161,6 +161,22 @@ function collectOpenHr(decisionsDir: string): { name: string; contents: string }
     if (!/^HR-.+\.md$/i.test(entry)) continue;
     const contents = readFileSync(join(decisionsDir, entry), "utf8");
     if (!isHrOpen(contents)) continue;
+    out.push({ name: entry, contents });
+  }
+  return out;
+}
+
+// Parked HR files: the `deferred` disposition, which is neither delivered nor
+// discharged. Collected separately from collectOpenHr() on purpose — a lane must
+// not be handed a row that was set aside deliberately, but nobody may lose count
+// of how many were set aside.
+function collectParkedHr(decisionsDir: string): { name: string; contents: string }[] {
+  if (!existsSync(decisionsDir)) return [];
+  const out: { name: string; contents: string }[] = [];
+  for (const entry of readdirSync(decisionsDir).sort()) {
+    if (!/^HR-.+\.md$/i.test(entry)) continue;
+    const contents = readFileSync(join(decisionsDir, entry), "utf8");
+    if (hrDisposition(parseHrFields(contents)) !== "deferred") continue;
     out.push({ name: entry, contents });
   }
   return out;
@@ -293,6 +309,28 @@ export function collectSessionLoad(repo: string): SessionLoad {
     }
     ledgerLines.push("");
   }
+  // Parked rows, indexed one line each. They are `deferred`: deliberately not
+  // delivered, which is why the count and the review-by date have to be here.
+  // Round-2 review finding 5 — `parked` was a quiet hiding place with the lock
+  // left open: absent from this load, absent from the pack preamble, and bounded
+  // only by a self-chosen date with no ceiling. The horizon is now bounded by
+  // the checker (instance/params.yaml: ledger.parked_horizon_days); this is the
+  // other half, making the bucket visible rather than merely bounded.
+  const parked = collectParkedHr(decisionsDir);
+  ledgerLines.push(`### Parked (${parked.length}) — deferred on purpose, not delivered, each bounded by review-by`);
+  if (parked.length === 0) {
+    ledgerLines.push("(none)");
+  } else {
+    for (const hr of parked) {
+      const reviewBy = frontmatterValue(hr.contents, "review-by") ?? "NO-REVIEW-BY";
+      const heading = trimTrailing(hr.contents)
+        .find((line) => line.startsWith("# "))
+        ?.replace(/^#\s*/, "") ?? "(no heading)";
+      ledgerLines.push(`- ${hr.name} [review-by: ${reviewBy}] ${heading}`);
+    }
+  }
+  ledgerLines.push("");
+
   const untriaged = collectUntriagedInbox(decisionsDir);
   ledgerLines.push("### Untriaged inbound (inbox.jsonl)");
   if (untriaged.length === 0) {

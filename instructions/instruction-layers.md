@@ -85,7 +85,7 @@ tentative routing, and a **mandatory** `state` from this closed vocabulary:
 | `pending` | captured, not yet triaged or routed | — (72h SLA on `date:`) | **open** — delivered in full to every pack and session load |
 | `owed` | triaged, obligation identified, work not done | `tracked-by:` | **open** — listed in every session load until closed |
 | `routed` | binding force moved into a doc or param | `routes-to:` | closed |
-| `parked` | deliberately set aside | `review-by:` (must be in the future) | deferred — neither delivered nor discharged |
+| `parked` | deliberately set aside | `review-by:` (in the future, within the parked horizon) | deferred — neither delivered nor discharged, but counted |
 | `superseded` | replaced by a later ruling | `superseded-by:` | closed |
 
 `owed` exists because the older vocabulary conflated "ruling routed into a doc"
@@ -98,20 +98,44 @@ outside this set, is a checker FAIL **and is treated as open and delivered**
 until fixed — fail-visible, never fail-hidden. A stateless file must never be
 quietly skipped by the thing that reads it.
 
-**Every closure claim must resolve, on every run.** `routes-to:`,
-`tracked-by:`, `superseded-by:` and a triage row's structured `closes:` must
-name a workboard row id present in `instance/workboard.md`, an existing repo
-path, or a doc id in the generated index. A claim that resolves to nothing is a
-FAIL and the row is **not** treated as closed. Resolution is re-verified on
-every run rather than at write time, which is what makes board renumbering
-safe: the NI→V3 rebuild orphaned three closures pointing at `NI-1`/`NI-2`/`NI-3`,
-and under this rule the renumbering commit goes red at the gate. Free-text
-`reason` prose cannot close anything.
+**Every closure claim names ONE target, and it must resolve on every run.**
+`routes-to:`, `tracked-by:`, `superseded-by:` and a triage row's structured
+`closes:` take a single token — a workboard row id present in
+`instance/workboard.md`, an existing repo path, or a doc id in the generated
+index — and nothing else. Three shapes are refused, each with its own repair:
 
-Enforced by `tools/instructions/ledger.ts` (`checkHrStates`,
+- **prose** — anything with whitespace in it. Write the target; put the sentence
+  in the body. A value like `not done yet, tracked in instance/workboard.md`
+  resolved under the first version of this rule, because one token in it named
+  a real file. A claim whose own words say the work is not done must not pass.
+- **a container** — `instance/workboard.md`, any directory, any `README.md`.
+  These exist regardless of what happened to the thing the claim was about, so
+  they discharge nothing. Name the row, doc or file inside.
+- **a target that does not exist** — the original rule, unchanged.
+
+Resolution is re-verified on every run rather than at write time. That is what
+makes board renumbering safe: rename a row an HR file points at and the checker
+goes red without the HR file being touched. **This catches only claims made in
+the structured field.** Free-text `reason` prose cannot close anything, but
+neither is it read: a triage row asserting completion in prose with
+`answer_status: "answered"` is not currently checked against anything, which is
+how the NI→V3 renumbering's three false closures survived. Requiring `answered`
+to be backed by a resolving `closes:` is a separate, larger row (V3-2.20).
+
+**A park is bounded in both directions.** `review-by:` is mandatory, FAILs once
+past, and FAILs when set further out than `instance/params.yaml:
+ledger.parked_horizon_days`. A date with no ceiling is not a bound — parking
+something for seventy years and deleting it are the same act. Parked rows are
+not delivered, so their COUNT is stated next to the open count in every pack
+preamble and every session load: undelivered and uncounted is invisible.
+
+Enforced by `tools/instructions/ledger.ts` (`checkHrStates`, `checkHrAging`,
 `checkTriageClosures`), surfaced by `tools/instructions/check.ts`, and run by
-`gate/lane-exit.sh` and `gate/land.sh` on every lane exit and every landing.
-Pre-existing debt is enumerated with an owner and an expiry in
+`gate/lane-exit.sh` on every lane exit and by `gate/land.sh` on every landing —
+there against the **merged result**, after the merge and before the push, on the
+rollback path. A pre-merge run alone inspects the tree the candidate is about to
+change; two lanes can each be green alone and red together, and only the merged
+tree shows it. Pre-existing debt is enumerated with an owner and an expiry in
 `instance/hr-state-exemptions.tsv`; a new violation is not in that file, so it
 fails immediately.
 

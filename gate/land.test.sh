@@ -1559,4 +1559,214 @@ assert test "$(git -C "$fixture_root/meteorite-refusal-repo" rev-parse main)" = 
 assert test "$(git -C "$fixture_root/meteorite-refusal-repo" rev-parse HEAD)" = "$meteorite_before"
 assert test -z "$(git -C "$fixture_root/meteorite-refusal-repo" status --porcelain)"
 
+# --------------------------------------------------------------------------
+# Decisions-ledger execution site at LANDING time (V3-3.1, round-2 findings 1
+# and 2).
+#
+# What these lock is not the ledger predicate -- tools/instructions/hr-state.
+# test.ts covers that -- it is that gate/land.sh RUNS it, against the MERGED
+# RESULT, and honours a red verdict with a rollback.
+#
+# Round 1 shipped the wiring with no scenario at all: the reviewer deleted the
+# entire ledger-state block from gate/land.sh and land.test.sh, land-target-
+# branch.test.sh, land-rollback.test.sh and meteorite-gate.test.sh all stayed
+# green. The lane-exit half got four scenarios; this half got none, which is the
+# same "present, plausible, cannot fail" shape the row exists to remove.
+# Deleting either invocation must now turn one of these red.
+#
+# The stub checker's verdict is chosen by the TREE it is run against: it exits 1
+# only when instance/ledger-red.marker is present. That is what separates the
+# two call sites. A checker with a fixed verdict cannot tell "ran against main
+# before the merge" from "ran against the merged result", and it was exactly
+# that indistinguishability that let round 1 read plausible while checking the
+# wrong tree.
+install_tree_sensitive_checker() {
+  # $1 repo
+  mkdir -p "$1/tools/instructions"
+  cat > "$1/tools/instructions/check.ts" <<'EOF'
+#!/usr/bin/env bun
+// Stub instruction checker for the land suite. Red iff the marker is in the
+// tree it is pointed at, so its verdict distinguishes the pre-merge target
+// tree from the merged result.
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+const repoIndex = process.argv.indexOf("--repo");
+const repo = repoIndex === -1 ? process.cwd() : process.argv[repoIndex + 1];
+const red = existsSync(join(repo, "instance", "ledger-red.marker"));
+console.log(`stub instruction checker: repo=${repo} red=${red}`);
+process.exit(red ? 1 : 0);
+EOF
+  git -C "$1" add tools/instructions/check.ts
+  git -C "$1" commit -m "track the instruction checker" >/dev/null
+  git -C "$1" push origin main >/dev/null
+}
+
+# THE regression lock for finding 1. main is green, the candidate is red. Under
+# the round-1 wiring -- one invocation, before the merge, against $repo already
+# asserted onto the target branch -- this landing goes green and the violation
+# lands. It must now be blocked and rolled back.
+make_fixture ledger-merged-red
+ledger_repo="$fixture_root/ledger-merged-red-repo"
+install_tree_sensitive_checker "$ledger_repo"
+ledger_before=$(git -C "$ledger_repo" rev-parse main)
+git -C "$ledger_repo" checkout -b ag-ledger-red >/dev/null
+printf 'a stateless HR file, an unresolvable closure, an expired exemption\n' > "$ledger_repo/instance/ledger-red.marker"
+git -C "$ledger_repo" add instance/ledger-red.marker
+git -C "$ledger_repo" commit -m "introduce a ledger violation" >/dev/null
+ledger_sha=$(git -C "$ledger_repo" rev-parse HEAD)
+git -C "$ledger_repo" checkout main >/dev/null
+report "$fixture_root/ledger-merged-red-report.md" "$ledger_sha"
+ledger_output="$fixture_root/ledger-merged-red-output.txt"
+if "$land" --branch ag-ledger-red --item-id ag-ledger-red --report "$fixture_root/ledger-merged-red-report.md" --repo "$ledger_repo" --no-push >"$ledger_output" 2>&1; then
+  echo 'ledger-merged-red: a landing carrying a ledger violation was accepted' >&2
+  exit 1
+fi
+# The baseline run saw the clean target tree and passed. Only the merged-result
+# run can have produced the failure, which is the property under test.
+assert_output_has "$ledger_output" 'LAND ledger-state phase=baseline'
+assert_output_has "$ledger_output" 'LAND step=ledger-state status=pass'
+assert_output_has "$ledger_output" 'LAND ledger-state phase=merged'
+assert_output_has "$ledger_output" 'red=true'
+assert_output_has "$ledger_output" 'LAND step=ledger-state-merged status=fail'
+assert_output_has "$ledger_output" 'LAND verdict=aborted sha=none'
+assert test "$(git -C "$ledger_repo" rev-parse main)" = "$ledger_before"
+assert test "$(git -C "$ledger_repo" rev-parse HEAD)" = "$ledger_before"
+assert test -z "$(git -C "$ledger_repo" status --porcelain)"
+assert_not git -C "$ledger_repo" merge-base --is-ancestor "$ledger_sha" HEAD
+
+# The other half of the lock: an otherwise-identical landing whose merged result
+# is GREEN must still land. Without this, "block everything" would pass the
+# scenario above and the gate would be useless rather than wrong.
+make_fixture ledger-merged-green
+ledger_green_repo="$fixture_root/ledger-merged-green-repo"
+install_tree_sensitive_checker "$ledger_green_repo"
+ledger_green_sha=$(make_lane "$ledger_green_repo" ag-ledger-green)
+report "$fixture_root/ledger-merged-green-report.md" "$ledger_green_sha"
+ledger_green_output="$fixture_root/ledger-merged-green-output.txt"
+"$land" --branch ag-ledger-green --item-id ag-ledger-green --report "$fixture_root/ledger-merged-green-report.md" --repo "$ledger_green_repo" --no-push >"$ledger_green_output" 2>&1
+assert_output_has "$ledger_green_output" 'LAND ledger-state phase=baseline'
+assert_output_has "$ledger_green_output" 'LAND ledger-state phase=merged'
+assert_output_has "$ledger_green_output" 'red=false'
+assert_output_has "$ledger_green_output" 'LAND step=ledger-state-merged status=pass'
+assert git -C "$ledger_green_repo" merge-base --is-ancestor "$ledger_green_sha" HEAD
+
+# An already-red TARGET branch is refused before the merge, not merged into.
+# This is what the baseline run is for, and it keeps "the candidate broke it"
+# distinguishable from "it was already broken".
+make_fixture ledger-baseline-red
+ledger_base_repo="$fixture_root/ledger-baseline-red-repo"
+install_tree_sensitive_checker "$ledger_base_repo"
+printf 'pre-existing violation on the target branch\n' > "$ledger_base_repo/instance/ledger-red.marker"
+git -C "$ledger_base_repo" add instance/ledger-red.marker
+git -C "$ledger_base_repo" commit -m "target branch is already red" >/dev/null
+git -C "$ledger_base_repo" push origin main >/dev/null
+ledger_base_before=$(git -C "$ledger_base_repo" rev-parse main)
+ledger_base_sha=$(make_lane "$ledger_base_repo" ag-ledger-baseline)
+report "$fixture_root/ledger-baseline-red-report.md" "$ledger_base_sha"
+ledger_base_output="$fixture_root/ledger-baseline-red-output.txt"
+if "$land" --branch ag-ledger-baseline --item-id ag-ledger-baseline --report "$fixture_root/ledger-baseline-red-report.md" --repo "$ledger_base_repo" --no-push >"$ledger_base_output" 2>&1; then
+  echo 'ledger-baseline-red: landed onto an already-red target branch' >&2
+  exit 1
+fi
+assert_output_has "$ledger_base_output" 'LAND ledger-state phase=baseline'
+assert_output_has "$ledger_base_output" 'LAND step=ledger-state status=fail'
+# Nothing was merged, so the merged-result run never had to speak.
+assert_not grep -Fq 'phase=merged' "$ledger_base_output"
+assert test "$(git -C "$ledger_base_repo" rev-parse main)" = "$ledger_base_before"
+
+# The case that pins "merged result" specifically, and that no single-tree run
+# can satisfy: the candidate is green ALONE, the target branch is green ALONE,
+# and only their merge is red. This is the ordinary shape of the failure --
+# one lane renumbers a workboard row while another lane, cut earlier, writes a
+# closure claim against it. Checking the candidate instead of the target would
+# have been a smaller bug than round 1's, and would still miss this.
+#
+# The stub is red when a line of instance/claim.txt names no line of
+# instance/rows.txt, which is the ledger's real predicate in miniature.
+make_fixture ledger-cross-lane
+cross_repo="$fixture_root/ledger-cross-lane-repo"
+mkdir -p "$cross_repo/tools/instructions"
+cat > "$cross_repo/tools/instructions/check.ts" <<'EOF'
+#!/usr/bin/env bun
+// Stub instruction checker: every claim must name an existing row.
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+const repoIndex = process.argv.indexOf("--repo");
+const repo = repoIndex === -1 ? process.cwd() : process.argv[repoIndex + 1];
+const read = (rel) => {
+  const path = join(repo, rel);
+  if (!existsSync(path)) return [];
+  return readFileSync(path, "utf8").split("\n").map((line) => line.trim()).filter(Boolean);
+};
+const rows = new Set(read("instance/rows.txt"));
+const dangling = read("instance/claim.txt").filter((claim) => !rows.has(claim));
+console.log(`stub instruction checker: repo=${repo} dangling=${dangling.join(",") || "none"}`);
+process.exit(dangling.length === 0 ? 0 : 1);
+EOF
+printf 'V3-1\n' > "$cross_repo/instance/rows.txt"
+git -C "$cross_repo" add tools/instructions/check.ts instance/rows.txt
+git -C "$cross_repo" commit -m "track the checker and one board row" >/dev/null
+git -C "$cross_repo" push origin main >/dev/null
+
+# The candidate, cut from that base: it claims the row that exists in ITS tree.
+git -C "$cross_repo" checkout -b ag-ledger-cross >/dev/null
+printf 'V3-1\n' > "$cross_repo/instance/claim.txt"
+git -C "$cross_repo" add instance/claim.txt
+git -C "$cross_repo" commit -m "close against V3-1" >/dev/null
+cross_sha=$(git -C "$cross_repo" rev-parse HEAD)
+# Unpiped, status captured directly: a pipe would report the filter's status.
+cross_candidate_status=0
+env -u BUN_BIN bun "$cross_repo/tools/instructions/check.ts" --repo "$cross_repo" --strict >"$fixture_root/cross-candidate.out" 2>&1 || cross_candidate_status=$?
+assert test "$cross_candidate_status" -eq 0        # green as a candidate, alone
+
+# The target branch moves on: the row is renumbered. No claim exists here yet.
+git -C "$cross_repo" checkout main >/dev/null
+printf 'V3-9\n' > "$cross_repo/instance/rows.txt"
+git -C "$cross_repo" add instance/rows.txt
+git -C "$cross_repo" commit -m "renumber V3-1 to V3-9" >/dev/null
+git -C "$cross_repo" push origin main >/dev/null
+cross_target_status=0
+env -u BUN_BIN bun "$cross_repo/tools/instructions/check.ts" --repo "$cross_repo" --strict >"$fixture_root/cross-target.out" 2>&1 || cross_target_status=$?
+assert test "$cross_target_status" -eq 0           # green as a target, alone
+
+cross_before=$(git -C "$cross_repo" rev-parse main)
+report "$fixture_root/ledger-cross-lane-report.md" "$cross_sha"
+cross_output="$fixture_root/ledger-cross-lane-output.txt"
+if "$land" --branch ag-ledger-cross --item-id ag-ledger-cross --report "$fixture_root/ledger-cross-lane-report.md" --repo "$cross_repo" --no-push >"$cross_output" 2>&1; then
+  echo 'ledger-cross-lane: two individually green trees merged into a red one and landed' >&2
+  exit 1
+fi
+assert_output_has "$cross_output" 'LAND step=ledger-state status=pass'
+assert_output_has "$cross_output" 'dangling=V3-1'
+assert_output_has "$cross_output" 'LAND step=ledger-state-merged status=fail'
+assert test "$(git -C "$cross_repo" rev-parse main)" = "$cross_before"
+assert test -z "$(git -C "$cross_repo" status --porcelain)"
+
+# No landing-side scenario for a tracked-but-DELETED checker, deliberately: the
+# working-tree guard at gate/land.sh:243 refuses a dirty checkout long before
+# the ledger step, so `rm` cannot reach this gate at all. Asserted rather than
+# assumed, because "we thought an earlier guard covered it" is how gaps stay
+# open. gate/lane-exit.test.sh keeps its own scenario for that hatch, which it
+# needs: lane exit has no dirty-tree precondition.
+make_fixture ledger-checker-deleted
+ledger_del_repo="$fixture_root/ledger-checker-deleted-repo"
+install_tree_sensitive_checker "$ledger_del_repo"
+ledger_del_before=$(git -C "$ledger_del_repo" rev-parse main)
+ledger_del_sha=$(make_lane "$ledger_del_repo" ag-ledger-deleted)
+rm "$ledger_del_repo/tools/instructions/check.ts"   # still tracked in the index
+report "$fixture_root/ledger-checker-deleted-report.md" "$ledger_del_sha"
+ledger_del_output="$fixture_root/ledger-checker-deleted-output.txt"
+if "$land" --branch ag-ledger-deleted --item-id ag-ledger-deleted --report "$fixture_root/ledger-checker-deleted-report.md" --repo "$ledger_del_repo" --no-push >"$ledger_del_output" 2>&1; then
+  echo 'ledger-checker-deleted: an rm disabled the ledger gate' >&2
+  exit 1
+fi
+assert_output_has "$ledger_del_output" 'LAND step=working-tree status=fail'
+assert test "$(git -C "$ledger_del_repo" rev-parse main)" = "$ledger_del_before"
+
+# A repo that never carried this control plane's instruction tooling is scoped
+# out explicitly, not silently skipped: this gate is generic and must still land
+# lanes in a product repo. `good` above is that path; assert it names itself.
+assert_output_has "$good_output" 'LAND step=ledger-state phase=baseline status=not-applicable'
+assert_output_has "$good_output" 'LAND step=ledger-state-merged phase=merged status=not-applicable'
+
 echo "land tests: pass"

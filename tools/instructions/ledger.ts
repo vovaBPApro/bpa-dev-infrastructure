@@ -441,9 +441,12 @@ export function resolveTarget(
     const resolved = resolveRepoPath(repo, token);
     if (resolved !== undefined) {
       if (isContainerTarget(repo, resolved)) return "container";
-      // A bare root filename still resolves against nothing: it names no
-      // directory, so it carries none of the "which one inside it" the rule is
-      // about. The test reads the RESOLVED path, so `x` and `./x` answer alike.
+      // A path target must be more than a bare filename. Without a separator a
+      // token is in the same namespace as a workboard row id or a doc id, and
+      // those are resolved above; letting a root file answer here would make
+      // which one wins depend on what happens to exist. Unchanged from round 2
+      // except that the test reads the RESOLVED path, so `x` and `./x` answer
+      // alike instead of differently.
       if (resolved.rel.includes(sep)) return "resolved";
     }
   }

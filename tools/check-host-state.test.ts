@@ -655,14 +655,39 @@ describe("this installation's own unit enumeration", () => {
   test("the armed root timer that operates this fleet is named", () => {
     // The round-2 finding, locked. This row existing is what makes the
     // difference between an enumeration and a claim of one.
+    //
+    // 2026-08-05: F16 is CLOSED -- V3-2.11 landed the script, V3-2.12 landed
+    // the templates, and the deployed service now execs the tracked copy. This
+    // test used to pin `unresolved` and the literal /root/.local/bin path, so
+    // repairing the host turned it red. Pinning whichever disposition happens
+    // to be true today is the wrong lock: it asserts a snapshot, and a snapshot
+    // of host state is the one thing guaranteed to change. The finding was
+    // never "this row says unresolved" -- it was "an armed root unit runs code
+    // from outside git, and nothing named it". So that is what is locked here.
     const rows = unitManifest(REPO);
     const timer = rows.find((row) => row.unit === "orch-fleet-nudge.timer" && row.manager === "system");
     expect(timer).toBeDefined();
     expect(timer!.state).toBe("armed");
-    expect(timer!.disposition).toBe("unresolved");
     const service = rows.find((row) => row.unit === "orch-fleet-nudge.service" && row.manager === "system");
-    expect(service!.exec).toBe("/root/.local/bin/orch-fleet-nudge.sh");
+    expect(service).toBeDefined();
     expect(service!.state).toBe("armed");
+    // A `rebuildable` disposition is a claim about the ExecStart too, not only
+    // about the unit template. Round 2's defect was an armed root service whose
+    // program this repository did not carry; asserting the target really is
+    // here is the assertion that would have caught it, and it keeps catching a
+    // regression to any untracked program.
+    if (service!.disposition === "rebuildable") {
+      // Anchoring matters as much as existence. Resolving the exec and calling
+      // existsSync on it would be satisfied by /root/.local/bin/orch-fleet-nudge.sh
+      // -- the very script the finding was about -- because that file is still
+      // present on this host. A path that exists on the machine says nothing
+      // about what a rebuild from git would produce, so the claim under test is
+      // that the program is $INSTALL_ROOT-anchored AND carried here.
+      const exec = normalize(service!.exec);
+      expect(exec.startsWith("$INSTALL_ROOT/"), `${exec} is not anchored to the install root`).toBe(true);
+      const relative = exec.slice("$INSTALL_ROOT/".length);
+      expect(existsSync(join(REPO, relative)), `${relative} is not carried by this repository`).toBe(true);
+    }
   });
 
   test("no `rebuildable` row claims a template this repository does not carry", () => {

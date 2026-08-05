@@ -134,9 +134,10 @@ factually wrong about this host; both are gone (see below).
 is deployed**. So a unit with no template is invisible to it by construction.
 The `systemd-dir` row used to delegate the question to it anyway, and was marked
 `rebuildable` — an affirmative claim that a rebuild reproduces
-`/etc/systemd/system`. It would not: four deployed units there are rendered from
-nothing tracked. That row is now `unresolved`, and the reverse question has a
-mechanism instead of a delegation.
+`/etc/systemd/system`. It would not: deployed units there are rendered from
+nothing tracked (four when this was written; three as of 2026-08-05, the fleet
+nudge having become tracked). That row is now `unresolved`, and the reverse
+question has a mechanism instead of a delegation.
 
 #### Armed is not the same as installed
 
@@ -171,6 +172,40 @@ the host.
 They are separate counters on purpose. Folding the second into the first is how a
 permanently-red check stops being read, and then real drift arrives into noise
 nobody looks at.
+
+#### KNOWN OVERLAP with `check-unit-drift.sh`, stated rather than unified
+
+Found on the 2026-08-05 rebase and **deliberately left in place**. Two mechanisms
+now ask an overlapping question and return different verdicts about one unit:
+
+| mechanism | reads | asks | verdict on `orch-morning-report.service` |
+|---|---|---|---|
+| `bootstrap/check-unit-drift.sh` | tracked templates | is the `$INSTALL_ROOT`-anchored path carried by this repository? | `PATH-EXEMPT` — green, ledgered in `instance/unit-path-exemptions.tsv` as `owner=V3-2.17` |
+| `tools/check-host-state.ts --units` | units deployed on the host | does this armed unit's `ExecStart` target exist? | `DRIFT` — red |
+
+Both are right on their own terms, and the questions are not identical: the first
+is repository-side and host-independent, the second is host-side. They coincide
+whenever a deployed unit was rendered from a tracked template with an
+`$INSTALL_ROOT`-anchored `ExecStart`, and `orchestrator/morning.sh` is exactly
+that case. So the system currently tells an agent that this fact is an owned,
+expiring debt **and** that it is drift, with no reference between the two.
+
+That is the shape of defect V3-2.16 was filed about, which is why it is written
+down here instead of being quietly fixed. Two things make it worse than cosmetic:
+
+- By this document's own taxonomy directly above, `DRIFT` means *the manifest is
+  wrong — someone must fix the file*. Here the manifest is **right**: the unit is
+  armed and its template is carried. No edit to `instance/host-units.tsv` clears
+  this, so the one counter that is supposed to be actionable has an entry that
+  cannot be actioned.
+- `--units` has no exemption ledger, so it cannot express "known, owned, expiring"
+  at all — the vocabulary the other mechanism uses for this exact fact.
+
+Resolving it is a decision about mechanism ownership, not a rebase's call. The two
+candidates are: teach `--units` to consult `instance/unit-path-exemptions.tsv`
+(one ledger, two readers), or narrow `--units` to stop asking a question
+`check-unit-drift.sh` already owns. Choosing wrongly duplicates the ledger, and
+duplicating a ledger is how the expiry rule V3-2.16 built gets bypassed.
 
 ### The honest limits of all three scans
 
@@ -229,9 +264,10 @@ nobody looks at.
 
   Round 2 stated this as *"on this host no bpa timer is armed"*. That was false
   when written: `orch-morning-report.timer` is armed and tracked, and
-  `orch-fleet-nudge.timer` is armed and untracked (F16). The claim is corrected
-  rather than quietly dropped, because believing no timer was armed is part of
-  what kept F16 unlooked-for.
+  `orch-fleet-nudge.timer` was armed and untracked (F16 — tracked since
+  2026-08-05, and joined by the armed `orch-fleet-nudge-liveness.timer`). The
+  claim is corrected rather than quietly dropped, because believing no timer was
+  armed is part of what kept F16 unlooked-for.
 - **A path assembled entirely from variables is invisible to the drift scan.**
   The manifest records those as `external:` writers, which costs the reverse
   check on that row. The sweep is what now covers them from the other side, but
@@ -268,21 +304,36 @@ reading can never recur:
 
 ```
 HOST-STATE sweep roots=6 unlisted=0 stale=0 unresolved=7
-HOST-STATE units dirs=2 unlisted=0 drift=0 unresolved=7 stale=0
+HOST-STATE units dirs=2 unlisted=0 drift=1 unresolved=5 stale=0
 ```
 
 `unresolved` counts enumerated, undecided Hard Floor 5 breaches. Their probes
 **fail while the breach exists** and clear themselves when the path is gone, so no
 edit here is needed to resolve one. Today they are:
 
+Re-measured 2026-08-05:
+
 | what | why it is a breach |
 |---|---|
-| `orch-fleet-nudge.timer` + `.service` + its script (F16) | armed, root, ten-minutely, operates the fleet, untracked |
 | `bpa-db-network-boundary.service` (F17) | armed, and its script went away with a reaped lane worktree |
-| `/etc/systemd/system` (`systemd-dir`) | four deployed units there are rendered from nothing tracked |
+| `/etc/systemd/system` (`systemd-dir`) | deployed units there are rendered from nothing tracked |
 | `/root/.config/systemd/user` + 4 unit rows (F18) | 14 units, one enabled, no templates |
 | `orch-recover.sh`, `orch-recover-claude.sh`, `orch-claude-debug.sh` (F8) | untracked fleet-recovery scripts improvised during incidents |
 | `/var/lib/bpa-authority` (F11) | a second, undeclared lane-provisioning state root |
+| `/root/oldorch-breakglass` | holds `preflight-cli-auth.sh`, which `orchestrator/runtime.env` names in `ORCH_AUTH_PREFLIGHT` — so the launcher's auth preflight is outside git |
+
+`orch-fleet-nudge.timer` + `.service` + its script (F16) **left this table on
+2026-08-05**: V3-2.11 and V3-2.12 landed the script and the templates, the
+deployed units were re-verified against them, and the rows are now `rebuildable`.
+It is the first entry here to be closed rather than restated, and the closure was
+detected by re-running the scans rather than by anyone remembering to update a
+document.
+
+`systemd-dir`'s exposure probe was repointed in the same pass. It targeted
+`orch-fleet-nudge.timer`, which had become tracked — so the row would have
+cleared itself on a directory that is still not reproducible. It now probes
+`bpa-db-network-boundary.service` (F17), the sharpest remaining instance. A probe
+that clears for the wrong reason is the same class of defect as a stale row.
 
 None of them are deleted, moved or tidied. The operator has ruled against cleanup
 (Telegram 2132, 2134); the decision about each is the operator's and the
@@ -441,7 +492,25 @@ fail-closed; a host-only copy means the versioned surface and the live one
 cannot be compared. Enumerated so the gap is visible; closing it is not this
 row's scope.
 
-**F16 — an armed root timer operates this fleet from outside git. (open)**
+**F16 — an armed root timer operates this fleet from outside git. (CLOSED 2026-08-05)**
+
+> Closed between round 3 and this branch's rebase, by other rows and not by this
+> one. **V3-2.11** (`1cdac84`, `d764a15`, `585581d`) landed the script as
+> `orchestrator/fleet/fleet-nudge.sh`; **V3-2.12** (`b5f1cad`) landed
+> `bootstrap/units/orch-fleet-nudge.service.in` and `.timer.in`. The deployed
+> service now execs `$INSTALL_ROOT/orchestrator/fleet/fleet-nudge.sh`, verified
+> against this host on 2026-08-05, and nothing under `/etc/systemd/system` or
+> `/root/.config/systemd` still references the old path. `HR-309.md:66`'s claim,
+> premature when made, is now true.
+>
+> `/root/.local/bin/orch-fleet-nudge.sh` is **still on disk** — untracked, 5198
+> bytes, mode 755, unmodified since Jul 31 — and is now `orphan`: present, and
+> nothing runs it. The breach was the arming, not the bytes. Nothing was deleted
+> or moved (operator ruling, Telegram 2132/2134).
+>
+> The account below is left as written, because how this was found is the part
+> worth keeping.
+
 The round-2 blocking finding, and the sharpest live instance of Hard Floor 5 on
 this machine. `orch-fleet-nudge.timer` is enabled and fires every ten minutes as
 root; `orch-fleet-nudge.service` runs `/root/.local/bin/orch-fleet-nudge.sh`,
@@ -541,11 +610,18 @@ disabled — so this lane names the gap rather than adding another unarmed unit.
 What that costs is stated above under the honest limits, not left for a reader to
 infer.
 
-**Nothing was repaired on the host.** F16's timer is still armed, F17's boundary
-service still points into a deleted worktree, and F18's user units are still
-deployed. This row's obligation is that the checker **names** them; the decision
-about the nudge script — track it, retire it, or rule it out of scope — belongs
-to the operator and the orchestrator, and it is not made here.
+**Nothing was repaired on the host.** F17's boundary service still points into a
+deleted worktree and F18's user units are still deployed. This row's obligation is
+that the checker **names** them; the decisions belong to the operator and the
+orchestrator, and none are made here.
+
+F16 is the exception, and it was closed by other rows rather than by this one:
+between round 3 and the 2026-08-05 rebase, V3-2.11 landed the nudge script as
+`orchestrator/fleet/fleet-nudge.sh` and V3-2.12 landed its unit templates, so the
+armed root timer now runs tracked code. This lane changed no host state to make
+that true — it re-measured, found the finding closed, and moved the rows from
+`unresolved` to `rebuildable`. The untracked `/root/.local/bin/orch-fleet-nudge.sh`
+is still on disk, now unrun and carrying `orphan`.
 
 **Nothing was deleted, moved, pruned or tidied** — including F4's and F13's
 directory modes, the two orphan databases, the three untracked fleet scripts
@@ -555,12 +631,23 @@ lane-test unit residue at F19.
 
 ## What `--verify` reports on this host today
 
-59 state rows and 25 unit rows. The failures are real host conditions, not
-mechanism defects: `codex-home` 755 (F4), `root-crontab` absent (F5),
-`shell-codex-home` 775 (F13), and the `unresolved` exposures — F8 ×3, F11, plus
-this round's `systemd-dir`, `fleet-nudge-script` and `user-systemd-units`. The
-units scan adds seven more `unresolved` for F16, F17 and F18. Both host scans
-report `unlisted=0` and `drift=0`.
+Rebased onto `main` on 2026-08-05 and re-measured on the host that day; the
+numbers below are that measurement, not the round-3 one.
+
+61 state rows and 27 unit rows, 11 verify failures. The failures are real host
+conditions, not mechanism defects: `codex-home` 755 (F4), `root-crontab` absent
+(F5), `shell-codex-home` 775 (F13), `shell-xdg-state` present-but-empty, and the
+`unresolved` exposures — F8 ×3, F11, `systemd-dir`, `user-systemd-units` and the
+newly enumerated `oldorch-breakglass`. The units scan adds five more `unresolved`
+for F17 and F18.
+
+`--sweep` reports `unlisted=0`, and `--units` reports `unlisted=0 drift=1`. **That
+`drift=1` is not new and was not introduced by the rebase**: `orch-morning-report.service`
+is armed while its ExecStart target `$INSTALL_ROOT/orchestrator/morning.sh` does
+not exist — on the host or at any commit on the v3 line. Round 3 printed
+`drift=0` in this document while that condition already held, so the sentence
+this paragraph replaces was inaccurate when it was written. The scan was right
+and the prose was wrong, which is the direction this whole row exists to catch.
 
 **A row that fails is doing its job.** What is deliberately *not* claimed is that
 the enumeration is complete about this host: it is complete about what it scans,

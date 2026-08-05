@@ -52,21 +52,44 @@ vm:
   # (msg 11555) was Vova's sizing FLOOR, not this box; the delivered machine exceeds it.
 
 fleet:
-  # ACTIVE as of 2026-07-31 — instance/decisions/HR-281.md (Vova, verbatim; the
-  # row covers his Telegram 275 + 281 together, so cite 281 — HR-275.md does not
-  # exist and an earlier version of this comment pointed at it).
-  # This band was marked `suspended` as a leftover of the legacy control plane,
-  # and the orchestrator used that as licence to work single-threaded on a
-  # 12-core / 251 GB box while Codex sat at 92% unused quota. He called that out
-  # directly: parallelism is the reason the server is paid for.
-  floor: 10                        # HIS TARGET (2026-07-31): «У тебе задача — десять лейнів стабільно тримати»
-  ceiling: 15                      # upper bound; raise only with measured host headroom
-  notify_human_below: 3            # below this the watchdog messages HIM directly, not just the orchestrator
+  # ACTIVE. The lane number here is the operator's cap of 2026-08-04:
+  # instance/decisions/HR-2342.md — «Давай там до трьох» — scoped per repository
+  # by instance/decisions/HR-2398.md. Both files declare `lane_cap:` as a
+  # machine-readable field, and tools/check-fleet-cap.ts refuses any value here
+  # that disagrees with them.
+  #
+  # SUPERSEDES the `floor: 10` / `ceiling: 15` pair this block carried from
+  # instance/decisions/HR-281.md (2026-07-31, «У тебе задача — десять лейнів
+  # стабільно тримати»). That pair was not inert: daemon/autonomy-keepalive.ts
+  # read `floor` live, so every census under ten read as below floor against a
+  # binding cap of three, and tools/instructions/session-load.ts pushes this file
+  # into the orchestrator's standing context at every session start, so each new
+  # session was told to hold ten lanes (audit finding F1,
+  # instance/audits/false-facts-2026-08-04.md).
+  cap: 3                           # instance/decisions/HR-2342.md + HR-2398.md: max parallel lanes, PER REPOSITORY.
+  # A CEILING, not a target. HR-2342: "fewer is allowed whenever the work does
+  # not need them." There is deliberately no floor/target key: every count from
+  # 1 to the cap is permitted, so the only lane count that can be a fault is
+  # ZERO, and the wake thresholds below are 1 for that reason rather than by
+  # taste. Replacing an underived 10 with an underived 3 is the same defect with
+  # a smaller number; the capacity-derived budget is workboard row V3-0.34 and
+  # nothing states a target until it exists.
+  wake_below: 1                    # daemon/autonomy-keepalive.ts: nudge the ORCHESTRATOR only when the fleet is doing nothing.
+  notify_human_below: 1            # orchestrator/watchdog.sh: message HIM only when the fleet is idle, never at 1-2 lanes.
+  # HR-281's literal «менше трьох … маєш мені писати» was given when the
+  # configured floor was ten, so "fewer than three" then named a fleet that had
+  # nearly stopped. Under a cap of three it names ordinary operation. The intent
+  # is kept and the arithmetic is not — the reasoning is in
+  # instructions/autonomy-and-capacity.md, which already states it in prose.
   keepalive_interval_minutes: 15   # daemon timer backstop; independent of lane exit events
   status: active
-  # Enforced by the state-contract checker: open work plus zero measured system
-  # lane units is FLEET-IDLE; an unavailable system lane count also fails closed.
-  fleet_idle_check: tools/state-contract/check.ts:FLEET-IDLE
+  # The fail-closed idle enforcer, named honestly: the timer watchdog is what
+  # actually measures it. Open work plus zero running lanes wakes the
+  # orchestrator and tells the operator once; a board that cannot be parsed is
+  # refused rather than counted as "no work". The state-contract checker this
+  # key named until now has never existed (audit finding F6).
+  fleet_idle_check: orchestrator/fleet/fleet-nudge.sh
+  fleet_idle_backstop: daemon/autonomy-keepalive.ts   # the 15-minute in-daemon backstop; shares the counter above
 
 orchestrator:
   session: bpa-orchestrator          # bootstrap/env.template: one instance session for launcher + watchdog

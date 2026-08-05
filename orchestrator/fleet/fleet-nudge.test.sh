@@ -493,6 +493,39 @@ FLEET_NUDGE_CAP=7 run_watchdog "$TMP/valid.md"
 grep -Fq 'caps parallel lanes at 7' "$TMP/tmux.log" ||
   fail "the orchestrator wake-up did not follow FLEET_NUDGE_CAP"
 
+# V3-5.10. The number and the ruling id in that sentence were both literals in
+# this file, hand-retyped at each cap change — and the comment block beside them
+# was already saying "five" against a parameter of three when nobody noticed.
+# Both are now read from the repository's instance/params.yaml, so a fixture
+# repository stating different values must produce a different sentence with no
+# edit here.
+reset_state
+mkdir -p "$TMP/other-repo/instance"
+printf 'fleet:\n  cap: 9\n  declared_by: HR-4711\n  status: active\n' >"$TMP/other-repo/instance/params.yaml"
+FLEET_NUDGE_REPO="$TMP/other-repo" run_watchdog "$TMP/valid.md"
+grep -Fq 'HR-4711 caps parallel lanes at 9 — a ceiling, not a target' "$TMP/tmux.log" ||
+  { cat "$TMP/tmux.log" >&2; fail "the wake-up did not read the cap and its ruling from instance/params.yaml"; }
+
+# Half a citation is not a citation. With no ruling to quote, the sentence is
+# dropped rather than sent with an invented or stale id.
+reset_state
+printf 'fleet:\n  cap: 9\n  status: active\n' >"$TMP/other-repo/instance/params.yaml"
+FLEET_NUDGE_REPO="$TMP/other-repo" run_watchdog "$TMP/valid.md"
+if grep -Fq 'caps parallel lanes' "$TMP/tmux.log"; then
+  cat "$TMP/tmux.log" >&2
+  fail "the wake-up quoted a cap with no ruling behind it"
+fi
+grep -Fq '[fleet-nudge] running lanes=' "$TMP/tmux.log" ||
+  fail "dropping the ceiling sentence also dropped the wake-up"
+
+# An unreadable parameter file invents no ceiling either.
+reset_state
+FLEET_NUDGE_REPO="$TMP/no-such-repo" run_watchdog "$TMP/valid.md"
+if grep -Fq 'caps parallel lanes' "$TMP/tmux.log"; then
+  cat "$TMP/tmux.log" >&2
+  fail "the wake-up quoted a cap it could not read"
+fi
+
 # A parse error is operator-loud and remains a failed service invocation.
 reset_state
 set +e

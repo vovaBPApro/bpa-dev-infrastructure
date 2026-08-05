@@ -15,18 +15,26 @@
 # RED-BEFORE. The launcher under test is a parameter, so this suite is also the
 # red proof of the defect it locks:
 #
-#   git show HEAD~1:orchestrator/fleet/launch-lane.sh >/tmp/pre-cap-launch-lane.sh
-#   chmod +x /tmp/pre-cap-launch-lane.sh
-#   LAUNCH_LANE_UNDER_TEST=/tmp/pre-cap-launch-lane.sh bash orchestrator/fleet/launch-lane-cap.test.sh
+#   git show <pre-cap-sha>:orchestrator/fleet/launch-lane.sh \
+#     >orchestrator/fleet/pre-cap-launch-lane.sh
+#   chmod +x orchestrator/fleet/pre-cap-launch-lane.sh
+#   LAUNCH_LANE_UNDER_TEST="$PWD/orchestrator/fleet/pre-cap-launch-lane.sh" \
+#     bash orchestrator/fleet/launch-lane-cap.test.sh   # -> started the cap+1-th lane
+#   rm orchestrator/fleet/pre-cap-launch-lane.sh
 #
-# against the pre-change launcher, which launches the cap+1-th lane un-refused.
+# The copy must sit BESIDE the real launcher: launch-lane.sh derives its default
+# repository from its own path, so a copy in /tmp fails for an unrelated reason
+# and proves nothing.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOST_REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
 LAUNCHER="${LAUNCH_LANE_UNDER_TEST:-$SCRIPT_DIR/launch-lane.sh}"
 SCRATCH="$(mktemp -d)"
-cleanup() { rm -rf "$SCRATCH"; }
+# KEEP_SCRATCH retains the fixture tree: every launcher refusal here is proven
+# by its stderr, and a failure that deletes that stderr is a failure nobody can
+# read. Used by the red-before run in the header comment.
+cleanup() { [ -n "${KEEP_SCRATCH:-}" ] && { printf 'fixture retained: %s\n' "$SCRATCH" >&2; return 0; }; rm -rf "$SCRATCH"; }
 trap cleanup EXIT
 mkdir -p "$SCRATCH/bin" "$SCRATCH/lanes"
 

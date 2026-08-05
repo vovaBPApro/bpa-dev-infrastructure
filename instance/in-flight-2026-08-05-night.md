@@ -18,7 +18,32 @@ is not finished (Telegram 2398) and will decide about product work in the mornin
 | V3-2.11 | `1fd31cc` | the fleet watchdog, restored from `v2-deprecated` and adapted. Three coder rounds, four independent reviews, one meteorite refusal. |
 | V3-0.44 (reopened) | `aaf7ec6` | **systemd ate the tenth argument.** Every lane was invoking its exit gate as `--role ""`, so every lane reported `failed` regardless of its work. |
 | V3-2.13 | `cae28ff` | "this document names a file that exists" is now a check. |
-| V3-2.13 R2/R3 | in flight at time of writing | pair-keying lock + extensionless citations. |
+| V3-2.13 R2/R3 | `b68f651` | pair-keying lock + extensionless citations. |
+| V3-2.12 | `b5f1cad` | unit rendering no longer silently empties the nightly-suite and watchdog timers on a rebuilt host. **Four coder rounds, five reviews, three landing attempts.** |
+
+## V3-2.12 is the row to read if you read only one
+
+Its two landing refusals were both the gate working on evidence, and **neither cause was in
+the change under review**:
+
+1. The completion guard re-ran the verify command in its own fresh checkout and found a
+   failure three prior green runs had missed — the lane's, the reviewer's and the exit
+   gate's all ran where ambient host state happened to be benign. Cause: `/usr/bin/X11` had
+   been rewritten into a self-loop (`instance/incidents/2026-08-05-host-symlink-corruption-broke-the-suite.md`).
+2. The meteorite refused it: `instance/units/agentic-bpa-stand-verifier.service.in` requires
+   `postgresql.service`, absent in a clean container, so `systemd-analyze` emits
+   `Unit <name> not found` and the classifier called it fatal. That defect had been in the
+   row **since its first commit** and had never been executed in a clean container. Four
+   reviews looked at that code and none could have seen it.
+
+**And the orchestrator dispatched round 3 against a diagnosis it had inferred rather than
+measured** — that the container lacked `systemd-analyze`. The lane ran the container's own
+prerequisites command, found the binary present, reported `NO-GO`, and changed nothing,
+because the brief said to confirm the cause first and stop if it differed. Had it been
+agreeable it would have shipped a no-op, the meteorite would have failed a third time, and
+the real cause would have been hidden behind a plausible fix. That is exactly how V3-0.44
+spent a day marked `done` against the wrong cause. **Keep that instruction in every brief
+that hands over an inference rather than a measurement.**
 
 ## The four defect classes found, which matter more than the four fixes
 
@@ -26,11 +51,26 @@ is not finished (Telegram 2398) and will decide about product work in the mornin
    `$FULL_SUITE_ON_CALENDAR` and `$ORCH_WATCHDOG_INTERVAL` (V3-2.12, open — on a clean
    rebuild the nightly-suite and watchdog timers render broken); the inbox ledger passed in
    a checkout where its input file was absent. Absence rendering as success.
-2. **A property defended by accident, not construction.** Pair keying held only because the
-   ledger happened to carry duplicate paths; prose exclusion holds only because today's
-   top-level directory names don't collide (N1); the fleet-count glob was safe until a test
-   fixture claimed `lane-*`; `active_scope` was never wrong-looking because nothing ever
-   evaluated it.
+2. **A property defended by accident, not construction — the dominant pattern, eight
+   instances.** Pair keying held only because the ledger happened to carry duplicate paths.
+   Prose exclusion holds only because this repository's top-level directory names happen to
+   be ordinary words — backtick the existing phrase `vendor/session` in `CLAUDE.md` and the
+   checker goes red. The fleet-count glob was safe until a test fixture claimed `lane-*`.
+   A shell guard and a TypeScript test turned out to be accidental complements, catching
+   the unquoted and quoted forms respectively, "which is not a designed division".
+   `active_scope` was never wrong-looking because nothing ever evaluated it. V3-2.12's
+   derived list "carries two meanings that only coincide today". Every one was correct when
+   written and one edit away from silently ceasing to be.
+
+   **This is the finding to hand the operator, not the individual fixes.** Each instance is
+   cheap; the pattern is not. A property nothing asserts is a property that will drift, and
+   the drift is invisible because the code still reads correctly.
+
+   Its close relative, seen seven times: **a check that cannot fail.** A drift test
+   asserting no `${VAR}` survived, which unrestricted `envsubst` can never leave. A
+   bootstrap check invoking `rg`, absent on this host, so it exited 127 and passed by never
+   running. A "one list" guard whose regex required `$` immediately after `=` while every
+   real assignment has a quote there — added by the very commit that fixed the other two.
 3. **The system asserts facts to its own agents that are false.** Sixteen findings in
    `instance/audits/false-facts-2026-08-04.md`, fourteen false. `CLAUDE.md` names
    `instance/README.md`, and HR-735 routes an agent there to check whether the operator

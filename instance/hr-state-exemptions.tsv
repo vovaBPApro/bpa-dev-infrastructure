@@ -1,0 +1,130 @@
+# Exemptions for the HR-state and closure-resolution rules in
+# tools/instructions/ledger.ts (checkHrStates, checkTriageClosures), landed by
+# workboard row V3-3.1.
+#
+# WHY THIS FILE EXISTS. V3-3.1 inverted the ledger's polarity: a requirement is
+# visible unless a machine-checkable proof of closure exists, so a missing or
+# out-of-vocabulary `state:` is a FAIL and the file is treated as OPEN. Applied
+# to the corpus as it stood, that turned every landing red at once. Relabeling
+# it to WARN would violate Hard Floor 7 (green is fail-closed; never relabel a
+# failure as a warning), so the pre-existing debt is ENUMERATED here instead:
+# named exactly, owned, and dated. A NEW violation is not in this file, so it
+# fails immediately.
+#
+# Format: subject<TAB>rule<TAB>expires<TAB>evidence
+#
+#   subject   an instance/decisions/HR-<id>.md path, or `msg:<id>` for a
+#             triage.jsonl row.
+#   rule      one of hr-state-missing | hr-state-invalid |
+#             hr-closure-unresolved | triage-answer-status-missing. A rule
+#             outside that set is itself a FAIL -- an exemption for a rule that
+#             does not exist excuses nothing and hides a typo.
+#   expires   YYYY-MM-DD. Past that date the entry FAILS (EXEMPTION-EXPIRED)
+#             and the underlying violation is reported alongside it.
+#   evidence  starts `owner=<id>; <reason>`. An unowned debt is how a row stays
+#             forever; the parser refuses an entry without the field.
+#
+# Keyed on the subject+rule PAIR, never the subject alone: a whole-file
+# exemption would silently license every future violation added to that file
+# under the original, unrelated justification.
+#
+# AN ENTRY EXPIRES IN BOTH DIRECTIONS (the V3-2.16 rule, deliberately not a
+# second design). Past its date it fails; and an entry whose violation no
+# longer exists ALSO fails (EXEMPTION-STALE), with the line to delete named.
+# V3-2.16 was landed precisely because an exemption outlived its reason by a
+# day, and this ledger must not reintroduce that.
+#
+# DRAINING THIS FILE IS THE POINT. Every line is one Human requirement whose
+# bookkeeping is unknown, which is the condition that hid HR-2171 for a day and
+# the persona requirement for six. The drain is plan item 6.2
+# (instance/plans/requirements-reading-fix-2026-08-05.md): a lane sweeps every
+# HR file, assigns an honest state, and deletes its line here. That lane needs
+# its own workboard row -- it does not have one yet, which is exactly the
+# failure mode this repository keeps repeating, so it is said here in the file
+# that depends on it.
+#
+# NOT EXEMPTED, DELIBERATELY: the false closures for msgs 563, 162 and 564.
+# They asserted completion against NI-1/NI-2/NI-3, workboard ids that stopped
+# existing when the board was renumbered, and read as closed in git for four
+# days. They are the defect this mechanism was built to catch, not legacy
+# noise, so they were REOPENED in triage.jsonl (answer_status: owed) instead of
+# being excused here.
+instance/decisions/HR-108.md	hr-closure-unresolved	2026-08-19	owner=V3-3.1; legacy closure target 'workboard' names no checkable row
+instance/decisions/HR-114.md	hr-closure-unresolved	2026-08-19	owner=V3-3.1; legacy closure target 'workboard' names no checkable row
+instance/decisions/HR-11567.md	hr-closure-unresolved	2026-08-19	owner=V3-3.1; legacy closure target 'stack-consilium-final' names no checkable row
+instance/decisions/HR-11582.md	hr-closure-unresolved	2026-08-19	owner=V3-3.1; legacy closure target 'status-truth-fix, gpt-consilium-instruction-review' names no checkable row
+instance/decisions/HR-117.md	hr-closure-unresolved	2026-08-19	owner=V3-3.1; legacy closure target 'workboard' names no checkable row
+instance/decisions/HR-11736.md	hr-closure-unresolved	2026-08-19	owner=V3-3.1; legacy closure target 'workboard' names no checkable row
+instance/decisions/HR-146.md	hr-closure-unresolved	2026-08-19	owner=V3-3.1; legacy closure target 'workboard' names no checkable row
+instance/decisions/HR-150.md	hr-closure-unresolved	2026-08-19	owner=V3-3.1; legacy closure target 'workboard' names no checkable row
+instance/decisions/HR-161.md	hr-closure-unresolved	2026-08-19	owner=V3-3.1; legacy closure target 'workboard' names no checkable row
+instance/decisions/HR-1718.md	hr-closure-unresolved	2026-08-19	owner=V3-3.1; legacy closure target 'instance/consilium-2026-08-03-sprint-review.md' names no checkable row
+instance/decisions/HR-185.md	hr-closure-unresolved	2026-08-19	owner=V3-3.1; legacy closure target 'workboard' names no checkable row
+instance/decisions/HR-189.md	hr-closure-unresolved	2026-08-19	owner=V3-3.1; legacy closure target 'workboard' names no checkable row
+instance/decisions/HR-203.md	hr-closure-unresolved	2026-08-19	owner=V3-3.1; legacy closure target 'workboard' names no checkable row
+instance/decisions/HR-210.md	hr-closure-unresolved	2026-08-19	owner=V3-3.1; legacy closure target 'workboard' names no checkable row
+instance/decisions/HR-212.md	hr-closure-unresolved	2026-08-19	owner=V3-3.1; legacy closure target 'workboard' names no checkable row
+instance/decisions/HR-269.md	hr-closure-unresolved	2026-08-19	owner=V3-3.1; legacy closure target 'workboard' names no checkable row
+instance/decisions/HR-271.md	hr-closure-unresolved	2026-08-19	owner=V3-3.1; legacy closure target 'workboard' names no checkable row
+instance/decisions/HR-281.md	hr-closure-unresolved	2026-08-19	owner=V3-3.1; legacy closure target 'workboard' names no checkable row
+instance/decisions/HR-292.md	hr-closure-unresolved	2026-08-19	owner=V3-3.1; legacy closure target 'workboard' names no checkable row
+instance/decisions/HR-302.md	hr-closure-unresolved	2026-08-19	owner=V3-3.1; legacy closure target 'workboard' names no checkable row
+instance/decisions/HR-309.md	hr-closure-unresolved	2026-08-19	owner=V3-3.1; legacy closure target 'workboard' names no checkable row
+instance/decisions/HR-330.md	hr-closure-unresolved	2026-08-19	owner=V3-3.1; legacy closure target 'workboard' names no checkable row
+instance/decisions/HR-535.md	hr-closure-unresolved	2026-08-19	owner=V3-3.1; legacy closure target 'workboard' names no checkable row
+instance/decisions/HR-537.md	hr-closure-unresolved	2026-08-19	owner=V3-3.1; legacy closure target 'workboard' names no checkable row
+instance/decisions/HR-101.md	hr-state-invalid	2026-08-19	owner=V3-3.1; legacy state 'open' written before the vocabulary was enforced
+instance/decisions/HR-1876.md	hr-state-invalid	2026-08-19	owner=V3-3.1; legacy state 'backlog' written before the vocabulary was enforced
+instance/decisions/HR-254.md	hr-state-invalid	2026-08-19	owner=V3-3.1; legacy state 'captured' written before the vocabulary was enforced
+instance/decisions/HR-98.md	hr-state-invalid	2026-08-19	owner=V3-3.1; legacy state 'open' written before the vocabulary was enforced
+instance/decisions/HR-1349.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-1363.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-1371.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-1374.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-1379.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-1382.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-1418.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-1430.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-1439.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-1451.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-1453.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-1457.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-1494.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-1962.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-2166.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-2171.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-2188.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-2224.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-2285.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-2315.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-2335.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-2342.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-2369.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-2377.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-2398.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-2401.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-2451.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-2456.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-681.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-709.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-735.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-785.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+instance/decisions/HR-798.md	hr-state-missing	2026-08-19	owner=V3-3.1; no frontmatter at all; the capture predates the state vocabulary
+msg:124	triage-answer-status-missing	2026-08-19	owner=V3-3.1; triaged before answer_status became mandatory
+msg:125	triage-answer-status-missing	2026-08-19	owner=V3-3.1; triaged before answer_status became mandatory
+msg:126	triage-answer-status-missing	2026-08-19	owner=V3-3.1; triaged before answer_status became mandatory
+msg:131	triage-answer-status-missing	2026-08-19	owner=V3-3.1; triaged before answer_status became mandatory
+msg:133	triage-answer-status-missing	2026-08-19	owner=V3-3.1; triaged before answer_status became mandatory
+msg:136	triage-answer-status-missing	2026-08-19	owner=V3-3.1; triaged before answer_status became mandatory
+msg:139	triage-answer-status-missing	2026-08-19	owner=V3-3.1; triaged before answer_status became mandatory
+msg:140	triage-answer-status-missing	2026-08-19	owner=V3-3.1; triaged before answer_status became mandatory
+msg:147	triage-answer-status-missing	2026-08-19	owner=V3-3.1; triaged before answer_status became mandatory
+msg:59	triage-answer-status-missing	2026-08-19	owner=V3-3.1; triaged before answer_status became mandatory
+msg:69	triage-answer-status-missing	2026-08-19	owner=V3-3.1; triaged before answer_status became mandatory
+msg:71	triage-answer-status-missing	2026-08-19	owner=V3-3.1; triaged before answer_status became mandatory
+msg:72	triage-answer-status-missing	2026-08-19	owner=V3-3.1; triaged before answer_status became mandatory
+msg:75	triage-answer-status-missing	2026-08-19	owner=V3-3.1; triaged before answer_status became mandatory
+msg:79	triage-answer-status-missing	2026-08-19	owner=V3-3.1; triaged before answer_status became mandatory
+msg:86	triage-answer-status-missing	2026-08-19	owner=V3-3.1; triaged before answer_status became mandatory
+msg:95	triage-answer-status-missing	2026-08-19	owner=V3-3.1; triaged before answer_status became mandatory
+msg:96	triage-answer-status-missing	2026-08-19	owner=V3-3.1; triaged before answer_status became mandatory

@@ -29,6 +29,7 @@ import { execFileSync } from "node:child_process";
 import { resolve, join } from "node:path";
 import { collectDocs, type InstructionDoc } from "./docs.ts";
 import { AUDIENCES, type Audience } from "./schema.ts";
+import { hrDisposition, isHrOpen, parseHrFields } from "./ledger.ts";
 
 export const PACK_MARKER_PREFIX = "<!-- compose.ts pack v1";
 
@@ -357,8 +358,46 @@ function parseBody(contents: string): string {
   return match ? contents.slice(match[0].length) : contents;
 }
 
+// Counts HR rows that are not provably closed -- `pending`, `owed`, and every
+// file whose `state:` is missing or outside the vocabulary (ledger.ts:isHrOpen).
+//
+// This number is stated in every pack preamble deliberately. Full delivery
+// stays scoped to `pending` so a pack does not become the whole backlog, but a
+// silent pack let every lane believe the board was empty while 33 stateless
+// captures sat undelivered. A count cannot be misread as zero.
+export function countOpenObligations(repo: string): number {
+  const dir = join(repo, "instance", "decisions");
+  if (!existsSync(dir)) return 0;
+  let open = 0;
+  for (const entry of readdirSync(dir)) {
+    if (!/^HR-.+\.md$/i.test(entry)) continue;
+    if (isHrOpen(readFileSync(join(dir, entry), "utf8"))) open += 1;
+  }
+  return open;
+}
+
+// Counts parked (`deferred`) rows: deliberately set aside, deliberately NOT
+// delivered in the pack, and therefore the one bucket that can go quiet. Round-2
+// review finding 5: `parked` was invisible in both the session load and the pack
+// preamble, bounded only by a self-chosen `review-by:` with no ceiling. It is
+// counted separately rather than added to the open count, because a lane must
+// not be told to act on a row that was parked on purpose — it must only be told
+// the row exists.
+export function countParkedObligations(repo: string): number {
+  const dir = join(repo, "instance", "decisions");
+  if (!existsSync(dir)) return 0;
+  let parked = 0;
+  for (const entry of readdirSync(dir)) {
+    if (!/^HR-.+\.md$/i.test(entry)) continue;
+    const fields = parseHrFields(readFileSync(join(dir, entry), "utf8"));
+    if (hrDisposition(fields) === "deferred") parked += 1;
+  }
+  return parked;
+}
+
 // Collects interim directives: instance/decisions/*.md whose `state: pending`.
-// routed / parked / superseded rows are not delivered.
+// owed / routed / parked / superseded rows are not delivered in full; `owed`
+// rows are counted by countOpenObligations() and carried in the session load.
 export function collectPendingDecisions(repo: string): Decision[] {
   const dir = join(repo, "instance", "decisions");
   if (!existsSync(dir)) return [];
@@ -401,6 +440,8 @@ export function renderPreamble(
   entries: PackEntry[],
   decisions: Decision[],
   facts: InstanceFacts,
+  openObligations = 0,
+  parkedObligations = 0,
 ): string {
   const lines: string[] = [];
   lines.push(`${PACK_MARKER_PREFIX} role=${role} l1=${l1} -->`);
@@ -432,7 +473,29 @@ export function renderPreamble(
   lines.push("## INSTANCE FACTS");
   lines.push("");
   lines.push(`phase=${facts.phase} active_scope=${facts.active_scope} capture.mode=${facts.capture_mode} operator.language=${facts.operator_language}`);
+  // Both numbers, always, even at zero. A count that only appears when non-zero
+  // is a count a reader learns to stop looking for.
+  lines.push(`open_obligations=${openObligations} parked_obligations=${parkedObligations}`);
   lines.push("");
+  if (parkedObligations > 0) {
+    lines.push(
+      `${parkedObligations} row(s) are parked: deliberately deferred, NOT delivered ` +
+        "below, and bounded by a `review-by:` the checker enforces in both " +
+        "directions. Stated here because undelivered and uncounted is invisible. " +
+        "Read them with `bun tools/instructions/session-load.ts`.",
+    );
+    lines.push("");
+  }
+  if (openObligations > 0) {
+    lines.push(
+      `${openObligations} Human requirement(s) are recorded and NOT provably closed. ` +
+        "Only the interim `pending` rows are delivered in full below; the rest are " +
+        "listed by `bun tools/instructions/session-load.ts` and failed by " +
+        "`bun tools/instructions/check.ts --strict`. This pack being short is not " +
+        "evidence that the board is empty.",
+    );
+    lines.push("");
+  }
 
   // Doc bodies, in order.
   lines.push("## DOCUMENTS");
@@ -478,7 +541,15 @@ export function compose(options: Options): ComposeResult {
   const decisions = collectPendingDecisions(options.repo);
   const instanceFacts = readInstanceFacts(options.repo);
   const l1 = gitSha(options.repo);
-  const preamble = renderPreamble(options.role, l1, entries, decisions, instanceFacts);
+  const preamble = renderPreamble(
+    options.role,
+    l1,
+    entries,
+    decisions,
+    instanceFacts,
+    countOpenObligations(options.repo),
+    countParkedObligations(options.repo),
+  );
 
   return {
     preamble,

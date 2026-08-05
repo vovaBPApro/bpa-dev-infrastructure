@@ -10,7 +10,7 @@
 //   1. instance/params.yaml (every this-installation value the orchestrator
 //      needs to resolve parameterized rules);
 //   2. OPEN decisions-ledger rows — instance/decisions/HR-*.md with
-//      `state: pending` (interim-binding directives), plus untriaged
+//      every HR row not provably closed (pending/owed/stateless), plus untriaged
 //      inbox.jsonl rows (raw inbound with no HR file and no triage verdict), so
 //      a directive captured seconds before a restart is loaded on the next boot;
 //   3. every binding doc whose audience reaches the orchestrator
@@ -38,6 +38,7 @@ import { Database } from "bun:sqlite";
 import { collectDocs, type InstructionDoc } from "./docs.ts";
 import { admitsAudience } from "./compose.ts";
 import { latestHandoffPath } from "./handoff.ts";
+import { capturedMsgIds, hrDisposition, isHrOpen, parseHrFields } from "./ledger.ts";
 
 // The role a SessionStart load targets. Orchestrator is the only session that
 // gets a SessionStart hook (§2.3); factored out so the checker and tests share
@@ -145,32 +146,57 @@ function frontmatterValue(contents: string, key: string): string | undefined {
   return undefined;
 }
 
-// Open (pending) HR decision files, sorted by filename for stable output.
-function collectPendingHr(decisionsDir: string): { name: string; contents: string }[] {
+// Open HR decision files, sorted by filename for stable output.
+//
+// This predicate used to be `state === "pending"`, an ALLOWLIST that selected
+// nothing across the entire real corpus, so no HR file had ever appeared in a
+// session load. It is now a BLOCKLIST: everything that is not provably closed
+// is delivered -- `pending`, `owed`, and every file whose state is missing or
+// outside the vocabulary. Absence of bookkeeping surfaces the requirement
+// instead of hiding it, and checkHrStates() fails loudly about it in parallel.
+function collectOpenHr(decisionsDir: string): { name: string; contents: string }[] {
   if (!existsSync(decisionsDir)) return [];
   const out: { name: string; contents: string }[] = [];
   for (const entry of readdirSync(decisionsDir).sort()) {
     if (!/^HR-.+\.md$/i.test(entry)) continue;
     const contents = readFileSync(join(decisionsDir, entry), "utf8");
-    if (frontmatterValue(contents, "state") !== "pending") continue;
+    if (!isHrOpen(contents)) continue;
+    out.push({ name: entry, contents });
+  }
+  return out;
+}
+
+// Parked HR files: the `deferred` disposition, which is neither delivered nor
+// discharged. Collected separately from collectOpenHr() on purpose — a lane must
+// not be handed a row that was set aside deliberately, but nobody may lose count
+// of how many were set aside.
+function collectParkedHr(decisionsDir: string): { name: string; contents: string }[] {
+  if (!existsSync(decisionsDir)) return [];
+  const out: { name: string; contents: string }[] = [];
+  for (const entry of readdirSync(decisionsDir).sort()) {
+    if (!/^HR-.+\.md$/i.test(entry)) continue;
+    const contents = readFileSync(join(decisionsDir, entry), "utf8");
+    if (hrDisposition(parseHrFields(contents)) !== "deferred") continue;
     out.push({ name: entry, contents });
   }
   return out;
 }
 
 // Untriaged inbox rows: inbound msg-ids with no HR-<id>.md and no triage verdict.
-// Mirrors the aging check's routed/triaged resolution so the two never disagree.
+// Mirrors the aging check's captured/triaged resolution so the two never disagree
+// -- it now calls the shared ledger predicate rather than keeping an inline twin
+// of it, which is how the two copies were able to drift into the same trap.
+//
+// CAPTURED suppresses this list, not DISCHARGED: an HR file proves the message
+// was read and recorded, so it is not untriaged. Whether the obligation inside
+// was ever discharged is answered by collectOpenHr() above, which now delivers
+// it. Previously both questions were answered from the filename, so writing the
+// capture file removed the requirement from every list at once.
 function collectUntriagedInbox(decisionsDir: string): string[] {
   const inboxPath = join(decisionsDir, "inbox.jsonl");
   if (!existsSync(inboxPath)) return [];
 
-  const routed = new Set<string>();
-  if (existsSync(decisionsDir)) {
-    for (const entry of readdirSync(decisionsDir)) {
-      const m = entry.match(/^HR-(.+)\.md$/i);
-      if (m) routed.add(m[1]);
-    }
-  }
+  const captured = capturedMsgIds(decisionsDir);
 
   const triaged = new Set<string>();
   const triagePath = join(decisionsDir, "triage.jsonl");
@@ -199,7 +225,7 @@ function collectUntriagedInbox(decisionsDir: string): string[] {
     }
     if (row.msg_id === undefined) continue;
     const id = String(row.msg_id);
-    if (routed.has(id) || triaged.has(id)) continue;
+    if (captured.has(id) || triaged.has(id)) continue;
     const ts = row.ts ?? "";
     const text = (row.text ?? "").replace(/\s+/g, " ").trim();
     lines.push(`- msg ${id} (${ts}): ${text}`);
@@ -242,18 +268,69 @@ export function collectSessionLoad(repo: string): SessionLoad {
     lines: params !== undefined ? trimTrailing(params) : ["(absent)"],
   });
 
-  // 2. Open ledger rows: pending HR files + untriaged inbox rows.
-  const pending = collectPendingHr(decisionsDir);
+  // 2. Open ledger rows: open HR files + untriaged inbox rows.
+  //
+  // Two tiers, because the inversion made this set large and a full dump would
+  // blow the line budget this module exists to respect (33 open rows render as
+  // ~2600 lines against a 600-line cap). Raising the cap to fit them would
+  // weaken the check instead of the content, so the split is by binding force:
+  //
+  //   `pending` -- interim-binding, overriding nothing yet but binding NOW.
+  //                Delivered VERBATIM in full; its exact words are the rule.
+  //   every other open row (`owed`, stateless, out-of-vocabulary) -- indexed
+  //                one line each: name, state, date and first heading, with the
+  //                path to read. Visible and countable, which is the property
+  //                that was missing; not inlined, which is what keeps the load
+  //                bounded as the backlog drains.
+  //
+  // The failure being fixed is invisibility, not brevity. An indexed row is on
+  // the list; the pre-inversion behaviour put it nowhere at all.
+  const open = collectOpenHr(decisionsDir);
+  const interim = open.filter((hr) => frontmatterValue(hr.contents, "state") === "pending");
+  const indexed = open.filter((hr) => frontmatterValue(hr.contents, "state") !== "pending");
   const ledgerLines: string[] = [];
-  if (pending.length === 0) {
-    ledgerLines.push("(no pending HR rows)");
+  if (open.length === 0) {
+    ledgerLines.push("(no open HR rows)");
+  }
+  for (const hr of interim) {
+    ledgerLines.push(`<!-- ${hr.name} -->`);
+    ledgerLines.push(...trimTrailing(hr.contents));
+    ledgerLines.push("");
+  }
+  if (indexed.length > 0) {
+    ledgerLines.push(`### Open, not provably closed (${indexed.length}) — read the file before acting`);
+    for (const hr of indexed) {
+      const state = frontmatterValue(hr.contents, "state") ?? "NO-STATE";
+      const date = frontmatterValue(hr.contents, "date") ?? "no-date";
+      const heading = trimTrailing(hr.contents)
+        .find((line) => line.startsWith("# "))
+        ?.replace(/^#\s*/, "") ?? "(no heading)";
+      ledgerLines.push(`- ${hr.name} [state: ${state}] (${date}) ${heading}`);
+    }
+    ledgerLines.push("");
+  }
+  // Parked rows, indexed one line each. They are `deferred`: deliberately not
+  // delivered, which is why the count and the review-by date have to be here.
+  // Round-2 review finding 5 — `parked` was a quiet hiding place with the lock
+  // left open: absent from this load, absent from the pack preamble, and bounded
+  // only by a self-chosen date with no ceiling. The horizon is now bounded by
+  // the checker (instance/params.yaml: ledger.parked_horizon_days); this is the
+  // other half, making the bucket visible rather than merely bounded.
+  const parked = collectParkedHr(decisionsDir);
+  ledgerLines.push(`### Parked (${parked.length}) — deferred on purpose, not delivered, each bounded by review-by`);
+  if (parked.length === 0) {
+    ledgerLines.push("(none)");
   } else {
-    for (const hr of pending) {
-      ledgerLines.push(`<!-- ${hr.name} -->`);
-      ledgerLines.push(...trimTrailing(hr.contents));
-      ledgerLines.push("");
+    for (const hr of parked) {
+      const reviewBy = frontmatterValue(hr.contents, "review-by") ?? "NO-REVIEW-BY";
+      const heading = trimTrailing(hr.contents)
+        .find((line) => line.startsWith("# "))
+        ?.replace(/^#\s*/, "") ?? "(no heading)";
+      ledgerLines.push(`- ${hr.name} [review-by: ${reviewBy}] ${heading}`);
     }
   }
+  ledgerLines.push("");
+
   const untriaged = collectUntriagedInbox(decisionsDir);
   ledgerLines.push("### Untriaged inbound (inbox.jsonl)");
   if (untriaged.length === 0) {
@@ -387,7 +464,7 @@ function usage(exitCode: number): never {
       "Usage: bun tools/instructions/session-load.ts [--repo <path>]",
       "",
       "Prints the orchestrator SessionStart load: instance/params.yaml, open",
-      "decisions-ledger rows (pending HR + untriaged inbox), and every",
+      "decisions-ledger rows (open HR + untriaged inbox), and every",
       "orchestrator-audience binding instruction, in full.",
       "",
       "  --repo <path>   Repository root (default: current directory).",

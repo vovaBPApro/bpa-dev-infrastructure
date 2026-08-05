@@ -17,6 +17,10 @@ import { collectDocs, type InstructionDoc } from "./docs.ts";
 export const FLOOR_BEGIN = "<!-- hard-floor:begin -->";
 export const FLOOR_END = "<!-- hard-floor:end -->";
 export const CLAUDE_FILENAME = "CLAUDE.md";
+// The other half of the root agent contract. Hard Rule 5 makes it a symlink to
+// CLAUDE_FILENAME rather than a second file, so it is named here beside its
+// target and never spelled out again by a reader.
+export const AGENTS_FILENAME = "AGENTS.md";
 
 // A single floor imperative sourced from one doc.
 export type FloorLine = { id: string; line: string };

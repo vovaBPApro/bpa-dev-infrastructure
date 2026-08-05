@@ -3,7 +3,7 @@
   "private": true,
   "packageManager": "bun@1.2.22",
   "scripts": {
-    "test:foundation": "bun test tools/instructions gate/completion-guard.test.ts gate/land.test.sh",
+    "test:foundation": "bun test tools/instructions tools/instance gate/completion-guard.test.ts gate/land.test.sh",
     "test:whisper-proof": "bash docker/whisper-proof-run.sh",
     "test:meteorite": "bash meteorite/run.sh"
   },

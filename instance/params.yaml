@@ -10,7 +10,7 @@ operator:
   timezone: Europe/Warsaw          # migration-prep/HUMAN_REQUIREMENTS_MATRIX_2026-07-28.md (Kraków clock; morning rhythm)
 
 phase:
-  current: sole-mission            # instance/README + CLAUDE.md Mission (this repo is the sole current mission)
+  current: sole-mission            # instance/README.md + CLAUDE.md Mission (this repo is the sole current mission)
   # Predicate used by instruction `sunset:` frontmatter, per
   # migration-prep/INSTRUCTIONS_CONSILIUM_FINAL.md §2.1, §4.2.
   active_scope: v3-infrastructure-to-cutover   # instance/decisions/HR-2401.md (Vova 2401):

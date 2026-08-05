@@ -6,7 +6,7 @@
 //   (b) id uniqueness;
 //   (c) generated-index freshness — only when the index carries the generator
 //       marker (otherwise SKIP, so the current hand-written README is not failed
-//       red on day one);
+//       red on day one); the same rule covers the generated instance/README.md;
 //   (d) dangling references: decision:/overrides:/moved-to: pointing at an id
 //       that exists in no local doc is reported (FAIL locally; cross-tree ids
 //       are a WARN since a stranger's fork cannot be resolved here).
@@ -28,6 +28,11 @@ import {
   FloorError,
   CLAUDE_FILENAME,
 } from "./floor.ts";
+import {
+  renderInstanceIndex,
+  INSTANCE_INDEX_MARKER,
+  INSTANCE_INDEX_PATH,
+} from "../instance/index.ts";
 import { runLedgerChecks } from "./ledger.ts";
 import { runSessionLoadCheck } from "./session-load.ts";
 import { runPathChecks } from "./paths.ts";
@@ -157,6 +162,38 @@ if (!existsSync(indexPath)) {
     } else {
       record("FAIL", INDEX_FILENAME, "index-freshness", "stale — regenerate with tools/instructions/index.ts");
     }
+  }
+}
+
+// (c2) instance-index freshness — instance/README.md is generated from the
+// ledger, the credential inventory and the tracked evidence directories
+// (tools/instance/index.ts), and rots exactly like the instructions index would.
+// Same rule, same shape, deliberately in this checker rather than a second one.
+//
+// Absence is a SKIP here and that is not a hole: CLAUDE.md cites
+// `instance/README.md`, so a deleted index is already a FAIL under (j)
+// path-exists. This check owns staleness; that one owns existence.
+const instanceIndexPath = join(options.repo, INSTANCE_INDEX_PATH);
+if (!existsSync(instanceIndexPath)) {
+  record("SKIP", INSTANCE_INDEX_PATH, "instance-index-freshness", "no instance index");
+} else {
+  const current = readFileSync(instanceIndexPath, "utf8");
+  if (!current.includes(INSTANCE_INDEX_MARKER)) {
+    record(
+      "SKIP",
+      INSTANCE_INDEX_PATH,
+      "instance-index-freshness",
+      "hand-written index (no generator marker) — run tools/instance/index.ts to adopt",
+    );
+  } else if (normalize(current) === normalize(renderInstanceIndex(options.repo))) {
+    record("PASS", INSTANCE_INDEX_PATH, "instance-index-freshness", "up to date");
+  } else {
+    record(
+      "FAIL",
+      INSTANCE_INDEX_PATH,
+      "instance-index-freshness",
+      "stale — regenerate with tools/instance/index.ts",
+    );
   }
 }
 

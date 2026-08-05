@@ -29,8 +29,6 @@
 # are genuine deletions, some want a redirect, and gate/land-batch.sh is a
 # policy question (should the batch path exist at all) rather than a broken
 # reference. Each becomes its own row now that the checker names it.
-CLAUDE.md	instance/README.md	pending-V3-2.13	F9 -- the installation index named by CLAUDE.md and by HR-735 as the place to check whether the operator already answered; never written on v3
-instance/params.yaml	instance/README	pending-V3-2.13	F9 asserted a SECOND time, extensionless, in the file session-load.ts pushes into the orchestrator's standing context verbatim; invisible until the match rule stopped requiring a final extension
 instance/params.yaml	instance/decisions/inbox.jsonl	generated	raw capture, never tracked: gitignored by instance/decisions/.gitignore, so it is host state in every tree
 instructions/operator-feedback.md	instance/decisions/inbox.jsonl	generated	same artifact as the params.yaml row: gitignored raw capture, deliberately never tracked
 instructions/repository-hygiene.md	instance/decisions/inbox.jsonl	generated	the doc cites it precisely to say it is ignored; the file is host state, not repository content

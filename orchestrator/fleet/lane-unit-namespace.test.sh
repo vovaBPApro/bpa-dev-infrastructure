@@ -77,10 +77,12 @@ for file in "${unit_creators[@]}"; do
       fail "$LAUNCHER no longer names real lanes lane-<name>; the whole rule below rests on that"
     continue
   fi
-  # Every `--unit` handed to systemd-run, on the line that invokes it. The name
-  # must come from the guard -- as a direct call, or through a variable this
-  # same file assigns from it. A literal is refused even when it looks safe:
-  # `lane-payload-probe-$$` looked safe too.
+  # Every `--unit` handed to a real systemd-run INVOCATION -- the command word
+  # followed by a flag, comments excluded. Prose about systemd-run creates no
+  # units, and this file (and the scanner in it) is full of prose. The name must
+  # come from the guard: a direct call, or a variable this same file assigns
+  # from it. A literal is refused even when it looks safe; `lane-payload-probe-$$`
+  # looked safe too.
   while IFS= read -r line; do
     token="$(printf '%s' "$line" | sed -n 's/.*--unit[ =]\{1,\}\([^ ]*\).*/\1/p')"
     [[ -n "$token" ]] || fail "$file: a systemd-run line passes --unit with no value: $line"
@@ -99,7 +101,8 @@ for file in "${unit_creators[@]}"; do
       *) fail "$file: fixture unit name $token is a literal, not built by probe_unit_name (workboard V3-5.19)" ;;
     esac
     fixture_seen=true
-  done < <(grep -n 'systemd-run' "$REPO/$file" | grep -- '--unit' || true)
+  done < <(grep -nE '(^|[^A-Za-z0-9_-])systemd-run[[:space:]]+-' "$REPO/$file" |
+    grep -- '--unit' | grep -Ev '^[0-9]+:[[:space:]]*#' || true)
 done
 [[ "$launcher_seen" == true ]] || fail "the scan never saw $LAUNCHER -- it is not scanning what it claims to"
 [[ "$fixture_seen" == true ]] || fail 'the scan found no fixture unit name at all; it proves nothing'

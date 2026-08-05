@@ -7,4 +7,49 @@
 # report-only, forever -- it is never a timeout that eventually deletes the
 # branch on its own. See hygiene/reap.sh and instance/workboard.md V3-1.4.
 #
-# No dispositions recorded yet.
+# Every entry below was classified against main 42a0cdb on 2026-08-05. The
+# per-branch evidence -- which SHA on main carries the work, or which tree
+# comparison proves containment -- is in instance/branch-inventory-2026-08-05.md.
+# A branch reaches this file only when that evidence exists; "looks finished"
+# is not a disposition, and an unclassifiable branch stays report-only.
+
+# V3-1.5, the fail-closed meteorite runner. Rounds 1-3 of one lineage: the tree
+# of each round's tip is byte-identical to the corresponding commit of the next,
+# so r1 is contained in r2 and r2 in r3. The row was then recut and landed at
+# 133541c, and instance/hygiene-protected-branches.txt already records the
+# operator-visible ruling (2026-08-03, Telegram 1931) that r3 no longer holds the
+# only copy of anything. origin/ag-s3-1-r3 is deliberately NOT deleted: it is
+# required to exist by instance/github-protected-refs.tsv.
+ag-s3-1-meteorite superseded by the V3-1.5 recut landed at 133541c; contained in ag-s3-1-r2
+ag-s3-1-r2 superseded by the V3-1.5 recut landed at 133541c; contained in ag-s3-1-r3
+ag-s3-1-r3 superseded by the V3-1.5 recut landed at 133541c; retained on origin as history
+
+# V3-1.11, review claims in the report contract. ag-s3-11-rebase2 (d1ec462) is an
+# ancestor of main. The tips of r3 and rebase are byte-identical to it on all
+# three changed files; r2 and review-claim are earlier revisions whose only diff
+# to the landed version adds the fence-aware parser and the unterminated-fence
+# refusal, so the landed guard is strictly the stronger one.
+ag-s3-11-review-claim superseded by ag-s3-11-rebase2 at d1ec462, an ancestor of main
+ag-s3-11-r2 superseded by ag-s3-11-rebase2 at d1ec462, an ancestor of main
+ag-s3-11-r3 tree byte-identical to ag-s3-11-rebase2 at d1ec462, an ancestor of main
+ag-s3-11-rebase tree byte-identical to ag-s3-11-rebase2 at d1ec462, an ancestor of main
+
+# V3-1.7, the shared-stash boundary. hygiene/check-shared-stash.sh on this branch
+# is byte-identical to main's (blob 7519e85), landed at c7f1c79; the rule itself
+# is in instructions/lane-lifecycle.md on main. The only difference in the test is
+# main's later CHECK_SHARED_STASH_CHECKER override, an addition, not a loss.
+ag-s3-4-stash superseded by c7f1c79 on main; checker blob identical
+
+# V3-1.13, the watchdog status contract. ag-s3-9-rebase (533c854) is an ancestor
+# of main and carries both commits of this lineage under the same titles. r2's
+# tree matches it on every changed file but tools/shell-test-tier.test.ts, where
+# the landed version adds one further entry.
+ag-s3-9-watchdog superseded by 334ebcd on main via ag-s3-9-rebase
+ag-s3-9-r2 superseded by 533c854 on main via ag-s3-9-rebase
+
+# V3-1.9 round 1, non-root lanes. Byte-identical to 29571ad, the first commit of
+# ag-s4-5-r2, which is protected and retained as round 2's only copy. Round 1 is
+# therefore contained in a branch that is being kept. Not a judgment on the row:
+# HR-2335 puts non-root out of scope until cutover, and the park record
+# instance/parked/V3-1.9-nonroot-lanes-2026-08-03.md stands.
+ag-s4-5-nonroot contained byte-identically in the retained ag-s4-5-r2 at 29571ad

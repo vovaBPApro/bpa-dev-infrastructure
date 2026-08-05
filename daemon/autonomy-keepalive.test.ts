@@ -9,6 +9,7 @@ const REPO = join(import.meta.dir, "..");
 const PARAMS = [
   "fleet:",
   "  cap: 3",
+  "  declared_by: HR-2538",
   "  wake_below: 1",
   "  notify_human_below: 1",
   "  keepalive_interval_minutes: 15",
@@ -48,7 +49,7 @@ test("the parameter file this repository ships parses to the landed semantics", 
   // The cap is HR-2538's three; the wake threshold does NOT move with it, which
   // is the decoupling V3-2.11's B3 landed and V3-2.15 wrote into the file. The
   // number moved 3 -> 5 -> 3 in one day and the threshold never followed it.
-  expect(config).toEqual({ cap: 3, wakeBelow: 1, target: 0, intervalMs: 900_000 });
+  expect(config).toEqual({ cap: 3, declaredBy: "HR-2538", wakeBelow: 1, target: 0, intervalMs: 900_000 });
 });
 
 // The behaviour the workboard row asks to be shown, at every lane count the cap
@@ -106,9 +107,27 @@ test("the target seam is off by default and reaches only the orchestrator when s
 });
 
 test("an unreadable parameter file falls back to idleness only, and quotes no cap it does not know", async () => {
-  expect(parseFleetConfig("")).toEqual({ cap: null, wakeBelow: 1, target: 0, intervalMs: 900_000 });
+  expect(parseFleetConfig("")).toEqual({ cap: null, declaredBy: null, wakeBelow: 1, target: 0, intervalMs: 900_000 });
   expect(await timerAt(1, 61, "")).toEqual([]);
   expect(await timerAt(0, 61, "")).toEqual([
+    "fleet idle: 0 running with 61 open workboard rows; dispatch or inspect blocked lanes.",
+  ]);
+});
+
+// V3-5.10. The ruling id in this sentence was a literal here and another literal
+// in orchestrator/fleet/fleet-nudge.sh, both hand-retyped at the last cap change
+// and correct only because one person edited both. It now follows
+// `fleet.declared_by`, and a citation missing its other half is not sent at all:
+// a number with no ruling, or a ruling with no number, is what "HR-2456 caps
+// parallel lanes at 3" would have been.
+test("the ruling id quoted to the orchestrator follows the parameter file", async () => {
+  const renamed = PARAMS.replace("declared_by: HR-2538", "declared_by: HR-4711");
+  expect(await timerAt(0, 61, renamed)).toEqual([
+    "fleet idle: 0 running with 61 open workboard rows; dispatch or inspect blocked lanes." +
+      " HR-4711 caps parallel lanes at 3 — a ceiling, not a target.",
+  ]);
+  const unstated = PARAMS.replace("  declared_by: HR-2538\n", "");
+  expect(await timerAt(0, 61, unstated)).toEqual([
     "fleet idle: 0 running with 61 open workboard rows; dispatch or inspect blocked lanes.",
   ]);
 });

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkFleetCap, fleetBlockText, readFleetBlock, shellDefault } from "./check-fleet-cap";
@@ -12,6 +12,7 @@ function fixture(options: {
   rulings?: { id: string; body: string }[];
   nudge?: string;
   keepalive?: string;
+  launcher?: string;
 }): string {
   const repo = mkdtempSync(join(tmpdir(), "fleet-cap-"));
   mkdirSync(join(repo, "instance", "decisions"), { recursive: true });
@@ -24,19 +25,31 @@ function fixture(options: {
   for (const ruling of options.rulings ?? [{ id: "HR-2342", body: "status: binding\nlane_cap: 3\n" }]) {
     writeFileSync(join(repo, "instance", "decisions", `${ruling.id}.md`), `# ${ruling.id}\n\ndate: 2026-08-04\n${ruling.body}`);
   }
-  writeFileSync(
-    join(repo, "orchestrator", "fleet", "fleet-nudge.sh"),
-    options.nudge ??
-      'CRITICAL=$(int_or "${FLEET_NUDGE_CRITICAL:-1}" 1)\nTARGET=$(int_or "${FLEET_NUDGE_TARGET:-0}" 0)\nCAP=$(int_or "${FLEET_NUDGE_CAP:-3}" 3)\n',
-  );
-  writeFileSync(
-    join(repo, "daemon", "autonomy-keepalive.ts"),
-    options.keepalive ?? "const cap = fleet.match(/cap:/); knob(fleet, 'wake_below', 1); knob(fleet, 'target', 0);\n",
-  );
+  writeFileSync(join(repo, "orchestrator", "fleet", "fleet-nudge.sh"), options.nudge ?? DEFAULTS.nudge);
+  writeFileSync(join(repo, "daemon", "autonomy-keepalive.ts"), options.keepalive ?? DEFAULTS.keepalive);
+  writeFileSync(join(repo, "orchestrator", "fleet", "launch-lane.sh"), options.launcher ?? DEFAULTS.launcher);
   return repo;
 }
 
-const DEFAULT_FLEET = ["  cap: 3", "  wake_below: 1", "  notify_human_below: 1", "  status: active"].join("\n");
+// The consuming files as they should look: the cap read rather than defaulted,
+// every knob named, and the launcher reading, counting and offering the
+// declared exception. Each test below replaces exactly one of them.
+const DEFAULTS = {
+  nudge:
+    'CRITICAL=$(int_or "${FLEET_NUDGE_CRITICAL:-1}" 1)\nTARGET=$(int_or "${FLEET_NUDGE_TARGET:-0}" 0)\n' +
+    'CAP=$(int_or "${FLEET_NUDGE_CAP:-$(fleet_cap "$REPO")}" \'\')',
+  keepalive:
+    "const cap = fleet.match(/cap:/); fleet.match(/declared_by:/); knob(fleet, 'wake_below', 1); knob(fleet, 'target', 0);",
+  launcher: 'cap=$(fleet_cap "$repo")\nrunning=$(fleet_running_lanes)\ncase "$1" in --allow-over-cap) ;; esac',
+} as const;
+
+const DEFAULT_FLEET = [
+  "  cap: 3",
+  "  declared_by: HR-2342",
+  "  wake_below: 1",
+  "  notify_human_below: 1",
+  "  status: active",
+].join("\n");
 
 function errorsFor(options: Parameters<typeof fixture>[0]): string[] {
   const repo = fixture(options);
@@ -111,9 +124,8 @@ const SUPERSEDED_PAIR = [
 
 test("a superseded lane_cap is history and does not contradict the live one", () => {
   const errors = errorsFor({
-    fleet: DEFAULT_FLEET.replace("cap: 3", "cap: 5"),
+    fleet: DEFAULT_FLEET.replace("cap: 3", "cap: 5").replace("declared_by: HR-2342", "declared_by: HR-2456"),
     rulings: SUPERSEDED_PAIR,
-    nudge: 'CRITICAL=$(int_or "${FLEET_NUDGE_CRITICAL:-1}" 1)\nTARGET=$(int_or "${FLEET_NUDGE_TARGET:-0}" 0)\nCAP=$(int_or "${FLEET_NUDGE_CAP:-5}" 5)\n',
   });
   expect(errors).toEqual([]);
 });
@@ -237,7 +249,7 @@ test("a lane_cap declared outside a binding record does not license the paramete
 test("a wake threshold above one is rejected as the ceiling installed as a floor", () => {
   const errors = errorsFor({ fleet: DEFAULT_FLEET.replace("notify_human_below: 1", "notify_human_below: 3") });
   expect(errors).toContain(
-    "instance/params.yaml:7 fleet.notify_human_below: 3 treats a lane count HR-2342 permits as a fault " +
+    "instance/params.yaml:8 fleet.notify_human_below: 3 treats a lane count HR-2342 permits as a fault " +
       "(read by orchestrator/watchdog.sh); only 0 running lanes is idle, so this is 1",
   );
 });
@@ -260,7 +272,7 @@ test("a non-zero target without a source is refused as another underived constan
 test("a target derived by a file that exists is allowed", () => {
   const repo = fixture({
     fleet: `${DEFAULT_FLEET}\n  target: 2\n  target_source: instance/params.yaml`,
-    nudge: 'CRITICAL=$(int_or "${FLEET_NUDGE_CRITICAL:-1}" 1)\nTARGET=$(int_or "${FLEET_NUDGE_TARGET:-2}" 2)\nCAP=$(int_or "${FLEET_NUDGE_CAP:-3}" 3)\n',
+    nudge: 'CRITICAL=$(int_or "${FLEET_NUDGE_CRITICAL:-1}" 1)\nTARGET=$(int_or "${FLEET_NUDGE_TARGET:-2}" 2)\nCAP=$(int_or "${FLEET_NUDGE_CAP:-$(fleet_cap "$REPO")}" \'\')\n',
   });
   try {
     expect(checkFleetCap(repo)).toEqual([]);
@@ -274,13 +286,100 @@ test("a target above the cap is refused even with a source", () => {
   expect(errors.some((error) => error.includes("exceeds the cap of 3"))).toBe(true);
 });
 
-test("the watchdog's own default cannot drift away from the parameter file", () => {
+// V3-5.10. The watchdog's cap default used to be a literal held EQUAL to
+// params.yaml by this check. That is one edit away from drift in both files at
+// once, and it is what happened: `${FLEET_NUDGE_CAP:-5}` and the ruling id
+// beside it were hand-retyped together at the last cap change, correct only
+// because one person remembered both. The literal is now refused outright — the
+// number is read, and there is no fallback to disagree with.
+test("a retyped cap default in the watchdog is refused, whatever number it carries", () => {
+  for (const literal of [10, 3]) {
+    const errors = errorsFor({
+      nudge: `CRITICAL=$(int_or "\${FLEET_NUDGE_CRITICAL:-1}" 1)\nCAP=$(int_or "\${FLEET_NUDGE_CAP:-${literal}}" ${literal})\n`,
+    });
+    expect(errors).toContain(
+      `orchestrator/fleet/fleet-nudge.sh: FLEET_NUDGE_CAP defaults to the literal ${literal} — ` +
+        "the cap is read from instance/params.yaml, and a retyped default is the drift this check exists for",
+    );
+  }
+});
+
+// The drift that stayed silent, in its own shape: the ruling that declares the
+// cap is superseded by one declaring the SAME number, so nothing about the cap
+// itself changes — and before this check, every operator-facing message went on
+// quoting the superseded id with nothing failing.
+test("a superseding ruling that keeps the number still turns declared_by red", () => {
   const errors = errorsFor({
-    nudge: 'CRITICAL=$(int_or "${FLEET_NUDGE_CRITICAL:-1}" 1)\nTARGET=$(int_or "${FLEET_NUDGE_TARGET:-0}" 0)\nCAP=$(int_or "${FLEET_NUDGE_CAP:-10}" 10)\n',
+    rulings: [
+      { id: "HR-2342", body: "status: binding\nlane_cap: 3\nlane_cap_superseded_by: HR-2538\n" },
+      { id: "HR-2538", body: "status: binding\nlane_cap: 3\n" },
+    ],
   });
   expect(errors).toContain(
-    "orchestrator/fleet/fleet-nudge.sh: FLEET_NUDGE_CAP defaults to 10, but instance/params.yaml:5 fleet.cap is 3 — two mechanisms, two numbers",
+    "instance/params.yaml:6 fleet.declared_by: HR-2342 is not the set of rulings declaring the live cap (HR-2538) — " +
+      "the operator would be quoted a ruling that does not declare this number",
   );
+  // ...and the cap itself is untouched, which is exactly why nothing caught it.
+  expect(errors.some((error) => error.includes("fleet.cap: 3 contradicts"))).toBe(false);
+});
+
+test("an absent declared_by is a failure — the consumers would go back to retyping it", () => {
+  const errors = errorsFor({ fleet: DEFAULT_FLEET.replace("  declared_by: HR-2342\n", "") });
+  expect(errors.some((error) => error.includes("fleet.declared_by: missing"))).toBe(true);
+});
+
+// The sentence the operator actually reads. Every consumer must assemble it
+// from `declared_by`; a literal id on that line is the defect, in code or in a
+// comment beside it, since the comment is what said "five" against a cap of
+// three while nothing failed.
+test("a ruling id retyped into the cap sentence is refused in every consumer", () => {
+  const sentence = 'HR-2456 caps parallel lanes at $CAP — a ceiling, not a target.';
+  for (const [key, file] of [
+    ["nudge", "orchestrator/fleet/fleet-nudge.sh"],
+    ["keepalive", "daemon/autonomy-keepalive.ts"],
+    ["launcher", "orchestrator/fleet/launch-lane.sh"],
+  ] as const) {
+    const base = errorsFor({});
+    const errors = errorsFor({ [key]: `${DEFAULTS[key]}\nmsg="${sentence}"\n` });
+    expect(base.some((error) => error.includes("caps parallel lanes"))).toBe(false);
+    expect(
+      errors.some(
+        (error) => error.startsWith(`${file}:`) && error.includes("retypes HR-2456 into the cap sentence"),
+      ),
+    ).toBe(true);
+  }
+});
+
+// The launcher is where the cap became a refusal. A shape assertion only —
+// orchestrator/fleet/launch-lane-cap.test.sh executes the ceiling at cap+1 —
+// but it names each part, so a launcher that quietly stops reading the
+// parameter or drops the declared exception is a failure here as well.
+test("a launcher that enforces nothing is refused, part by part", () => {
+  expect(errorsFor({ launcher: 'running=$(fleet_running_lanes)\ncase "$1" in --allow-over-cap) ;; esac\n' })).toContain(
+    "orchestrator/fleet/launch-lane.sh: does not call fleet_cap — the cap would be quoted elsewhere and enforced nowhere",
+  );
+  expect(errorsFor({ launcher: 'cap=$(fleet_cap "$repo")\ncase "$1" in --allow-over-cap) ;; esac\n' })).toContain(
+    "orchestrator/fleet/launch-lane.sh: does not call fleet_running_lanes — a cap with no census cannot refuse anything",
+  );
+  expect(errorsFor({ launcher: 'cap=$(fleet_cap "$repo")\nrunning=$(fleet_running_lanes)\n' })).toContain(
+    "orchestrator/fleet/launch-lane.sh: no --allow-over-cap path — refusal must be the default, not the only possibility",
+  );
+});
+
+// The shell reader and this checker must see the same repository the same way.
+// They are two implementations of one lookup, and the launcher trusts the first
+// while the gate trusts the second.
+test("the shell reader and this checker agree on the cap and the ruling", () => {
+  const repo = join(import.meta.dir, "..");
+  const read = (fn: string) =>
+    Bun.spawnSync(["bash", "-c", `. orchestrator/fleet/fleet-params.sh; ${fn} "$PWD"`], { cwd: repo });
+  const fleet = readFleetBlock(readFileSync(join(repo, "instance", "params.yaml"), "utf8"));
+  const cap = read("fleet_cap");
+  expect(cap.exitCode, cap.stderr.toString()).toBe(0);
+  expect(cap.stdout.toString()).toBe(fleet.get("cap")!.value);
+  const declared = read("fleet_declared_by");
+  expect(declared.exitCode, declared.stderr.toString()).toBe(0);
+  expect(declared.stdout.toString()).toBe(fleet.get("declared_by")!.value);
 });
 
 test("a knob the daemon stops reading is reported as inert, not as clean", () => {

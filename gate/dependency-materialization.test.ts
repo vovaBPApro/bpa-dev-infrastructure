@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { isBuiltin } from "node:module";
+import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 
 // V3-5.25 regression lock: the landing baseline must answer the same in a clean
@@ -36,10 +37,20 @@ import { dirname, join, sep } from "node:path";
 //      parent directory, or a global install. That resolves here and nowhere
 //      else, which is the original defect wearing a different hat: green on
 //      this host, red in a clone, and green again the moment anyone "fixes" it
-//      by installing on the host instead of in the repository.
+//      by installing on the host instead of in the repository;
+//   4. the step's workspace inventory read fails and the step reports success
+//      anyway, having materialized nothing.
 //
-// (3) is the load-bearing one. (1) and (2) are the wiring that keeps it from
-// being satisfied by accident.
+// (3) is the load-bearing one. (1), (2) and (4) are the wiring that keeps it
+// from being satisfied by accident.
+//
+// WHAT THIS LOCK DOES NOT COVER, stated because the review proved it (F1)
+// The assertion behind (3) is that every external import resolves from INSIDE
+// the checkout. It cannot detect a package whose CONTENT was tampered with in
+// the host's bun install cache: bun hardlinks out of that cache, so the
+// tampered file's realpath IS the in-checkout path and the assertion is
+// satisfied. That residue is described in full in gate/land-lib.sh and is its
+// own row, not something this file silently implies it covers.
 
 const repoRoot = realpathSync(join(import.meta.dir, ".."));
 const landLib = readFileSync(join(repoRoot, "gate/land-lib.sh"), "utf8");
@@ -127,16 +138,82 @@ test("every tracked workspace that declares dependencies has a tracked lockfile"
 // export does not even expose, so resolving package names would have missed the
 // exact specifier the aborted landing named.
 //
-// Bun.Transpiler.scanImports would be the exact reader, and it is deliberately
-// not used: on this repository's largest tracked source it terminates the
-// process with status 0 and no output, which inside the landing suite would be
-// a silent kill dressed as a pass -- the failure mode `verification-and-locks`
-// spends a section on. A regex plus a package-name shape filter is the weaker
-// reader that cannot do that. It errs toward finding MORE specifiers than the
-// runtime does (a package named in a comment is still required to resolve),
-// which is the safe direction for a lock.
+// THE READER: Bun.Transpiler.scanImports, behind a shebang guard, UNIONED with
+// a regex.
+//
+// An earlier draft used the regex alone and justified it by claiming
+// scanImports "terminates the process with status 0 and no output" on this
+// repository's largest tracked source. That is false in every particular and
+// the V3-5.25 review disproved it (F2). What actually happens: scanImports
+// throws an ordinary catchable BuildMessage, `Unexpected #!/usr/bin/env bun`,
+// on any source whose first line is a shebang -- 22 of this repository's 133
+// tracked sources have one, and a 40-byte file reproduces it. It has nothing to
+// do with file size and it is not a silent kill. Strip the shebang and the
+// transpiler reads all 133.
+//
+// Recording a fictional failure mode as the reason a future maintainer must
+// avoid the exact reader is worse than the weaker reader itself, so the exact
+// reader is now used. It is also strictly better on the one form the regex
+// provably misses: a bare side-effect `import "pkg";` (F3), which the runtime
+// performs and the regex, requiring `from` / `import(` / `require(`, does not
+// match.
+//
+// The regex STAYS as a union partner rather than being deleted, because it is a
+// superset in the other direction: it also matches type-only imports that the
+// transpiler correctly elides (`daemon/server.ts -> grammy/types`) and package
+// names in comments. Requiring those to resolve too is the safe direction for a
+// lock. Union means each reader's blind spot is covered by the other.
+//
+// What neither reader sees, stated because a lock's value is exactly its blind
+// spots: computed dynamic specifiers (`import(someVariable)`), which no static
+// reader can resolve, and specifiers assembled from concatenated fragments.
 const IMPORT_FORM = /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*)(["'])([^"'\n]+)\1/g;
 const PACKAGE_SPECIFIER = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)*$/i;
+const LEADING_SHEBANG = /^#![^\n]*/;
+
+function loaderFor(file: string): "ts" | "tsx" | "js" | "jsx" {
+  if (file.endsWith(".tsx")) return "tsx";
+  if (file.endsWith(".jsx")) return "jsx";
+  if (file.endsWith(".ts")) return "ts";
+  return "js";
+}
+
+// Exported for the reader's own locks below: the two repaired properties are
+// asserted against this function directly, on inputs the tracked tree does not
+// currently contain, so they stay red if the reader regresses to regex-only.
+export function readSpecifiers(source: string, file: string): string[] {
+  const specifiers = new Set<string>();
+
+  // The transpiler is the exact reader. A leading shebang is stripped because
+  // it is the one thing scanImports refuses outright; a throw for any OTHER
+  // reason is raised, never swallowed. A reader that returns [] on failure
+  // would turn an unreadable source into "imports nothing", which is the
+  // failure-as-absence shape this whole change exists to remove.
+  try {
+    for (const imported of new Bun.Transpiler({ loader: loaderFor(file) })
+      .scanImports(source.replace(LEADING_SHEBANG, ""))) {
+      specifiers.add(imported.path);
+    }
+  } catch (error) {
+    throw new Error(`scanImports failed on ${file}: ${error}`);
+  }
+
+  // The regex's extra reach. Its shape filter applies only here: the regex
+  // matches arbitrary quoted strings, so it needs one, while a transpiler
+  // result is already exactly what the code asked for and must not be dropped
+  // by a shape guess.
+  for (const match of source.matchAll(IMPORT_FORM)) {
+    if (PACKAGE_SPECIFIER.test(match[2])) specifiers.add(match[2]);
+  }
+
+  return [...specifiers];
+}
+
+function isExternal(specifier: string): boolean {
+  if (specifier.startsWith(".") || specifier.startsWith("/")) return false;
+  if (specifier.startsWith("bun:") || specifier.startsWith("node:")) return false;
+  return !isBuiltin(specifier);
+}
 
 function externalImports(): { file: string; specifier: string }[] {
   const listed = spawnSync(
@@ -149,17 +226,49 @@ function externalImports(): { file: string; specifier: string }[] {
   }
   const found: { file: string; specifier: string }[] = [];
   for (const file of listed.stdout.toString("utf8").split("\0").filter(Boolean)) {
-    for (const match of readFileSync(join(repoRoot, file), "utf8").matchAll(IMPORT_FORM)) {
-      const specifier = match[2];
-      if (specifier.startsWith(".") || specifier.startsWith("/")) continue;
-      if (specifier.startsWith("bun:") || specifier.startsWith("node:")) continue;
-      if (isBuiltin(specifier)) continue;
-      if (!PACKAGE_SPECIFIER.test(specifier)) continue;
-      found.push({ file, specifier });
+    const source = readFileSync(join(repoRoot, file), "utf8");
+    for (const specifier of readSpecifiers(source, file)) {
+      if (isExternal(specifier)) found.push({ file, specifier });
     }
   }
   return found;
 }
+
+// The fixture specifiers below are assembled rather than written literally, and
+// that is load-bearing rather than fussy: this file is itself a tracked source
+// that the scan above reads, and the regex half of the reader is deliberately
+// over-broad enough to match a package name inside an ordinary string literal.
+// A fixture written as a contiguous import clause with its specifier quoted
+// inline would therefore be collected as a real import of this file and then
+// required to resolve from gate/, where it does not exist -- the lock would
+// fail on its own examples. (It did, while this was being written, and the
+// offender it named was a package name appearing in this very comment.)
+// Splitting the quote from the name is exactly the concatenated-fragment blind
+// spot named above, used here on purpose.
+const Q = '"';
+const FIXTURE = "lock-fixture-package";
+
+test("the import reader survives a shebang, sees bare side-effect imports, and never swallows a throw", () => {
+  // F2: the whole tracked justification for avoiding the exact reader was that
+  // it dies on a large source. It dies on a SHEBANG, at 40 bytes, catchably.
+  // Red against an unguarded scanImports, which throws on this input.
+  expect(readSpecifiers(`#!/usr/bin/env bun\nimport z from ${Q}${FIXTURE}${Q};\n`, "x.ts"))
+    .toContain(FIXTURE);
+
+  // F3: a bare side-effect import is a form the runtime performs and the regex
+  // cannot match -- it requires `from`, `import(` or `require(`. Nothing in the
+  // tracked tree uses this form today, so only a synthetic input keeps it red
+  // against a regex-only reader.
+  expect(readSpecifiers(`import ${Q}${FIXTURE}${Q};\n`, "x.ts")).toContain(FIXTURE);
+
+  // The regex's own reach, kept: a type-only import the transpiler correctly
+  // elides still has to resolve. Union, not replacement.
+  expect(readSpecifiers(`import type { A } from ${Q}${FIXTURE}-types${Q};\n`, "x.ts"))
+    .toContain(`${FIXTURE}-types`);
+
+  // Fail-closed: an unreadable source must not read as "imports nothing".
+  expect(() => readSpecifiers("import { from '", "x.ts")).toThrow(/scanImports failed on x\.ts/);
+});
 
 test("every external import in a tracked source resolves from inside the checkout", () => {
   const imports = externalImports();
@@ -186,6 +295,33 @@ test("every external import in a tracked source resolves from inside the checkou
     }
   }
   expect(offenders).toEqual([]);
+});
+
+test("an unreadable workspace inventory fails the step closed, by name", () => {
+  // F4: the inventory read was the one fail-OPEN path in a function that is
+  // otherwise meticulous about never letting a failure read as an absence. With
+  // `git ls-files` failing, `manifests` was empty, the loop never ran, and the
+  // function returned 0 having materialized nothing and printed no `deps=` line.
+  // Driven through the real function rather than asserted against its text.
+  const notARepo = mkdtempSync(join(tmpdir(), "bpa-inventory-lock-"));
+  try {
+    const run = spawnSync(
+      "bash",
+      [
+        "-c",
+        '. "$1"/gate/land-lib.sh && land_resolve_bun && land_materialize_dependencies "$2" TRIAL-INVENTORY',
+        "bash",
+        repoRoot,
+        notARepo,
+      ],
+      { encoding: "utf8" },
+    );
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain("deps=install status=fail");
+    expect(run.stderr).toContain("detail=inventory-unreadable");
+  } finally {
+    rmSync(notARepo, { recursive: true, force: true });
+  }
 });
 
 test("materialized dependency output stays out of git", () => {

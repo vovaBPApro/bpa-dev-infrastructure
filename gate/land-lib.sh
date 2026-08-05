@@ -173,15 +173,44 @@ land_resolve_bun() {
 # must be refused." The second half stands and is what this function enforces.
 # The first half was refusing the wrong thing. `bun install --frozen-lockfile`
 # cannot resolve, add, update or remove a single package: it refuses outright
-# when the manifest and the lockfile disagree, and otherwise unpacks the exact
-# tree the tracked lockfile already names. It is a pure function of tracked
-# files -- the same act as checking out a tracked file, performed on files that
-# are tracked as a lockfile rather than as a directory. Deciding dependency
-# state is what is outside landing authority; deriving it from what the
-# repository already says is what makes the checkout reproducible at all.
+# when the manifest and the lockfile disagree, and otherwise materializes the
+# package set the tracked lockfile already names. Deciding dependency state is
+# what is outside landing authority; deriving it from what the repository
+# already says is what makes the checkout reproducible at all.
 # `--ignore-scripts` completes that: no lifecycle script runs, so materializing
 # a candidate's tree never executes the candidate's install-time code as the
 # gate.
+#
+# THE BOUNDARY THAT ACTUALLY HOLDS, stated exactly (V3-5.25 review, F1)
+# An earlier draft of this comment called the result "a pure function of tracked
+# files". It is not, and the overstatement mattered because this paragraph is the
+# only tracked home of the rule that licenses the gate to run an installer.
+#
+# What holds: the SET of packages, their names and their versions are decided by
+# the tracked lockfile alone, and a lockfile/manifest disagreement is refused.
+# What does NOT hold: the CONTENT is supplied by the host's bun install cache
+# (`~/.bun/install/cache`), which is git-ignored host state, and bun does not
+# re-verify already-cached content against the lockfile's recorded `sha512`. It
+# hardlinks out of that cache, so a package file in the checkout and its cache
+# entry are the same inode. Tamper with the cached content and this step reports
+# `deps=install status=pass` over a checkout that does not match its own
+# lockfile.
+#
+# So the derivation is a function of the tracked lockfile PLUS the host install
+# cache, and where those two disagree the cache wins, silently. Two consequences
+# follow: writing into a materialized `node_modules` file writes THROUGH to the
+# cache and every later clone on this host inherits it; and the gate's verdict
+# still rests on ambient host state, narrower than before (keyed by name and
+# version, and a clean clone now works) but not eliminated.
+#
+# Verifying the digests locally is not available as a cheap repair, which is why
+# this is recorded rather than closed: the lockfile's `sha512` entries are npm
+# TARBALL digests, and the cache retains only extracted files -- no tarball is
+# kept on this host to hash. Checking them would mean re-fetching every tarball
+# from the registry on every landing, which replaces a host-state dependency
+# with a hard network dependency and makes landings fail when the registry is
+# unreachable. Installing into a gate-controlled cache costs the same, for the
+# same reason. Closing this properly is its own row, not a clause here.
 #
 # It exists because the gate's inventory includes integration tests that spawn
 # daemon/server.ts, whose imports resolve only against daemon/node_modules --
@@ -197,9 +226,23 @@ land_resolve_bun() {
 # from the registry over the network. Where neither is available it fails closed
 # with a named `deps=install status=fail`, never a skip.
 land_materialize_dependencies() {
-  local dep_repo="$1" dep_prefix="$2" manifest_rel workspace_rel lock_rel install_log declares_status
+  local dep_repo="$1" dep_prefix="$2" manifest_rel workspace_rel lock_rel install_log declares_status inventory
   local -a manifests=()
-  mapfile -d '' -t manifests < <(git -C "$dep_repo" ls-files -z -- 'package.json' '*/package.json')
+  # Fail-closed like every other read in this function: a failed inventory read
+  # left `manifests` empty, so the loop never ran and the function returned 0
+  # having materialized nothing -- a failure readable as an absence, which is
+  # exactly what the manifest read below goes out of its way to prevent. The
+  # status is captured from `git` itself, not from a process substitution whose
+  # exit nobody sees, and the list goes through a file because command
+  # substitution discards the NUL bytes `-z` depends on.
+  inventory=$(mktemp "${TMPDIR:-/tmp}/bpa-land-inventory.XXXXXX") || return 1
+  if ! git -C "$dep_repo" ls-files -z -- 'package.json' '*/package.json' >"$inventory" 2>/dev/null; then
+    rm -f "$inventory"
+    echo "$dep_prefix deps=install status=fail detail=inventory-unreadable repo=$dep_repo" >&2
+    return 1
+  fi
+  mapfile -d '' -t manifests <"$inventory"
+  rm -f "$inventory"
   for manifest_rel in "${manifests[@]}"; do
     # 0 declares dependencies, 1 declares none, 2 unreadable or malformed. A
     # thrown parse must not be readable as "declares none", so the read is

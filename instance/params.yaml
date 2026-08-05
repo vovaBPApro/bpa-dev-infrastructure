@@ -168,5 +168,15 @@ capture:
   # the mirror is proven live writing instance/decisions/inbox.jsonl.
   mode: manual                     # instructions/orchestrator-fallback.md, instruction-layers.md (daemon mirror planned, not yet wired)
 
+ledger:
+  # Ceiling on how far ahead an HR row may be parked, enforced by
+  # tools/instructions/ledger.ts:checkHrAging(). `review-by:` was mandatory and
+  # bit when past, but had no upper bound, so `review-by: 2099-01-01` was green,
+  # undelivered and uncounted. The rule is generic; this number is ours. One
+  # quarter: long enough for a real park (a decision waiting on the operator, a
+  # row blocked on the cutover), short enough that the row comes back while the
+  # reason for parking it is still legible.
+  parked_horizon_days: 90          # round-2 review of V3-3.1, finding 5
+
 db:
   legacy_carry_over: none          # instructions/repo-layout.md (msg 11543: no legacy DB carry-over)

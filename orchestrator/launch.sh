@@ -85,17 +85,28 @@ CODEX_REASONING_EFFORT="${ORCH_CODEX_REASONING_EFFORT:-high}"
 # Standing-context load at session start. Codex fires SessionStart hooks with
 # the same wire format as the Claude harness — same stdin envelope, same
 # {"hookSpecificOutput":{"additionalContext":…}} reply — so both providers share
-# ONE hook script rather than forking the loader per vendor. Declared inline via
-# --config instead of a hooks.json file: a repo-local $CODEX_HOME would be
-# written into by codex (tui.model_availability_nux counters), leaving the tree
-# dirty and every session load reporting `startup: degraded`, and the real
-# $CODEX_HOME is shared with every other codex process on the box.
-CODEX_SESSION_HOOK="${ORCH_CODEX_SESSION_HOOK:-$REPO_DIR/.claude/hooks/session-load.sh}"
+# ONE hook script rather than forking the loader per vendor. For codex it is
+# declared inline via --config instead of a hooks.json file: a repo-local
+# $CODEX_HOME would be written into by codex (tui.model_availability_nux
+# counters), leaving the tree dirty and every session load reporting
+# `startup: degraded`, and the real $CODEX_HOME is shared with every other codex
+# process on the box. For claude it is declared in the settings JSON below,
+# beside the Stop relay.
+#
+# The default is a TRACKED path inside this repository. It used to be
+# $REPO_DIR/.claude/hooks/session-load.sh — a file in no commit and on no host,
+# wired to codex only, and guarded by a `[[ -x ]]` test that skipped it in
+# silence. The claude branch, which is what actually runs here, declared no
+# SessionStart hook at all, so every boot came up with no standing context and
+# said nothing about it. ORCH_CODEX_SESSION_HOOK is still read so an existing
+# runtime.env keeps working, but it no longer selects a per-vendor script:
+# there is one hook and both branches wire it.
+SESSION_HOOK="${ORCH_SESSION_HOOK:-${ORCH_CODEX_SESSION_HOOK:-$SCRIPT_DIR/hooks/session-start.sh}}"
 BOUND_CHAT_ID="${TELEGRAM_BOUND_CHAT_ID:-${TELEGRAM_CHAT_ID:-}}"
 INSTANCE_LOCK_FILE="${ORCH_INSTANCE_LOCK_FILE:-${BOUND_CHAT_ID:+$HOME/.claude/orchestrator-chat-$BOUND_CHAT_ID.lock}}"
 
 usage() {
-  printf '%s\n' 'Usage: launch.sh [start|stop|status|model|identity|--help]'
+  printf '%s\n' 'Usage: launch.sh [start|stop|status|model|identity|render-command|--help]'
 }
 
 # Machine-readable resolved model state, for the Telegram /model command.
@@ -113,6 +124,23 @@ model_report() {
 identity_report() {
   printf 'session=%s\nruntime_dir=%s\nstate_db=%s\nlease_file=%s\nlauncher=%s\nconfig_file=%s\n' \
     "$SESSION" "$RUNTIME_DIR" "$STATE_DB" "$LEASE_FILE" "$SCRIPT_DIR/launch.sh" "$CONFIG_FILE"
+}
+
+# Renders exactly the command line `start` would exec into the pane, and
+# refuses (exit 2) on exactly the same missing-mechanism conditions. This is
+# the seam session-hook-wiring.test.sh asserts against: without it a drift test
+# could only prove the hook is referenced in the SOURCE of launch.sh, which is
+# the same class of "checked something adjacent to the real property" the
+# audits keep finding. Starting nothing, it can assert what a start would wire.
+#
+# Not read-only: it materializes the same settings/MCP files build_command
+# writes, so point ORCH_RUNTIME_DIR at a scratch dir when probing a live host.
+command_report() {
+  local rendered
+  if ! rendered="$(build_command)"; then
+    return 2
+  fi
+  printf '%s\n' "$rendered"
 }
 
 session_exists() { tmux has-session -t "$SESSION" 2>/dev/null; }
@@ -248,28 +276,103 @@ codex_trust_preflight() {
   return 0
 }
 
+# ── Fail-closed wiring of the mechanisms declared to the provider ───────────
+# Every mechanism below used to sit behind `if [[ -x "$path" ]]` whose false
+# branch wired nothing and printed nothing, so "the hook is missing" and "the
+# session is healthy" rendered identically. Hard Floor 7: a missing mechanism
+# is a refusal that names the path, never a silent omission.
+require_mechanism() {
+  local kind="$1" path="$2" reason
+  if [[ -x "$path" ]]; then
+    return 0
+  fi
+  if [[ -e "$path" ]]; then reason="not executable"; else reason="missing"; fi
+  printf 'ERROR orchestrator-%s-unavailable path=%s reason=%s provider=%s\n' \
+    "$kind" "$path" "$reason" "$PROVIDER" >&2
+  printf 'hint: refusing to start a session with %s silently unwired; restore the tracked file (git ls-files + executable bit).\n' \
+    "$kind" >&2
+  return 1
+}
+
+# Break-glass, mirroring dispatch-check.ts's DISPATCH_OVERRIDE: one explicit,
+# greppable variable, refused when set-but-empty, and journaled to the same ops
+# journal on every use — an escape hatch nobody can take quietly. It exists for
+# a lane repairing this tooling, which would otherwise be unable to launch a
+# session to repair it with.
+OPS_JOURNAL="${ORCH_OPS_JOURNAL:-$REPO_DIR/orchestrator/runtime/ops-journal.log}"
+
+journal_override() {
+  local kind="$1" reason="$2" ts encoded
+  mkdir -p "$(dirname "$OPS_JOURNAL")" || return 1
+  ts="$(date --iso-8601=seconds)" || return 1
+  # JSON-escape the reason so a newline in it cannot forge a second row.
+  encoded="$(printf '%s' "$reason" | "$BUN_BIN" -e '
+process.stdout.write(JSON.stringify(await Bun.stdin.text()));
+')" || return 1
+  [[ -n "$encoded" ]] || return 1
+  printf '%s\tORCH_SKIP_SESSION_HOOK\tkind=%s\tprovider=%s\treason=%s\n' \
+    "$ts" "$kind" "$PROVIDER" "$encoded" >> "$OPS_JOURNAL" || return 1
+  return 0
+}
+
+# Sets SESSION_HOOK_WIRED to 1 (wire it) or 0 (break-glass skip). A non-zero
+# return means the launch must refuse.
+SESSION_HOOK_WIRED=0
+resolve_session_hook() {
+  SESSION_HOOK_WIRED=0
+  if [[ -n "${ORCH_SKIP_SESSION_HOOK+set}" ]]; then
+    local reason="$ORCH_SKIP_SESSION_HOOK"
+    if [[ -z "${reason//[[:space:]]/}" ]]; then
+      printf 'ERROR orchestrator-session-hook-override-empty\n' >&2
+      printf 'hint: ORCH_SKIP_SESSION_HOOK is set but empty — a break-glass override MUST carry a reason ("1" is accepted).\n' >&2
+      return 2
+    fi
+    if ! journal_override session-hook "$reason"; then
+      printf 'ERROR orchestrator-session-hook-override-unjournalable journal=%s\n' "$OPS_JOURNAL" >&2
+      printf 'hint: a break-glass use that cannot be recorded is refused, exactly as dispatch-check.ts refuses an unjournalable DISPATCH_OVERRIDE.\n' >&2
+      return 2
+    fi
+    printf 'WARN orchestrator-session-hook-skipped reason=%s journal=%s; this session loads NO standing context — it is a fail-closed NO-GO for dispatch until the load is run by hand\n' \
+      "$reason" "$OPS_JOURNAL" >&2
+    return 0
+  fi
+  require_mechanism session-hook "$SESSION_HOOK" || return 2
+  SESSION_HOOK_WIRED=1
+  return 0
+}
+
 build_command() {
+  resolve_session_hook || return 2
   case "$PROVIDER" in
     claude)
       local relay="${ORCH_CLAUDE_STOP_RELAY:-$SCRIPT_DIR/orchestrator-claude-stop-relay.sh}"
-      local settings=""
-      if [[ -x "$relay" ]]; then
-        local settings_tmp
-        mkdir -p "$(dirname "$CLAUDE_RELAY_SETTINGS")"
-        settings_tmp="$(mktemp "$(dirname "$CLAUDE_RELAY_SETTINGS")/.claude-relay-settings.XXXXXX")"
-        "$BUN_BIN" -e '
-const relay = process.argv[1];
-process.stdout.write(JSON.stringify({
+      require_mechanism stop-relay "$relay" || return 2
+      local settings="" settings_tmp hook_arg=""
+      (( SESSION_HOOK_WIRED )) && hook_arg="$SESSION_HOOK"
+      mkdir -p "$(dirname "$CLAUDE_RELAY_SETTINGS")"
+      settings_tmp="$(mktemp "$(dirname "$CLAUDE_RELAY_SETTINGS")/.claude-relay-settings.XXXXXX")"
+      # The claude branch declared NO SessionStart hook at all — the whole
+      # standing-context load was codex-only, on a path that did not exist. The
+      # settings file this already writes for the Stop relay is the natural
+      # carrier, so both hooks arrive through one artifact.
+      "$BUN_BIN" -e '
+const [, relay, hook] = process.argv;
+const settings = {
   hooks: {
     Stop: [{
       hooks: [{ type: "command", command: relay }],
     }],
   },
-}, null, 2) + "\n");
-' "$relay" > "$settings_tmp"
-        mv -f "$settings_tmp" "$CLAUDE_RELAY_SETTINGS"
-        printf -v settings ' --settings %q' "$CLAUDE_RELAY_SETTINGS"
-      fi
+};
+if (hook) {
+  settings.hooks.SessionStart = [{
+    hooks: [{ type: "command", command: hook }],
+  }];
+}
+process.stdout.write(JSON.stringify(settings, null, 2) + "\n");
+' "$relay" "$hook_arg" > "$settings_tmp"
+      mv -f "$settings_tmp" "$CLAUDE_RELAY_SETTINGS"
+      printf -v settings ' --settings %q' "$CLAUDE_RELAY_SETTINGS"
       local mcp=""
       if [[ -n "$CLAUDE_MCP_URL" ]]; then
         local mcp_tmp
@@ -294,20 +397,20 @@ process.stdout.write(JSON.stringify({
       ;;
     codex)
       local relay="${ORCH_TURNEND_RELAY:-$SCRIPT_DIR/orchestrator-turnend-relay.sh}"
+      require_mechanism turnend-relay "$relay" || return 2
       local notify="" effort="" hooks=""
-      if [[ -x "$relay" ]]; then
-        printf -v notify ' --config notify=%q' "[\"$relay\"]"
-      fi
+      printf -v notify ' --config notify=%q' "[\"$relay\"]"
       if [[ -n "$CODEX_REASONING_EFFORT" ]]; then
         printf -v effort ' --config model_reasoning_effort=%q' "\"$CODEX_REASONING_EFFORT\""
       fi
-      if [[ -x "$CODEX_SESSION_HOOK" ]]; then
+      if (( SESSION_HOOK_WIRED )); then
         # --dangerously-bypass-hook-trust is REQUIRED, not decorative: without
         # persisted trust codex drops the hook, and a headless tmux pane has no
         # way to answer the trust prompt, so the load fails silently and the
-        # orchestrator boots blind. The hook source is this repository.
+        # orchestrator boots blind. The hook source is this repository — the
+        # same tracked file the claude branch declares in its settings JSON.
         printf -v hooks ' --dangerously-bypass-hook-trust --config hooks.SessionStart=%q' \
-          "[{hooks=[{type=\"command\",command=\"$CODEX_SESSION_HOOK\"}]}]"
+          "[{hooks=[{type=\"command\",command=\"$SESSION_HOOK\"}]}]"
       fi
       printf 'exec codex --model %q --dangerously-bypass-approvals-and-sandbox%s%s%s' \
         "$CODEX_MODEL" "$effort" "$notify" "$hooks"
@@ -486,7 +589,11 @@ start() {
     return 2
   fi
   local command provider_bin singleton_command startup_file handoff_file acquired_file provider_stage_file pane_pid provider_pid pane_pipe terminal_alert_bun terminal_alert_command terminal_alert_ready
-  command="$(build_command)"
+  # build_command is fail-closed: a missing session hook or relay refuses here
+  # rather than starting a session with the mechanism silently unwired.
+  if ! command="$(build_command)"; then
+    return 2
+  fi
   provider_bin="$PROVIDER"
   command -v "$provider_bin" >/dev/null 2>&1 || { printf 'provider not found: %s\n' "$provider_bin" >&2; return 2; }
   startup_file="$RUNTIME_DIR/orchestrator.startup"
@@ -698,6 +805,7 @@ case "${1:-start}" in
   status) status ;;
   model) model_report ;;
   identity) identity_report ;;
+  render-command) command_report ;;
   -h|--help|help) usage ;;
   *) usage >&2; exit 2 ;;
 esac

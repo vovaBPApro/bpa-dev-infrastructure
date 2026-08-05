@@ -7,6 +7,10 @@ import { join } from "path";
 // immutable framework collection includes *.test.ts but not *.test.sh, so the
 // explicit inventory below both runs the tier and detects a deleted shell test.
 // Do not replace this inventory with a glob: a glob cannot detect deletion.
+//
+// The second, independent record of that inventory is tools/expected-shell-test-tier.tsv,
+// one path per line. It is deliberately not an aggregate count: a count is
+// merge-blind, and that is measured, not theoretical — see the file's header.
 
 const repoRoot = join(import.meta.dir, "..");
 
@@ -35,6 +39,7 @@ const runnableShellTests = [
   "orchestrator/watchdog-supervision.test.sh",
   "orchestrator/fleet/launch-lane.test.sh",
   "orchestrator/fleet/lane-payload-systemd.test.sh",
+  "orchestrator/fleet/lane-unit-namespace.test.sh",
   "orchestrator/watchdog.test.sh",
   "orchestrator/fleet/fleet-nudge.test.sh",
   "orchestrator/fleet/fleet-nudge-liveness.test.sh",
@@ -44,8 +49,22 @@ const excludedShellTests = {} as const;
 
 const allShellTests = [...runnableShellTests, ...Object.keys(excludedShellTests)];
 
+function readPinnedInventory(): string[] {
+  return readFileSync(join(repoRoot, "tools/expected-shell-test-tier.tsv"), "utf8")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith("#"));
+}
+
 test("the independently pinned shell-test inventory still exists", () => {
-  expect(allShellTests).toHaveLength(16);
+  const pinned = readPinnedInventory();
+  // Fail closed: an emptied or comment-only pin must never read as agreement.
+  expect(pinned.length).toBeGreaterThan(0);
+  expect(new Set(allShellTests).size, "the tier inventory names a shell test twice").toBe(
+    allShellTests.length,
+  );
+  expect(new Set(pinned).size, "the pin names a shell test twice").toBe(pinned.length);
+  expect([...allShellTests].sort()).toEqual([...pinned].sort());
   for (const relativePath of allShellTests) {
     expect(existsSync(join(repoRoot, relativePath)), `${relativePath} is missing`).toBe(true);
   }

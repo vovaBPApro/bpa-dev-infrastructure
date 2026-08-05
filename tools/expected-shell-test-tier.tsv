@@ -1,0 +1,29 @@
+# Independent pin for the shell-test tier inventory in tools/shell-test-tier.test.ts.
+# One tracked shell test per line, sorted. The executor asserts that this file and
+# its own inventory name exactly the same set, so removing a shell test from the
+# tier stays a deliberate two-place edit and cannot happen by dropping one line.
+#
+# This replaced an aggregate count (`toHaveLength(N)`) held in the executor. A
+# count is merge-blind: two lanes that each add one shell test both write the
+# same N+1 on the same line, git's three-way merge keeps that identical change
+# once, and the merged tree carries N+2 entries while asserting N+1 — green on
+# each branch alone, red only after the merge, at the meteorite. One line per
+# entry has no such collision: distinct lines merge to the union, which is the
+# correct answer.
+bootstrap/bootstrap.test.sh
+bootstrap/provision-service-user.test.sh
+gate/land-rollback.test.sh
+gate/land-target-branch.test.sh
+gate/land.test.sh
+gate/lane-exit.test.sh
+gate/meteorite-gate.test.sh
+gate/push-guard.test.sh
+orchestrator/fleet/fleet-nudge-liveness.test.sh
+orchestrator/fleet/fleet-nudge.test.sh
+orchestrator/fleet/lane-payload-systemd.test.sh
+orchestrator/fleet/lane-unit-namespace.test.sh
+orchestrator/fleet/launch-lane.test.sh
+orchestrator/launch-handshake-bounded.test.sh
+orchestrator/singleton-failclosed.test.sh
+orchestrator/watchdog-supervision.test.sh
+orchestrator/watchdog.test.sh

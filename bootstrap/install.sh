@@ -53,7 +53,13 @@ does not enable, start, restart, or reload units.
 Environment overrides: INSTALL_ROOT, REPO_URL, REPO_BRANCH (default: main),
 BUN_VERSION, ENV_FILE, BUN_BIN, BASH_BIN, RUNTIME_DIR, INFRA_STATE_DB,
 TEST_GATE_ORIGIN_URL,
-CRONTAB_CMD, SYSTEMD_SYSTEM_DIR, EXPECTED_UNITS_FILE.
+CRONTAB_CMD, SYSTEMD_SYSTEM_DIR, EXPECTED_UNITS_FILE,
+FULL_SUITE_ON_CALENDAR, ORCH_WATCHDOG_INTERVAL.
+The last two are rendered straight into timer directives and are read by
+systemd's parser during unit rendering, so an invalid value fails the install
+rather than deploying a disarmed timer. Every render variable's default lives
+in bootstrap/unit-render-lib.sh; `bootstrap/unit-render-lib.sh --print-env`
+prints the set this installer will use.
 --verify-source checks only the boundaries a source/container test can prove
 and reports explicit SKIPs where a live host would be required; there is no
 --verify mode in this row.
@@ -357,8 +363,11 @@ render_units() {
   done
 
   # systemd's own parser, on the staged set, before the destination directory
-  # is touched. Weaker than the assertions above -- it exits 0 on an
-  # unparsable timer value -- so it is an addition to them, never a substitute.
+  # is touched. Its exit status is unusable, so unit_render_verify_staged
+  # classifies its OUTPUT -- and it is mandatory, not advisory: the assertions
+  # above cannot see a directive value that is present but invalid
+  # (`OnUnitActiveSec=s`), so for value validity this is the only check there
+  # is. Its absence fails here rather than installing unvalidated units.
   if ! unit_render_verify_staged "$staged"; then
     echo 'ERROR: systemd-analyze rejected the staged units (nothing installed)' >&2
     return 1

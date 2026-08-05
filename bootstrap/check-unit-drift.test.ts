@@ -449,21 +449,45 @@ test("a TSV whose final line lacks a trailing newline is still honored, not drop
   }
 });
 
-test("every tracked template renders cleanly with envsubst (no undefined-variable garbage)", () => {
+test("every tracked template renders cleanly through the production renderer", () => {
   // V3-2.12: this test used to be a false green. It asserted only that no raw
   // `${VAR}` token survived -- but unrestricted envsubst can never leave one;
   // it replaces an unknown name with the EMPTY STRING and exits 0. The
   // assertion was therefore unfalsifiable by the very defect it was shaped
   // like, and `OnCalendar=` shipped past it to a nightly timer. It now asserts
   // on the rendered VALUE, which is what a deployed unit actually depends on.
+  //
+  // Round-2 review (lens one, F3): the residual-`$` half was STILL
+  // unfalsifiable after that fix, for the same reason one layer down. It kept
+  // using renderDir, whose harness shells out to unrestricted envsubst -- so a
+  // template naming a variable no renderer supplies came out silently
+  // truncated (`ExecStart=/bin/true`), non-empty, and clean, while the shipped
+  // renderer refuses it outright. A test harness that does not mirror the
+  // renderer it claims to check cannot check it.
+  //
+  // So render through bootstrap/unit-render-lib.sh here -- the same code path
+  // install.sh and check-unit-drift.sh both use. Its non-zero exit IS the
+  // assertion for the unsupplied-variable case; the per-line checks below stay
+  // as an independent restatement, so a bug inside the library cannot hide
+  // behind itself.
+  const renderLibPath = join(repoRoot, "bootstrap", "unit-render-lib.sh");
   const scratch = mkdtempSync(join(tmpdir(), "bpa-unit-drift-render-check-"));
   try {
-    renderAllTemplates(scratch);
     for (const dir of [genericTemplateDir, instanceTemplateDir]) {
       for (const entry of readdirSync(dir)) {
         if (!entry.endsWith(".in")) continue;
+        const unit = entry.slice(0, -3);
+        const rendering = spawnSync(
+          "bash",
+          [renderLibPath, "--render", join(dir, entry), join(scratch, unit), unit],
+          { encoding: "utf8", env: { ...process.env, ...RENDER_ENV } },
+        );
+        expect(
+          rendering.status,
+          `${entry}: the production renderer refused this template:\n${rendering.stderr}`,
+        ).toBe(0);
         const template = readFileSync(join(dir, entry), "utf8").split("\n");
-        const rendered = readFileSync(join(scratch, entry.slice(0, -3)), "utf8").split("\n");
+        const rendered = readFileSync(join(scratch, unit), "utf8").split("\n");
         expect(rendered.length, `${entry}: rendering changed the line count`).toBe(template.length);
         for (let i = 0; i < template.length; i++) {
           expect(rendered[i], `${entry}:${i + 1}: unsubstituted variable survived`).not.toMatch(/\$/);

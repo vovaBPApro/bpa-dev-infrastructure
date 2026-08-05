@@ -72,18 +72,48 @@ done
 # and it shipped `OnCalendar=` (a cleared schedule) to a nightly timer.
 RENDER_LIB="$SCRIPT_DIR/unit-render-lib.sh"
 grep -Fq "[INSTALL_ROOT]='/root/bpa-dev-infrastructure'" "$RENDER_LIB"
+# The ERE must match every form a real assignment takes, quoted or not.
+# Round-2 review (lens one, F1) found the first version of this guard REQUIRED
+# a `$` immediately after `=`, so it could not match the one line it names:
+#
+#   INSTALL_ROOT="${INSTALL_ROOT:-/root/bpa-dev-infrastructure}"
+#                ^ a double quote lives here, in every assignment in this repo
+#
+# It was therefore a third "check that quietly does nothing", added by the
+# commit that removed two others. `["']?` and the optional `export` prefix
+# close that. Deliberately the SAME coverage as the equivalent guard in
+# bootstrap/unit-render-lib.test.ts: that one used to match only the quoted
+# form and this one only the unquoted, so between them nothing escaped -- by
+# accident, not by design. Two guards that each cover the whole form is a
+# division; two that each cover half is a coincidence waiting to be edited.
 while IFS= read -r render_var; do
-  if grep -Eq "^[[:space:]]*${render_var}=\\\$\{${render_var}:-" "$INSTALLER"; then
+  render_default_re="^[[:space:]]*(export[[:space:]]+)?${render_var}=[\"']?\\\$\{${render_var}:-"
+  if grep -Eq "$render_default_re" "$INSTALLER"; then
     echo "ERROR: install.sh carries its own default for render variable $render_var" >&2
     echo '       Render variables have one home: bootstrap/unit-render-lib.sh' >&2
     exit 1
   fi
-  if grep -Eq "^[[:space:]]*${render_var}=\\\$\{${render_var}:-" "$SCRIPT_DIR/check-unit-drift.sh"; then
+  if grep -Eq "$render_default_re" "$SCRIPT_DIR/check-unit-drift.sh"; then
     echo "ERROR: check-unit-drift.sh carries its own default for render variable $render_var" >&2
     echo '       Render variables have one home: bootstrap/unit-render-lib.sh' >&2
     exit 1
   fi
 done < <(bash "$RENDER_LIB" --print-names)
+# The guard above is a negative assertion: it passes when it finds nothing,
+# which is also what a broken pattern does. Prove the pattern still has teeth
+# on every run, against the exact historical line, without editing any tracked
+# file -- if this stops matching, the loop above has silently stopped guarding.
+render_guard_probe="$(mktemp)"
+printf '%s\n' 'INSTALL_ROOT="${INSTALL_ROOT:-/root/bpa-dev-infrastructure}"' \
+  > "$render_guard_probe"
+if ! grep -Eq "^[[:space:]]*(export[[:space:]]+)?INSTALL_ROOT=[\"']?\\\$\{INSTALL_ROOT:-" \
+  "$render_guard_probe"; then
+  echo 'ERROR: the render-default guard no longer matches a real assignment' >&2
+  echo '       It would pass over a reintroduced private default in silence.' >&2
+  rm -f "$render_guard_probe"
+  exit 1
+fi
+rm -f "$render_guard_probe"
 for render_required in FULL_SUITE_ON_CALENDAR ORCH_WATCHDOG_INTERVAL; do
   # The two names the installer omitted. Pinned by name so that shrinking the
   # list back to the four it used to export fails here, not on a rebuilt host

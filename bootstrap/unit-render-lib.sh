@@ -45,12 +45,31 @@
 #      unit that still contains `$`, or whose key= line lost a value the
 #      template had. Absence of evidence is a failure here, never a skip.
 #
-# unit_render_verify_staged adds a fourth, weaker check (systemd's own parser)
-# for the install path only. It is deliberately NOT wired into
-# check-unit-drift.sh: that script renders for byte-comparison against
-# /etc/systemd/system using a DEPLOYMENT INSTALL_ROOT that need not exist on
-# the machine running the check, so systemd-analyze's filesystem opinions
-# there would be noise, not evidence.
+#      FORWARD CONSTRAINT, deliberate: because restricted envsubst leaves an
+#      unknown `$NAME` intact and this assertion then refuses it, a unit
+#      CANNOT use systemd's ordinary `ExecStart=/bin/foo $ARGS` +
+#      EnvironmentFile idiom. That is the correct fail-closed default here --
+#      every `$` in these templates today is a render variable -- but it is a
+#      rule, not an accident. A unit that genuinely needs systemd-side
+#      expansion needs this assertion taught the difference first; meeting it
+#      as a broken install is the wrong way to find out.
+#
+#   4. unit_render_verify_staged runs systemd's own parser over the staged set
+#      on the install path. It is NOT a weaker fourth opinion: for a value
+#      that is present but INVALID it is the only check any of this has. See
+#      its header for why its absence is therefore fatal.
+#
+# Check 4 is deliberately NOT wired into check-unit-drift.sh: that script
+# renders for byte-comparison against /etc/systemd/system using a DEPLOYMENT
+# INSTALL_ROOT that need not exist on the machine running the check, so
+# systemd-analyze's filesystem opinions there would be noise, not evidence.
+
+# SOURCE THIS AT FILE SCOPE, never from inside a function. `declare -A` and
+# `mapfile` create LOCALS when they run in a function body, so a sourcing
+# caller would get an empty variable list and an empty SHELL-FORMAT -- an
+# unrestricted render that empties every name, which is this row's defect
+# reached by a new route. Both current callers (bootstrap/install.sh,
+# bootstrap/check-unit-drift.sh) source at top level.
 
 # ── The one list ────────────────────────────────────────────────────────────
 # Every variable any tracked unit template may reference, with the default
@@ -213,8 +232,9 @@ unit_render_template() {
 # ── systemd's own opinion of the staged output ──────────────────────────────
 # unit_render_verify_staged STAGED_DIR
 #
-# Runs before anything is published. The exit status of `systemd-analyze
-# verify` is NOT usable on its own, in either direction:
+# Runs before anything is published, and is MANDATORY: see "not a fourth,
+# weaker check" below. The exit status of `systemd-analyze verify` is NOT
+# usable on its own, in either direction:
 #
 #   - it exits 1 for "Command /x/y is not executable", which is a claim about
 #     files on THIS machine, not about the render. Whether a unit may name a
@@ -230,6 +250,56 @@ unit_render_template() {
 # Every emitted line is therefore classified, and an unrecognized line is
 # fatal. Silence plus a non-zero status is fatal too -- an unexplained failure
 # is not a pass.
+#
+# NOT A FOURTH, WEAKER CHECK -- for value validity it is the ONLY check.
+# The render assertions above see three things: a residual `$`, a `key=` line
+# that lost the value its template had, and a changed line count. They cannot
+# see a value that is PRESENT BUT WRONG, and that is half of this row's own
+# defect:
+#
+#   OnCalendar=            (emptied)      -> RENDER-EMPTY-VALUE catches it
+#   OnUnitActiveSec=s      (unparsable)   -> ONLY systemd-analyze catches it
+#
+# unit_render_require_env cannot reach the second one either: `:-` semantics
+# mean an empty override is replaced by the default, so an empty variable is
+# unreachable -- a wrong one is not. So absence of systemd-analyze is FATAL
+# (`return 1`), not a warning. Returning 0 there would install a
+# value-unvalidated unit set under a success banner, which is the sentence
+# instructions/verification-and-locks.md forbids: a skipped or unverifiable
+# result is NO-GO, never clean.
+#
+# The cost is approximately zero and was measured, not assumed: `dpkg -S` puts
+# systemd-analyze and systemctl in the SAME package (systemd), so any host that
+# can arm a timer already has it, and a host that lacks it cannot run these
+# timers at all. render_units already refuses to run without root and without
+# envsubst; a hard prerequisite here matches that posture. If a container tier
+# ever genuinely cannot carry the package, the escape is an explicitly named,
+# evidence-producing opt-out recorded in the change record -- not a silent
+# default, and not added speculatively.
+
+# The ONE benign line class, anchored to the whole message shape rather than
+# matched as a substring. `systemd-analyze verify` reports a missing ExecStart
+# target as:
+#
+#   <unit>: Command <path> is not executable: No such file or directory
+#
+# The predicate used to be `*"is not executable: No such file or directory"*`
+# -- unanchored on both sides. systemd echoes DIRECTIVE VALUES into its other
+# diagnostics ("Failed to parse timer value, ignoring: <value>"), so a value
+# carrying that phrase dragged a fatal line into the benign class and this
+# function printed "accepted" over a permanently disarmed timer. That is this
+# row's own defect, restored through this row's own new check.
+#
+# Anchoring at both ends is what closes it, and it closes strictly more than a
+# prefix/suffix substring pair would: systemd prefixes a directive complaint
+# with `<unit>:<line>:`, so the first colon is followed by a digit, while the
+# benign line's first colon is followed by ` Command `. Laundered text can
+# therefore never reach the start of the line, whatever it contains -- not even
+# a value that itself embeds `: Command … is not executable: No such file or
+# directory`. Verified against systemd 255 over the live output of every
+# tracked template: all four legitimate lines stay NOTE, and every crafted
+# variant is FATAL.
+UNIT_RENDER_BENIGN_VERIFY_LINE='^[^[:space:]:]+\.[A-Za-z]+: Command .+ is not executable: No such file or directory$'
 unit_render_verify_staged() {
   local staged="$1" output line rc=0 fatal=0 lines=0
   local -a staged_units=()
@@ -242,15 +312,15 @@ unit_render_verify_staged() {
     return 1
   fi
   if ! command -v systemd-analyze >/dev/null 2>&1; then
-    printf 'UNIT-VERIFY-UNAVAILABLE: systemd-analyze is not on PATH -- the staged units in %s were NOT verified by systemd. This check did nothing; treat the render as proven only by the render assertions above.\n' \
+    printf 'UNIT-VERIFY-UNAVAILABLE: systemd-analyze is not on PATH -- the staged units in %s were NOT verified by systemd. This check did nothing; treat the render as proven only by the render assertions above. systemd-analyze is a HARD PREREQUISITE of rendering units, not an optional extra: it ships in the same package as systemctl, so any host that can arm these timers has it, and it is the ONLY check here that sees a directive value that is present but invalid.\n' \
       "$staged" >&2
-    return 0
+    return 1
   fi
   output="$(systemd-analyze verify "${staged_units[@]}" 2>&1)" && rc=0 || rc=$?
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
     ((lines += 1))
-    if [[ "$line" == *"is not executable: No such file or directory"* ]]; then
+    if [[ "$line" =~ $UNIT_RENDER_BENIGN_VERIFY_LINE ]]; then
       printf 'UNIT-VERIFY-NOTE %s (path presence is check-unit-drift.sh scope)\n' "$line" >&2
       continue
     fi

@@ -233,6 +233,76 @@ test("V3-2.12 lock: what install.sh deploys is byte-identical to what check-unit
   }
 });
 
+test("V3-2.12 lock: --verify-source forwards the library's whole list to check-unit-drift.sh", () => {
+  // The "third list" half of this row: install.sh's rendered_units_status
+  // named four of the six render variables when it called
+  // check-unit-drift.sh, so the checker fell back to its OWN defaults for the
+  // other two and validated a render the installer had never written. The fix
+  // forwards unit_render_env_assignments as one array. Round-2 review (lens
+  // one, F2) found the fix correct and unlocked -- deleting the forwarded
+  // array left the whole suite green.
+  //
+  // WHY THIS ARM IS SHAPED THIS WAY, because the obvious shape does not work:
+  // `env NAME=v ... script` passes the PARENT environment through as well, so
+  // an exported override reaches check-unit-drift.sh whether or not it is
+  // forwarded, and the assertion passes for the wrong reason. That is exactly
+  // how the deleted-array mutation stayed green.
+  //
+  // The render variables are deliberately not exported (see
+  // unit-render-lib.sh, "Environment plumbing"), so production's real
+  // condition is a NON-EXPORTED shell value -- set below inside the same bash
+  // process that sources install.sh. Forwarding is then the only route from
+  // the installer's value to the checker's render.
+  const destination = scratch("verify-source-forward");
+  const nonDefault = "*-*-* 04:44:00";
+  try {
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        [
+          // `unset -v` first: assigning to a name that is already exported
+          // KEEPS the export attribute, which would hand the value to the
+          // child directly and disarm this lock. Unsetting drops the
+          // attribute, so the assignment below is unambiguously local.
+          "unset -v FULL_SUITE_ON_CALENDAR",
+          `FULL_SUITE_ON_CALENDAR='${nonDefault}'`,
+          'source "$INSTALLER_PATH"',
+          "render_units >/dev/null 2>&1 || { echo RENDER-FAILED >&2; exit 9; }",
+          "rendered_units_status",
+        ].join("\n"),
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          BOOTSTRAP_LIB_ONLY: "true",
+          BOOTSTRAP_TEST_EUID: "0",
+          INSTALLER_PATH: installer,
+          INSTALL_ROOT: repoRoot,
+          REPO_ROOT: repoRoot,
+          SYSTEMD_SYSTEM_DIR: destination,
+          EXPECTED_UNITS_FILE: manifestFile,
+        },
+      },
+    );
+
+    // Guard the fixture before the assertion that matters: if render_units
+    // ignored the override, the checker agreeing with it would prove nothing.
+    expect(readFileSync(join(destination, "bpa-full-suite.timer"), "utf8")).toContain(
+      `OnCalendar=${nonDefault}`,
+    );
+    expect(result.stderr).not.toContain("RENDER-FAILED");
+    expect(result.stderr).not.toContain("DRIFT");
+    expect(
+      result.status,
+      `check-unit-drift.sh rendered with its own defaults, not the installer's values:\n${result.stderr}`,
+    ).toBe(0);
+  } finally {
+    rmSync(destination, { recursive: true, force: true });
+  }
+});
+
 test("V3-2.12 lock: every variable any tracked template references is in the library's one list", () => {
   // The durable answer to "is some other template depending on a variable
   // neither renderer supplies". Today: no. This fails the day one does.
@@ -293,7 +363,7 @@ test("V3-2.12 lock: the render assertion refuses an empty value and a residual $
   }
 });
 
-test("V3-2.12 lock: systemd-analyze rejects a bad staged render, and its absence is loud", () => {
+test("V3-2.12 lock: systemd-analyze rejects a bad staged render, and its absence is FATAL", () => {
   const dir = scratch("render-analyze");
   try {
     const good = join(dir, "good");
@@ -317,8 +387,22 @@ test("V3-2.12 lock: systemd-analyze rejects a bad staged render, and its absence
     const nothing = spawnSync("bash", [lib, "--verify-staged", empty], { encoding: "utf8" });
     expect(nothing.status).toBe(1);
 
-    // Absence says so loudly instead of passing in silence. A PATH with only
-    // the interpreters the library itself needs, and no systemd-analyze.
+    // Absence is FATAL, not loud. Tier-A review round 2 (lens two) overruled
+    // the previous reading, and this arm is the inverse of the one that
+    // asserted it: the earlier version required exit 0 here, so the behaviour
+    // being removed was the behaviour under lock.
+    //
+    // The reasoning, because a future reader will be tempted to relax it
+    // again: the render assertions see a residual `$`, a `key=` that lost its
+    // value, and a changed line count. They cannot see a value that is
+    // present but WRONG -- `OnUnitActiveSec=s`, which is half of this row's
+    // own defect. For value validity systemd-analyze is not a fourth opinion,
+    // it is the ONLY one, so returning 0 without it installs value-unvalidated
+    // units under "Bootstrap stage 2 completed". systemd-analyze ships in the
+    // same package as systemctl, so a host that can arm these timers has it.
+    //
+    // A PATH with only the interpreters the library itself needs, and no
+    // systemd-analyze.
     const stubPath = join(dir, "bin");
     mkdirSync(stubPath);
     for (const tool of ["bash", "find", "sort", "printf", "command"]) {
@@ -329,11 +413,90 @@ test("V3-2.12 lock: systemd-analyze rejects a bad staged render, and its absence
       encoding: "utf8",
       env: { ...process.env, PATH: stubPath },
     });
-    expect(unavailable.status, unavailable.stderr).toBe(0);
+    expect(
+      unavailable.status,
+      `absence of systemd-analyze must fail the render, not warn:\n${unavailable.stderr}`,
+    ).toBe(1);
+    // Guard the stub itself: a PATH that broke `find` or `bash` would also
+    // produce a non-zero exit and would satisfy the assertion above for the
+    // wrong reason. The marker proves this is the absence branch.
     expect(unavailable.stderr).toContain("UNIT-VERIFY-UNAVAILABLE");
     expect(unavailable.stderr).toContain("were NOT verified");
+    expect(unavailable.stderr).toContain("HARD PREREQUISITE");
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("V3-2.12 lock: a directive value carrying the benign phrase cannot launder itself into a pass", () => {
+  // Tier-A review round 2 (lens two), blocking finding. The benign predicate
+  // was the unanchored substring `*"is not executable: No such file or
+  // directory"*`. systemd echoes DIRECTIVE VALUES into its other diagnostics,
+  // so a value containing that phrase dragged its own fatal line into the
+  // benign class -- and lens two reached it through the installer's own
+  // documented ORCH_WATCHDOG_INTERVAL override, producing a permanently
+  // disarmed watchdog timer while render_units exited 0 and printed
+  // "systemd-analyze accepted the staged units".
+  //
+  // The reachability demo is the proof, not the risk. The property under lock
+  // is that the predicate describes the message it accepts.
+  const dir = scratch("render-launder");
+  const destination = scratch("render-launder-dest");
+  const phrase = "is not executable: No such file or directory";
+  try {
+    // 1. The classifier itself, on a staged unit that is otherwise valid --
+    //    OnBootSec keeps systemd from emitting any second complaint, so this
+    //    one line is all the classifier has to go on.
+    const staged = join(dir, "staged");
+    mkdirSync(staged);
+    writeFileSync(
+      join(staged, "probe.timer"),
+      `[Timer]\nOnBootSec=2min\nOnUnitActiveSec=${phrase}s\n`,
+    );
+    const laundered = spawnSync("bash", [lib, "--verify-staged", staged], { encoding: "utf8" });
+    expect(laundered.status, `laundered timer was accepted:\n${laundered.stdout}`).toBe(1);
+    expect(laundered.stderr).toContain("UNIT-VERIFY-FATAL");
+    expect(laundered.stdout).not.toContain("systemd-analyze accepted");
+
+    // 2. A value that embeds the WHOLE benign message shape -- `: Command `,
+    //    a path, and the phrase as the last thing on the line. Review round 2
+    //    proposed the substring pair `*": Command "*" is not executable: No
+    //    such file or directory"`, which still classifies this line as benign
+    //    and ships the disarmed timer. Verified against systemd 255: the
+    //    proposed pair says NOTE here, the shipped full-line anchor says
+    //    FATAL. OnCalendar rather than OnUnitActiveSec because the timer
+    //    template appends `s` to the interval, and that stray trailing
+    //    character is what makes the weaker pattern look sufficient.
+    const crafted = join(dir, "crafted");
+    mkdirSync(crafted);
+    writeFileSync(
+      join(crafted, "probe.timer"),
+      `[Timer]\nOnBootSec=2min\nOnCalendar=x.service: Command /x ${phrase}\n`,
+    );
+    const craftedResult = spawnSync("bash", [lib, "--verify-staged", crafted], { encoding: "utf8" });
+    expect(craftedResult.status, `crafted timer was accepted:\n${craftedResult.stdout}`).toBe(1);
+    expect(craftedResult.stdout).not.toContain("systemd-analyze accepted");
+
+    // 3. No regression on the real benign class: every genuine
+    //    "Command … is not executable" line the tracked set produces must
+    //    still be a NOTE, or this fix would simply have made the installer
+    //    refuse to run on a clean host.
+    const clean = runRenderUnits(destination);
+    expect(clean.status, `the tracked set no longer verifies:\n${clean.stderr}`).toBe(0);
+    expect(clean.stderr).toContain("UNIT-VERIFY-NOTE");
+    expect(clean.stderr).not.toContain("UNIT-VERIFY-FATAL");
+
+    // 4. End to end, lens two's exact reproduction through the installer's
+    //    own render path: it must now fail and publish nothing.
+    rmSync(destination, { recursive: true, force: true });
+    mkdirSync(destination);
+    const reached = runRenderUnits(destination, { ORCH_WATCHDOG_INTERVAL: phrase });
+    expect(reached.status, "the documented override still launders a disarmed timer").not.toBe(0);
+    expect(reached.stderr).toContain("UNIT-VERIFY-FATAL");
+    expect(readdirSync(destination), "a rejected render published units anyway").toEqual([]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(destination, { recursive: true, force: true });
   }
 });
 
@@ -348,12 +511,33 @@ test("V3-2.12 lock: the installer's environment is read from the library, not re
   expect(env.ORCH_WATCHDOG_INTERVAL).toBe("60");
 
   // Neither renderer may reintroduce a private copy of a render default.
+  //
+  // The pattern must cover every form a real assignment takes. Round-2 review
+  // (lens one, F1) found this guard and the equivalent one in
+  // bootstrap.test.sh were accidental complements -- this one matched only
+  // `NAME="${NAME:-`, that one only `NAME=${NAME:-`. Nothing escaped the pair,
+  // but nobody designed the pair, and a guard whose coverage is a coincidence
+  // is one edit away from covering nothing. Both now match both forms.
+  const privateDefault = (name: string) =>
+    new RegExp(`^\\s*(export\\s+)?${name}=["']?\\$\\{${name}:-`, "m");
+
+  // Prove the pattern matches a real assignment before trusting it to find
+  // none. A negative assertion and a broken regex look identical from here;
+  // this is the exact historical install.sh line the guard exists to catch.
+  expect(
+    privateDefault("INSTALL_ROOT").test(
+      'INSTALL_ROOT="${INSTALL_ROOT:-/root/bpa-dev-infrastructure}"',
+    ),
+    "the private-default pattern no longer matches a real assignment",
+  ).toBe(true);
+  expect(privateDefault("INSTALL_ROOT").test("INSTALL_ROOT=${INSTALL_ROOT:-/root/bpa}")).toBe(true);
+
   for (const script of [installer, driftChecker]) {
     const text = readFileSync(script, "utf8");
     expect(text).toContain("unit-render-lib.sh");
     for (const name of Object.keys(env)) {
       expect(
-        new RegExp(`^\\s*${name}="\\$\\{${name}:-`, "m").test(text),
+        privateDefault(name).test(text),
         `${script} carries its own default for ${name}`,
       ).toBe(false);
     }

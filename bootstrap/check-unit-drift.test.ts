@@ -321,7 +321,13 @@ test("DEFECT 2 (round 2, fixed): a whole-unit exemption must not cover a NEW, un
     );
     const exemptions = join(templates, "path-exemptions.tsv");
     // Only the KNOWN, pre-existing path is exempted -- unit+path, not unit alone.
-    writeFileSync(exemptions, "fake-unit.service\t/known/pending/path.sh\tpre-existing, deliberately not yet built\n");
+    // V3-2.16: every entry carries an owner field. `none` is a legitimate
+    // owner for a synthetic fixture -- there is no row behind a path invented
+    // for this test -- and the prose after it is the statement of why.
+    writeFileSync(
+      exemptions,
+      "fake-unit.service\t/known/pending/path.sh\towner=none; a fixture path, pre-existing, deliberately not yet built\n",
+    );
     const result = runCheck({
       TEMPLATE_DIR: templates,
       INSTANCE_TEMPLATE_DIR: join(templates, "empty-instance"),
@@ -330,10 +336,156 @@ test("DEFECT 2 (round 2, fixed): a whole-unit exemption must not cover a NEW, un
       PATH_EXEMPTIONS_FILE: exemptions,
       ...RENDER_ENV,
     });
-    expect(result.stdout).toContain("PATH-EXEMPT fake-unit.service: /known/pending/path.sh not in repo (pre-existing, deliberately not yet built)");
+    expect(result.stdout).toContain(
+      "PATH-EXEMPT fake-unit.service: /known/pending/path.sh not in repo (owner=none; a fixture path, pre-existing, deliberately not yet built)",
+    );
     // The new, unrelated path must NOT inherit that exemption.
     expect(result.stderr).toContain("PATH-MISSING fake-unit.service: /totally/unrelated/malicious-or-typo/path.sh does not exist");
     expect(result.status).not.toBe(0);
+  } finally {
+    rmSync(templates, { recursive: true, force: true });
+    rmSync(emptyDeployed, { recursive: true, force: true });
+  }
+});
+
+// ── V3-2.16: an exemption cannot outlive the reason it was granted for ──────
+//
+// The ledger could name a debt but never re-test it. `bpa-meteorite.service`
+// was exempted for `/meteorite/run.sh` "not yet built on v3"; V3-1.5 landed it
+// at 133541c and the exemption stayed, suppressing a check that would now
+// pass. Nothing in the checker could tell a live debt from a discharged one.
+//
+// The rule added here is the one V3-2.13 already settled for the sibling
+// ledger instance/doc-path-exemptions.tsv (tools/instructions/paths.ts): a row
+// whose path now EXISTS is itself a failure. Two ledgers disagreeing about one
+// discipline was the defect; this is deliberately not a second design.
+
+const trackedPathExemptions = join(repoRoot, "instance", "unit-path-exemptions.tsv");
+
+test("BEFORE/AFTER (V3-2.16): a discharged exemption turns the checker red, and the tracked ledger is green without it", () => {
+  const deployedDir = mkdtempSync(join(tmpdir(), "bpa-unit-drift-stale-deploy-"));
+  const scratch = mkdtempSync(join(tmpdir(), "bpa-unit-drift-stale-ledger-"));
+  try {
+    renderAllTemplates(deployedDir);
+    // AFTER (the tracked state this change produces): no row in the real
+    // ledger names a path this repository now carries. Asserted against the
+    // real templates and a genuinely complete deployment, so exit 0 means the
+    // whole checker is clean and not merely that this one pass said nothing.
+    const tracked = runCheck({ SYSTEMD_SYSTEM_DIR: deployedDir, ...RENDER_ENV });
+    expect(`${tracked.stdout}${tracked.stderr}`).not.toContain("PATH-EXEMPT-STALE");
+    expect(tracked.status).toBe(0);
+
+    // BEFORE: the row this repository actually carried until V3-2.16, restored
+    // verbatim except for the owner field the same change makes mandatory
+    // (without it the row no longer parses, which would prove a different
+    // rule). `meteorite/run.sh` is tracked, so the reason is discharged.
+    const staleLedger = join(scratch, "with-discharged-row.tsv");
+    writeFileSync(
+      staleLedger,
+      readFileSync(trackedPathExemptions, "utf8") +
+        "bpa-meteorite.service\t/meteorite/run.sh\towner=V3-1.5; meteorite/run.sh not yet built on v3; tracked at instance/workboard.md row V3-1.5\n",
+    );
+    const before = runCheck({ SYSTEMD_SYSTEM_DIR: deployedDir, PATH_EXEMPTIONS_FILE: staleLedger, ...RENDER_ENV });
+    // Named by entry, and stating that the reason is discharged -- so the fix
+    // is the message, not an investigation.
+    expect(before.stderr).toContain("PATH-EXEMPT-STALE bpa-meteorite.service: /meteorite/run.sh now exists");
+    expect(before.stderr).toContain("the reason for this exemption is discharged");
+    expect(before.status).not.toBe(0);
+  } finally {
+    rmSync(deployedDir, { recursive: true, force: true });
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("V3-2.16: an exemption ADDED for a path that already exists is rejected, even when no template names it", () => {
+  // The other direction of the lock, and a stronger property than re-testing
+  // the rows a template happens to reference: the ledger is checked on its own
+  // terms, so a row that has quietly stopped applying cannot hide behind the
+  // fact that nothing consults it any more.
+  const templates = mkdtempSync(join(tmpdir(), "bpa-unit-drift-added-existing-"));
+  const emptyDeployed = mkdtempSync(join(tmpdir(), "bpa-unit-drift-added-existing-deploy-"));
+  try {
+    const manifest = join(templates, "manifest.tsv");
+    writeFileSync(manifest, "fake-unit.service\tgeneric\n");
+    writeFileSync(
+      join(templates, "fake-unit.service.in"),
+      "[Unit]\nDescription=synthetic fixture\n\n[Service]\nType=oneshot\nExecStart=${INSTALL_ROOT}/known/pending/path.sh\n",
+    );
+    const exemptions = join(templates, "path-exemptions.tsv");
+    // gate/land.sh is tracked and present -- an exemption for it is a claim
+    // this repository can immediately falsify.
+    writeFileSync(
+      exemptions,
+      [
+        "fake-unit.service\t/known/pending/path.sh\towner=none; a fixture path, deliberately not built",
+        "fake-unit.service\t/gate/land.sh\towner=none; a path that exists, which is exactly what must be refused",
+        "",
+      ].join("\n"),
+    );
+    const result = runCheck({
+      TEMPLATE_DIR: templates,
+      INSTANCE_TEMPLATE_DIR: join(templates, "empty-instance"),
+      SYSTEMD_SYSTEM_DIR: emptyDeployed,
+      MANIFEST_FILE: manifest,
+      PATH_EXEMPTIONS_FILE: exemptions,
+      ...RENDER_ENV,
+    });
+    expect(result.stderr).toContain("PATH-EXEMPT-STALE fake-unit.service: /gate/land.sh now exists");
+    // The genuinely absent path keeps its exemption: this rule expires
+    // discharged debt, it does not delete live debt.
+    expect(result.stdout).toContain("PATH-EXEMPT fake-unit.service: /known/pending/path.sh not in repo");
+    expect(result.status).not.toBe(0);
+  } finally {
+    rmSync(templates, { recursive: true, force: true });
+    rmSync(emptyDeployed, { recursive: true, force: true });
+  }
+});
+
+test("BEFORE/AFTER (V3-2.16): an exemption with no owner fails closed rather than becoming a debt nobody owns", () => {
+  // Two rows in this repository's own ledger recorded "no workboard row yet"
+  // and stayed that way. An unowned debt is the one nobody closes, so the
+  // owner field is required by the parser rather than by convention. What an
+  // owner id LOOKS like is this installation's business (CLAUDE.md Mission,
+  // HR-309), so the mechanism matches the field, never a row-id shape.
+  const templates = mkdtempSync(join(tmpdir(), "bpa-unit-drift-owner-"));
+  const emptyDeployed = mkdtempSync(join(tmpdir(), "bpa-unit-drift-owner-deploy-"));
+  try {
+    const manifest = join(templates, "manifest.tsv");
+    writeFileSync(manifest, "fake-unit.service\tgeneric\n");
+    writeFileSync(
+      join(templates, "fake-unit.service.in"),
+      "[Unit]\nDescription=synthetic fixture\n\n[Service]\nType=oneshot\nExecStart=${INSTALL_ROOT}/known/pending/path.sh\n",
+    );
+    const owned = join(templates, "owned.tsv");
+    writeFileSync(owned, "fake-unit.service\t/known/pending/path.sh\towner=V3-0.0; a fixture debt with a row behind it\n");
+    const before = runCheck({
+      TEMPLATE_DIR: templates,
+      INSTANCE_TEMPLATE_DIR: join(templates, "empty-instance"),
+      SYSTEMD_SYSTEM_DIR: emptyDeployed,
+      MANIFEST_FILE: manifest,
+      PATH_EXEMPTIONS_FILE: owned,
+      ...RENDER_ENV,
+    });
+    expect(before.stdout).toContain("PATH-EXEMPT fake-unit.service: /known/pending/path.sh not in repo");
+    expect(before.stderr).not.toContain("without an owner");
+    // (exit 1 here is the unrelated DRIFT for the undeployed fixture unit; the
+    // contrast that matters is the fail-closed exit 2 below.)
+    expect(before.status).not.toBe(2);
+
+    // The same row, in the shape the ledger used before this change: prose
+    // with nobody's name on it.
+    const unowned = join(templates, "unowned.tsv");
+    writeFileSync(unowned, "fake-unit.service\t/known/pending/path.sh\tnot yet built on v3; no workboard row yet\n");
+    const after = runCheck({
+      TEMPLATE_DIR: templates,
+      INSTANCE_TEMPLATE_DIR: join(templates, "empty-instance"),
+      SYSTEMD_SYSTEM_DIR: emptyDeployed,
+      MANIFEST_FILE: manifest,
+      PATH_EXEMPTIONS_FILE: unowned,
+      ...RENDER_ENV,
+    });
+    expect(after.status).toBe(2);
+    expect(after.stderr).toContain("unit-path exemption without an owner");
   } finally {
     rmSync(templates, { recursive: true, force: true });
     rmSync(emptyDeployed, { recursive: true, force: true });
@@ -426,7 +578,10 @@ test("a TSV whose final line lacks a trailing newline is still honored, not drop
     );
     const exemptions = join(templates, "path-exemptions.tsv");
     // No trailing newline here either.
-    writeFileSync(exemptions, "fake-unit.service\t/known/pending/path.sh\tdeliberately pending, no trailing newline in this file");
+    writeFileSync(
+      exemptions,
+      "fake-unit.service\t/known/pending/path.sh\towner=none; deliberately pending, no trailing newline in this file",
+    );
     const result = runCheck({
       TEMPLATE_DIR: templates,
       INSTANCE_TEMPLATE_DIR: join(templates, "empty-instance"),
@@ -441,7 +596,7 @@ test("a TSV whose final line lacks a trailing newline is still honored, not drop
     // exemption would not apply (PATH-MISSING instead of PATH-EXEMPT).
     expect(result.stderr).not.toContain("MANIFEST-MISSING");
     expect(result.stdout).toContain(
-      "PATH-EXEMPT fake-unit.service: /known/pending/path.sh not in repo (deliberately pending, no trailing newline in this file)",
+      "PATH-EXEMPT fake-unit.service: /known/pending/path.sh not in repo (owner=none; deliberately pending, no trailing newline in this file)",
     );
   } finally {
     rmSync(templates, { recursive: true, force: true });

@@ -13,6 +13,19 @@ floor-line: Artifacts beat explanations — finish the file, commit, test, and r
 
 ## Binding rules
 
+- **A lane is one non-interactive turn, and ending that turn is process death.** A lane runs
+  as a single `claude --print` invocation. When you end your turn the process exits
+  immediately with status 0, **every outstanding background task is killed rather than
+  awaited, and nothing will wake you.** There is no re-entry, no notification, no second
+  turn. Your tooling says otherwise — the Bash tool describes a backgrounded command as
+  something that "keeps running across turns and re-invokes you when it exits", which is true
+  in an interactive session and **false here**. Therefore: **never end a turn with a
+  background task whose result you still need.** Poll it to completion inside the turn, or do
+  not start it. If you find yourself about to write "I'll write the report when the suite
+  finishes", you are about to lose the entire lane — write the report first and correct it
+  after. This rule exists because four lanes were lost this way, each having finished and
+  committed its work, and each having said in its final words that it was waiting to be
+  notified.
 - A mission names scope, owner, acceptance rows, risk tier, evidence destination, and a durable correlation identifier before dispatch.
 - Give every lane one branch, one worktree, and one writer. Never allow two writers to edit the same tree.
 - A lane never runs `git stash`: `refs/stash` is repository-global, so sibling worktrees share it and one lane can restore another lane's files. To set work aside locally, make a scratch commit on the lane branch with `git add -A && git commit --no-verify -m "scratch: set work aside"`; restore those changes in that same worktree with `git reset --soft HEAD^`. The commit and index are worktree-local through the lane's own branch and index; remove or replace the scratch commit before reporting the lane complete.

@@ -195,6 +195,35 @@ real_rows=$(awk '
 [ "$real_open" -lt "$real_rows" ] ||
   fail "every one of the $real_rows real rows counted open — the classifier is not discriminating"
 
+# V3-5.10. The cap and the ruling id are read out of instance/params.yaml by a
+# second awk program, in fleet-params.sh, on this watchdog's path AND on the lane
+# launcher's. It is replayed under mawk for the same reason the board parser is:
+# an awk-specific parse here does not make the fleet noisy, it makes the launcher
+# refuse every lane on a rebuilt host.
+params_reader_locks() {
+  local fixture="$TMP/params-reader"
+  mkdir -p "$fixture/instance"
+  printf 'operator:\n  name: Vova\n\nfleet:\n  cap: 4   # trailing comment\n  declared_by: HR-4711\n  status: active\n\norchestrator:\n  session: s\n' \
+    >"$fixture/instance/params.yaml"
+  # shellcheck source=orchestrator/fleet/fleet-params.sh
+  . "$DIR/fleet-params.sh"
+  [ "$(fleet_cap "$fixture")" = 4 ] ||
+    fail "${AWK_LABEL:-awk}: fleet_cap did not read the cap past its trailing comment"
+  [ "$(fleet_declared_by "$fixture")" = HR-4711 ] ||
+    fail "${AWK_LABEL:-awk}: fleet_declared_by did not read the ruling id"
+  # A key of the same name outside the fleet block is not the fleet's key.
+  printf 'other:\n  cap: 9\n\nfleet:\n  status: active\n' >"$fixture/instance/params.yaml"
+  if fleet_cap "$fixture" >/dev/null; then
+    fail "${AWK_LABEL:-awk}: fleet_cap read a cap from outside the fleet block"
+  fi
+  # A malformed cap is an absent one: the launcher refuses rather than guessing.
+  printf 'fleet:\n  cap: soon\n  status: active\n' >"$fixture/instance/params.yaml"
+  if fleet_cap "$fixture" >/dev/null; then
+    fail "${AWK_LABEL:-awk}: fleet_cap accepted a non-numeric cap"
+  fi
+}
+params_reader_locks
+
 }
 
 # ── awk portability: the parser must behave identically under mawk ───────────

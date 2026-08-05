@@ -126,9 +126,16 @@ function parseReportedCount(value: string): { passed: number; failed: number } |
   return { passed: Number(match[1]), failed: Number(match[2]) };
 }
 
+// Bun indents its own summary by one space -- it writes " 2 pass\n 0 fail\n" to
+// stderr -- so anchors that admitted no leading whitespace could not read the
+// output of the very tool this repository runs its tests with, and every honest
+// verify-count from a bun lane failed as unreadable. Horizontal whitespace only
+// ([ \t], never \s, which would let a match run across line boundaries): the
+// line anchors are the point, so that "162 pass" inside prose is never harvested
+// as a count.
 function parseVerificationCount(output: string): { passed: number; failed: number } | undefined {
-  const passed = [...output.matchAll(/^([0-9]+) pass(?:ed)?$/gim)];
-  const failed = [...output.matchAll(/^([0-9]+) fail(?:ed)?$/gim)];
+  const passed = [...output.matchAll(/^[ \t]*([0-9]+)[ \t]+pass(?:ed)?[ \t]*$/gim)];
+  const failed = [...output.matchAll(/^[ \t]*([0-9]+)[ \t]+fail(?:ed)?[ \t]*$/gim)];
   if (passed.length !== 1 || failed.length !== 1) return undefined;
   return { passed: Number(passed[0][1]), failed: Number(failed[0][1]) };
 }

@@ -283,13 +283,69 @@ describe("completion guard", () => {
     expect(result.stdout).toContain("GUARD verdict=violation");
   });
 
+  // Bun indents its summary by one space. Measured on this host with `cat -A`:
+  // " 2 pass$" / " 0 fail$" (on stderr). Fixtures here must reproduce those bytes
+  // exactly, because the previous fixtures used an unindented shape bun never
+  // emits -- so the suite stayed green while the parser could not read a single
+  // real bun run. Copy THIS shape, not a friendlier one.
   test("accepts a claimed count only when it matches the verify command output", () => {
     const item = fixture();
-    const body = valid(item.sha, "clean", "printf '179 pass\\n0 fail\\n'")
-      .replace("result:", "verify-count: 179/0\nresult:");
+    const body = valid(item.sha, "clean", "printf ' 2 pass\\n 0 fail\\n'")
+      .replace("result:", "verify-count: 2/0\nresult:");
     const result = run(report(item.directory, body), item.repo);
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("PASS verify-count 179/0");
+    expect(result.stdout).toContain("PASS verify-count 2/0");
+  });
+
+  // The regression lock proper: this fails against the pre-fix anchors
+  // (/^([0-9]+) pass$/), which admitted no leading whitespace.
+  test("reads a count from bun's own indented summary", () => {
+    const item = fixture();
+    const body = valid(item.sha, "clean", "printf ' 162 pass\\n 6 fail\\n' >&2")
+      .replace("result:", "verify-count: 162/6\nresult:");
+    const result = run(report(item.directory, body), item.repo);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("PASS verify-count 162/6");
+  });
+
+  // The fixture above is a transcription of bun's output; this one is bun's
+  // output. If bun ever changes its indentation, this test is what notices --
+  // a printf fixture would keep agreeing with a shape nothing produces.
+  test("reads a count from a real bun test run", () => {
+    const item = fixture();
+    writeFileSync(
+      join(item.directory, "sample.test.ts"),
+      'import { expect, test } from "bun:test";\n' +
+        'test("a", () => { expect(1).toBe(1); });\n' +
+        'test("b", () => { expect(2).toBe(2); });\n',
+    );
+    const body = valid(item.sha, "clean", `cd ${item.directory} && bun test`)
+      .replace("result:", "verify-count: 2/0\nresult:");
+    const result = run(report(item.directory, body), item.repo);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("PASS verify-count 2/0");
+  });
+
+  // Widening whitespace must not weaken the anchor: a count in prose is not a
+  // count, whatever whitespace surrounds the real one.
+  test("does not harvest a count from mid-line prose", () => {
+    const item = fixture();
+    const body = valid(item.sha, "clean", "printf 'logged 999 pass earlier\\n 2 pass\\n 0 fail\\n'")
+      .replace("result:", "verify-count: 2/0\nresult:");
+    const result = run(report(item.directory, body), item.repo);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("PASS verify-count 2/0");
+  });
+
+  // Ambiguity protection is unchanged by the widening: two indented pass lines
+  // are still two matches, and two matches are still unreadable.
+  test("rejects a claimed count when the output has two indented pass lines", () => {
+    const item = fixture();
+    const body = valid(item.sha, "clean", "printf ' 2 pass\\n 0 fail\\n 3 pass\\n'")
+      .replace("result:", "verify-count: 2/0\nresult:");
+    const result = run(report(item.directory, body), item.repo);
+    expect(result.status).toBe(2);
+    expect(result.stdout).toContain("FAIL verify-count command-output-missing-unambiguous-pass/fail-count");
   });
 
   test("rejects a typed count outside the provenance-checked field", () => {

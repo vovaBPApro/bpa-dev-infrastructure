@@ -137,6 +137,42 @@ what blocks the product**; everything else is reactive), HR-2377 (token and cost
 per model and per role — spec at `instance/specs/token-usage-accounting.md`), HR-2398 (the
 cap is per repository; reliability outranks speed), HR-2401 (active scope corrected).
 
+## STATE AT 07:10 — read this first if you are a compacted or restarted session
+
+**Do not restart to "reload context". It will not reload.** Audit finding F4: the
+SessionStart hook is wired only on the codex branch of `launch.sh`, points at
+`.claude/hooks/session-load.sh`, and that file does not exist and is untracked. A restarted
+orchestrator comes up blank and learns only what it reads from this file. Also
+`orchestrator/runtime.env` currently pins `ORCH_CLAUDE_MODEL=claude-fable-5`, so a restart
+changes the model.
+
+**Branches finished, reviewed or not, all pushed — none is host-only:**
+
+| branch | state | next step |
+|---|---|---|
+| `ag-v3-2.9-r7` | rebased, suite green, ACCEPT is stale | re-attestation, then land |
+| `ag-v3-req-audit` | the requirements audit (384 lines) | land the artifact |
+| `ag-v3-instance-readme` | generated `instance/README.md` | review, then land |
+| `ag-v3-3.10` | token+cost accounting, `stream-json` shape | review, then land |
+| `ag-v3-2.15` → `ag-v3-2.15-r2` | fleet cap; r2 moves 3→5 per HR-2456 | review, then land |
+
+**Running when this was written:** `ag-v3-fable-plan` (Fable, manager role — the plan for
+the requirements-reading problem, his top priority), `ag-v3-2.15-r2`.
+
+**The generated obligations list now exists** (`instance/README.md` on its branch): **285
+directives captured, 234 answered, 33 open, 18 with no status at all**. The orchestrator had
+been saying "15 owed" — that was one triage batch presented as the whole. Trust the file,
+not a remembered number.
+
+**His two new rulings this morning**, both binding: `HR-2451` (his messages are first
+priority; **an unhandled message blocks the next dispatch** — he chose the strict form over
+a time threshold) and `HR-2456` (lane cap raised to five; five is the *measured saturation
+point* of this host, not headroom — watch the suite's runtime).
+
+**Asked of the old orchestrator** via `/root/orch-mailbox/to-oldorch.md` (live, polls ~60s):
+the on-the-fly model-switch mechanism, and the cached `preflight-cli-auth.sh` source. Check
+`from-oldorch.md` for replies.
+
 ## Owed to him right now — written down because forgetting these is the defect under audit
 
 1. **`character` column in the token-accounting table** (Telegram 2449, *"скажи хай

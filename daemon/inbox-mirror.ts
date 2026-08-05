@@ -178,3 +178,54 @@ export function mirrorFailureNotice(msgId: number | string): string {
     `Перешли його ще раз.`
   );
 }
+
+// ---------------------------------------------------------------------------
+// The receipt emoji is RESERVED to the daemon (HR-2486, workboard V3-5.8)
+// ---------------------------------------------------------------------------
+// Everything above makes the daemon's own reaction sites earn the receipt. That
+// is only half a contract while any model-driven path can set the same symbol
+// by hand: the `react` MCP tool did exactly that, and the orchestrator used it
+// to hand-react 👀 to the Human's messages — the very false green the ruling
+// was written to remove, produced by the party that recorded the ruling.
+//
+// So the symbol itself is reserved here, next to the contract that gives it its
+// meaning, rather than left to whoever is holding the tool remembering. A model
+// asking for 👀 is REFUSED with a named reason — never silently swapped for
+// another emoji and never silently dropped, because both of those teach the
+// caller that the request succeeded.
+export const RECEIPT_EMOJI = "\u{1F440}"; // 👀
+
+// Reactions arrive as free text, so the comparison must not be defeated by a
+// decoration that carries no glyph: a variation selector, a zero-width
+// character, a bidi control, a tag character, or surrounding whitespace all
+// leave the same bare eyes on screen. Fold those away before comparing — a
+// reservation that "👀️" walks through is not a reservation.
+//
+// Fold the CLASS, not a hand-written list. The first version of this enumerated
+// seven codepoints and stopped one short of U+200E/U+200F, letting eleven more
+// invisible spellings through; an enumeration is only ever as complete as the
+// day it was written. `\p{Default_Ignorable_Code_Point}` is Unicode's own name
+// for "renders as nothing", `\p{Cc}` covers the C0/C1 controls including NUL,
+// and `\s` covers padding. What survives is what a reader can SEE is different.
+function normalizeEmoji(emoji: string): string {
+  return emoji
+    .normalize("NFC")
+    .replace(/[\s\p{Cc}\p{Default_Ignorable_Code_Point}]/gu, "");
+}
+
+export function isReceiptEmoji(emoji: string): boolean {
+  return normalizeEmoji(emoji) === RECEIPT_EMOJI;
+}
+
+// Throws for the reserved emoji; returns silently for everything else. The
+// message names the symbol, the rule, and the way out, because the caller is a
+// model that will otherwise retry the same call.
+export function assertReactionEmojiAllowed(emoji: string): void {
+  if (!isReceiptEmoji(emoji)) return;
+  throw new Error(
+    `${RECEIPT_EMOJI} is reserved to the daemon's receipt path (HR-2486): on ` +
+      `the Human's own message it means «отримав і зберіг» and is set only ` +
+      `once the inbox mirror row has reached disk. It cannot be set by hand. ` +
+      `Use a different emoji.`,
+  );
+}

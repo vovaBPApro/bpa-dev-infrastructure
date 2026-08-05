@@ -1073,9 +1073,13 @@ test("branches: a lane dispatched while the sweep is running keeps its branch, c
 // the escalation past it, delete_local_branch fetches. `ext::` makes that fetch
 // run a script, so the branch can acquire a worktree in exactly that gap --
 // under the installed cron argv, with no --with-worktrees and no
-// --liveness-cmd. This is the case the message classification, not the
-// re-measurement, has to catch: the second `-d` now refuses with "used by
-// worktree", and escalating past THAT is what deleted a running lane's branch.
+// --liveness-cmd. This is the window the SECOND re-measure exists for, and
+// round-3 review found that guard was the one new guard of round 2 that no test
+// held: removing it left the whole file passing, because the message classifier
+// in front of it happened to catch this fixture first. It no longer does --
+// the classifier is a measurement now, and the measurement says this branch is
+// genuinely unmerged, i.e. escalate. So the re-measure is all that stands here,
+// which is exactly what makes this its lock.
 function remoteWhoseFetchDispatchesALane(
   dir: string,
   repo: string,
@@ -1104,7 +1108,7 @@ function remoteWhoseFetchDispatchesALane(
   sh("git config protocol.ext.allow always", repo);
 }
 
-test("branches: the escalation refuses a -d refusal it cannot read as merged-vs-HEAD", () => {
+test("branches: a worktree that appears during the fetch keeps its branch -- the re-measure between the refusal and the delete", () => {
   const { dir, repo } = buildFixture();
   const victimWorktree = join(dir, "unmerged-wt");
   remoteWhoseFetchDispatchesALane(dir, repo, "unmerged", victimWorktree);
@@ -1118,12 +1122,54 @@ test("branches: the escalation refuses a -d refusal it cannot read as merged-vs-
   expect(apply.status).toBe(0);
   expect(apply.stdout).toContain("deleting dispositioned branch: unmerged");
   expect(apply.stdout).toContain("git refused -d for unmerged, re-measuring rather than forcing");
-  expect(apply.stdout).toContain("git refused -d for a reason this tool does not escalate past, retaining: unmerged");
-  expect(apply.stdout).toContain("used by worktree");
-  // It must NOT have claimed the diagnosis it did not perform.
+  expect(apply.stdout).toContain("a worktree took this branch while it was being reaped, refusing: unmerged");
+  expect(apply.stdout).toContain(victimWorktree);
+  // It must NOT have reached the escalation at all.
   expect(apply.stdout).not.toContain("git -d judges against HEAD; deleting the exact measured ref instead");
   expect(sh("git show-ref --verify --quiet refs/heads/unmerged && echo present", repo).trim()).toBe("present");
   expect(sh("git rev-parse --abbrev-ref HEAD", victimWorktree).trim()).toBe("unmerged");
+});
+
+// Round 2 decided which of `git branch -d`'s two refusals it was looking at by
+// testing the message for `is not fully merged`. Round-3 review pointed out
+// that git puts a PATH in that message -- the worktree path in the in-use
+// refusal, the repository path in a lock failure -- so an operator who happens
+// to have that string anywhere in a path spells whichever classification they
+// like. Here the repository itself lives under `is not fully merged`, the
+// branch IS merged, and `-d` fails for a third reason entirely (a stale ref
+// lock, what a crashed or concurrent git leaves behind). Against the round-2
+// script the substring matches, the tool announces the merged-vs-HEAD
+// diagnosis it never performed, and escalates to the exact-ref delete. It is
+// now decided by asking git the same question `-d` asks.
+function repoUnderAMisleadingPath(): string {
+  const dir = fixtureDir();
+  const repo = join(dir, "is not fully merged", "repo");
+  mkdirSync(repo, { recursive: true });
+  sh("git init -q -b main .", repo);
+  sh("git config user.email hygiene@example.test", repo);
+  sh("git config user.name Hygiene", repo);
+  writeFileSync(join(repo, "base.txt"), "base\n");
+  sh("git add base.txt && git commit -qm base", repo);
+  sh("git branch merged", repo);
+  writeFileSync(join(repo, ".git", "refs", "heads", "merged.lock"), "");
+  return repo;
+}
+
+test("branches: the escalation is decided by measurement, not by a refusal whose text a path can spell", () => {
+  const repo = repoUnderAMisleadingPath();
+
+  const apply = run(["branches", "--repo", repo, "--apply"]);
+
+  expect(apply.status).toBe(0);
+  expect(apply.stdout).toContain("merged branch: merged");
+  expect(apply.stdout).toContain("git refused -d for merged, re-measuring rather than forcing");
+  // The refusal text contains "is not fully merged" -- inside the path -- and
+  // the tool must still read it as a refusal it cannot attribute to the merge
+  // check. git's own words stay in the log; they just no longer decide.
+  expect(apply.stdout).toContain("git refused -d for a reason this tool does not escalate past, retaining: merged");
+  expect(apply.stdout).toContain("cannot lock ref");
+  expect(apply.stdout).not.toContain("git -d judges against HEAD; deleting the exact measured ref instead");
+  expect(sh("git show-ref --verify --quiet refs/heads/merged && echo present", repo).trim()).toBe("present");
 });
 
 // --- the escalation primitive's other two outcomes -------------------------
@@ -1195,6 +1241,385 @@ test("remote-branches: a lane dispatched while the sweep is running keeps its re
   expect(sh("git rev-parse --abbrev-ref HEAD", victimWorktree).trim()).toBe("ag-merged-remote");
 });
 
+// --- a lane whose HEAD is detached -----------------------------------------
+//
+// Round-3 review's blocking finding. Every liveness guard in this tool was
+// reached only through the `branch refs/heads/<name>` line of
+// `git worktree list --porcelain`, and git prints `detached` instead of it for
+// the whole duration of a rebase or a bisect -- the ordinary state of a lane on
+// this installation, where HR-2538 records V3-5.1 alone needing three rebases.
+// The census then found no holder, worktree_is_terminal was never called, its
+// `operation-in-progress` check never ran, and `remote-branches --apply`
+// deleted the running lane's remote branch: the ref with no reflog on the far
+// side. Measured against the round-2 script, both fixtures below:
+//
+//   deleted dispositioned remote branch: origin/ag-lane (c2124b3b...)
+//   remote now:  refs/heads/main        <- the lane's branch is gone
+//
+// Both states are produced by running git, not by writing marker files: a
+// fixture that fabricates `rebase-merge` proves something about the fixture.
+
+// A lane stopped in the middle of a real rebase: `--exec false` fails after the
+// commit is replayed, so the worktree is left detached, CLEAN, and holding
+// `rebase-merge` -- clean on purpose, so the refusal has to come from the
+// operation marker and cannot be the dirty-tree check answering by accident.
+function buildRebasingLaneFixture(): { dir: string; repo: string; lane: string; dispositions: string } {
+  const dir = fixtureDir();
+  const repo = join(dir, "repo");
+  mkdirSync(repo);
+  sh("git init -q -b main .", repo);
+  sh("git config user.email hygiene@example.test", repo);
+  sh("git config user.name Hygiene", repo);
+  writeFileSync(join(repo, "base.txt"), "base\n");
+  sh("git add base.txt && git commit -qm base", repo);
+  const remote = join(dir, "remote.git");
+  sh(`git init -q --bare ${JSON.stringify(remote)}`, repo);
+  sh(`git remote add origin ${JSON.stringify(remote)}`, repo);
+  sh("git push -q origin main", repo);
+
+  sh("git checkout -qb ag-lane", repo);
+  writeFileSync(join(repo, "lane.txt"), "lane work nobody else has\n");
+  sh("git add lane.txt && git commit -qm lane && git push -q origin ag-lane", repo);
+  sh("git checkout -q main", repo);
+  writeFileSync(join(repo, "trunk.txt"), "trunk\n");
+  sh("git add trunk.txt && git commit -qm trunk && git push -q origin main", repo);
+
+  const lane = join(dir, "lane-wt");
+  sh(`git worktree add -q ${JSON.stringify(lane)} ag-lane`, repo);
+  spawnSync("git", ["rebase", "--exec", "false", "main"], { cwd: lane, encoding: "utf8" });
+  const listed = sh("git worktree list --porcelain", repo);
+  if (!listed.includes("detached")) {
+    throw new Error(`fixture setup failed: the lane is not detached\n${listed}`);
+  }
+  if (sh("git status --porcelain", lane) !== "") {
+    throw new Error("fixture setup failed: the rebasing lane is dirty, so the refusal would not prove the marker");
+  }
+  const dispositions = join(dir, "dispositions.txt");
+  writeFileSync(dispositions, "ag-lane operator ruling: superseded, safe to drop\n");
+  return { dir, repo, lane, dispositions };
+}
+
+test("remote-branches: a lane detached in the middle of a rebase keeps its remote branch", () => {
+  const { repo, lane, dispositions } = buildRebasingLaneFixture();
+
+  const apply = run(["remote-branches", "--repo", repo, "--dispositions", dispositions, "--apply"]);
+  expect(apply.status).toBe(0);
+  expect(apply.stdout).toContain("remote branch held by a live lane, refusing: origin/ag-lane");
+  // The refusal must be the operation marker: that check exists for exactly
+  // this state and was never reached before.
+  expect(apply.stdout).toContain("operation-in-progress=rebase-merge");
+  expect(apply.stdout).toContain(lane);
+  expect(apply.stdout).not.toContain("deleting dispositioned remote branch");
+  expect(sh("git ls-remote --heads origin", repo)).toContain("refs/heads/ag-lane");
+});
+
+test("branches: a lane detached in the middle of a rebase keeps its local branch, with or without --with-worktrees", () => {
+  const { repo, dispositions } = buildRebasingLaneFixture();
+
+  for (const argv of [
+    ["branches", "--repo", repo, "--dispositions", dispositions, "--apply"],
+    ["branches", "--repo", repo, "--dispositions", dispositions, "--with-worktrees", "--apply"],
+  ]) {
+    const apply = run(argv);
+    expect(apply.status).toBe(0);
+    expect(apply.stdout).toContain("held by live worktree, refusing: ag-lane");
+    expect(sh("git show-ref --verify --quiet refs/heads/ag-lane && echo present", repo).trim()).toBe("present");
+  }
+});
+
+test("worktrees: a detached lane is classified under the branch it is rebasing, not as `detached`", () => {
+  const { repo, lane } = buildRebasingLaneFixture();
+
+  const out = run(["worktrees", "--repo", repo, "--apply", "--terminal"]);
+  expect(out.status).toBe(0);
+  expect(out.stdout).toContain(`live worktree, refusing: ${lane} (branch: ag-lane, operation-in-progress=rebase-merge)`);
+  expect(existsSync(lane)).toBe(true);
+});
+
+// The other detached state: `git bisect` checks out a midpoint and records the
+// branch it will return to in BISECT_START. Here the lane's branch is a plain
+// ancestor of main, so the reaper genuinely wants it and no disposition file is
+// involved -- the refusal has to come from finding the holder.
+function buildBisectingLaneFixture(): { dir: string; repo: string; lane: string } {
+  const dir = fixtureDir();
+  const repo = join(dir, "repo");
+  mkdirSync(repo);
+  sh("git init -q -b main .", repo);
+  sh("git config user.email hygiene@example.test", repo);
+  sh("git config user.name Hygiene", repo);
+  for (const n of [1, 2, 3, 4, 5]) {
+    writeFileSync(join(repo, `c${n}.txt`), `${n}\n`);
+    sh(`git add c${n}.txt && git commit -qm c${n}`, repo);
+  }
+  const remote = join(dir, "remote.git");
+  sh(`git init -q --bare ${JSON.stringify(remote)}`, repo);
+  sh(`git remote add origin ${JSON.stringify(remote)}`, repo);
+  sh("git push -q origin main", repo);
+  sh("git branch ag-lane HEAD~4 && git push -q origin ag-lane", repo);
+
+  const lane = join(dir, "lane-wt");
+  sh(`git worktree add -q ${JSON.stringify(lane)} ag-lane`, repo);
+  sh("git bisect start main ag-lane", lane);
+  const listed = sh("git worktree list --porcelain", repo);
+  if (!listed.includes("detached")) {
+    throw new Error(`fixture setup failed: the bisecting lane is not detached\n${listed}`);
+  }
+  return { dir, repo, lane };
+}
+
+test("a lane detached in the middle of a bisect keeps the branch bisect will return it to", () => {
+  const { repo, lane } = buildBisectingLaneFixture();
+
+  const remoteSweep = run(["remote-branches", "--repo", repo, "--apply"]);
+  expect(remoteSweep.status).toBe(0);
+  expect(remoteSweep.stdout).toContain("remote branch held by a live lane, refusing: origin/ag-lane");
+  expect(remoteSweep.stdout).toContain("operation-in-progress=BISECT_LOG");
+  expect(remoteSweep.stdout).toContain(lane);
+  expect(sh("git ls-remote --heads origin", repo)).toContain("refs/heads/ag-lane");
+
+  const localSweep = run(["branches", "--repo", repo, "--with-worktrees", "--apply"]);
+  expect(localSweep.status).toBe(0);
+  expect(localSweep.stdout).toContain("held by live worktree, refusing: ag-lane");
+  expect(sh("git show-ref --verify --quiet refs/heads/ag-lane && echo present", repo).trim()).toBe("present");
+});
+
+test("a worktree whose porcelain record does not parse is UNKNOWN, and UNKNOWN refuses every branch", () => {
+  const dir = fixtureDir();
+  const repo = join(dir, "repo");
+  mkdirSync(repo);
+  sh("git init -q -b main .", repo);
+  sh("git config user.email hygiene@example.test", repo);
+  sh("git config user.name Hygiene", repo);
+  writeFileSync(join(repo, "base.txt"), "base\n");
+  sh("git add base.txt && git commit -qm base", repo);
+  sh("git branch merged", repo);
+  sh("git branch victim", repo);
+  // A newline in a worktree path splits one porcelain record into two, so the
+  // `branch` line that follows belongs to a path no line-based parser can name.
+  // The round-2 parser answered anyway, with the truncated path. There is one
+  // true answer here and it is "I do not know".
+  const weird = join(dir, "we\nird-wt");
+  // Not through a shell: the newline has to reach `git worktree add` as a
+  // newline, and every quoting form a shell offers turns it into something else.
+  const added = spawnSync("git", ["worktree", "add", "-q", weird, "victim"], { cwd: repo, encoding: "utf8" });
+  if (added.status !== 0 || !sh("git worktree list --porcelain", repo).includes("\nird-wt")) {
+    throw new Error(`fixture setup failed: no worktree at a path containing a newline\n${added.stderr}`);
+  }
+
+  const apply = run(["branches", "--repo", repo, "--apply"]);
+  expect(apply.status).toBe(0);
+  expect(apply.stdout).toContain("a worktree's branch could not be determined, refusing: victim");
+  // And it refuses the OTHER branch too: an unreadable worktree inventory is a
+  // statement about the whole repository, not about one branch in it.
+  expect(apply.stdout).toContain("a worktree's branch could not be determined, refusing: merged");
+  expect(sh("git show-ref --verify --quiet refs/heads/victim && echo present", repo).trim()).toBe("present");
+  expect(sh("git show-ref --verify --quiet refs/heads/merged && echo present", repo).trim()).toBe("present");
+});
+
+// --- the prohibition, asserted as a property -------------------------------
+//
+// Round 1 enforced "no `git branch -D`" by looking for the string. Round 2
+// replaced that with a three-alternative regex, which round-3 review defeated
+// three ways, each leaving the entire file passing: `git branch --delete
+// --force` (the banned command, spelled long), `printf 'delete refs/heads/%s\n'
+// | git update-ref --stdin`, and `git push <remote> ":<ref>"` -- a delete
+// refspec with no `--delete` in it, which reap_meteorite_refs already uses, so
+// the file demonstrated the hole itself.
+//
+// The question was never "which spellings appear in the source". It is "can any
+// code path remove a ref that a live or checked-out worktree depends on", and
+// that is answered by taking the full ref inventory, running every entry point
+// the tool exposes with --apply against a fleet of live lanes, and taking it
+// again. Nothing in that measurement knows what a git verb is.
+
+type RefInventory = { local: string[]; remote: string[] };
+
+function refInventory(repo: string): RefInventory {
+  const parse = (out: string) =>
+    out
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => line.split(/\s+/).pop() as string)
+      .map((ref) => ref.replace(/^refs\/heads\//, ""))
+      .sort();
+  return {
+    local: parse(sh("git for-each-ref --format='%(refname)' refs/heads", repo)),
+    remote: parse(sh("git ls-remote --heads origin", repo)),
+  };
+}
+
+// A repository holding three lanes that must not be touched -- one working
+// (a real process inside it), one mid-rebase, one mid-bisect -- and one branch
+// that genuinely is finished, so a sweep that refuses everything cannot pass
+// this by doing nothing.
+function buildLiveFleetFixture(): { dir: string; repo: string; dispositions: string } {
+  const dir = fixtureDir();
+  const repo = join(dir, "repo");
+  mkdirSync(repo);
+  sh("git init -q -b main .", repo);
+  sh("git config user.email hygiene@example.test", repo);
+  sh("git config user.name Hygiene", repo);
+  writeFileSync(join(repo, "base.txt"), "base\n");
+  sh("git add base.txt && git commit -qm base", repo);
+  const remote = join(dir, "remote.git");
+  sh(`git init -q --bare ${JSON.stringify(remote)}`, repo);
+  sh(`git remote add origin ${JSON.stringify(remote)}`, repo);
+  sh("git push -q origin main", repo);
+
+  // ag-done: landed and finished. The control.
+  sh("git checkout -qb ag-done", repo);
+  writeFileSync(join(repo, "done.txt"), "done\n");
+  sh("git add done.txt && git commit -qm done && git push -q origin ag-done", repo);
+  sh("git checkout -q main && git merge -q --no-ff -m 'merge ag-done' ag-done", repo);
+
+  // ag-working: merged, so the reaper wants it, but a lane is inside it.
+  sh("git checkout -qb ag-working main", repo);
+  writeFileSync(join(repo, "working.txt"), "working\n");
+  sh("git add working.txt && git commit -qm working && git push -q origin ag-working", repo);
+  sh("git checkout -q main && git merge -q --no-ff -m 'merge ag-working' ag-working", repo);
+
+  // ag-bisecting: a plain ancestor of main. The filler commits give the bisect
+  // a range wide enough that it checks a midpoint out (and so detaches) rather
+  // than concluding on the spot.
+  sh("git branch ag-bisecting main && git push -q origin ag-bisecting", repo);
+  for (const n of [1, 2, 3, 4]) {
+    writeFileSync(join(repo, `filler${n}.txt`), `${n}\n`);
+    sh(`git add filler${n}.txt && git commit -qm filler${n}`, repo);
+  }
+
+  // ag-rebasing: unique content, dispositioned, so the reaper wants it too.
+  sh("git checkout -qb ag-rebasing main", repo);
+  writeFileSync(join(repo, "rebasing.txt"), "rebasing\n");
+  sh("git add rebasing.txt && git commit -qm rebasing && git push -q origin ag-rebasing", repo);
+  sh("git checkout -q main", repo);
+  writeFileSync(join(repo, "trunk.txt"), "trunk\n");
+  sh("git add trunk.txt && git commit -qm trunk", repo);
+  sh("git push -q origin main", repo);
+
+  const working = join(dir, "ag-working-wt");
+  sh(`git worktree add -q ${JSON.stringify(working)} ag-working`, repo);
+  spawnLaneIn(working);
+
+  const rebasing = join(dir, "ag-rebasing-wt");
+  sh(`git worktree add -q ${JSON.stringify(rebasing)} ag-rebasing`, repo);
+  spawnSync("git", ["rebase", "--exec", "false", "main"], { cwd: rebasing, encoding: "utf8" });
+
+  const bisecting = join(dir, "ag-bisecting-wt");
+  sh(`git worktree add -q ${JSON.stringify(bisecting)} ag-bisecting`, repo);
+  sh("git bisect start main ag-bisecting", bisecting);
+
+  const detached = (sh("git worktree list --porcelain", repo).match(/^detached$/gm) ?? []).length;
+  if (detached !== 2) {
+    throw new Error(`fixture setup failed: expected two detached lanes, saw ${detached}`);
+  }
+  const dispositions = join(dir, "dispositions.txt");
+  writeFileSync(
+    dispositions,
+    ["ag-rebasing operator ruling: superseded", "ag-bisecting operator ruling: superseded", ""].join("\n"),
+  );
+  return { dir, repo, dispositions };
+}
+
+// Every entry point this tool exposes, each with the flag that lets it mutate.
+function sweepEverything(script: string, repo: string, dispositions: string): string {
+  const argvs = [
+    ["branches", "--repo", repo, "--dispositions", dispositions, "--apply"],
+    ["branches", "--repo", repo, "--dispositions", dispositions, "--with-worktrees", "--apply"],
+    ["remote-branches", "--repo", repo, "--dispositions", dispositions, "--apply"],
+    ["worktrees", "--repo", repo, "--apply", "--terminal"],
+    ["meteorite-refs", "--repo", repo, "--max-age-seconds", "0", "--apply"],
+  ];
+  let combined = "";
+  for (const argv of argvs) {
+    const result = spawnSync("bash", [script, ...argv], { encoding: "utf8" });
+    combined += `\n$ reap.sh ${argv.join(" ")}\n${result.stdout}${result.stderr}`;
+  }
+  return combined;
+}
+
+const liveLanes = ["ag-working", "ag-rebasing", "ag-bisecting"];
+
+// The measurement itself: which refs a live lane depends on stopped existing.
+function laneRefsDestroyedBy(script: string): { destroyed: string[]; log: string; after: RefInventory } {
+  const { repo, dispositions } = buildLiveFleetFixture();
+  const before = refInventory(repo);
+  for (const lane of liveLanes) {
+    if (!before.local.includes(lane) || !before.remote.includes(lane)) {
+      throw new Error(`fixture setup failed: ${lane} is not present on both sides`);
+    }
+  }
+  const log = sweepEverything(script, repo, dispositions);
+  const after = refInventory(repo);
+  const destroyed: string[] = [];
+  for (const lane of liveLanes) {
+    if (!after.local.includes(lane)) destroyed.push(`local:${lane}`);
+    if (!after.remote.includes(lane)) destroyed.push(`remote:${lane}`);
+  }
+  return { destroyed, log, after };
+}
+
+test("PROPERTY: no entry point removes a ref a live lane depends on, whatever primitive it is spelled with", () => {
+  const { destroyed, after } = laneRefsDestroyedBy(reap);
+  expect(destroyed).toEqual([]);
+  // ...and it is not passing by refusing everything: the one branch that IS
+  // finished was reaped on both sides in the same run.
+  expect(after.local).not.toContain("ag-done");
+  expect(after.remote).not.toContain("ag-done");
+});
+
+// A copy of this repository with one line changed, so the property above is
+// exercised against a reaper that really does destroy work. Without this the
+// property test proves only that the current script passes it.
+function reapWithInjection(anchor: string, injected: string): string {
+  const root = fixtureDir();
+  sh(`git archive HEAD | tar -x -C ${JSON.stringify(root)}`, repoRoot);
+  const target = join(root, "hygiene", "reap.sh");
+  const source = readFileSync(target, "utf8");
+  const occurrences = source.split(anchor).length - 1;
+  if (occurrences !== 1) {
+    throw new Error(`injection anchor is not unique (${occurrences} matches): ${anchor}`);
+  }
+  writeFileSync(target, source.replace(anchor, `${anchor}\n${injected}`));
+  return target;
+}
+
+const injections: Array<{ name: string; anchor: string; injected: string }> = [
+  {
+    // `git branch -D`, spelled long. The round-2 regexes require `\s-[dD]\b`.
+    name: "git branch --delete --force",
+    anchor: '        say "held by live worktree, refusing: $branch (worktree: $worktree)"',
+    injected: '        git -C "$repo" branch --delete --force "$branch" >/dev/null 2>&1 || true',
+  },
+  {
+    // A third ref-deleting primitive, on the path that has just REFUSED a live
+    // lane, in neither guarded function.
+    name: "git update-ref --stdin",
+    anchor:
+      '        say "remote branch held by a live lane, refusing: $remote/$branch (worktree: $worktree, $reason)"',
+    injected:
+      '        printf \'delete refs/heads/%s\\n\' "$branch" | git -C "$repo" update-ref --stdin >/dev/null 2>&1 || true',
+  },
+  {
+    // A delete refspec with no --delete in it -- the form reap_meteorite_refs
+    // already uses, which is why no blocklist over verbs can see it.
+    name: "git push <remote> :<ref>",
+    anchor:
+      '        say "remote branch held by a live lane, refusing: $remote/$branch (worktree: $worktree, $reason)"',
+    injected: '        git -C "$repo" push "$remote" ":refs/heads/$branch" >/dev/null 2>&1 || true',
+  },
+];
+
+test("the property has teeth: each injected deletion primitive is caught by it", () => {
+  for (const injection of injections) {
+    const script = reapWithInjection(injection.anchor, injection.injected);
+    const { destroyed } = laneRefsDestroyedBy(script);
+    if (destroyed.length === 0) {
+      throw new Error(`the property test did not catch the injection: ${injection.name}`);
+    }
+  }
+});
+
 // Splits reap.sh into `name() { ... }` bodies so a claim about WHERE a
 // primitive may appear can be made about the script rather than about a
 // string in it.
@@ -1247,10 +1672,15 @@ test("no code path deletes a branch that is checked out or held by a live lane, 
   expect(sh("git show-ref --verify --quiet refs/heads/worktree-held && echo present", repo).trim()).toBe("present");
   expect(existsSync(worktree)).toBe(true);
 
-  // 2. LOCATION. Every primitive that can remove a refs/heads ref lives in one
-  //    of the two functions that re-measure the holding worktree immediately
-  //    before acting. A third primitive added anywhere else fails here even if
-  //    it is spelled in a way no blocklist anticipated.
+  // 2. LOCATION. A cheap tripwire, and only that. It asserts that the ref-
+  //    deleting spellings this file KNOWS ABOUT appear only inside the two
+  //    functions that re-measure the holding worktree before acting. Round 2's
+  //    comment here claimed more -- that a primitive spelled in a way no
+  //    blocklist anticipated would fail here -- and round-3 review falsified it
+  //    with three such spellings. The claim now rests on the PROPERTY test
+  //    above, which measures the ref inventory before and after every entry
+  //    point and therefore cannot be spelled around. This survives because a
+  //    regex costs nothing and fails faster than a fixture.
   const source = readFileSync(reap, "utf8");
   const bodies = shellFunctionBodies(source);
   const guarded = ["delete_local_branch", "delete_remote_branch"];

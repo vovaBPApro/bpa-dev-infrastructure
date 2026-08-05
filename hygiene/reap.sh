@@ -242,22 +242,240 @@ disposition_reason() {
   return 1
 }
 
-worktree_for_branch() {
-  local branch="$1" worktree_list="$2"
-  awk -v wanted="refs/heads/$branch" '
-    $1 == "worktree" { path=$2 }
-    $1 == "branch" && $2 == wanted { print path; exit }
-  ' <<< "$worktree_list"
+# --- which worktree holds which branch --------------------------------------
+#
+# This was `awk '$1 == "branch" && $2 == wanted { print $2 }'` over
+# `git worktree list --porcelain`, and every liveness guard in this file was
+# reached only through that one line. Round-3 review measured what that costs:
+#
+#   worktree /tmp/detach2-PSGd/lane-wt
+#   HEAD c85fac0c74a31b3d5b4613e3d8fdeb1383557ccf
+#   detached
+#
+# git prints `detached` INSTEAD OF `branch refs/heads/<name>` for any worktree
+# whose HEAD is detached -- which is the ordinary state of a lane in the middle
+# of a rebase or a bisect, and HR-2538 records V3-5.1 alone needing three
+# rebases. So the census reported no holder, worktree_is_terminal was never
+# called, its `operation-in-progress=rebase-merge` check never ran, and
+# `remote-branches --apply` deleted a running lane's remote branch -- the ref
+# with no reflog on the far side. The refusal that did fire in the control case
+# was a property of the lane NOT being mid-rebase, not of the lane being live.
+#
+# So the association is resolved from what git records on disk rather than from
+# the one porcelain line that disappears exactly when a lane is busiest:
+#
+#   attached       the porcelain `branch refs/heads/<name>` line, as before
+#   rebase         <admin>/rebase-merge/head-name, <admin>/rebase-apply/head-name
+#                  -- the branch the rebase will move when it finishes
+#   bisect         <admin>/BISECT_START -- the branch `git bisect reset` returns to
+#   by content     any branch whose tip equals the worktree's HEAD, ORIG_HEAD,
+#                  REBASE_HEAD or a rebase's recorded orig-head, which covers a
+#                  plain `git checkout --detach` off the branch
+#
+# And absence FAILS: a worktree whose association cannot be determined at all
+# (unparseable record, admin directory missing, files unreadable) is reported as
+# `?` and every caller refuses on it rather than falling through to a delete.
+# The porcelain path is taken with `${line#worktree }` rather than awk's `$2`,
+# so a path containing spaces is no longer truncated -- round-3 review found the
+# refusal message handing the operator `/tmp/clsdef-uWvu/is` for a worktree at
+# `/tmp/clsdef-uWvu/is not fully merged/wt`.
+
+# Prints the first `worktree` path in a porcelain listing. Space-safe.
+first_worktree_path() {
+  local line
+  while IFS= read -r line; do
+    if [[ "$line" == "worktree "* ]]; then printf '%s\n' "${line#worktree }"; return 0; fi
+  done <<< "$1"
+  return 1
+}
+
+# 0 = the worktree at $1 is locked in the porcelain listing $2.
+worktree_is_locked() {
+  local want="$1" line path=""
+  while IFS= read -r line; do
+    case "$line" in
+      "worktree "*) path="${line#worktree }" ;;
+      locked|"locked "*) if [[ "$path" == "$want" ]]; then return 0; fi ;;
+    esac
+  done <<< "$2"
+  return 1
+}
+
+# The administrative directory git keeps for the worktree at $1
+# (<common-git-dir>/worktrees/<id>), found by matching the recorded `gitdir`
+# rather than by guessing the id from the path -- the id is a basename that git
+# disambiguates with a suffix, and the directory may be gone while the metadata
+# (and the branch it holds) is not.
+worktree_admin_dir() {
+  local want="$1" common entry gitdir wt
+  common="$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null)" || return 1
+  [[ -n "$common" ]] || return 1
+  if [[ "$common" != /* ]]; then common="$repo/$common"; fi
+  for entry in "$common"/worktrees/*; do
+    [[ -d "$entry" ]] || continue
+    [[ -r "$entry/gitdir" ]] || continue
+    gitdir="$(< "$entry/gitdir")" || continue
+    wt="${gitdir%/.git}"
+    if [[ "$wt" == "$want" ]]; then printf '%s\n' "$entry"; return 0; fi
+  done
+  return 1
+}
+
+# Emits one TAB-separated `<path>\t<name>` record per (worktree, branch) pair,
+# `<path>\t-` for a worktree that provably holds no branch, and `<path>\t?` for
+# one whose association could not be determined. Records for the same worktree
+# are contiguous and in listing order, which report_worktrees relies on.
+worktree_associations() {
+  local worktree_list="$1"
+  local line path head kind bad admin tips name sha emitted
+  local -a paths=() heads=() kinds=()
+  path=""; head=""; kind=""; bad=""
+  # Parse first, resolve second: an unrecognized attribute line means the record
+  # is not the shape this parser understands (a path containing a newline splits
+  # into exactly that), and an unparseable record must be UNKNOWN, not skipped.
+  while IFS= read -r line; do
+    case "$line" in
+      "")
+        continue
+        ;;
+      "worktree "*)
+        if [[ -n "$path" ]]; then paths+=("$path"); heads+=("$head"); kinds+=("${bad:-$kind}"); fi
+        path="${line#worktree }"; head=""; kind=""; bad=""
+        ;;
+      "HEAD "*)
+        head="${line#HEAD }"
+        ;;
+      "branch "*)
+        kind="branch:${line#branch }"
+        ;;
+      detached)
+        kind="detached"
+        ;;
+      bare)
+        kind="bare"
+        ;;
+      locked|"locked "*|prunable|"prunable "*)
+        :
+        ;;
+      *)
+        # STICKY: a record that did not parse does not become parseable again
+        # because a later line happens to look like an attribute. A worktree
+        # path containing a newline splits into exactly this shape, and the
+        # `branch` line that follows belongs to a path this parser can no
+        # longer name -- reporting it against the truncated path would be a
+        # confident wrong answer where UNKNOWN is the true one.
+        bad="unparseable"
+        ;;
+    esac
+  done <<< "$worktree_list"
+  if [[ -n "$path" ]]; then paths+=("$path"); heads+=("$head"); kinds+=("${bad:-$kind}"); fi
+
+  local index
+  for index in "${!paths[@]}"; do
+    path="${paths[$index]}"
+    head="${heads[$index]}"
+    kind="${kinds[$index]}"
+    case "$kind" in
+      bare)
+        printf '%s\t-\n' "$path"
+        continue
+        ;;
+      branch:refs/heads/*)
+        printf '%s\t%s\n' "$path" "${kind#branch:refs/heads/}"
+        continue
+        ;;
+      branch:*)
+        # A worktree on a ref outside refs/heads is not a branch this tool
+        # deletes, but it is also not something this parser claims to know.
+        printf '%s\t?\n' "$path"
+        continue
+        ;;
+      detached)
+        :
+        ;;
+      *)
+        printf '%s\t?\n' "$path"
+        continue
+        ;;
+    esac
+    # Detached: the branch, if any, is on disk in the worktree's admin dir.
+    if ! admin="$(worktree_admin_dir "$path")"; then
+      printf '%s\t?\n' "$path"
+      continue
+    fi
+    emitted=""
+    for name in rebase-merge/head-name rebase-apply/head-name; do
+      if [[ -e "$admin/$name" ]]; then
+        if ! sha="$(< "$admin/$name")"; then printf '%s\t?\n' "$path"; continue 2; fi
+        if [[ "$sha" == refs/heads/* ]]; then
+          printf '%s\t%s\n' "$path" "${sha#refs/heads/}"
+          emitted=yes
+        fi
+      fi
+    done
+    if [[ -e "$admin/BISECT_START" ]]; then
+      if ! sha="$(< "$admin/BISECT_START")"; then printf '%s\t?\n' "$path"; continue; fi
+      # BISECT_START holds the branch name `git bisect reset` returns to, or a
+      # raw sha when the bisect started from a detached HEAD.
+      if [[ -n "$sha" && "$sha" != *[[:space:]]* ]]; then
+        printf '%s\t%s\n' "$path" "$sha"
+        emitted=yes
+      fi
+    fi
+    # By content: any branch sitting at a revision this worktree is working
+    # from. `git checkout --detach` leaves HEAD there and nothing else on disk.
+    tips=""
+    for name in HEAD ORIG_HEAD REBASE_HEAD rebase-merge/orig-head rebase-apply/orig-head; do
+      if [[ "$name" == HEAD ]]; then
+        sha="$head"
+      elif [[ -e "$admin/$name" ]]; then
+        sha="$(< "$admin/$name")" || sha=""
+      else
+        continue
+      fi
+      if [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then tips="$tips $sha "; fi
+    done
+    if [[ -n "$tips" ]]; then
+      while IFS=' ' read -r sha name; do
+        [[ -n "${name:-}" ]] || continue
+        if [[ "$tips" == *" $sha "* ]]; then
+          printf '%s\t%s\n' "$path" "$name"
+          emitted=yes
+        fi
+      done < <(git -C "$repo" for-each-ref --format='%(objectname) %(refname:short)' refs/heads 2>/dev/null)
+    fi
+    if [[ -z "$emitted" ]]; then printf '%s\t-\n' "$path"; fi
+  done
+}
+
+# Answers "is this branch held by a worktree" against an association table.
+#   0 = held; prints the holding worktree's path
+#   1 = provably held by nothing
+#   2 = at least one worktree could not be resolved; prints the reason
+# Callers must treat 2 as a refusal: an unresolvable worktree is the one shape
+# that used to read exactly like an absent one.
+branch_holder() {
+  local branch="$1" associations="$2" path name unknown=""
+  while IFS=$'\t' read -r path name; do
+    [[ -n "${path:-}" ]] || continue
+    if [[ "$name" == "$branch" ]]; then printf '%s\n' "$path"; return 0; fi
+    if [[ "$name" == "?" ]]; then unknown="$path"; fi
+  done <<< "$associations"
+  if [[ -n "$unknown" ]]; then
+    printf 'worktree-association-undeterminable=%s\n' "$unknown"
+    return 2
+  fi
+  return 1
 }
 
 # Same question, asked of the repository as it is RIGHT NOW rather than of a
 # list captured earlier. A sweep's census is a plan-time measurement, and a
 # lane that starts after it is not in it -- see the note above
 # worktree_is_terminal, which says the same thing about the other direction.
-# Prints the holding worktree's path, or nothing.
+# Same three-valued answer as branch_holder.
 holding_worktree_now() {
   local branch="$1"
-  worktree_for_branch "$branch" "$(git -C "$repo" worktree list --porcelain)"
+  branch_holder "$branch" "$(worktree_associations "$(git -C "$repo" worktree list --porcelain)")"
 }
 
 # --- terminal-worktree machinery -------------------------------------------
@@ -341,12 +559,9 @@ processes_inside() {
 worktree_is_terminal() {
   local path="$1" branch="$2" worktree_list="$3"
   local main_worktree status_out git_dir marker probe rc=0
-  main_worktree="$(awk '$1 == "worktree" { print $2; exit }' <<< "$worktree_list")"
-  if [[ "$path" == "$main_worktree" ]]; then printf 'main-worktree\n'; return 1; fi
-  if awk -v want="$path" '
-        $1 == "worktree" { p = $2 }
-        $1 == "locked" && p == want { found = 1 }
-        END { exit found ? 0 : 1 }' <<< "$worktree_list"; then
+  main_worktree="$(first_worktree_path "$worktree_list")" || main_worktree=""
+  if [[ -n "$main_worktree" && "$path" == "$main_worktree" ]]; then printf 'main-worktree\n'; return 1; fi
+  if worktree_is_locked "$path" "$worktree_list"; then
     printf 'locked\n'; return 1
   fi
   if [[ ! -d "$path" ]]; then printf 'directory-missing (orphan metadata; prune handles this)\n'; return 1; fi
@@ -430,14 +645,63 @@ remove_terminal_worktree() {
 # installs. The in-use refusal also takes precedence over the merge check, so
 # an unmerged branch behind a worktree reports "used by worktree" too.
 #
-# The classification is therefore fail-closed on the message: escalate only on
-# a refusal this tool recognizes as the merged-vs-HEAD case, retain on anything
-# else, including a message it cannot read at all. `LC_ALL=C` is set on the
-# probe so the message is the untranslated msgid rather than whatever locale
-# the timer happens to run under -- a translated refusal would be unreadable
-# here, and unreadable must not quietly become "escalate".
+# Round 2 classified that on the refusal TEXT -- `[[ "$out" != *"is not fully
+# merged"* ]]` -- and round-3 review defeated it with content, because git's
+# in-use refusal embeds the worktree path:
+#
+#   error: cannot delete branch 'victim' used by worktree at
+#          '/tmp/.../is not fully merged/wt'
+#
+# so any worktree path carrying that substring made an in-use refusal read as
+# the merged-vs-HEAD case. `LC_ALL=C` fixes the locale; nothing fixes the
+# content, because the content is a path an operator chooses. So the two
+# reasons are told apart by MEASURING them instead:
+#
+#   held by a worktree?   ask the worktree table (branch_holder), which is a
+#                         fact about the repository, not a sentence about it
+#   unmerged vs HEAD?     ask git the same question `-d` asks -- is the tip an
+#                         ancestor of HEAD, or of HEAD's upstream
+#
+# Both must answer, and both must answer in the one direction that permits the
+# escalation; either refusing, or failing to answer, retains the branch. The
+# refusal text is still PRINTED, because the operator reading branches.log
+# wants git's own words -- it is just no longer what decides.
+#
+# `LC_ALL=C` stays on both probes anyway: the message is now evidence in a log
+# that a human reads, and an untranslated msgid is the one that matches the
+# rest of this file.
+
+# The merge half of what `git branch -d` refuses on, asked as a measurement.
+# git accepts `-d` when the tip is contained in HEAD or in the branch's
+# upstream, so:
+#   0 = -d's merge check is SATISFIED, so the refusal was something else and
+#       must not be escalated past
+#   1 = the tip is provably in neither, which is the one refusal this tool
+#       escalates past
+#   2 = could not be measured (unborn HEAD, broken ref) -- never escalate
+branch_d_merge_check() {
+  local branch="$1" sha="$2" upstream rc=0
+  git -C "$repo" merge-base --is-ancestor "$sha" HEAD 2>/dev/null || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    1) : ;;
+    *) return 2 ;;
+  esac
+  if upstream="$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$branch@{upstream}" 2>/dev/null)" &&
+     [[ -n "$upstream" ]]; then
+    rc=0
+    git -C "$repo" merge-base --is-ancestor "$sha" "$upstream" 2>/dev/null || rc=$?
+    case "$rc" in
+      0) return 0 ;;
+      1) : ;;
+      *) return 2 ;;
+    esac
+  fi
+  return 1
+}
+
 delete_local_branch() {
-  local branch="$1" label="$2" proven="$3" sha out holder
+  local branch="$1" label="$2" proven="$3" sha out holder rc=0
   # Liveness is re-measured HERE, immediately before the deletion, against a
   # census taken now -- never the one reap_branches took before its loop. A
   # lane dispatched while the sweep was running is invisible in that older
@@ -445,9 +709,14 @@ delete_local_branch() {
   # land_assert_reap_safe correctly calls it carried. So the ordinary state of
   # a brand-new lane is "deletable and absent from the census", and the census
   # is the only thing that was standing between it and this function.
-  holder="$(holding_worktree_now "$branch")"
-  if [[ -n "$holder" ]]; then
+  rc=0
+  holder="$(holding_worktree_now "$branch")" || rc=$?
+  if (( rc == 0 )); then
     say "a worktree holds this branch as of right now, refusing: $branch (worktree: $holder)"
+    return 1
+  fi
+  if (( rc != 1 )); then
+    say "a worktree's branch could not be determined, refusing: $branch ($holder)"
     return 1
   fi
   sha="$(git -C "$repo" rev-parse "refs/heads/$branch")"
@@ -472,17 +741,30 @@ delete_local_branch() {
     say "retaining branch, safety not independently proven: $branch (git: ${out##*$'\n'})"
     return 1
   fi
-  if [[ "$out" != *"is not fully merged"* ]]; then
-    say "git refused -d for a reason this tool does not escalate past, retaining: $branch (git: ${out%%$'\n'*})"
+  # Measurement 1: does anything hold this branch RIGHT NOW? The window between
+  # the refusal above and the delete below is small and it is not empty --
+  # `git worktree add` takes milliseconds, and the fetch this function just
+  # performed can take seconds -- so this is re-measured rather than reusing the
+  # answer from the top of the function. Round-3 review proved this guard load
+  # bearing by removing it: with an `ext::` remote whose fetch checks the branch
+  # out, the live checked-out worktree's branch is destroyed without it.
+  rc=0
+  holder="$(holding_worktree_now "$branch")" || rc=$?
+  if (( rc == 0 )); then
+    say "a worktree took this branch while it was being reaped, refusing: $branch (worktree: $holder)"
     return 1
   fi
-  # The window between the refusal above and the delete below is small and it
-  # is not empty: `git worktree add` takes milliseconds, and the fetch this
-  # function just performed can take seconds. Re-measure again rather than
-  # reuse the answer from the top of the function.
-  holder="$(holding_worktree_now "$branch")"
-  if [[ -n "$holder" ]]; then
-    say "a worktree took this branch while it was being reaped, refusing: $branch (worktree: $holder)"
+  if (( rc != 1 )); then
+    say "a worktree's branch could not be determined while reaping, refusing: $branch ($holder)"
+    return 1
+  fi
+  # Measurement 2: was the refusal actually the merged-vs-HEAD case? Anything
+  # else -- a lock this tool did not take, a ref store it cannot write, a
+  # message it has never seen -- is retained with git's own first line.
+  rc=0
+  branch_d_merge_check "$branch" "$sha" || rc=$?
+  if (( rc != 1 )); then
+    say "git refused -d for a reason this tool does not escalate past, retaining: $branch (git: ${out%%$'\n'*})"
     return 1
   fi
   say "git -d judges against HEAD; deleting the exact measured ref instead ($proven): $branch"
@@ -501,8 +783,13 @@ delete_remote_branch() {
   # So it re-measures on exactly the same terms as the local path: fresh list,
   # taken now, at the moment of the deletion.
   fresh_list="$(git -C "$repo" worktree list --porcelain)"
-  holder="$(worktree_for_branch "$branch" "$fresh_list")"
-  if [[ -n "$holder" ]]; then
+  holder="$(branch_holder "$branch" "$(worktree_associations "$fresh_list")")" || rc=$?
+  if (( rc == 2 )); then
+    say "a worktree's branch could not be determined, refusing the remote delete: $remote/$branch ($holder)"
+    return 1
+  fi
+  if (( rc == 0 )); then
+    rc=0
     reason="$(worktree_is_terminal "$holder" "$branch" "$fresh_list")" || rc=$?
     if (( rc != 0 )); then
       say "a lane holds this branch as of right now, refusing the remote delete: $remote/$branch (worktree: $holder, $reason)"
@@ -552,19 +839,25 @@ reap_branches() {
   git_repo
   git -C "$repo" show-ref --verify --quiet "refs/heads/$main_branch" || die "main branch not found: $main_branch"
   load_protected
-  local main_sha branch worktree_list worktree timestamp age now safety_out reason
+  local main_sha branch worktree_list associations worktree timestamp age now safety_out reason
   local held_worktree rc
   main_sha="$(git -C "$repo" rev-parse "refs/heads/$main_branch")"
   now="$(date +%s)"
   worktree_list="$(git -C "$repo" worktree list --porcelain)"
+  associations="$(worktree_associations "$worktree_list")"
   while IFS= read -r branch; do
     if is_protected "$branch"; then
       say "protected branch, refusing: $branch"
       continue
     fi
     held_worktree=""
-    worktree="$(worktree_for_branch "$branch" "$worktree_list")"
-    if [[ -n "$worktree" ]]; then
+    rc=0
+    worktree="$(branch_holder "$branch" "$associations")" || rc=$?
+    if (( rc == 2 )); then
+      say "a worktree's branch could not be determined, refusing: $branch ($worktree)"
+      continue
+    fi
+    if (( rc == 0 )); then
       # Default, unchanged: ANY worktree refuses its branch outright. Removing
       # a worktree is a second destructive act on top of a branch delete, so it
       # stays behind an explicit flag rather than arriving with an upgrade.
@@ -666,10 +959,11 @@ reap_remote_branches() {
     die "cannot fetch $remote; refusing to reap remote branches on stale measurements"
   local main_ref="refs/remotes/$remote/$main_branch"
   git -C "$repo" show-ref --verify --quiet "$main_ref" || die "main branch not found on remote: $remote/$main_branch"
-  local main_sha heads worktree_list sha ref branch worktree reason rc
+  local main_sha heads worktree_list associations sha ref branch worktree reason rc
   main_sha="$(git -C "$repo" rev-parse "$main_ref")"
   heads="$(remote_heads_bounded)" || die "cannot enumerate branches on remote: $remote"
   worktree_list="$(git -C "$repo" worktree list --porcelain)"
+  associations="$(worktree_associations "$worktree_list")"
   while read -r sha ref; do
     [[ -n "${ref:-}" ]] || continue
     branch="${ref#refs/heads/}"
@@ -680,8 +974,13 @@ reap_remote_branches() {
     # A branch belonging to a RUNNING lane is refused even when its content is
     # carried: the lane is still writing, and its next commit is work that the
     # measurement a moment ago cannot possibly have covered.
-    worktree="$(worktree_for_branch "$branch" "$worktree_list")"
-    if [[ -n "$worktree" ]]; then
+    rc=0
+    worktree="$(branch_holder "$branch" "$associations")" || rc=$?
+    if (( rc == 2 )); then
+      say "remote branch held by a worktree this tool cannot resolve, refusing: $remote/$branch ($worktree)"
+      continue
+    fi
+    if (( rc == 0 )); then
       rc=0
       reason="$(worktree_is_terminal "$worktree" "$branch" "$worktree_list")" || rc=$?
       if (( rc != 0 )); then
@@ -736,12 +1035,20 @@ reap_worktrees() {
 # the tool is that its inventory is honest even when it is not permitted to act.
 # Removal happens only with --apply --terminal.
 report_worktrees() {
-  local worktree_list main_worktree path branch reason rc
+  local worktree_list main_worktree path branch reason rc previous=""
   worktree_list="$(git -C "$repo" worktree list --porcelain)"
-  main_worktree="$(awk '$1 == "worktree" { print $2; exit }' <<< "$worktree_list")"
+  main_worktree="$(first_worktree_path "$worktree_list")" || main_worktree=""
   while IFS=$'\t' read -r path branch; do
     [[ -n "${path:-}" ]] || continue
+    # worktree_associations emits one line per branch a worktree holds; a
+    # worktree is classified once, under the first branch it was resolved to.
+    if [[ "$path" == "$previous" ]]; then continue; fi
+    previous="$path"
     if [[ "$path" == "$main_worktree" ]]; then continue; fi
+    case "$branch" in
+      -) branch="" ;;
+      '?') branch="" ;;
+    esac
     rc=0
     reason="$(worktree_is_terminal "$path" "$branch" "$worktree_list")" || rc=$?
     if (( rc != 0 )); then
@@ -754,11 +1061,7 @@ report_worktrees() {
     elif "$apply"; then
       say "not removing without --terminal: $path"
     fi
-  done < <(awk '
-    $1 == "worktree" { if (path != "") print path "\t" branch; path = $2; branch = "" }
-    $1 == "branch" { sub(/^refs\/heads\//, "", $2); branch = $2 }
-    END { if (path != "") print path "\t" branch }
-  ' <<< "$worktree_list")
+  done < <(worktree_associations "$worktree_list")
 }
 
 reap_meteorite_refs() {

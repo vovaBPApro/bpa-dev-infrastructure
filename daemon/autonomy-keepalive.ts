@@ -1,7 +1,8 @@
 // ── What this timer measures ────────────────────────────────────────────────
 //
-// IDLENESS, not shortfall. HR-2456 caps parallel lanes at five, raising
-// HR-2342's three without touching its framing: "a ceiling, not a target: fewer
+// IDLENESS, not shortfall. HR-2538 caps parallel lanes at three (five only as
+// an exception), superseding HR-2456's five and restoring HR-2342's number
+// without touching its framing: "a ceiling, not a target: fewer
 // is allowed whenever the work does not need them." HR-2398 scopes that cap per
 // repository. A backstop that installs the ceiling as a floor turns every lane
 // count the ruling expressly permits into a permanent fault, and sub-floor IS
@@ -175,7 +176,7 @@ export class AutonomyKeepalive {
     if (open === 0) return;
 
     const ceiling =
-      cap === null ? '' : ` HR-2456 caps parallel lanes at ${cap} — a ceiling, not a target.`;
+      cap === null ? '' : ` HR-2538 caps parallel lanes at ${cap} — a ceiling, not a target.`;
     await this.opts.nudge(
       idle
         ? `fleet idle: ${running} running with ${open} open workboard rows; dispatch or inspect blocked lanes.${ceiling}`

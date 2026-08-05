@@ -13,7 +13,7 @@
 // invented ids and invented prose only.
 
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, statSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -34,6 +34,8 @@ import {
   readParkedHorizonDays,
   DEFAULT_PARKED_HORIZON_DAYS,
   HR_STATES,
+  CONTAINER_FILES,
+  WORKBOARD_PATH,
 } from "./ledger.ts";
 
 const NOW = Date.parse("2026-08-05T12:00:00Z");
@@ -607,6 +609,37 @@ describe("a closure claim resolves to one specific target, not to a token in a s
     expect(closureToken(undefined)).toBeUndefined();
   });
 
+  test("a triage `closes:` claim is refused for the same container, however it is spelled", () => {
+    // Same resolver, second field. Round 2 shipped the container rule with
+    // `closes: instance/workboard.md` refused and `closes: ./instance/
+    // workboard.md` producing no finding at all, so the bypass reproduced here
+    // verbatim.
+    const root = makeRepo();
+    try {
+      for (const value of ["instance/workboard.md", "./instance/workboard.md", "instance//workboard.md"]) {
+        writeTriage(root, [
+          {
+            msg_id: 90004,
+            verdict: "directive",
+            category: "infra",
+            reason: "routed",
+            triaged_by: "orch",
+            triaged_at: "2026-08-04",
+            quote: "an invented directive",
+            answer_status: "answered",
+            closes: value,
+          },
+        ]);
+        const findings = checkTriageClosures(root, NOW);
+        expect(
+          findings.some((f) => f.level === "FAIL" && f.detail.includes("is a container that exists regardless")),
+        ).toBe(true);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("a triage `closes:` claim is held to the same rule", () => {
     const root = makeRepo();
     try {
@@ -628,6 +661,181 @@ describe("a closure claim resolves to one specific target, not to a token in a s
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round-3 review, finding A: a container is a container however it is spelled.
+//
+// Round 2 fixed the case the round-1 reviewer measured and left the PROPERTY
+// false. It decided the two file containers by comparing the token STRING, so
+// one file got opposite verdicts depending on two characters of typing:
+// `instance/workboard.md` was refused, `./instance/workboard.md` discharged the
+// obligation and left the checker green, and `./CLAUDE.md` did the same to a
+// file round 1 had named by name.
+//
+// A list of the spellings someone thought of would repeat that mistake one
+// round later, so this locks the property instead: every container in the rule
+// crossed with every spelling transform, asserted to give ONE answer. Adding a
+// container to `CONTAINER_FILES` or a transform to `SPELLINGS` extends the grid
+// without touching a case.
+// ---------------------------------------------------------------------------
+
+// Round 2's rule, kept verbatim in behaviour beside round 1's above, so "red
+// before" is demonstrated against the real thing rather than a paraphrase.
+function OLD_STRING_CONTAINER(root: string, token: string): "container" | "resolved" | "unresolved" {
+  const container = (): boolean => {
+    if (token === "instance/workboard.md") return true;
+    if (token.split("/").pop() === "README.md") return true;
+    try {
+      return statSync(join(root, token)).isDirectory();
+    } catch {
+      return false;
+    }
+  };
+  if (/^[A-Za-z0-9._][A-Za-z0-9._/-]*$/.test(token) && !token.includes("..")) {
+    // node's join() normalizes, so `existsSync` already answered about the
+    // resolved file while the container test above answered about the token.
+    // That disagreement between two lines is the whole defect.
+    if (token.includes("/") && existsSync(join(root, token))) {
+      return container() ? "container" : "resolved";
+    }
+  }
+  return "unresolved";
+}
+
+// Ways of writing the same repo-relative path. Every one is legal, every one is
+// already used by tracked docs somewhere, and none of them changes which file is
+// named. `instructions/` is used as the pivot because makeRepo() always creates
+// it.
+const SPELLINGS: Array<{ name: string; spell: (path: string) => string }> = [
+  { name: "canonical", spell: (path) => path },
+  { name: "leading ./", spell: (path) => `./${path}` },
+  { name: "repeated ./", spell: (path) => `././${path}` },
+  { name: "leading .//", spell: (path) => `.//${path}` },
+  { name: "up and back", spell: (path) => `instructions/../${path}` },
+  { name: "up, back and down", spell: (path) => `instructions/.././${path}` },
+  {
+    name: "interior /./",
+    spell: (path) => (path.includes("/") ? path.replace("/", "/./") : `./${path}`),
+  },
+  {
+    name: "interior //",
+    spell: (path) => (path.includes("/") ? path.replace("/", "//") : `.//${path}`),
+  },
+  { name: "trailing /.", spell: (path) => `${path}/.` },
+];
+
+describe("a container is a container however it is spelled", () => {
+  // Gives makeRepo() the rest of the container set: the root agent contract
+  // pair (AGENTS.md a symlink to CLAUDE.md, as Hard Rule 5 requires) and a
+  // generated index.
+  function makeContainerRepo(): string {
+    const root = makeRepo();
+    writeFileSync(join(root, "CLAUDE.md"), "# Agent contract\n");
+    symlinkSync("CLAUDE.md", join(root, "AGENTS.md"));
+    writeFileSync(join(root, "instructions", "README.md"), "# generated index\n");
+    return root;
+  }
+
+  // Every kind of container the rule names, each written the canonical way.
+  const CONTAINERS = [
+    "instance/workboard.md", // the file row ids are enumerated out of
+    "CLAUDE.md", // the root agent contract
+    "AGENTS.md", // ... and its symlink, which is the same file
+    "instructions/README.md", // a generated index
+    "instructions", // a directory
+    "instance/decisions", // a nested directory
+  ];
+
+  for (const container of CONTAINERS) {
+    for (const { name, spell } of SPELLINGS) {
+      const value = spell(container);
+      test(`${container} spelled '${value}' (${name}) discharges nothing`, () => {
+        const root = makeContainerRepo();
+        try {
+          const resolvables = collectResolvables(root);
+          expect(resolveTarget(root, resolvables, value)).toBe("container");
+          expect(resolvesTarget(root, resolvables, value)).toBe(false);
+
+          // And the whole rule goes red on a real HR file carrying it, with the
+          // repair a reader can act on rather than a bare "invalid".
+          writeHr(root, "90201", ["id: hr-90201", "date: 2026-08-04", "state: routed", `routes-to: ${value}`]);
+          const finding = checkHrStates(root, NOW).find((f) => f.file.endsWith("HR-90201.md"));
+          expect(finding?.level).toBe("FAIL");
+          expect(finding?.detail).toContain("is a container that exists regardless");
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+        }
+      });
+    }
+  }
+
+  test("RED BEFORE: round 2's string comparison discharged the obligation for most of that grid", () => {
+    // The regression this locks, stated as a count so it cannot quietly shrink
+    // to zero: under round 2's rule, some spelling of a container resolved.
+    const root = makeContainerRepo();
+    try {
+      const escaped: string[] = [];
+      for (const container of CONTAINERS) {
+        for (const { spell } of SPELLINGS) {
+          const value = spell(container);
+          if (OLD_STRING_CONTAINER(root, value) !== "container") escaped.push(value);
+        }
+      }
+      expect(escaped.length).toBeGreaterThan(0);
+      // The two the round-3 review measured by hand are in it, by name.
+      expect(escaped).toContain("./instance/workboard.md");
+      expect(escaped).toContain("./CLAUDE.md");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a NON-container resolves under every one of those spellings", () => {
+    // Without this the grid above would pass for the wrong reason: a rule that
+    // refuses everything with a `.` in it locks nothing.
+    const root = makeContainerRepo();
+    try {
+      const resolvables = collectResolvables(root);
+      for (const { name, spell } of SPELLINGS) {
+        const value = spell("instructions/sample-doc.md");
+        expect([name, resolveTarget(root, resolvables, value)]).toEqual([name, "resolved"]);
+      }
+      // ... and so does a real workboard row, which is not a path at all.
+      expect(resolveTarget(root, resolvables, "V3-9.1")).toBe("resolved");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a symlink to a container is the container, and a symlink out of the repo resolves to nothing", () => {
+    // Identity, not spelling, is what the rule now reads — so a name that does
+    // not look like any container in the set is still refused when it IS one,
+    // and the containment rule survives the one escape a string-level `..`
+    // refusal could never see.
+    const root = makeContainerRepo();
+    try {
+      symlinkSync(join(root, "instance", "workboard.md"), join(root, "instructions", "board-link.md"));
+      symlinkSync(join(root, "instructions", "README.md"), join(root, "instructions", "index-link.md"));
+      symlinkSync(tmpdir(), join(root, "instructions", "escape"));
+      const resolvables = collectResolvables(root);
+      expect(resolveTarget(root, resolvables, "instructions/board-link.md")).toBe("container");
+      expect(resolveTarget(root, resolvables, "instructions/index-link.md")).toBe("container");
+      expect(resolveTarget(root, resolvables, "instructions/escape")).toBe("unresolved");
+      expect(resolveTarget(root, resolvables, "../etc/hostname")).toBe("unresolved");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("the container set is data the rule reads, not a literal repeated in it", () => {
+    // WORKBOARD_PATH is shared with collectWorkboardRows(), so the file row ids
+    // come OUT of is the same file the rule refuses. Locked because the two
+    // drifting apart is exactly how a container becomes discharging again.
+    expect(CONTAINER_FILES).toContain(WORKBOARD_PATH);
+    expect(CONTAINER_FILES).toContain("CLAUDE.md");
+    expect(CONTAINER_FILES).toContain("AGENTS.md");
   });
 });
 

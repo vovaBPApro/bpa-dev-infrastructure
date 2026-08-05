@@ -18,9 +18,11 @@
 // Time source is the caller's clock, injected as `nowMs` so the check is
 // deterministic under test. Thresholds are the constants below.
 
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { basename, isAbsolute, join, relative, sep } from "node:path";
 import { spawnSync } from "node:child_process";
+import { INDEX_FILENAME } from "./docs.ts";
+import { AGENTS_FILENAME, CLAUDE_FILENAME } from "./floor.ts";
 
 export const INBOX_TRIAGE_SLA_MS = 24 * 60 * 60 * 1000; // 24h
 export const HR_PENDING_SLA_MS = 72 * 60 * 60 * 1000; // 72h
@@ -330,25 +332,81 @@ export function closureToken(value: string | undefined): string | undefined {
   return token;
 }
 
+// The files that are containers by IDENTITY rather than by shape: the workboard
+// is the file row ids are enumerated out of, and the root agent contract is the
+// entry point every lane already loads. Named once, here, so the rule and its
+// lock cannot drift into disagreeing about what the set is.
+export const CONTAINER_FILES = [WORKBOARD_PATH, CLAUDE_FILENAME, AGENTS_FILENAME];
+
+// Resolves a repo-relative token to the file it ACTUALLY names, or undefined
+// when it names nothing inside the repository.
+//
+// Round 2 decided the two file containers by comparing the token STRING, so one
+// file had opposite verdicts depending on how it was typed: `instance/
+// workboard.md` failed as a container while `./instance/workboard.md`,
+// `instance/./workboard.md` and `instance//workboard.md` all resolved, silently
+// discharging the obligation, dropping it out of the open count and out of the
+// session load with the checker still green. The directory case never had that
+// hole, because `statSync()` resolves the path before answering -- so the repair
+// is to give every case the directory case's treatment and decide on identity,
+// not on spelling.
+//
+// `realpathSync()` is what makes that general rather than a list of the
+// spellings someone happened to think of: `./`, `//`, `a/./b`, `a/../b` and
+// symlinks all collapse to one answer, so a new spelling is not a new bypass.
+// It also subsumes the old string-level `..` refusal, and subsumes it more
+// strongly -- containment is now checked on the RESOLVED path, so a symlink
+// pointing out of the tree is refused too, which `!token.includes("..")` could
+// not see.
+function resolveRepoPath(
+  repo: string,
+  token: string,
+): { abs: string; rel: string } | undefined {
+  let root: string;
+  let abs: string;
+  try {
+    root = realpathSync(repo);
+    abs = realpathSync(join(repo, token));
+  } catch {
+    return undefined;
+  }
+  const rel = relative(root, abs);
+  // `..` or an absolute remainder means the token escaped the repository.
+  if (isAbsolute(rel) || rel === ".." || rel.startsWith(`..${sep}`)) return undefined;
+  // rel === "" is the repository root itself, which the container test below
+  // answers as the directory it is.
+  return { abs, rel };
+}
+
 // A container is a target that other targets are named out of, so naming it
 // discharges nothing: it exists no matter what happened to the thing the claim
-// was about. `instance/workboard.md` is the file row ids are enumerated from --
-// with the board path accepted, renaming the row a claim points at left the
-// claim green, which is precisely the property (surviving board renumbering)
-// this design calls its own. A directory is the same failure one level up, and
-// a README is the generated index over its directory.
+// was about. With the board path accepted, renaming the row a claim points at
+// left the claim green, which is precisely the property (surviving board
+// renumbering) this design calls its own. A directory is the same failure one
+// level up, a README is the generated index over its directory, and the root
+// agent contract is the file every session loads regardless.
 //
-// Root `CLAUDE.md`/`AGENTS.md` need no entry: a path token must contain a `/`
-// to be considered at all, so a bare root filename already resolves against
-// nothing.
-function isContainerTarget(repo: string, token: string): boolean {
-  if (token === WORKBOARD_PATH) return true;
-  if (token.split("/").pop() === "README.md") return true;
+// Every arm reads the RESOLVED path. The README arm therefore also catches a
+// link whose own name is not `README.md`, and the `CONTAINER_FILES` arm catches
+// `AGENTS.md` through its symlink to `CLAUDE.md` without depending on either
+// name -- the set lists both so the rule still holds where they are two files.
+function isContainerTarget(repo: string, resolved: { abs: string; rel: string }): boolean {
   try {
-    return statSync(join(repo, token)).isDirectory();
+    if (statSync(resolved.abs).isDirectory()) return true;
   } catch {
     return false;
   }
+  if (basename(resolved.abs) === INDEX_FILENAME) return true;
+  for (const container of CONTAINER_FILES) {
+    let containerAbs: string;
+    try {
+      containerAbs = realpathSync(join(repo, container));
+    } catch {
+      continue;
+    }
+    if (containerAbs === resolved.abs) return true;
+  }
+  return false;
 }
 
 export type TargetResolution = "resolved" | "empty" | "prose" | "container" | "unresolved";
@@ -376,11 +434,17 @@ export function resolveTarget(
     const hrId = token.replace(/^HR-/i, "").replace(/\.md$/i, "");
     if (resolvables.hrIds.has(hrId)) return "resolved";
   }
-  // A path token must look repo-relative and actually exist. `..` is refused so
-  // a claim cannot resolve against something outside the repository.
-  if (/^[A-Za-z0-9._][A-Za-z0-9._/-]*$/.test(token) && !token.includes("..")) {
-    if (token.includes("/") && existsSync(join(repo, token))) {
-      return isContainerTarget(repo, token) ? "container" : "resolved";
+  // A path token must look repo-relative and name something real inside the
+  // repository. What it names is decided by resolveRepoPath(), so every arm
+  // below reads one file identity rather than the characters it was typed with.
+  if (/^[A-Za-z0-9._][A-Za-z0-9._/-]*$/.test(token)) {
+    const resolved = resolveRepoPath(repo, token);
+    if (resolved !== undefined) {
+      if (isContainerTarget(repo, resolved)) return "container";
+      // A bare root filename still resolves against nothing: it names no
+      // directory, so it carries none of the "which one inside it" the rule is
+      // about. The test reads the RESOLVED path, so `x` and `./x` answer alike.
+      if (resolved.rel.includes(sep)) return "resolved";
     }
   }
   return "unresolved";

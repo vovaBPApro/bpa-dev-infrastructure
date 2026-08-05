@@ -108,9 +108,17 @@ index — and nothing else. Three shapes are refused, each with its own repair:
   in the body. A value like `not done yet, tracked in instance/workboard.md`
   resolved under the first version of this rule, because one token in it named
   a real file. A claim whose own words say the work is not done must not pass.
-- **a container** — `instance/workboard.md`, any directory, any `README.md`.
-  These exist regardless of what happened to the thing the claim was about, so
-  they discharge nothing. Name the row, doc or file inside.
+- **a container** — `instance/workboard.md`, the root `CLAUDE.md`/`AGENTS.md`
+  contract pair, any directory, any `README.md`. These exist regardless of what
+  happened to the thing the claim was about, so they discharge nothing. Name the
+  row, doc or file inside. The rule reads the path a token RESOLVES to, never
+  the characters it was typed with, so a leading `./`, a doubled separator, an
+  interior `/./`, a `..` that comes back, and a symlink pointing at the board
+  are one refusal and not five loopholes; a token resolving outside the
+  repository resolves to nothing at all. Deciding this on the token string is
+  how the first version of the rule came to refuse `instance/workboard.md` and
+  accept `./instance/workboard.md` — the same file, opposite verdicts, two
+  characters apart.
 - **a target that does not exist** — the original rule, unchanged.
 
 Resolution is re-verified on every run rather than at write time. That is what
@@ -135,7 +143,11 @@ Enforced by `tools/instructions/ledger.ts` (`checkHrStates`, `checkHrAging`,
 there against the **merged result**, after the merge and before the push, on the
 rollback path. A pre-merge run alone inspects the tree the candidate is about to
 change; two lanes can each be green alone and red together, and only the merged
-tree shows it. Pre-existing debt is enumerated with an owner and an expiry in
+tree shows it. The merged tree supplies the DATA and never the checker: the
+executable is materialized from the pre-merge SHA, so a candidate cannot replace
+the observer that is about to judge it, and removing the checker in the
+candidate does not make the check not-applicable. Pre-existing debt is
+enumerated with an owner and an expiry in
 `instance/hr-state-exemptions.tsv`; a new violation is not in that file, so it
 fails immediately.
 

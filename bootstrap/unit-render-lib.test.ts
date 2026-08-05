@@ -162,12 +162,26 @@ test("V3-2.12 fail-before: the pre-fix four-variable export set produces the def
       BUN_BIN: "/usr/local/bin/bun",
       BASH_BIN: "/usr/bin/bash",
     };
+    // FOUR names means four, whatever the caller's environment holds. This arm
+    // reproduces the historical defect by OMITTING two names, so an ambient
+    // FULL_SUITE_ON_CALENDAR repairs the very render it is trying to break:
+    // no defect appears, `defects` is empty, and the arm can no longer show
+    // red-before. That is exactly what happened inside bootstrap/install.sh,
+    // whose test-gate strip list forgot those two names while the meteorite
+    // exported them (round 4) -- the arm failed there and nowhere else, which
+    // is why this host never saw it. The strip list is fixed and locked in
+    // bootstrap/bootstrap.test.sh; this arm additionally stops depending on
+    // any caller getting it right. The deleted set is derived from the
+    // library, so a seventh render variable cannot reopen the hole.
+    const preFixBase: Record<string, string | undefined> = { ...process.env };
+    for (const name of Object.keys(installerRenderEnv())) delete preFixBase[name];
+    const preFixOnly = { ...preFixBase, ...preFixEnv };
     const defects: string[] = [];
     for (const { unit, template } of manifestUnits()) {
       const out = join(destination, unit);
       const rendered = spawnSync("bash", ["-c", 'envsubst < "$1" > "$2"', "_", template, out], {
         encoding: "utf8",
-        env: { ...process.env, ...preFixEnv },
+        env: preFixOnly,
       });
       expect(rendered.status, "the pre-fix renderer exited 0 -- that is the point").toBe(0);
       defects.push(
@@ -195,7 +209,7 @@ test("V3-2.12 fail-before: the pre-fix four-variable export set produces the def
         // Same four names as the pre-fix installer; the library supplies the
         // two it omitted from its own single list, so this must SUCCEED --
         // proving the fix is the list, not the caller.
-        env: { ...process.env, ...preFixEnv },
+        env: preFixOnly,
       });
       expect(refused.status, `${unit}: ${refused.stderr}`).toBe(0);
     }
@@ -497,6 +511,176 @@ test("V3-2.12 lock: a directive value carrying the benign phrase cannot launder 
   } finally {
     rmSync(dir, { recursive: true, force: true });
     rmSync(destination, { recursive: true, force: true });
+  }
+});
+
+test("V3-2.12 lock: an unresolvable dependency is a ledgered machine fact, and the ledger is visible debt", () => {
+  // Round 4. `Requires=postgresql.service` in a tracked template makes
+  // systemd-analyze say, on a machine without that unit:
+  //
+  //   <unit>: Failed to create <unit>/start: Unit postgresql.service not found.
+  //
+  // Every non-benign line was fatal, so on a CLEAN machine -- the only kind
+  // this row's rebuild proof runs on -- render_units published nothing and
+  // four locks failed. This host passed only because postgresql.service
+  // happens to be installed here. That line is a claim about the checking
+  // machine, exactly like `Command <path> is not executable`, and it now has
+  // the ledger that class already had.
+  //
+  // The fixture is synthetic on purpose: the real tracked set produces this
+  // line only where postgresql.service is absent, so a test keyed to it would
+  // assert nothing here and everything in a container. Arm 8 covers the real
+  // ledger, which IS machine-independent.
+  const dir = scratch("verify-dependency");
+  try {
+    const staged = join(dir, "staged");
+    mkdirSync(staged);
+    writeFileSync(
+      join(staged, "fixture-dep.service"),
+      "[Unit]\nDescription=fixture\nRequires=fixture-missing.service\n\n[Service]\nType=oneshot\nExecStart=/bin/true\n",
+    );
+    const manifest = join(dir, "manifest.tsv");
+    writeFileSync(manifest, "# fixture\nfixture-dep.service\tinstance\nbpa-orchestrator.service\tgeneric\n");
+    const ledger = join(dir, "ledger.tsv");
+    const verify = (extra: Record<string, string> = {}) =>
+      spawnSync("bash", [lib, "--verify-staged", staged], {
+        encoding: "utf8",
+        env: { ...process.env, UNIT_RENDER_MANIFEST_FILE: manifest, ...extra },
+      });
+
+    // 1. RED: with no entry, an unresolvable dependency stays fatal -- and the
+    //    message names the ledger, so the operator's next move is decidable.
+    const unledgered = verify({ UNIT_DEPENDENCY_EXEMPTIONS_FILE: join(dir, "absent.tsv") });
+    expect(unledgered.status, `an unledgered dependency was accepted:\n${unledgered.stdout}`).toBe(1);
+    expect(unledgered.stderr).toContain("UNIT-VERIFY-FATAL");
+    expect(unledgered.stderr).toContain("fixture-missing.service");
+    expect(unledgered.stderr).toContain("absent.tsv");
+    expect(unledgered.stdout).not.toContain("systemd-analyze accepted");
+
+    // 2. GREEN: the declared pair is a NOTE, the evidence is echoed, and the
+    //    render is verified rather than merely un-refused.
+    writeFileSync(ledger, "fixture-dep.service\tfixture-missing.service\tfixture debt, named\n");
+    const ledgered = verify({ UNIT_DEPENDENCY_EXEMPTIONS_FILE: ledger });
+    expect(ledgered.status, ledgered.stderr).toBe(0);
+    expect(ledgered.stderr).toContain("UNIT-VERIFY-NOTE");
+    expect(ledgered.stderr).toContain("fixture debt, named");
+    expect(ledgered.stderr).not.toContain("UNIT-VERIFY-FATAL");
+    expect(ledgered.stdout).toContain("systemd-analyze accepted");
+
+    // 3. Keyed on unit+required-unit, never on the unit alone: a DIFFERENT
+    //    unresolvable dependency in an already-exempted template must not ride
+    //    in on the first entry's justification. This is the round-2 defect of
+    //    instance/unit-path-exemptions.tsv, not repeated. (One unit at a time:
+    //    job creation stops at the first unresolvable requirement, so two
+    //    missing dependencies in one unit produce one line, not two.)
+    writeFileSync(
+      join(staged, "fixture-dep.service"),
+      "[Unit]\nDescription=fixture\nRequires=fixture-second.service\n\n[Service]\nType=oneshot\nExecStart=/bin/true\n",
+    );
+    const second = verify({ UNIT_DEPENDENCY_EXEMPTIONS_FILE: ledger });
+    expect(second.status, "a new dangling dependency rode in on an existing entry").toBe(1);
+    expect(second.stderr).toContain("fixture-second.service");
+    expect(second.stderr).toContain("UNIT-VERIFY-FATAL");
+    writeFileSync(
+      join(staged, "fixture-dep.service"),
+      "[Unit]\nDescription=fixture\nRequires=fixture-missing.service\n\n[Service]\nType=oneshot\nExecStart=/bin/true\n",
+    );
+
+    // 4. VISIBLE DEBT, the property that keeps this from being a mute button:
+    //    an entry naming a unit this repository RENDERS is rejected, because
+    //    that unit does resolve and a not-found for it is a real defect.
+    writeFileSync(ledger, "fixture-dep.service\tbpa-orchestrator.service\tfixture\n");
+    const stale = verify({ UNIT_DEPENDENCY_EXEMPTIONS_FILE: ledger });
+    expect(stale.status, "an entry for a unit we render was accepted").toBe(1);
+    expect(stale.stderr).toContain("UNIT-VERIFY-LEDGER-STALE");
+
+    // 5. And the same test in the other direction: a row cannot outlive the
+    //    template that justified it.
+    writeFileSync(ledger, "departed.service\tfixture-missing.service\tfixture\n");
+    const orphan = verify({ UNIT_DEPENDENCY_EXEMPTIONS_FILE: ledger });
+    expect(orphan.status, "an entry for a unit we no longer render was accepted").toBe(1);
+    expect(orphan.stderr).toContain("UNIT-VERIFY-LEDGER-STALE");
+
+    // 6. Every other doubt fails closed, like check-unit-drift.sh's ledgers:
+    //    a row without evidence, a file that exists but cannot be read, and a
+    //    file that declares nothing at all.
+    writeFileSync(ledger, "fixture-dep.service\tfixture-missing.service\t\n");
+    expect(verify({ UNIT_DEPENDENCY_EXEMPTIONS_FILE: ledger }).stderr).toContain(
+      "UNIT-VERIFY-LEDGER-INVALID",
+    );
+    const notAFile = join(dir, "ledger-dir");
+    mkdirSync(notAFile);
+    const unreadable = verify({ UNIT_DEPENDENCY_EXEMPTIONS_FILE: notAFile });
+    expect(unreadable.status).toBe(1);
+    expect(unreadable.stderr).toContain("UNIT-VERIFY-LEDGER-UNREADABLE");
+    writeFileSync(ledger, "# nothing but a comment\n");
+    expect(verify({ UNIT_DEPENDENCY_EXEMPTIONS_FILE: ledger }).stderr).toContain(
+      "UNIT-VERIFY-LEDGER-EMPTY",
+    );
+    // A missing manifest cannot decide "does it resolve", so it refuses.
+    writeFileSync(ledger, "fixture-dep.service\tfixture-missing.service\tfixture debt, named\n");
+    const noManifest = verify({
+      UNIT_DEPENDENCY_EXEMPTIONS_FILE: ledger,
+      UNIT_RENDER_MANIFEST_FILE: join(dir, "no-manifest.tsv"),
+    });
+    expect(noManifest.status).toBe(1);
+    expect(noManifest.stderr).toContain("UNIT-VERIFY-LEDGER-NO-MANIFEST");
+
+    // 7. ANCHORING, the constraint B2 just closed one class over: a directive
+    //    VALUE carrying the whole message shape -- with that exact pair
+    //    ledgered -- must still be FATAL. systemd prefixes a directive
+    //    complaint with its own `<file>:<line>:`, so laundered text can never
+    //    reach the start of the line; the predicate is anchored at both ends
+    //    and additionally requires the prefixed unit to be the unit whose job
+    //    failed AND to be one of the staged files.
+    const crafted = join(dir, "crafted");
+    mkdirSync(crafted);
+    writeFileSync(
+      join(crafted, "fixture-dep.timer"),
+      "[Timer]\nOnBootSec=2min\nOnCalendar=fixture-dep.service: Failed to create fixture-dep.service/start: Unit fixture-missing.service not found.\n",
+    );
+    const laundered = spawnSync("bash", [lib, "--verify-staged", crafted], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        UNIT_RENDER_MANIFEST_FILE: manifest,
+        UNIT_DEPENDENCY_EXEMPTIONS_FILE: ledger,
+      },
+    });
+    expect(laundered.status, `a laundered value was accepted:\n${laundered.stdout}`).toBe(1);
+    expect(laundered.stderr).toContain("UNIT-VERIFY-FATAL");
+    expect(laundered.stdout).not.toContain("systemd-analyze accepted");
+
+    // 8. B1 is untouched: a value that is PRESENT BUT INVALID is still fatal
+    //    with a valid ledger in force. The ledger widens exactly one line
+    //    class and nothing else.
+    const empty = join(dir, "b1");
+    mkdirSync(empty);
+    writeFileSync(join(empty, "fixture-dep.timer"), "[Timer]\nOnCalendar=\n");
+    const b1 = spawnSync("bash", [lib, "--verify-staged", empty], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        UNIT_RENDER_MANIFEST_FILE: manifest,
+        UNIT_DEPENDENCY_EXEMPTIONS_FILE: ledger,
+      },
+    });
+    expect(b1.status, "an emptied OnCalendar stopped being fatal").toBe(1);
+    expect(b1.stderr).toContain("UNIT-VERIFY-FATAL");
+
+    // 9. The TRACKED ledger, against the TRACKED manifest, on whatever machine
+    //    runs this. Validation happens on every verify -- not only where an
+    //    entry would have been consulted -- so a stale row in the real file is
+    //    caught here, on a host where postgresql.service exists and the line
+    //    it exempts is never emitted.
+    const good = join(dir, "good");
+    mkdirSync(good);
+    writeFileSync(join(good, "probe.timer"), "[Timer]\nOnCalendar=*-*-* 03:30:00\n");
+    const tracked = spawnSync("bash", [lib, "--verify-staged", good], { encoding: "utf8" });
+    expect(tracked.status, `the tracked dependency ledger is not valid:\n${tracked.stderr}`).toBe(0);
+    expect(tracked.stderr).not.toContain("UNIT-VERIFY-LEDGER");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

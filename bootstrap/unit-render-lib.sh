@@ -64,12 +64,29 @@
 # INSTALL_ROOT that need not exist on the machine running the check, so
 # systemd-analyze's filesystem opinions there would be noise, not evidence.
 
+# Check 4 classifies MACHINE FACTS separately from render defects. Two of its
+# lines are claims about the machine running the check rather than about the
+# rendered bytes -- a missing ExecStart target, and a dependency unit that does
+# not exist here -- and each has its own ledger of visible debt. See
+# unit_render_verify_staged and instance/unit-dependency-exemptions.tsv.
+
 # SOURCE THIS AT FILE SCOPE, never from inside a function. `declare -A` and
 # `mapfile` create LOCALS when they run in a function body, so a sourcing
 # caller would get an empty variable list and an empty SHELL-FORMAT -- an
 # unrestricted render that empties every name, which is this row's defect
 # reached by a new route. Both current callers (bootstrap/install.sh,
 # bootstrap/check-unit-drift.sh) source at top level.
+
+# Where this library sits, so the ledger and manifest it consults are found
+# relative to the checkout it was sourced from rather than the caller's cwd.
+# Built from builtins only: unit_render_verify_staged must keep working on a
+# PATH that carries nothing but the interpreter, which is the condition the
+# systemd-analyze-absence arm of the lock puts it under.
+if [[ "${BASH_SOURCE[0]}" == */* ]]; then
+  UNIT_RENDER_LIB_DIR="$(cd "${BASH_SOURCE[0]%/*}" && pwd)"
+else
+  UNIT_RENDER_LIB_DIR="$PWD"
+fi
 
 # ── The one list ────────────────────────────────────────────────────────────
 # Every variable any tracked unit template may reference, with the default
@@ -300,15 +317,168 @@ unit_render_template() {
 # tracked template: all four legitimate lines stay NOTE, and every crafted
 # variant is FATAL.
 UNIT_RENDER_BENIGN_VERIFY_LINE='^[^[:space:]:]+\.[A-Za-z]+: Command .+ is not executable: No such file or directory$'
+
+# ── The second machine-fact class: a dependency that does not resolve HERE ──
+#
+# V3-2.12 round 4. `Requires=postgresql.service` in a tracked template makes
+# systemd-analyze emit, on a machine where that unit does not exist:
+#
+#   <unit>: Failed to create <unit>/start: Unit <required> not found.
+#
+# Verified against systemd 255: Requires=, Requisite= and BindsTo= produce it;
+# After=, Wants= and PartOf= produce nothing.
+#
+# That is the SAME KIND of claim as the benign line above -- about what exists
+# on the machine running the check, not about the rendered bytes -- and it was
+# classified FATAL because no ledger existed for it. The consequence was not
+# theoretical: the whole point of this row is a clean-machine rebuild, and on a
+# clean machine every render refused to publish. This host passed only because
+# it happens to have postgresql.service installed, which is precisely the drift
+# between "the machine that checks" and "the machine that runs" that a machine
+# fact must be ledgered rather than decided by accident.
+#
+# The ledger is instance/unit-dependency-exemptions.tsv, keyed on the EXACT
+# unit+required-unit pair for the same reason unit-path-exemptions.tsv is:
+# a whole-unit exemption would license any future unresolvable dependency added
+# to that template, wearing the original, unrelated justification.
+#
+# VISIBLE DEBT, not a mute button. An entry is REJECTED when the unit it names
+# does resolve -- that is, when this repository's own manifest renders it. If we
+# ship the unit, a "not found" for it is a real defect (a typo, a manifest gap,
+# a missing Install section), and exempting it would hide exactly the class this
+# row exists to end. The same test in the other direction rejects an entry for a
+# depending unit the manifest no longer carries, so a row cannot outlive the
+# template that justified it.
+#
+# "Does resolve" is deliberately answered from the MANIFEST and never by asking
+# the local systemd (`systemctl cat`, a unit-path probe, ...). A host probe would
+# make this host and a clean container disagree about whether the same commit is
+# valid, which is the defect being fixed here, not a fix for it.
+UNIT_DEPENDENCY_EXEMPTIONS_FILE="${UNIT_DEPENDENCY_EXEMPTIONS_FILE:-$UNIT_RENDER_LIB_DIR/../instance/unit-dependency-exemptions.tsv}"
+UNIT_RENDER_MANIFEST_FILE="${UNIT_RENDER_MANIFEST_FILE:-$UNIT_RENDER_LIB_DIR/../instance/expected-units.tsv}"
+# Anchored to the WHOLE message shape, both ends, like the benign class -- an
+# unanchored predicate here is the defect the anchored benign line just closed,
+# one class over. Three independent things must hold before a line is a machine
+# fact: the line matches this shape from ^ to $; the unit it is prefixed with is
+# the same unit the failed job belongs to; and that unit is one of the files
+# being verified. systemd prefixes a directive complaint with `<unit>:<line>:`,
+# so an echoed DIRECTIVE VALUE can never reach the start of the line, and the
+# unit tokens here admit no colon, so it cannot forge the prefix either.
+UNIT_RENDER_MISSING_DEPENDENCY_VERIFY_LINE='^([A-Za-z0-9@_.-]+\.[A-Za-z]+): Failed to create ([A-Za-z0-9@_.-]+\.[A-Za-z]+)/[A-Za-z-]+: Unit ([A-Za-z0-9@_.-]+\.[A-Za-z]+) not found\.$'
+
+# Populated by unit_render_load_dependency_exemptions. Declared at file scope on
+# purpose: `declare -A` inside a function creates a LOCAL, which is the same
+# foot-gun the header warns about for UNIT_RENDER_DEFAULTS.
+declare -A UNIT_RENDER_DEPENDENCY_EXEMPTIONS=()
+# US (0x1F) cannot appear in a TSV field or a systemd unit name.
+UNIT_RENDER_KEY_SEP=$'\x1f'
+
+unit_render_is_unit_name() {
+  [[ "$1" =~ ^[A-Za-z0-9@_.-]+\.(service|socket|target|device|mount|automount|swap|path|timer|slice|scope)$ ]]
+}
+
+# Read the expected-units manifest into a caller-named associative array. This
+# is the same file bootstrap/install.sh renders from and
+# bootstrap/check-unit-drift.sh checks against. Both it and the ledger are
+# resolved relative to THIS library, so the two files a staleness verdict
+# compares always come from one tree; pinning the manifest to a caller's
+# INSTALL_ROOT while the ledger came from the source checkout would judge one
+# tree's debt against another tree's fleet.
+unit_render_load_manifest() {
+  local -n _unit_render_manifest="$1"
+  local unit rest
+  _unit_render_manifest=()
+  if [[ ! -f "$UNIT_RENDER_MANIFEST_FILE" || ! -r "$UNIT_RENDER_MANIFEST_FILE" ]]; then
+    printf 'UNIT-VERIFY-LEDGER-NO-MANIFEST %s: cannot decide whether a ledgered dependency resolves without the expected-units manifest\n' \
+      "$UNIT_RENDER_MANIFEST_FILE" >&2
+    return 1
+  fi
+  while IFS=$'\t' read -r unit rest || [[ -n "${unit:-}" ]]; do
+    [[ -z "$unit" || "$unit" == \#* ]] && continue
+    _unit_render_manifest["$unit"]=1
+  done < "$UNIT_RENDER_MANIFEST_FILE"
+  ((${#_unit_render_manifest[@]} > 0)) || {
+    printf 'UNIT-VERIFY-LEDGER-NO-MANIFEST %s: manifest is empty\n' "$UNIT_RENDER_MANIFEST_FILE" >&2
+    return 1
+  }
+}
+
+# Load and VALIDATE the dependency-exemption ledger. Runs on every verify, even
+# on a machine where no dependency is missing, so a stale or malformed row is
+# visible everywhere rather than only where it would have been used. Absence of
+# the file is not an error -- it means no exemption exists, and every
+# unresolvable dependency stays fatal. Every other doubt fails closed.
+unit_render_load_dependency_exemptions() {
+  local file="$UNIT_DEPENDENCY_EXEMPTIONS_FILE"
+  local unit required evidence extra key bad=0 entries=0
+  local -A manifest=()
+  UNIT_RENDER_DEPENDENCY_EXEMPTIONS=()
+  if [[ -e "$file" ]] && { [[ ! -f "$file" ]] || [[ ! -r "$file" ]]; }; then
+    printf 'UNIT-VERIFY-LEDGER-UNREADABLE %s: exists but is not a readable regular file (refusing to treat as empty)\n' "$file" >&2
+    return 1
+  fi
+  [[ -e "$file" ]] || return 0
+  while IFS=$'\t' read -r unit required evidence extra || [[ -n "${unit:-}" ]]; do
+    [[ -z "$unit" || "$unit" == \#* ]] && continue
+    ((entries += 1))
+    if [[ -n "${extra:-}" ]] || ! unit_render_is_unit_name "$unit" \
+      || ! unit_render_is_unit_name "${required:-}" || [[ -z "${evidence:-}" ]]; then
+      printf 'UNIT-VERIFY-LEDGER-INVALID %s: an entry is <unit>TAB<required-unit>TAB<evidence>, all three present\n' "$unit" >&2
+      bad=1
+      continue
+    fi
+    key="$unit$UNIT_RENDER_KEY_SEP$required"
+    if [[ -n "${UNIT_RENDER_DEPENDENCY_EXEMPTIONS[$key]+x}" ]]; then
+      printf 'UNIT-VERIFY-LEDGER-DUPLICATE %s: %s is exempted twice\n' "$unit" "$required" >&2
+      bad=1
+      continue
+    fi
+    if ((${#manifest[@]} == 0)) && ! unit_render_load_manifest manifest; then
+      return 1
+    fi
+    if [[ -n "${manifest[$required]+x}" ]]; then
+      printf 'UNIT-VERIFY-LEDGER-STALE %s: %s is rendered by this repository (%s), so it resolves -- a not-found for it is a real defect, not a machine fact\n' \
+        "$unit" "$required" "$UNIT_RENDER_MANIFEST_FILE" >&2
+      bad=1
+      continue
+    fi
+    if [[ -z "${manifest[$unit]+x}" ]]; then
+      printf 'UNIT-VERIFY-LEDGER-STALE %s: this repository no longer renders that unit (%s); the entry outlived the template that justified it\n' \
+        "$unit" "$UNIT_RENDER_MANIFEST_FILE" >&2
+      bad=1
+      continue
+    fi
+    UNIT_RENDER_DEPENDENCY_EXEMPTIONS["$key"]="$evidence"
+  done < "$file"
+  if ((entries == 0)); then
+    printf 'UNIT-VERIFY-LEDGER-EMPTY %s: the file exists but declares nothing; delete it or name the debt\n' "$file" >&2
+    return 1
+  fi
+  return "$bad"
+}
+
 unit_render_verify_staged() {
   local staged="$1" output line rc=0 fatal=0 lines=0
+  local subject job_unit required key staged_file
   local -a staged_units=()
+  local -A staged_names=()
   # Enumerate explicitly rather than handing systemd-analyze a bare glob: an
   # empty directory would otherwise pass the literal `dir/*` through and be
   # reported as an ordinary parse error, which reads like a verified render.
   mapfile -t staged_units < <(find "$staged" -mindepth 1 -maxdepth 1 -type f -printf '%p\n' 2>/dev/null | LC_ALL=C sort)
   if ((${#staged_units[@]} == 0)); then
     printf 'UNIT-VERIFY: no staged unit files found in %s (refusing to report a verified render)\n' "$staged" >&2
+    return 1
+  fi
+  for staged_file in "${staged_units[@]}"; do
+    staged_names["${staged_file##*/}"]=1
+  done
+  # Before systemd is asked anything: a ledger that cannot be read, parsed, or
+  # justified refuses the render on every machine, including the ones where no
+  # dependency is missing and no entry would have been consulted.
+  if ! unit_render_load_dependency_exemptions; then
+    printf 'UNIT-VERIFY: the dependency-exemption ledger %s was rejected (nothing verified)\n' \
+      "$UNIT_DEPENDENCY_EXEMPTIONS_FILE" >&2
     return 1
   fi
   if ! command -v systemd-analyze >/dev/null 2>&1; then
@@ -323,6 +493,25 @@ unit_render_verify_staged() {
     if [[ "$line" =~ $UNIT_RENDER_BENIGN_VERIFY_LINE ]]; then
       printf 'UNIT-VERIFY-NOTE %s (path presence is check-unit-drift.sh scope)\n' "$line" >&2
       continue
+    fi
+    if [[ "$line" =~ $UNIT_RENDER_MISSING_DEPENDENCY_VERIFY_LINE ]]; then
+      subject="${BASH_REMATCH[1]}"
+      job_unit="${BASH_REMATCH[2]}"
+      required="${BASH_REMATCH[3]}"
+      # The line must be systemd talking about a unit we handed it, about its
+      # own job. Anything else falls through to fatal below.
+      if [[ "$subject" == "$job_unit" && -n "${staged_names[$subject]+x}" ]]; then
+        key="$subject$UNIT_RENDER_KEY_SEP$required"
+        if [[ -n "${UNIT_RENDER_DEPENDENCY_EXEMPTIONS[$key]+x}" ]]; then
+          printf 'UNIT-VERIFY-NOTE %s (ledgered machine fact: %s)\n' \
+            "$line" "${UNIT_RENDER_DEPENDENCY_EXEMPTIONS[$key]}" >&2
+          continue
+        fi
+        printf 'UNIT-VERIFY-FATAL %s -- no entry for %s + %s in %s; a dependency this machine cannot resolve is debt that must be named there, with evidence\n' \
+          "$line" "$subject" "$required" "$UNIT_DEPENDENCY_EXEMPTIONS_FILE" >&2
+        fatal=1
+        continue
+      fi
     fi
     printf 'UNIT-VERIFY-FATAL %s\n' "$line" >&2
     fatal=1

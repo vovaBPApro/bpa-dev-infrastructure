@@ -284,7 +284,20 @@ run_install_test_gate() {
   if [[ -n "${TEST_GATE_ORIGIN_URL:-}" ]]; then
     git -C "$INSTALL_ROOT" remote set-url origin "$TEST_GATE_ORIGIN_URL"
   fi
-  (cd "$INSTALL_ROOT" && env -u BUN_BIN -u TMPDIR -u INSTALL_ROOT -u REPO_URL \
+  # EVERY render variable is stripped, and the list is DERIVED from
+  # unit-render-lib.sh rather than restated here. This used to be six typed
+  # names, and it forgot the two the usage text above documents as render
+  # overrides: FULL_SUITE_ON_CALENDAR and ORCH_WATCHDOG_INTERVAL reached the
+  # suite, where the V3-2.12 fail-before arm reconstructs the historical
+  # four-variable renderer and needs them ABSENT to reproduce the defect it
+  # locks. A hand-kept list that forgot a name is this row's own defect wearing
+  # a third hat, so the loop below cannot forget the next one.
+  local -a strip=()
+  local render_var
+  for render_var in "${UNIT_RENDER_VARS[@]}"; do
+    strip+=(-u "$render_var")
+  done
+  (cd "$INSTALL_ROOT" && env "${strip[@]}" -u TMPDIR -u REPO_URL \
     -u REPO_BRANCH -u TEST_GATE_ORIGIN_URL "$BUN_BIN" test)
   echo 'INSTALL GATE: PASS full sweep'
 }
@@ -368,6 +381,12 @@ render_units() {
   # above cannot see a directive value that is present but invalid
   # (`OnUnitActiveSec=s`), so for value validity this is the only check there
   # is. Its absence fails here rather than installing unvalidated units.
+  #
+  # It also consults the dependency-exemption ledger, which is read from the
+  # same tree as the library itself (see UNIT_DEPENDENCY_EXEMPTIONS_FILE) --
+  # deliberately NOT pinned to $EXPECTED_UNITS_FILE here, because the ledger
+  # and the manifest that decides whether its entries are stale must come from
+  # ONE tree to be judged against each other at all.
   if ! unit_render_verify_staged "$staged"; then
     echo 'ERROR: systemd-analyze rejected the staged units (nothing installed)' >&2
     return 1

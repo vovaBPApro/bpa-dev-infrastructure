@@ -637,6 +637,11 @@ cat > "$stage2_fixture/bin/bun" <<EOF
 printf '%s\n' "\$*" >> "$stage2_fixture/bun.calls"
 printf '%s\n' "\${TMPDIR-unset}" >> "$stage2_fixture/bun.tmpdir"
 printf '%s\n' "\${REPO_BRANCH-unset}:\${REPO_URL-unset}:\${INSTALL_ROOT-unset}:\${TEST_GATE_ORIGIN_URL-unset}" >> "$stage2_fixture/bun.env"
+# Every exported NAME this child received, so the assertion can be written
+# against a list derived from unit-render-lib.sh instead of a list typed here
+# -- a second copy of those names is the defect V3-2.12 is about. compgen is a
+# bash builtin, so this works on the restrictive fixture PATHs too.
+compgen -e > "$stage2_fixture/bun.exported" || true
 exit "\${BUN_STUB_EXIT:-0}"
 EOF
 chmod 700 "$stage2_fixture/bin/bun"
@@ -660,6 +665,69 @@ if BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$stage2_fixture/root" BUN_BIN="$stage2_
   exit 1
 fi
 echo 'PASS run_install_test_gate: runs complete repository test command and propagates failure'
+
+# ── No render variable reaches the suite child (V3-2.12 round 4) ───────────
+# The strip list was six typed names and forgot the two the installer's own
+# usage text documents as render overrides. The meteorite's bootstrap-install
+# stage exports FULL_SUITE_ON_CALENDAR and ORCH_WATCHDOG_INTERVAL, so they
+# reached the repository suite that install.sh runs itself -- where the
+# V3-2.12 fail-before arm reconstructs the historical four-variable renderer
+# and needs those names ABSENT to reproduce the defect it locks. The arm saw
+# no defect and failed, and only ever inside install.sh, which is why this
+# host never saw it.
+#
+# The list is DERIVED here too. Restating it would put a seventh copy of these
+# names in the tree, and "one list that forgot a name" is this row's own
+# defect: the guard must fail the day a render variable is added and not
+# stripped, without anyone remembering to edit this file.
+declare -A leak_env=()
+while IFS= read -r render_var; do
+  leak_env["$render_var"]="leak-sentinel-$render_var"
+done < <(bash "$RENDER_LIB" --print-names)
+if ((${#leak_env[@]} == 0)); then
+  echo 'ERROR: the render-variable list is empty; this guard would assert nothing' >&2
+  exit 1
+fi
+# Only these two VALUES are real -- run_install_test_gate uses them as inputs.
+# The list itself stays derived.
+leak_env[INSTALL_ROOT]="$stage2_fixture/root"
+leak_env[BUN_BIN]="$stage2_fixture/bin/bun"
+leak_args=()
+for render_var in "${!leak_env[@]}"; do
+  leak_args+=("$render_var=${leak_env[$render_var]}")
+done
+env "${leak_args[@]}" BOOTSTRAP_LIB_ONLY=true INSTALLER_PATH="$INSTALLER" \
+  "$BASH_BIN" -c 'source "$INSTALLER_PATH"; run_install_test_gate' >/dev/null
+leaked=()
+while IFS= read -r render_var; do
+  if grep -Fxq "$render_var" "$stage2_fixture/bun.exported"; then
+    leaked+=("$render_var")
+  fi
+done < <(bash "$RENDER_LIB" --print-names)
+if ((${#leaked[@]} > 0)); then
+  echo "ERROR: run_install_test_gate handed render variables to the suite child: ${leaked[*]}" >&2
+  echo '       Strip every name in bootstrap/unit-render-lib.sh, derived, not typed.' >&2
+  exit 1
+fi
+# Teeth, proven against the exact historical implementation rather than
+# asserted: the six-name strip list this replaced leaks precisely the two
+# names that broke the rebuild proof. A negative assertion and a broken
+# fixture look identical from here without this.
+env "${leak_args[@]}" "$BASH_BIN" -c \
+  'cd "$1" && env -u BUN_BIN -u TMPDIR -u INSTALL_ROOT -u REPO_URL -u REPO_BRANCH -u TEST_GATE_ORIGIN_URL "$2" test' \
+  _ "$stage2_fixture/root" "$stage2_fixture/bin/bun" >/dev/null
+historic_leak=()
+for render_var in FULL_SUITE_ON_CALENDAR ORCH_WATCHDOG_INTERVAL; do
+  if grep -Fxq "$render_var" "$stage2_fixture/bun.exported"; then
+    historic_leak+=("$render_var")
+  fi
+done
+if ((${#historic_leak[@]} != 2)); then
+  echo 'ERROR: the historical six-name strip list no longer leaks the two render variables' >&2
+  echo '       This guard has lost its teeth: it would now pass against the pre-fix code.' >&2
+  exit 1
+fi
+echo 'PASS run_install_test_gate: strips every render variable, derived from the library list'
 
 printf '%s\t%s\n' \
   first.service generic \

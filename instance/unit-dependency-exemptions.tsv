@@ -1,0 +1,24 @@
+# Unresolvable-dependency exemptions for the systemd-analyze pass in
+# bootstrap/unit-render-lib.sh (unit_render_verify_staged). Format:
+# unit<TAB>required-unit<TAB>evidence. Keyed on the EXACT unit+required-unit
+# pair, never on the unit alone -- a whole-unit exemption would silently
+# license any future unresolvable dependency added to that template under the
+# original, unrelated justification (the same defect unit-path-exemptions.tsv
+# was fixed for). Absence with no entry here is a failure (Hard Floor 7): an
+# unresolvable dependency lands here with a named reason, or the render is
+# refused.
+#
+# WHAT BELONGS HERE. `Unit <name> not found.` is a claim about the machine
+# running the check, not about the rendered bytes -- the same class as
+# `Command <path> is not executable`, which instance/unit-path-exemptions.tsv
+# owns. This host has postgresql.service installed and a clean ubuntu:24.04
+# container does not, so without this ledger the same commit is valid here and
+# refuses to install there. That divergence is what V3-2.12 exists to end.
+#
+# WHAT DOES NOT. An entry naming a unit this repository itself renders (any
+# unit in instance/expected-units.tsv) is REJECTED: we ship it, so it resolves,
+# and a not-found for it is a real defect -- a typo, a manifest gap, a missing
+# [Install] section -- that an exemption would hide. An entry whose depending
+# unit has left the manifest is rejected too, so a row cannot outlive the
+# template that justified it. This file is visible debt, not a mute button.
+agentic-bpa-stand-verifier.service	postgresql.service	postgresql is provided by a host package, not by any template this repository renders, and v3 does not install a database yet; the stand-verifier is a product-specific unit already held under instance/ per HR-309 with two rows in instance/unit-path-exemptions.tsv awaiting the same product-repo boundary decision

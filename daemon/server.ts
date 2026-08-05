@@ -1589,9 +1589,52 @@ async function autonomyNudge(message: string): Promise<void> {
   });
 }
 
+// "What counts as open work" has ONE home: the counter inside the tracked
+// fleet-nudge script (workboard V3-2.11 B3). `--count-open` is its deliberately
+// side-effect-free query form — it returns before the heartbeat trap is armed,
+// so asking it here cannot make a stopped watchdog look alive to its own
+// liveness alarm. A non-zero exit is a board this repository refuses to count,
+// which the caller must not read as "no work".
+const FLEET_NUDGE_SCRIPT = join(
+  INSTALL_ROOT,
+  'orchestrator',
+  'fleet',
+  'fleet-nudge.sh',
+);
+
+async function countOpenWorkboardRows(): Promise<number | null> {
+  const proc = Bun.spawn(
+    ['bash', FLEET_NUDGE_SCRIPT, '--count-open', WORKBOARD_FILE],
+    { stdout: 'pipe', stderr: 'pipe' },
+  );
+  const timeout = setTimeout(() => proc.kill(), 10_000);
+  timeout.unref();
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  clearTimeout(timeout);
+  const detail = stderr.trim().split('\n').filter(Boolean).pop() ?? '';
+  if (exitCode !== 0) {
+    process.stderr.write(
+      `${LOG_PREFIX} workboard count refused (exit ${exitCode}): ${detail}\n`,
+    );
+    return null;
+  }
+  const count = Number(stdout.trim().split('\n').pop());
+  if (!Number.isSafeInteger(count) || count < 0) {
+    process.stderr.write(
+      `${LOG_PREFIX} workboard count unparseable: ${stdout.trim().slice(0, 120)}\n`,
+    );
+    return null;
+  }
+  return count;
+}
+
 const autonomyKeepalive = new AutonomyKeepalive({
-  floor: FLEET_CONFIG.floor,
-  readWorkboard: () => readFileSync(WORKBOARD_FILE, 'utf8'),
+  fleet: FLEET_CONFIG,
+  countOpenWork: countOpenWorkboardRows,
   listUnits: listSystemLaneUnits,
   nudge: autonomyNudge,
 });

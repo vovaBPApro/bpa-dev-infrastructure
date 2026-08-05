@@ -40,7 +40,6 @@ instance/params.yaml	migration-prep/HUMAN_REQUIREMENTS_MATRIX_2026-07-28.md	pend
 instance/params.yaml	migration-prep/INSTRUCTIONS_CONSILIUM_FINAL.md	pending-V3-2.13	F10 -- phase.active_scope cites the design authority in the absent migration-prep/ directory
 instance/params.yaml	orchestrator/codex-notify-wiring.test.sh	pending-V3-2.13	fallback_model_status: pinned claims this test locks the emitted --model; no such test exists, so the pin has no lock
 instance/params.yaml	orchestrator/model-command.test.sh	pending-V3-2.13	top_model_status: pinned claims this test locks the emitted --model; no such test exists, so the pin has no lock
-instance/params.yaml	tools/state-contract/check.ts	pending-V3-2.13	F6 -- asserted as the fail-closed FLEET-IDLE enforcer; the directory does not exist and nothing enforces it
 instructions/branching-policy.md	gate/land-batch.sh	pending-V3-2.13	F5 -- named by a Hard Floor doc carried in every coder pack; whether the batch path should exist at all is a policy question, not a broken link to repair
 instructions/landing-and-merge.md	gate/land-batch.sh	pending-V3-2.13	F5 -- the gate contract doc names the batch script alongside gate/land.sh
 instructions/orchestrator-playbook.md	gate/land-batch.sh	pending-V3-2.13	F5 -- the playbook routes a reviewed batch to a script that is not there

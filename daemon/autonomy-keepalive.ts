@@ -1,17 +1,61 @@
+// ── What this timer measures ────────────────────────────────────────────────
+//
+// IDLENESS, not shortfall. HR-2456 caps parallel lanes at five, raising
+// HR-2342's three without touching its framing: "a ceiling, not a target: fewer
+// is allowed whenever the work does not need them." HR-2398 scopes that cap per
+// repository. A backstop that installs the ceiling as a floor turns every lane
+// count the ruling expressly permits into a permanent fault, and sub-floor IS
+// the normal state, so it would nudge forever. That is exactly what `floor: 10`
+// did here (audit F1): every census under ten read as below floor. Note which
+// way a raise cuts — a wider cap widens the permitted band, so the fault
+// threshold stays at zero rather than rising with the cap.
+//
+// The semantics are not re-derived here. `orchestrator/fleet/fleet-nudge.sh`
+// landed them (workboard V3-2.11 B3, twice reviewed) and this file is the same
+// rule in the daemon, knob for knob:
+//
+//   running < wake_below   the fleet is doing NOTHING while work remains. Nudge.
+//   running < target       below a capacity-derived width. DISABLED by default.
+//   otherwise              allowed by HR-2342. Silent.
 export type LaneUnit = { name: string; active: boolean };
 
-export type FleetConfig = { floor: number; intervalMs: number };
+export type FleetConfig = {
+  // The HR-2342 ceiling, quoted to the orchestrator so it knows how wide it may
+  // go. It is NOT a trigger: nothing here compares the lane count against it.
+  // `null` when the params file could not be read — an unknown cap is omitted
+  // from the message rather than invented.
+  cap: number | null;
+  wakeBelow: number;
+  target: number;
+  intervalMs: number;
+};
+
+function knob(fleet: string, key: string, fallback: number): number {
+  const raw = fleet.match(new RegExp(`^\\s+${key}:\\s*(\\d+(?:\\.\\d+)?)`, 'm'))?.[1];
+  if (raw === undefined) return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : fallback;
+}
 
 export function parseFleetConfig(yaml: string): FleetConfig {
   const fleet = yaml.match(/^fleet:\s*\n((?:^[ \t]+.*(?:\n|$))*)/m)?.[1] ?? '';
-  const floor = Number(fleet.match(/^\s+floor:\s*(\d+)/m)?.[1] ?? 1);
-  const minutes = Number(
-    fleet.match(/^\s+keepalive_interval_minutes:\s*(\d+(?:\.\d+)?)/m)?.[1] ?? 15,
-  );
+  const capRaw = fleet.match(/^\s+cap:\s*(\d+)/m)?.[1];
+  const cap = capRaw === undefined ? null : Number(capRaw);
+  // Never zero. `running < 0` is unreachable, so a zero here silently deletes
+  // the severe tier and the backstop can never fire — the same defect
+  // fleet-nudge.sh clamps against by name.
+  const wakeBelow = Math.max(1, Math.trunc(knob(fleet, 'wake_below', 1)));
+  // The seam for the capacity-derived budget (workboard V3-0.34), deliberately
+  // OFF (0) by default: no measured host capacity exists yet, and installing
+  // another underived constant is the defect that row exists to end. Replacing
+  // an underived 10 with an underived 3 would re-commit it.
+  const target = Math.max(0, Math.trunc(knob(fleet, 'target', 0)));
+  const minutes = knob(fleet, 'keepalive_interval_minutes', 15);
   return {
-    floor: Number.isFinite(floor) && floor > 0 ? floor : 1,
-    intervalMs:
-      Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : 900_000,
+    cap: cap !== null && Number.isFinite(cap) && cap > 0 ? cap : null,
+    wakeBelow,
+    target,
+    intervalMs: minutes > 0 ? minutes * 60_000 : 900_000,
   };
 }
 
@@ -29,13 +73,20 @@ export function parseSystemdLaneUnits(output: string): LaneUnit[] {
     });
 }
 
-export function hasOpenWorkboardRows(markdown: string): boolean {
-  const open = markdown.match(/^## Open\s*$([\s\S]*?)(?=^##\s|(?![\s\S]))/m)?.[1] ?? '';
-  return open
-    .split('\n')
-    .filter((line) => /^- \*\*/.test(line))
-    .some((line) => !/\bCLOSED\b/i.test(line));
-}
+// The open-work gate used to live here as a second board parser, and it read
+// the **v2 bullet board** (`## Open`, `- **`). The v3 board is a markdown table,
+// so it answered `false` on the real board and the timer backstop had never
+// fired once — proven by execution and by an all-time-empty journal (audit F4).
+// F1 (the wrong floor) and F4 (the comparison never happening) had been hiding
+// each other.
+//
+// It is deleted rather than repaired: "what counts as open work" is a rule, and
+// a rule with two implementations drifts. `orchestrator/fleet/fleet-nudge.sh
+// --count-open` is the one home for it — a deliberately side-effect-free
+// diagnostic (it runs before the heartbeat trap is armed, so querying it cannot
+// make a dead watchdog look alive), POSIX-clean under mawk, and fail-closed on a
+// board it cannot read. The daemon asks it instead of guessing.
+export type OpenWorkCount = number | null; // null = the board could not be counted
 
 type AutonomyDelivery = {
   tmuxAvailable: () => Promise<boolean>;
@@ -63,8 +114,8 @@ export async function deliverAutonomyNudge(
 }
 
 type KeepaliveOptions = {
-  floor: number;
-  readWorkboard: () => string;
+  fleet: FleetConfig;
+  countOpenWork: () => OpenWorkCount | Promise<OpenWorkCount>;
   listUnits: () => LaneUnit[] | Promise<LaneUnit[]>;
   nudge: (message: string) => Promise<void>;
 };
@@ -97,12 +148,38 @@ export class AutonomyKeepalive {
   }
 
   async timerTick(): Promise<void> {
+    const { cap, wakeBelow, target } = this.opts.fleet;
     const units = await this.opts.listUnits();
     const running = units.filter((unit) => unit.active).length;
-    if (running >= this.opts.floor) return;
-    if (!hasOpenWorkboardRows(this.opts.readWorkboard())) return;
+    const idle = running < wakeBelow;
+    const belowTarget = target > 0 && running < target;
+    // 1 and 2 running lanes at the default settings land here and the backstop
+    // stays silent: HR-2342 permits them, so they are not a fault and must not
+    // be reported as one.
+    if (!idle && !belowTarget) return;
+
+    const open = await this.opts.countOpenWork();
+    // A board that cannot be counted must never read as "no work" — that
+    // inversion is what made this backstop inert. Nudging the orchestrator is
+    // the cheap direction; this path reaches the orchestrator's tmux only,
+    // never the operator.
+    if (open === null) {
+      await this.opts.nudge(
+        `${running} running and the workboard could not be counted; check the board and the fleet-nudge counter`,
+      );
+      return;
+    }
+    // Nothing left to dispatch. Asking the operator what comes next is the one
+    // operator-facing outcome, and it belongs to fleet-nudge.sh, which
+    // deduplicates it; a second unguarded channel for it is a second alarm.
+    if (open === 0) return;
+
+    const ceiling =
+      cap === null ? '' : ` HR-2456 caps parallel lanes at ${cap} — a ceiling, not a target.`;
     await this.opts.nudge(
-      `fleet below floor: ${running}/${this.opts.floor} running with open workboard rows; dispatch more work`,
+      idle
+        ? `fleet idle: ${running} running with ${open} open workboard rows; dispatch or inspect blocked lanes.${ceiling}`
+        : `fleet below target: ${running}/${target} running with ${open} open workboard rows; dispatch more work.${ceiling}`,
     );
   }
 }

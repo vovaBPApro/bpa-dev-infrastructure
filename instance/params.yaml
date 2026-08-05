@@ -52,21 +52,64 @@ vm:
   # (msg 11555) was Vova's sizing FLOOR, not this box; the delivered machine exceeds it.
 
 fleet:
-  # ACTIVE as of 2026-07-31 — instance/decisions/HR-281.md (Vova, verbatim; the
-  # row covers his Telegram 275 + 281 together, so cite 281 — HR-275.md does not
-  # exist and an earlier version of this comment pointed at it).
-  # This band was marked `suspended` as a leftover of the legacy control plane,
-  # and the orchestrator used that as licence to work single-threaded on a
-  # 12-core / 251 GB box while Codex sat at 92% unused quota. He called that out
-  # directly: parallelism is the reason the server is paid for.
-  floor: 10                        # HIS TARGET (2026-07-31): «У тебе задача — десять лейнів стабільно тримати»
-  ceiling: 15                      # upper bound; raise only with measured host headroom
-  notify_human_below: 3            # below this the watchdog messages HIM directly, not just the orchestrator
+  # ACTIVE. The lane number here is the operator's cap of 2026-08-05:
+  # instance/decisions/HR-2456.md — «Дозволяю підняти ліміт лейнів до 5».
+  # It amends instance/decisions/HR-2342.md («Давай там до трьох», 2026-08-04)
+  # in the NUMBER ONLY, and leaves instance/decisions/HR-2398.md's per-repository
+  # scope and its «не швидкість а надійний і впевнений рух» framing intact. All
+  # three declare `lane_cap:` as a machine-readable field; the two superseded
+  # numbers carry `lane_cap_superseded_by: HR-2456`, and tools/check-fleet-cap.ts
+  # refuses any value here that disagrees with the live one.
+  #
+  # FIVE IS THE EDGE, NOT HEADROOM. Workboard row V3-0.34 measured this host
+  # saturating at exactly five concurrent lanes: 12 cores, load average 16.46,
+  # with the suite stretching under load (98s idle -> 112.87s at six workers ->
+  # 115.19s at twelve, where the deadline then killed a passing run). So the cap
+  # now sits ON the measured saturation point rather than below it. He authorised
+  # running there and that is his call; the obligation it creates is to watch the
+  # suite's runtime at five and report degradation rather than absorb it, because
+  # the suite is this system's measurement instrument — above capacity the fleet
+  # gets faster and its evidence gets less trustworthy at the same moment. The
+  # derived budget is still V3-0.34 and still open; this is a ruling, not a
+  # derivation.
+  #
+  # SUPERSEDES the `floor: 10` / `ceiling: 15` pair this block carried from
+  # instance/decisions/HR-281.md (2026-07-31, «У тебе задача — десять лейнів
+  # стабільно тримати»). That pair was not inert: daemon/autonomy-keepalive.ts
+  # read `floor` live, so every census under ten read as below floor against a
+  # binding cap of three, and tools/instructions/session-load.ts pushes this file
+  # into the orchestrator's standing context at every session start, so each new
+  # session was told to hold ten lanes (audit finding F1,
+  # instance/audits/false-facts-2026-08-04.md).
+  cap: 5                           # instance/decisions/HR-2456.md (amending HR-2342.md + HR-2398.md): max parallel lanes, PER REPOSITORY.
+  # A CEILING, not a target. HR-2342: "fewer is allowed whenever the work does
+  # not need them." — untouched by the raise to five. There is deliberately no
+  # floor/target key: every count from 1 to the cap is permitted, so the only
+  # lane count that can be a fault is ZERO, and the wake thresholds below are 1
+  # for that reason rather than by taste. THE THRESHOLDS DO NOT MOVE WITH THE
+  # CAP: "idle" means zero running lanes whether the cap is 3, 5 or 10, and
+  # letting five leak into a threshold would re-install the ceiling as a floor —
+  # the defect this block was rewritten to remove. Replacing an underived 10
+  # with an underived 5 is the same defect with a different number; the
+  # capacity-derived budget is workboard row V3-0.34 and nothing states a target
+  # until it exists.
+  wake_below: 1                    # daemon/autonomy-keepalive.ts: nudge the ORCHESTRATOR only when the fleet is doing nothing.
+  notify_human_below: 1            # orchestrator/watchdog.sh: message HIM only when the fleet is idle, never at 1-2 lanes.
+  # HR-281's literal «менше трьох … маєш мені писати» was given when the
+  # configured floor was ten, so "fewer than three" then named a fleet that had
+  # nearly stopped. Under a cap of three — or five — it names ordinary
+  # operation, and a wider cap only makes it more ordinary. The intent
+  # is kept and the arithmetic is not — the reasoning is in
+  # instructions/autonomy-and-capacity.md, which already states it in prose.
   keepalive_interval_minutes: 15   # daemon timer backstop; independent of lane exit events
   status: active
-  # Enforced by the state-contract checker: open work plus zero measured system
-  # lane units is FLEET-IDLE; an unavailable system lane count also fails closed.
-  fleet_idle_check: tools/state-contract/check.ts:FLEET-IDLE
+  # The fail-closed idle enforcer, named honestly: the timer watchdog is what
+  # actually measures it. Open work plus zero running lanes wakes the
+  # orchestrator and tells the operator once; a board that cannot be parsed is
+  # refused rather than counted as "no work". The state-contract checker this
+  # key named until now has never existed (audit finding F6).
+  fleet_idle_check: orchestrator/fleet/fleet-nudge.sh
+  fleet_idle_backstop: daemon/autonomy-keepalive.ts   # the 15-minute in-daemon backstop; shares the counter above
 
 orchestrator:
   session: bpa-orchestrator          # bootstrap/env.template: one instance session for launcher + watchdog

@@ -6,6 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DEFAULT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck disable=SC1091
 source "$REPO_DEFAULT/orchestrator/lib.sh"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/fleet-params.sh"
 
 usage() {
   cat <<'EOF'
@@ -24,6 +26,9 @@ Options:
   --agent-command FILE One-argv-entry-per-line command file
                        (blank lines and # comments in column 1 are ignored)
                        (default: AGENT_COMMAND_FILE or instance/lane-agent-command.conf)
+  --allow-over-cap R   Launch past the lane cap deliberately, stating the reason
+                       R. Journaled to LANES-DIR/fleet-cap.jsonl. Refusal is the
+                       default; this is the declared exception, not a bypass.
 EOF
 }
 
@@ -32,8 +37,10 @@ die() { printf 'launch-lane: %s\n' "$*" >&2; exit 2; }
 name=""; role=""; task_file=""; repo="$REPO_DEFAULT"
 lanes_dir="${XDG_CACHE_HOME:-$HOME/.cache}/infra-lanes"
 base="origin/main"; branch=""; agent_command_file="${AGENT_COMMAND_FILE:-}"
+over_cap_reason=""; over_cap_requested=false
 while (($#)); do
   case "$1" in
+    --allow-over-cap) over_cap_requested=true; over_cap_reason="${2:-}"; shift 2 ;;
     --name) name="${2:-}"; shift 2 ;;
     --role) role="${2:-}"; shift 2 ;;
     --task-file) task_file="${2:-}"; shift 2 ;;
@@ -60,6 +67,59 @@ lane_payload="$repo/orchestrator/fleet/lane-payload.sh"
 [[ -f "$lane_payload" && -r "$lane_payload" ]] || die "lane payload missing or unreadable: $lane_payload"
 [[ -x "$BUN_BIN" ]] || die 'Bun is unavailable; install it with bootstrap/install.sh or set BUN_BIN'
 command -v systemd-run >/dev/null || die 'systemd-run is unavailable; lane launch requires systemd'
+
+# ── The lane cap, enforced here rather than quoted elsewhere ────────────────
+# Until workboard row V3-5.10, nothing in this launcher refused a lane beyond the
+# configured cap: `FLEET_NUDGE_CAP` and `FleetConfig.cap` were only ever printed
+# in messages, and the ceiling was held by the orchestrator counting running
+# units by hand at every dispatch. A rule enforced by an agent remembering to
+# count is a rule the system does not have.
+#
+# The number and the ruling that declares it are read from the target
+# repository's instance/params.yaml — HR-2538 scopes the cap PER REPOSITORY, so
+# it is that repository's parameter file, not the launcher's — through the one
+# reader in fleet-params.sh. Nothing here retypes either.
+#
+# Fail-closed on both edges: an unreadable cap and an untakeable census are
+# refusals, not zeros, because neither can show the launch is under the ceiling.
+# The refusal happens before any artifact exists, so a refused launch leaves the
+# worktree, branch, pack and unit untouched.
+cap=$(fleet_cap "$repo") ||
+  die "cannot read fleet.cap from $repo/instance/params.yaml; refusing to launch against an unknown cap"
+declared_by=$(fleet_declared_by "$repo") || declared_by="unstated ruling"
+
+json_escape() { printf '%s' "$1" | tr '\n\t' '  ' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+
+# Every cap decision that is not an ordinary in-budget launch is journaled, both
+# halves of it: the refusal, so a fleet that keeps hitting the ceiling is visible
+# without reading logs, and the override, so a deliberate extra lane is a record
+# rather than a memory. Journal failure never blocks a launch — the journal is
+# evidence about the decision, not part of it.
+cap_journal="${FLEET_CAP_JOURNAL:-$lanes_dir/fleet-cap.jsonl}"
+journal_cap_decision() { # decision running reason
+  local running_field="$2"
+  case "$running_field" in '' | *[!0-9]*) running_field=null ;; esac
+  mkdir -p "$(dirname "$cap_journal")" 2>/dev/null || return 0
+  printf '{"at":"%s","lane":"%s","repo":"%s","decision":"%s","cap":%s,"running":%s,"declared_by":"%s","reason":"%s"}\n' \
+    "$(date -Is)" "$(json_escape "$name")" "$(json_escape "$repo")" "$1" "$cap" "$running_field" \
+    "$(json_escape "$declared_by")" "$(json_escape "$3")" >>"$cap_journal" 2>/dev/null || return 0
+}
+
+running=""
+running=$(fleet_running_lanes) || running=""
+
+if [[ "$over_cap_requested" == true ]]; then
+  [[ -n "$over_cap_reason" ]] || die '--allow-over-cap requires a reason; a deliberate exception states why'
+  journal_cap_decision over-cap-override "$running" "$over_cap_reason"
+  printf 'launch-lane: launching past the cap of %s (%s) by explicit --allow-over-cap: %s\n' \
+    "$cap" "$declared_by" "$over_cap_reason" >&2
+elif [[ -z "$running" ]]; then
+  journal_cap_decision refused-census-unavailable "" 'systemctl lane census failed'
+  die "cannot count running lanes; refusing rather than launching past an unverified cap of $cap ($declared_by) — use --allow-over-cap REASON for a deliberate exception"
+elif ((running >= cap)); then
+  journal_cap_decision refused-at-cap "$running" "cap reached"
+  die "refusing to launch $name: $running lane(s) already running and the cap is $cap ($declared_by) — land or reap a lane, or use --allow-over-cap REASON for a deliberate exception"
+fi
 
 agent_argv=()
 while IFS= read -r arg || [[ -n "$arg" ]]; do

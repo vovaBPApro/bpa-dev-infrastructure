@@ -106,6 +106,15 @@ fleet:
   # with an underived 5 is the same defect with a different number; the
   # capacity-derived budget is workboard row V3-0.34 and nothing states a target
   # until it exists.
+  # The ruling id every operator-facing message quotes beside the number. It was
+  # typed into orchestrator/fleet/fleet-nudge.sh and daemon/autonomy-keepalive.ts
+  # by hand at each cap change and was right only because a person remembered
+  # both files; the same edit left this file's own prose saying "five" while the
+  # cap said three (workboard V3-5.10). It is stated ONCE here, read from here by
+  # every consumer, and recomputed from instance/decisions/ by
+  # tools/check-fleet-cap.ts on every run — so a ledger change nobody mirrored
+  # here fails the check instead of quoting a superseded ruling at the operator.
+  declared_by: HR-2538             # every binding record declaring a live `lane_cap:`, comma-separated
   wake_below: 1                    # daemon/autonomy-keepalive.ts: nudge the ORCHESTRATOR only when the fleet is doing nothing.
   notify_human_below: 1            # orchestrator/watchdog.sh: message HIM only when the fleet is idle, never at 1-2 lanes.
   # HR-281's literal «менше трьох … маєш мені писати» was given when the

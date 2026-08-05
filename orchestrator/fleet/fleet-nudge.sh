@@ -18,12 +18,20 @@
 # message.
 set -uo pipefail
 
+FLEET_NUDGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+. "$FLEET_NUDGE_DIR/fleet-params.sh"
+# The repository whose cap this watchdog quotes. HR-2538 scopes the cap per
+# repository, and this script is launched from a tracked path inside the one it
+# reports on, so the repository root is derived from this file rather than named.
+FLEET_NUDGE_REPO=${FLEET_NUDGE_REPO:-$(cd "$FLEET_NUDGE_DIR/../.." && pwd)}
+
 SESSION=${FLEET_NUDGE_SESSION:-bpa-orchestrator}
 
 # ── What counts as a fault ──────────────────────────────────────────────────
-# This watchdog measures IDLENESS, not shortfall. HR-2538 caps parallel lanes at
-# five (raising HR-2342's three, whose framing it leaves standing): "a ceiling,
-# not a target: fewer is allowed whenever the work does not need them." A
+# This watchdog measures IDLENESS, not shortfall. The lane cap — its number and
+# the ruling that declares it, both read from instance/params.yaml below — is "a
+# ceiling, not a target: fewer is allowed whenever the work does not need them." A
 # watchdog that installs that ceiling as a floor turns every lane count the
 # ruling expressly permits into a permanent fault, and sub-floor IS the normal
 # state, so the nudge would fire forever. Raising the cap widens that band rather
@@ -54,11 +62,20 @@ CRITICAL=$(int_or "${FLEET_NUDGE_CRITICAL:-1}" 1)
 # underived constant here is the defect that row exists to end. Replacing an
 # underived 10 with an underived 3 would re-commit it.
 TARGET=$(int_or "${FLEET_NUDGE_TARGET:-0}" 0)
-# The HR-2456 ceiling (five, raised from HR-2342's three), quoted to the
-# orchestrator so it knows how wide it may go. It is not a trigger: nothing in
-# this script compares the lane count against it, and CRITICAL above stays at 1
-# regardless of what this becomes.
-CAP=$(int_or "${FLEET_NUDGE_CAP:-3}" 3)
+# The ceiling, quoted to the orchestrator so it knows how wide it may go. It is
+# not a trigger HERE: nothing in this script compares the lane count against it,
+# and CRITICAL above stays at 1 regardless of what this becomes. The refusal
+# lives in orchestrator/fleet/launch-lane.sh, which enforces this same number.
+#
+# READ, never retyped. Both the number and the ruling id below were literals in
+# this file until workboard row V3-5.10, hand-edited at each cap change and
+# correct only because a person edited every copy at once — the comment block
+# above this one still said "five" against a parameter of three when that row was
+# picked up. There is deliberately NO numeric fallback: if params.yaml cannot be
+# read the message drops the sentence rather than inventing a ceiling, and
+# tools/check-fleet-cap.ts fails on a literal default reappearing here.
+CAP=$(int_or "${FLEET_NUDGE_CAP:-$(fleet_cap "$FLEET_NUDGE_REPO")}" '')
+DECLARED_BY=$(fleet_declared_by "$FLEET_NUDGE_REPO" || printf '')
 
 BOARD=${FLEET_NUDGE_BOARD:-/root/bpa-dev-infrastructure/instance/workboard.md}
 DAEMON=${FLEET_NUDGE_DAEMON:-http://127.0.0.1:4822}
@@ -395,7 +412,12 @@ if ! open=$(count_open_rows "$BOARD"); then
 fi
 clear_alert board "✅ Fleet watchdog знову читає workboard: $open відкритих рядків. Alert cleared." || exit 3
 
-running=$(systemctl list-units --type=service --state=running --no-legend 'lane-*' 2>/dev/null | wc -l)
+# The same census the launcher enforces the cap against, from one home: a
+# watchdog reporting a different number from the one the ceiling is applied to
+# would make every cap message unfalsifiable. A census that cannot be taken has
+# always read as zero here, and stays that way — this watchdog's failure
+# direction is to nudge, where the launcher's is to refuse.
+running=$(fleet_running_lanes) || running=0
 session_up=true
 tmux has-session -t "$SESSION" 2>/dev/null || session_up=false
 
@@ -469,7 +491,14 @@ if [ "$running" -lt "$CRITICAL" ] && [ $((NOW - idle_since)) -ge "$IDLE_SUSTAIN"
   raise_idle "$NOW" "⚠️ Флот простоює: активних лейнів $running, на дошці $open відкритих рядків. Піднімаю оркестратор." || exit 3
 fi
 
-msg="[fleet-nudge] running lanes=$running, workboard open rows=$open. HR-2538 caps parallel lanes at $CAP — a ceiling, not a target. Collect finished lane reports, land what is ACCEPTed, dispatch the next wave. Per HR-281 report the lane count to Vova unprompted."
+# The ceiling sentence is assembled from what was READ, and is omitted entirely
+# when either half is unavailable. An unknown cap is not a cap: quoting a
+# fallback number, or a ruling id that nothing checked, is how this message came
+# to say "five" the day the parameter said three.
+ceiling=""
+[ -n "$CAP" ] && [ -n "$DECLARED_BY" ] &&
+  ceiling=" $DECLARED_BY caps parallel lanes at $CAP — a ceiling, not a target."
+msg="[fleet-nudge] running lanes=$running, workboard open rows=$open.$ceiling Collect finished lane reports, land what is ACCEPTed, dispatch the next wave. Per HR-281 report the lane count to Vova unprompted."
 buf="nudge$$"
 tmux set-buffer -b "$buf" -- "$msg" 2>/dev/null || exit 0
 tmux paste-buffer -t "$SESSION" -b "$buf" -d 2>/dev/null || exit 0

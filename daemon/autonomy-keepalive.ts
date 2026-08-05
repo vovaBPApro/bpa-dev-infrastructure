@@ -1,8 +1,9 @@
 // ── What this timer measures ────────────────────────────────────────────────
 //
-// IDLENESS, not shortfall. HR-2538 caps parallel lanes at three (five only as
-// an exception), superseding HR-2456's five and restoring HR-2342's number
-// without touching its framing: "a ceiling, not a target: fewer
+// IDLENESS, not shortfall. The lane cap — its number and the ruling that
+// declares it, both read from instance/params.yaml rather than written here
+// (workboard V3-5.10) — leaves HR-2342's framing standing: "a ceiling, not a
+// target: fewer
 // is allowed whenever the work does not need them." HR-2398 scopes that cap per
 // repository. A backstop that installs the ceiling as a floor turns every lane
 // count the ruling expressly permits into a permanent fault, and sub-floor IS
@@ -26,6 +27,12 @@ export type FleetConfig = {
   // `null` when the params file could not be read — an unknown cap is omitted
   // from the message rather than invented.
   cap: number | null;
+  // The ruling id quoted beside the cap, read from `fleet.declared_by` and never
+  // typed here. It was a literal `HR-2456`, then a literal `HR-2538`, each
+  // hand-retyped at a cap change in this file and in fleet-nudge.sh together —
+  // right only while someone remembered both. `null` when the params file could
+  // not be read, and then the sentence is dropped rather than half-quoted.
+  declaredBy: string | null;
   wakeBelow: number;
   target: number;
   intervalMs: number;
@@ -42,6 +49,8 @@ export function parseFleetConfig(yaml: string): FleetConfig {
   const fleet = yaml.match(/^fleet:\s*\n((?:^[ \t]+.*(?:\n|$))*)/m)?.[1] ?? '';
   const capRaw = fleet.match(/^\s+cap:\s*(\d+)/m)?.[1];
   const cap = capRaw === undefined ? null : Number(capRaw);
+  const declaredRaw = fleet.match(/^\s+declared_by:\s*([^#\n]+)/m)?.[1]?.trim();
+  const declaredBy = declaredRaw && /^HR-\d/.test(declaredRaw) ? declaredRaw : null;
   // Never zero. `running < 0` is unreachable, so a zero here silently deletes
   // the severe tier and the backstop can never fire — the same defect
   // fleet-nudge.sh clamps against by name.
@@ -54,6 +63,7 @@ export function parseFleetConfig(yaml: string): FleetConfig {
   const minutes = knob(fleet, 'keepalive_interval_minutes', 15);
   return {
     cap: cap !== null && Number.isFinite(cap) && cap > 0 ? cap : null,
+    declaredBy,
     wakeBelow,
     target,
     intervalMs: minutes > 0 ? minutes * 60_000 : 900_000,
@@ -149,7 +159,7 @@ export class AutonomyKeepalive {
   }
 
   async timerTick(): Promise<void> {
-    const { cap, wakeBelow, target } = this.opts.fleet;
+    const { cap, declaredBy, wakeBelow, target } = this.opts.fleet;
     const units = await this.opts.listUnits();
     const running = units.filter((unit) => unit.active).length;
     const idle = running < wakeBelow;
@@ -175,8 +185,13 @@ export class AutonomyKeepalive {
     // deduplicates it; a second unguarded channel for it is a second alarm.
     if (open === 0) return;
 
+    // Both halves are read, or the sentence is not said. Quoting a number
+    // without the ruling that declares it, or a ruling id nothing checked
+    // against the ledger, is the drift this was rewritten to remove.
     const ceiling =
-      cap === null ? '' : ` HR-2538 caps parallel lanes at ${cap} — a ceiling, not a target.`;
+      cap === null || declaredBy === null
+        ? ''
+        : ` ${declaredBy} caps parallel lanes at ${cap} — a ceiling, not a target.`;
     await this.opts.nudge(
       idle
         ? `fleet idle: ${running} running with ${open} open workboard rows; dispatch or inspect blocked lanes.${ceiling}`

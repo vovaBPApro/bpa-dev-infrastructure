@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# One home for reading the fleet block of instance/params.yaml from shell, and
+# for taking the lane census that the cap is enforced against.
+#
+# Why this file exists (workboard V3-5.10). The cap and the ruling that declares
+# it were RETYPED into every mechanism that mentioned them: the launcher had no
+# cap at all, `orchestrator/fleet/fleet-nudge.sh` carried `${FLEET_NUDGE_CAP:-5}`
+# as a literal default and quoted a literal `HR-2456` in the message it pastes to
+# the orchestrator, and `daemon/autonomy-keepalive.ts` quoted the same id in its
+# own. All three were correct only because a person edited them together at the
+# last cap change, and the evidence that this does not hold is already in the
+# tree: at the moment this file was written, fleet-nudge.sh's own comment still
+# read "caps parallel lanes at five" against a parameter of three.
+#
+# So the number and the ruling id are read from instance/params.yaml, which
+# tools/check-fleet-cap.ts already holds against the decision ledger — the cap
+# against every binding record declaring a live `lane_cap:`, and `declared_by`
+# against the set of records that declare it. Nothing downstream retypes either.
+#
+# Sourced, not executed: `source .../fleet-params.sh` then call the functions.
+# POSIX-clean awk, no regex intervals — a clean Ubuntu has mawk and this code
+# runs on the fleet's launch path (see the awk note in fleet-nudge.sh).
+
+# The value of one key in the `fleet:` block, comments stripped. Prints nothing
+# and returns 1 when the file, the block, or the key is absent — an unreadable
+# parameter is never silently a number.
+fleet_param() { # repo key
+  local value
+  [ -r "$1/instance/params.yaml" ] || return 1
+  value=$(awk -v want="$2" '
+    /^fleet:[ \t]*$/ { inside = 1; next }
+    /^[^ \t]/ { inside = 0 }
+    inside {
+      if (match($0, /^[ \t]+[A-Za-z][A-Za-z0-9_]*:/)) {
+        key = substr($0, 1, RLENGTH - 1)
+        gsub(/^[ \t]+/, "", key)
+        if (key == want) {
+          val = substr($0, RLENGTH + 1)
+          sub(/[ \t]*#.*$/, "", val)
+          gsub(/^[ \t]+/, "", val)
+          gsub(/[ \t]+$/, "", val)
+          print val
+          exit
+        }
+      }
+    }
+  ' "$1/instance/params.yaml")
+  [ -n "$value" ] || return 1
+  printf '%s' "$value"
+}
+
+# The cap, validated as a positive integer. A missing or malformed cap returns 1
+# rather than a fallback: the caller must refuse or say so, because a default
+# invented here is exactly the retyped literal this file removes.
+fleet_cap() { # repo
+  local value
+  value=$(fleet_param "$1" cap) || return 1
+  case "$value" in
+    '' | *[!0-9]*) return 1 ;;
+    0) return 1 ;;
+  esac
+  printf '%s' "$value"
+}
+
+# The ruling id(s) that declare the live cap, for operator-facing messages.
+# Derived here only in the sense of being read from one place; the value itself
+# is held against instance/decisions/ by tools/check-fleet-cap.ts on every run,
+# so a ledger change that nobody mirrored here fails the check rather than
+# quietly printing a superseded ruling at the operator.
+fleet_declared_by() { # repo
+  local value
+  value=$(fleet_param "$1" declared_by) || return 1
+  case "$value" in
+    HR-[0-9]*) printf '%s' "$value" ;;
+    *) return 1 ;;
+  esac
+}
+
+# The lane census: how many lane units are running right now. This is the same
+# question `systemctl list-units --state=running 'lane-*'` answered inline in
+# fleet-nudge.sh, kept in one place so the cap is enforced against the same
+# number the watchdog reports. Returns 1 when the census cannot be taken at all,
+# which is a refusal condition for the launcher, not a zero.
+fleet_running_lanes() {
+  local units
+  command -v systemctl >/dev/null 2>&1 || return 1
+  units=$(systemctl list-units --type=service --state=running --no-legend 'lane-*' 2>/dev/null) || return 1
+  printf '%s' "$units" | grep -c '^[ \t]*lane-' || true
+}

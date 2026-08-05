@@ -24,12 +24,15 @@ Options:
   --agent-command FILE One-argv-entry-per-line command file
                        (blank lines and # comments in column 1 are ignored)
                        (default: AGENT_COMMAND_FILE or instance/lane-agent-command.conf)
+  --item ID            Workboard row this lane is spending against, recorded
+                       with its token usage (V3-3.10). Optional: the column is
+                       nullable because the launcher is not always told.
 EOF
 }
 
 die() { printf 'launch-lane: %s\n' "$*" >&2; exit 2; }
 
-name=""; role=""; task_file=""; repo="$REPO_DEFAULT"
+name=""; role=""; task_file=""; item=""; repo="$REPO_DEFAULT"
 lanes_dir="${XDG_CACHE_HOME:-$HOME/.cache}/infra-lanes"
 base="origin/main"; branch=""; agent_command_file="${AGENT_COMMAND_FILE:-}"
 while (($#)); do
@@ -42,6 +45,7 @@ while (($#)); do
     --base) base="${2:-}"; shift 2 ;;
     --branch) branch="${2:-}"; shift 2 ;;
     --agent-command) agent_command_file="${2:-}"; shift 2 ;;
+    --item) item="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -95,7 +99,7 @@ unit_path="$(dirname "$BUN_BIN"):$(dirname "${agent_argv[0]}"):/usr/local/bin:/u
 # Checked here, before any artifact exists, so a rejected launch leaves nothing.
 for systemd_value in "$prompt" "$BUN_BIN" "$repo/daemon/mask-stream.ts" "$log" "$report" \
   "$status" "$repo/gate/lane-exit.sh" "$repo" "$branch" "$role" "$lane_payload" \
-  "$worktree" "$tmp_dir" "$HOME" "$unit_path" "${agent_argv[@]}"; do
+  "$worktree" "$tmp_dir" "$HOME" "$unit_path" "$name" "$item" "${agent_argv[@]}"; do
   if [[ "$systemd_value" == *'$'* ]]; then
     die "refusing to launch: systemd would expand '\$' in a lane value: $systemd_value"
   fi
@@ -152,6 +156,7 @@ if ! systemd-run --collect --unit "$unit" \
   --property=IPAddressAllow=127.0.0.53 \
   --setenv="HOME=$HOME" --setenv="TMPDIR=$tmp_dir" --setenv="PATH=$unit_path" \
   --setenv="LANE_REPORT_PATH=$report" \
+  --setenv="LANE_USAGE_LANE=$name" --setenv="LANE_USAGE_ITEM=$item" \
   --working-directory="$worktree" \
   /bin/bash "$lane_payload" \
   "$prompt" "$BUN_BIN" "$repo/daemon/mask-stream.ts" "$log" "$report" "$status" \

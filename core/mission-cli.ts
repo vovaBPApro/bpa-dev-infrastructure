@@ -1,10 +1,11 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { DurableStore, FencedTransitionError } from "./state";
+import { DurableStore, FencedTransitionError, type UsageGroupBy } from "./state";
 import { lineValue } from "../gate/report-contract";
 import { isMissionCliAction } from "./mission-cli-actions";
+import { stateDbPath } from "./state-path";
 
-const path = () => process.env.INFRA_STATE_DB || resolve(import.meta.dir, "..", "runtime", "state.db");
+const path = () => stateDbPath(resolve(import.meta.dir, ".."));
 // The repository this lane's evidence lives in. Defaults to mission-cli.ts's
 // own repo (core/mission-cli.ts -> ..), matching how gate/lane-exit.sh is
 // invoked elsewhere (instructions/orchestrator-cold-start.md's `--repo "$REPO"`).
@@ -37,14 +38,75 @@ function laneExitVerdict(reportPath: string, repo: string, branch: string): { st
   return { status: result.exitCode ?? 1, output };
 }
 
+// V3-3.10, the query path from instance/specs/token-usage-accounting.md. It
+// exists so the operator can ask what was spent without a UI existing, which
+// is why the default output is a table a human reads rather than JSON.
+const GROUPINGS = ["model", "role", "hour"] as const;
+
+function instant(value: string | undefined, name: string): number | undefined {
+  if (value === undefined) return undefined;
+  // Epoch ms is accepted alongside ISO-8601 because the stored column IS epoch
+  // ms; a caller that read a row back should be able to hand the number
+  // straight back as a window edge.
+  const parsed = /^\d+$/.test(value) ? Number(value) : Date.parse(value);
+  if (!Number.isFinite(parsed)) throw new Error(`${name} must be an ISO-8601 instant or epoch milliseconds`);
+  return parsed;
+}
+
+function usage(store: DurableStore, args: string[]): void {
+  let since: number | undefined; let until: number | undefined; let json = false;
+  let groupBy: UsageGroupBy[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const flag = args[index];
+    if (flag === "--since") { since = instant(args[++index], "--since"); continue; }
+    if (flag === "--until") { until = instant(args[++index], "--until"); continue; }
+    if (flag === "--json") { json = true; continue; }
+    if (flag === "--group-by") {
+      groupBy = (args[++index] ?? "").split(",").map((key) => key.trim()).filter(Boolean) as UsageGroupBy[];
+      for (const key of groupBy) if (!(GROUPINGS as readonly string[]).includes(key)) throw new Error(`--group-by accepts ${GROUPINGS.join(", ")}; got ${key}`);
+      continue;
+    }
+    throw new Error(`usage: unknown flag ${flag} (--since <iso> --until <iso> --group-by ${GROUPINGS.join(",")} --json)`);
+  }
+  const rows = store.queryUsage({ since, until, groupBy });
+  if (json) { console.log(JSON.stringify(rows)); return; }
+  if (rows.length === 0) { console.log("USAGE no rows in window"); return; }
+  for (const row of rows) {
+    const dimensions = GROUPINGS.filter((key) => groupBy.includes(key)).map((key) => `${key}=${row[key] ?? "-"}`);
+    // `unmeasured` is printed on every line, not only when it is non-zero. A
+    // total that quietly omits the turns nobody could measure is the reading
+    // this whole row exists to prevent, and the operator should not have to
+    // remember to ask.
+    console.log([
+      ...dimensions,
+      `events=${row.events}`,
+      `unmeasured=${row.unmeasuredEvents}`,
+      `in=${row.inputTokens ?? "unmeasured"}`,
+      `out=${row.outputTokens ?? "unmeasured"}`,
+      `cache_create=${row.cacheCreationInputTokens ?? "unmeasured"}`,
+      `cache_read=${row.cacheReadInputTokens ?? "unmeasured"}`,
+      `cost_usd=${row.costUsd === null ? "unmeasured" : row.costUsd.toFixed(6)}`,
+    ].join(" "));
+  }
+}
+
 function run(args: string[]): void {
   const database = path();
   mkdirSync(dirname(database), { recursive: true });
   const injected = process.env.BPA_ALLOW_TEST_CLOCK === "1" ? Number(process.env.INFRA_TEST_NOW_MS) : Number.NaN;
   const store = new DurableStore(database, Number.isSafeInteger(injected) ? { now: () => injected } : {});
   try {
-    const [group, action, ...v] = args;
+    // A leading `--flag` is not an action name. `usage` is flag-driven, and
+    // this is the same split tools/check-documented-mission-cli.ts already
+    // makes when it scans documentation (its action pattern is `[a-z][a-z-]*`,
+    // which no flag matches), so the dispatcher and the doc checker agree on
+    // what "no action" looks like. No existing action begins with `--`, so
+    // every other command dispatches exactly as before.
+    const [group, ...rest] = args;
+    const action = rest[0]?.startsWith("--") ? undefined : rest[0];
+    const v = action === undefined ? rest : rest.slice(1);
     if (!isMissionCliAction(group ?? "", action)) throw new Error(`unknown action: ${[group, action].filter(Boolean).join(" ") || "missing"}`);
+    if (group === "usage") { usage(store, v); return; }
     if (group === "mission" && action === "create" && v.length === 2) {
       const id = crypto.randomUUID(); store.createMission({ id, correlationId: required(v[0], "correlation id"), acceptanceId: required(v[1], "acceptance id") });
       console.log(`MISSION id=${id} state=queued`); return;
@@ -108,7 +170,7 @@ function run(args: string[]): void {
     }
     if (group === "outbox" && action === "enqueue" && v.length === 4) { store.enqueueOutbox({ id:v[0]!, channel:v[1]!, dedupeKey:v[2]!, payload:JSON.parse(v[3]!) }); console.log("OUTBOX"); return; }
     if (group === "status" && action === undefined) { console.log(JSON.stringify(store.reconstruct())); return; }
-    throw new Error("usage: mission create <correlation> <acceptance> | mission complete <mission> | manager create <mission> <manager> | lane create <mission> <manager> <lane> <acceptance> <retries> | lane claim <lane> <owner> <lease-ms> | lane ack <lane> <owner> <token> | lane progress <lane> <owner> <token> <evidence> | lane complete <lane> <owner> <token> <sha> <report-path> <clean|NO-GO> <branch> | outbox enqueue ... | status");
+    throw new Error("usage: mission create <correlation> <acceptance> | mission complete <mission> | manager create <mission> <manager> | lane create <mission> <manager> <lane> <acceptance> <retries> | lane claim <lane> <owner> <lease-ms> | lane ack <lane> <owner> <token> | lane progress <lane> <owner> <token> <evidence> | lane complete <lane> <owner> <token> <sha> <report-path> <clean|NO-GO> <branch> | outbox enqueue ... | status | usage [--since <iso>] [--until <iso>] [--group-by model,role,hour] [--json]");
   } finally { store.close(); }
 }
 

@@ -15,6 +15,12 @@ export {
   type MissionRecord,
   type OutboxRecord,
   type TerminalVerdict,
+  type UsageEventInput,
+  type UsageEventRecord,
+  type UsageGroupBy,
+  type UsageRole,
+  type UsageSeriesRow,
+  type UsageSource,
 } from "./schema";
 
 export { DurableStore as StateStore } from "./schema";

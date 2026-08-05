@@ -34,6 +34,106 @@ export type OutboxRecord = {
   attempts: number; lastError: string | null; createdAt: number; deliveredAt: number | null;
 };
 
+/** How a usage row's numbers were obtained. `unmeasured` is not a failure mode
+ * to be tidied away: it is the honest record of a turn nobody could measure,
+ * and it is the reason every count on this row is nullable. */
+export type UsageSource = "cli-json" | "estimated" | "unmeasured";
+export type UsageRole = "coder" | "reviewer" | "orchestrator" | "manager";
+
+export type UsageEventInput = {
+  model: string | null; role: UsageRole; lane?: string | null; itemId?: string | null;
+  inputTokens: number | null; outputTokens: number | null;
+  cacheCreationInputTokens: number | null; cacheReadInputTokens: number | null;
+  costUsd: number | null; serviceTier?: string | null;
+  sessionId?: string | null; eventId?: string | null; source: UsageSource;
+  observedAt?: number;
+};
+
+export type UsageEventRecord = Required<UsageEventInput> & { id: number };
+
+/** One aggregated bucket of the usage time series. The measured/unmeasured
+ * split travels WITH the sums on purpose: a bucket of three turns whose sums
+ * came from one of them is a different fact from a bucket of three measured
+ * turns, and a caller that only reads `costUsd` cannot tell them apart. */
+export type UsageSeriesRow = {
+  model: string | null; role: string | null; hour: string | null;
+  events: number; measuredEvents: number; unmeasuredEvents: number;
+  inputTokens: number | null; outputTokens: number | null;
+  cacheCreationInputTokens: number | null; cacheReadInputTokens: number | null;
+  costUsd: number | null;
+};
+
+export type UsageGroupBy = "model" | "role" | "hour";
+export const usageGroupByColumns: Record<UsageGroupBy, string> = {
+  model: "model", role: "role",
+  // Epoch ms -> UTC hour bucket. strftime is applied to the stored integer
+  // rather than a stored text timestamp so the column stays cheap to range-scan.
+  hour: "strftime('%Y-%m-%dT%H:00Z', observed_at / 1000, 'unixepoch')",
+};
+
+// V3-3.10 (instance/specs/token-usage-accounting.md, HR-2377). Additive: the
+// existing tables are untouched, and `CREATE TABLE IF NOT EXISTS` on every open
+// IS the migration, so an already-populated state DB gains the table without a
+// separate step.
+//
+// Every count is NULLABLE, and that is the whole design rather than laziness
+// about defaults. This data is destined for a graph, and on a graph a zero
+// reads as "we spent nothing" while the truth may be "we did not look". The
+// three CHECK constraints below make that rule structural instead of a
+// convention some future writer can forget:
+//
+//   - `unmeasured` forces EVERY observed field null, so no code path can file a
+//     zero as an observation. A writer that computes 0 for an unobserved value
+//     does not get a lenient row, it gets a constraint failure.
+//   - a measured row must carry a model and both token counts, so the opposite
+//     mistake -- claiming `cli-json` while having observed nothing -- is equally
+//     rejected.
+//   - `source` is closed to the three known values.
+//
+// Each CHECK is written from `IS NULL` / `IS NOT NULL` operands only. SQLite
+// accepts a CHECK whose expression evaluates to NULL, so a constraint built out
+// of ordinary comparisons against a nullable column would silently pass on
+// exactly the rows it exists to catch.
+//
+// `cost_usd` is nullable independently of the counts: the interactive CLI
+// records tokens in its session transcript but no cost (daemon/usage-ingest-
+// transcripts.ts), and guessing that cost from a hand-kept price table would
+// put an invented number next to observed ones.
+const usageEventsDdl = `
+    CREATE TABLE IF NOT EXISTS usage_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      observed_at INTEGER NOT NULL,
+      model TEXT,
+      role TEXT NOT NULL,
+      lane TEXT,
+      item_id TEXT,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      cache_creation_input_tokens INTEGER,
+      cache_read_input_tokens INTEGER,
+      cost_usd REAL,
+      service_tier TEXT,
+      session_id TEXT,
+      event_id TEXT,
+      source TEXT NOT NULL,
+      CHECK (source IN ('cli-json', 'estimated', 'unmeasured')),
+      CHECK (source <> 'unmeasured' OR (
+        model IS NULL AND input_tokens IS NULL AND output_tokens IS NULL
+        AND cache_creation_input_tokens IS NULL AND cache_read_input_tokens IS NULL
+        AND cost_usd IS NULL AND service_tier IS NULL)),
+      CHECK (source = 'unmeasured' OR (
+        model IS NOT NULL AND input_tokens IS NOT NULL AND output_tokens IS NOT NULL))
+    );
+    -- Ingest idempotency. The transcript reader (orchestrator role) re-reads
+    -- files it has already seen on every run, so re-recording the same provider
+    -- message must be a no-op rather than a doubled bill. SQLite treats NULLs
+    -- as distinct in a UNIQUE index, so rows carrying no provider identity --
+    -- an unmeasured turn, for instance -- are never collapsed into each other.
+    CREATE UNIQUE INDEX IF NOT EXISTS usage_events_identity
+      ON usage_events (session_id, event_id, model);
+    CREATE INDEX IF NOT EXISTS usage_events_observed_at ON usage_events (observed_at);
+`;
+
 export class SchemaError extends Error {}
 export class FencedTransitionError extends SchemaError {}
 
@@ -159,6 +259,96 @@ export class DurableStore {
     if (changed !== 1) throw new SchemaError(`unknown or already delivered outbox row: ${id}`);
   }
 
+  /** Record one model invocation's consumption. Returns false when the row was
+   * already present under the same provider identity, so a re-run of an ingest
+   * is a no-op rather than a duplicated bill.
+   *
+   * This runs inside the shared store's own transaction discipline (V3-0.20 and
+   * V3-0.7 are the two-writers hazard it inherits) rather than opening a second
+   * connection with rules of its own. */
+  recordUsage(input: UsageEventInput): boolean {
+    if (!["coder", "reviewer", "orchestrator", "manager"].includes(input.role)) throw new SchemaError(`unknown usage role: ${input.role}`);
+    if (!["cli-json", "estimated", "unmeasured"].includes(input.source)) throw new SchemaError(`unknown usage source: ${input.source}`);
+    const counts = {
+      input_tokens: input.inputTokens, output_tokens: input.outputTokens,
+      cache_creation_input_tokens: input.cacheCreationInputTokens, cache_read_input_tokens: input.cacheReadInputTokens,
+    };
+    for (const [name, value] of Object.entries(counts)) {
+      if (value === null) continue;
+      if (!Number.isSafeInteger(value) || value < 0) throw new SchemaError(`${name} must be null or a non-negative integer`);
+    }
+    if (input.costUsd !== null && (!Number.isFinite(input.costUsd) || input.costUsd < 0)) throw new SchemaError("cost must be null or a non-negative number");
+    // Refuse the mistake in the caller's own vocabulary. The table's CHECK
+    // catches it too, but an SQLITE_CONSTRAINT on a five-column predicate does
+    // not tell the author WHICH rule they broke, and this one is the rule the
+    // whole row exists to enforce.
+    if (input.source === "unmeasured" && (input.model !== null || Object.values(counts).some((value) => value !== null) || input.costUsd !== null)) {
+      throw new SchemaError("an unmeasured usage row carries no model, counts or cost -- record null, never zero");
+    }
+    if (input.source !== "unmeasured" && (input.model === null || input.inputTokens === null || input.outputTokens === null)) {
+      throw new SchemaError(`a ${input.source} usage row must carry the reported model and both token counts`);
+    }
+    return this.tx(() => this.db.query(`INSERT OR IGNORE INTO usage_events
+      (observed_at, model, role, lane, item_id, input_tokens, output_tokens,
+       cache_creation_input_tokens, cache_read_input_tokens, cost_usd, service_tier, session_id, event_id, source)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      input.observedAt ?? this.now(), input.model, input.role, input.lane ?? null, input.itemId ?? null,
+      input.inputTokens, input.outputTokens, input.cacheCreationInputTokens, input.cacheReadInputTokens,
+      input.costUsd, input.serviceTier ?? null, input.sessionId ?? null, input.eventId ?? null, input.source,
+    ).changes === 1);
+  }
+
+  /** The time series. `groupBy` may be empty for one whole-window total. */
+  queryUsage(options: { since?: number; until?: number; groupBy?: UsageGroupBy[] } = {}): UsageSeriesRow[] {
+    const groupBy = options.groupBy ?? [];
+    for (const key of groupBy) if (!(key in usageGroupByColumns)) throw new SchemaError(`unknown usage grouping: ${key}`);
+    const where: string[] = []; const values: number[] = [];
+    if (options.since !== undefined) { where.push("observed_at >= ?"); values.push(options.since); }
+    if (options.until !== undefined) { where.push("observed_at < ?"); values.push(options.until); }
+    const selected = (["model", "role", "hour"] as UsageGroupBy[]).map((key) =>
+      `${groupBy.includes(key) ? usageGroupByColumns[key] : "NULL"} AS ${key}`);
+    const grouping = groupBy.map((key) => usageGroupByColumns[key]);
+    const rows = this.db.query(`SELECT ${selected.join(", ")},
+        COUNT(*) AS events,
+        SUM(CASE WHEN source <> 'unmeasured' THEN 1 ELSE 0 END) AS measured_events,
+        SUM(CASE WHEN source = 'unmeasured' THEN 1 ELSE 0 END) AS unmeasured_events,
+        SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens,
+        SUM(cache_creation_input_tokens) AS cache_creation_input_tokens,
+        SUM(cache_read_input_tokens) AS cache_read_input_tokens,
+        SUM(cost_usd) AS cost_usd
+      FROM usage_events
+      ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+      ${grouping.length ? `GROUP BY ${grouping.join(", ")}` : ""}
+      ORDER BY ${[...grouping, "1"].join(", ")}`).all(...values) as any[];
+    // SUM() over an all-null group is NULL, and it stays NULL here. Coercing it
+    // to 0 would manufacture the exact reading -- "this hour cost nothing" --
+    // that the unmeasured rule exists to prevent.
+    return rows.map((r) => ({
+      model: r.model ?? null, role: r.role ?? null, hour: r.hour ?? null,
+      events: r.events, measuredEvents: r.measured_events, unmeasuredEvents: r.unmeasured_events,
+      inputTokens: r.input_tokens ?? null, outputTokens: r.output_tokens ?? null,
+      cacheCreationInputTokens: r.cache_creation_input_tokens ?? null,
+      cacheReadInputTokens: r.cache_read_input_tokens ?? null, costUsd: r.cost_usd ?? null,
+    }));
+  }
+
+  /** Raw rows, newest first. The query path above answers the operator's
+   * question; this one answers "show me the actual records". */
+  usageEvents(options: { since?: number; until?: number; limit?: number } = {}): UsageEventRecord[] {
+    const where: string[] = []; const values: number[] = [];
+    if (options.since !== undefined) { where.push("observed_at >= ?"); values.push(options.since); }
+    if (options.until !== undefined) { where.push("observed_at < ?"); values.push(options.until); }
+    const rows = this.db.query(`SELECT * FROM usage_events ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+      ORDER BY observed_at DESC, id DESC ${options.limit !== undefined ? "LIMIT ?" : ""}`)
+      .all(...values, ...(options.limit !== undefined ? [options.limit] : [])) as any[];
+    return rows.map((r) => ({
+      id: r.id, observedAt: r.observed_at, model: r.model, role: r.role, lane: r.lane, itemId: r.item_id,
+      inputTokens: r.input_tokens, outputTokens: r.output_tokens,
+      cacheCreationInputTokens: r.cache_creation_input_tokens, cacheReadInputTokens: r.cache_read_input_tokens,
+      costUsd: r.cost_usd, serviceTier: r.service_tier, sessionId: r.session_id, eventId: r.event_id, source: r.source,
+    }));
+  }
+
   getLane(id: string): LaneRecord | undefined { return this.readLane(id); }
   reconstruct(): { missions: MissionRecord[]; managers: ManagerRecord[]; lanes: LaneRecord[]; leases: LeaseRecord[]; outbox: OutboxRecord[] } {
     const missions = (this.db.query("SELECT * FROM missions ORDER BY id").all() as any[]).map(r => ({
@@ -184,6 +374,7 @@ export class DurableStore {
     CREATE TABLE IF NOT EXISTS managers (id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(id), parent_id TEXT NOT NULL, depth INTEGER NOT NULL CHECK(depth=1), state TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS lanes (id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(id), manager_id TEXT NOT NULL REFERENCES managers(id), parent_id TEXT NOT NULL, depth INTEGER NOT NULL CHECK(depth=2), state TEXT NOT NULL, generation INTEGER NOT NULL, lease_owner TEXT, fencing_token INTEGER NOT NULL, lease_deadline_at INTEGER, retries_used INTEGER NOT NULL, retry_budget INTEGER NOT NULL, acceptance_id TEXT NOT NULL, acknowledgement_at INTEGER, semantic_progress_at INTEGER, semantic_evidence_path TEXT, terminal_sha TEXT, terminal_report_path TEXT, terminal_verdict TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS outbox (id TEXT PRIMARY KEY, channel TEXT NOT NULL, dedupe_key TEXT UNIQUE NOT NULL, payload_json TEXT NOT NULL, delivery_state TEXT NOT NULL, attempts INTEGER NOT NULL, last_error TEXT, created_at INTEGER NOT NULL, delivered_at INTEGER);
+    ${usageEventsDdl}
   `); }
 
   private guardedUpdate(id: string, owner: string, token: number, setSql: string, values: unknown[]): void {

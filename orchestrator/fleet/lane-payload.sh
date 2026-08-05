@@ -58,8 +58,27 @@ if [[ -z "$role" ]]; then
   exit 2
 fi
 
+# V3-3.10 (instance/specs/token-usage-accounting.md): the masker renders the
+# provider's stream-json events back into the plain-text lane log AND diverts
+# the terminal result event to the accounting sink. One process, one stream, no
+# second invocation of the agent.
+#
+# `--role` is passed from the validated positional above rather than through the
+# environment: role is the field the tenth-argument incident destroyed, and a
+# second source of truth for it is exactly how that stayed hidden for a day. The
+# lane name and workboard row travel by environment instead (LANE_USAGE_LANE,
+# LANE_USAGE_ITEM, set by launch-lane.sh), because growing this file's
+# positional contract is the other half of that incident.
+#
+# Two safety properties this line depends on, both locked by tests:
+#   - the masker is byte-for-byte pass-through for any line that is not a
+#     recognizable event, so a plain-text provider (the codex confs) keeps the
+#     log it has today and simply records an unmeasured turn;
+#   - the masker never exits non-zero for an accounting failure, so the
+#     log-masker-exit branch below cannot be reached by a full disk in the
+#     state database.
 set +e
-"$@" "$(cat "$prompt")" 2>&1 | "$bun" "$masker" >>"$log"
+"$@" "$(cat "$prompt")" 2>&1 | "$bun" "$masker" --format stream-json --role "$role" >>"$log"
 pipeline_status=("${PIPESTATUS[@]}")
 
 # The two checks below decide whether a crashed agent or a failed masker is

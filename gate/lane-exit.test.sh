@@ -296,4 +296,102 @@ rm -rf "$fixture_root"/repo "$fixture_root"/*.md "$fixture_root"/*.out
 echo "PASS: omitting --role is unchanged, pre-existing coder behaviour"
 echo
 
+# --------------------------------------------------------------------------
+# Ledger-state execution site (V3-3.1).
+#
+# The mechanism these scenarios lock is not the ledger predicate -- that is
+# covered by tools/instructions/hr-state.test.ts -- it is that the predicate is
+# RUN. Before this row, `check.ts --strict` and the ledger checkers behind it
+# were wired into nothing: no gate, no unit, no timer invoked them against the
+# real corpus, so they reported green over 82 uncleared HR records for as long
+# as they existed. A predicate nobody runs is the same shape as a rule nobody
+# enforces, so "it runs" is itself an acceptance row with its own lock.
+# --------------------------------------------------------------------------
+
+# Installs a minimal instruction-checker into the fixture repo, tracked, whose
+# verdict the scenario chooses. Nothing here re-implements the real checker: the
+# question under test is whether lane-exit.sh runs it and honours its status.
+install_checker() {
+  local exit_code="$1"
+  mkdir -p "$repo/tools/instructions"
+  cat > "$repo/tools/instructions/check.ts" <<EOF
+#!/usr/bin/env bun
+console.log("stub instruction checker: exiting ${exit_code}");
+process.exit(${exit_code});
+EOF
+  git -C "$repo" add tools/instructions/check.ts
+  git -C "$repo" commit -m "add checker" >/dev/null
+}
+
+echo "== scenario: a RED ledger blocks lane exit, even with a valid report =="
+make_repo
+install_checker 1
+tip=$(git -C "$repo" rev-parse HEAD)
+report="$fixture_root/red-ledger.report.md"
+valid_report "$tip" "$report"
+out="$fixture_root/red-ledger.out"
+"$lane_exit" --report "$report" --repo "$repo" --branch ag-lane-1 --role coder >"$out" 2>&1
+status=$?
+cat "$out"
+# The report itself is contract-valid, so without the wiring this exits 0. The
+# ONLY thing that can make it 2 is the ledger check actually having run.
+assert [ "$status" -eq 2 ]
+assert_output_has "$out" "step=ledger-state"
+rm -rf "$fixture_root"/repo "$fixture_root"/*.md "$fixture_root"/*.out
+echo "PASS: the checker has an execution site, and a red verdict blocks"
+echo
+
+echo "== scenario: a GREEN ledger does not block a valid report =="
+make_repo
+install_checker 0
+tip=$(git -C "$repo" rev-parse HEAD)
+report="$fixture_root/green-ledger.report.md"
+valid_report "$tip" "$report"
+out="$fixture_root/green-ledger.out"
+"$lane_exit" --report "$report" --repo "$repo" --branch ag-lane-1 --role coder >"$out" 2>&1
+status=$?
+cat "$out"
+assert [ "$status" -eq 0 ]
+assert_output_has "$out" "stub instruction checker"
+rm -rf "$fixture_root"/repo "$fixture_root"/*.md "$fixture_root"/*.out
+echo "PASS: a green ledger is not a blocker"
+echo
+
+echo "== scenario: a repo that does not TRACK the checker is not-applicable =="
+make_repo
+tip=$(git -C "$repo" rev-parse HEAD)
+report="$fixture_root/no-checker.report.md"
+valid_report "$tip" "$report"
+out="$fixture_root/no-checker.out"
+"$lane_exit" --report "$report" --repo "$repo" --branch ag-lane-1 --role coder >"$out" 2>&1
+status=$?
+cat "$out"
+# This gate is generic: it must still land lanes in a product repo that never
+# carried this control plane's instruction tooling.
+assert [ "$status" -eq 0 ]
+assert_output_has "$out" "status=not-applicable"
+rm -rf "$fixture_root"/repo "$fixture_root"/*.md "$fixture_root"/*.out
+echo "PASS: absence of the tooling is scoped out, not silently skipped"
+echo
+
+echo "== scenario: DELETING a tracked checker does not skip the check =="
+make_repo
+install_checker 1
+rm "$repo/tools/instructions/check.ts"   # still tracked in the index
+tip=$(git -C "$repo" rev-parse HEAD)
+report="$fixture_root/deleted-checker.report.md"
+valid_report "$tip" "$report"
+out="$fixture_root/deleted-checker.out"
+"$lane_exit" --report "$report" --repo "$repo" --branch ag-lane-1 --role coder >"$out" 2>&1
+status=$?
+cat "$out"
+# The guard is keyed on tracked-ness, not on `[[ -f ]]`. A filesystem-existence
+# guard is the fail-open shape this repository keeps getting burned by: it would
+# let `rm` disable an evidence gate silently.
+assert [ "$status" -eq 2 ]
+assert_output_has "$out" "step=ledger-state"
+rm -rf "$fixture_root"/repo "$fixture_root"/*.md "$fixture_root"/*.out
+echo "PASS: the escape hatch is a reviewable diff, not an rm"
+echo
+
 echo "ALL PASS"

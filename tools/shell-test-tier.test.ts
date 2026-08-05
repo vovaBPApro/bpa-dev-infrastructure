@@ -13,9 +13,17 @@ const repoRoot = join(import.meta.dir, "..");
 const requiredTypeScriptExecutors = [
   "tools/check-mechanism-reachability.test.ts",
   "tools/check-documented-mission-cli.test.ts",
+  // The board checker (V3-0.43). The gate's collection is a glob, so this file
+  // already RUNS; what a glob cannot do is notice it stopped existing. Deleting
+  // it would take the workboard back to having no reader at all -- the exact
+  // state in which `e0cd52b` committed a corrupted board and passed the gate.
+  "tools/check-workboard-shape.test.ts",
 ] as const;
 
 test("independently pinned TypeScript gate executors still exist", () => {
+  // Length first, for the same reason the shell inventory below pins its own:
+  // without it, deleting a file AND its line here is a silently green removal.
+  expect(requiredTypeScriptExecutors).toHaveLength(3);
   for (const relativePath of requiredTypeScriptExecutors) {
     expect(existsSync(join(repoRoot, relativePath)), `${relativePath} is missing`).toBe(true);
   }

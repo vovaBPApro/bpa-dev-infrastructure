@@ -31,3 +31,4 @@ tier:shell	shell-tier	tools/shell-test-tier.test.ts
 gate:landing	gate	gate/land.sh
 runner:meteorite	runner	meteorite/run.sh
 checker:fleet-cap	checker	tools/check-fleet-cap.ts
+guard:pre-push	guard	gate/push-guard.sh

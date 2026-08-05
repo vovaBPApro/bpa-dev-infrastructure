@@ -277,10 +277,14 @@ codex_trust_preflight() {
 }
 
 # ── Fail-closed wiring of the mechanisms declared to the provider ───────────
-# Every mechanism below used to sit behind `if [[ -x "$path" ]]` whose false
-# branch wired nothing and printed nothing, so "the hook is missing" and "the
-# session is healthy" rendered identically. Hard Floor 7: a missing mechanism
-# is a refusal that names the path, never a silent omission.
+# The session hook used to sit behind `if [[ -x "$path" ]]` whose false branch
+# wired nothing and printed nothing, so "the hook is missing" and "the session
+# is healthy" rendered identically. Hard Floor 7: a missing mechanism is a
+# refusal that names the path, never a silent omission.
+#
+# The two relay guards below are the same defect class and are NOT yet routed
+# through this function — deliberately, and only until V3-5.6 lands. See the
+# citation at each guard.
 require_mechanism() {
   local kind="$1" path="$2" reason
   if [[ -x "$path" ]]; then
@@ -346,33 +350,45 @@ build_command() {
   case "$PROVIDER" in
     claude)
       local relay="${ORCH_CLAUDE_STOP_RELAY:-$SCRIPT_DIR/orchestrator-claude-stop-relay.sh}"
-      require_mechanism stop-relay "$relay" || return 2
-      local settings="" settings_tmp hook_arg=""
-      (( SESSION_HOOK_WIRED )) && hook_arg="$SESSION_HOOK"
-      mkdir -p "$(dirname "$CLAUDE_RELAY_SETTINGS")"
-      settings_tmp="$(mktemp "$(dirname "$CLAUDE_RELAY_SETTINGS")/.claude-relay-settings.XXXXXX")"
+      local settings="" settings_tmp hook_arg="" relay_arg=""
+      # DELIBERATELY FAIL-OPEN, AND ONLY UNTIL V3-5.6.
+      # orchestrator-claude-stop-relay.sh exists in no commit and on no host, so
+      # routing this through require_mechanism refuses every claude launch —
+      # including the live orchestrator, the operator's only channel here. The
+      # missing relays and the fourteen hours of dead heartbeat they caused are
+      # measured in instance/incidents/2026-08-05-the-heartbeat-has-had-no-writer-since-yesterday.md;
+      # workboard row V3-5.6 restores the tracked relays and closes this guard.
+      # Restoring the status quo is what this comment exists to make expensive:
+      # if V3-5.6 is closed and this guard is still here, this guard is the bug.
+      if [[ -x "$relay" ]]; then relay_arg="$relay"; fi
+      if (( SESSION_HOOK_WIRED )); then hook_arg="$SESSION_HOOK"; fi
       # The claude branch declared NO SessionStart hook at all — the whole
       # standing-context load was codex-only, on a path that did not exist. The
       # settings file this already writes for the Stop relay is the natural
-      # carrier, so both hooks arrive through one artifact.
-      "$BUN_BIN" -e '
+      # carrier, so both hooks arrive through one artifact. The hook does NOT
+      # depend on the relay: on this host the relay is absent today, and that
+      # must not take the standing-context load down with it.
+      if [[ -n "$relay_arg" || -n "$hook_arg" ]]; then
+        mkdir -p "$(dirname "$CLAUDE_RELAY_SETTINGS")"
+        settings_tmp="$(mktemp "$(dirname "$CLAUDE_RELAY_SETTINGS")/.claude-relay-settings.XXXXXX")"
+        "$BUN_BIN" -e '
 const [, relay, hook] = process.argv;
-const settings = {
-  hooks: {
-    Stop: [{
-      hooks: [{ type: "command", command: relay }],
-    }],
-  },
-};
+const settings = { hooks: {} };
+if (relay) {
+  settings.hooks.Stop = [{
+    hooks: [{ type: "command", command: relay }],
+  }];
+}
 if (hook) {
   settings.hooks.SessionStart = [{
     hooks: [{ type: "command", command: hook }],
   }];
 }
 process.stdout.write(JSON.stringify(settings, null, 2) + "\n");
-' "$relay" "$hook_arg" > "$settings_tmp"
-      mv -f "$settings_tmp" "$CLAUDE_RELAY_SETTINGS"
-      printf -v settings ' --settings %q' "$CLAUDE_RELAY_SETTINGS"
+' "$relay_arg" "$hook_arg" > "$settings_tmp"
+        mv -f "$settings_tmp" "$CLAUDE_RELAY_SETTINGS"
+        printf -v settings ' --settings %q' "$CLAUDE_RELAY_SETTINGS"
+      fi
       local mcp=""
       if [[ -n "$CLAUDE_MCP_URL" ]]; then
         local mcp_tmp
@@ -397,9 +413,21 @@ process.stdout.write(JSON.stringify({
       ;;
     codex)
       local relay="${ORCH_TURNEND_RELAY:-$SCRIPT_DIR/orchestrator-turnend-relay.sh}"
-      require_mechanism turnend-relay "$relay" || return 2
       local notify="" effort="" hooks=""
-      printf -v notify ' --config notify=%q' "[\"$relay\"]"
+      # DELIBERATELY FAIL-OPEN, AND ONLY UNTIL V3-5.6.
+      # orchestrator-turnend-relay.sh exists in no commit and on no host. It is
+      # also the single ongoing writer of the heartbeat file (watchdog.sh:348-350),
+      # so its absence has left that signal dead since 2026-08-04 18:13, masked by
+      # the tmux pane-activity fallback:
+      # instance/incidents/2026-08-05-the-heartbeat-has-had-no-writer-since-yesterday.md.
+      # Workboard row V3-5.6 owns the relay's contract — heartbeat write included —
+      # and closes this guard. Authoring that contract from a session-hook lane is
+      # how a plausible wrong thing ships, so the guard stays open one more day
+      # instead. If V3-5.6 is closed and this guard is still here, this guard is
+      # the bug.
+      if [[ -x "$relay" ]]; then
+        printf -v notify ' --config notify=%q' "[\"$relay\"]"
+      fi
       if [[ -n "$CODEX_REASONING_EFFORT" ]]; then
         printf -v effort ' --config model_reasoning_effort=%q' "\"$CODEX_REASONING_EFFORT\""
       fi

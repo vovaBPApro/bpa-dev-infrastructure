@@ -22,10 +22,18 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PAYLOAD="$SCRIPT_DIR/lane-payload.sh"
 SCRATCH="$(mktemp -d)"
-UNIT_TAG="lane-payload-probe-$$"
+# NOT `lane-payload-probe-$$`, which is what this was: `lane-*` is the glob the
+# fleet census and the daemon's completion channel read as "a live lane", so
+# these six transient units were counted as lanes and reported as lanes
+# finishing (workboard V3-5.19). The name is built by the shared helper, which
+# refuses any name inside that namespace -- see its header for why a distinct
+# namespace was chosen over an exclusion in the census.
+# shellcheck source=orchestrator/fleet/probe-unit-namespace.sh
+. "$SCRIPT_DIR/probe-unit-namespace.sh"
+UNIT_TAG="$(probe_unit_name payload "$$")" || exit 1
 cleanup() {
   # --collect reaps a completed transient unit, but a unit that failed to start
-  # can linger; never leave fleet-namespace residue behind.
+  # can linger; never leave residue behind.
   for suffix in probe inline escaped role crash masker; do
     systemctl reset-failed "$UNIT_TAG-$suffix" >/dev/null 2>&1 || true
   done

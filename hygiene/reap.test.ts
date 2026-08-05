@@ -951,23 +951,339 @@ test("an unreadable proc root is UNKNOWN, never an empty list of processes", () 
   );
 });
 
-test("the reaper contains no force-delete of any kind", () => {
-  // A static lock, deliberately. Every other test here proves a guard the
-  // script currently has; this one proves an instrument it must never acquire.
-  // `git branch -D` is how a reaper becomes a work-destroyer: a `-d` refusal
-  // is evidence that the premise is wrong, so the script fetches and
-  // re-measures instead. The same reasoning bars `worktree remove --force`
-  // (which discards an uncommitted tree) and a bare `push --force`
-  // (--force-with-lease, pinned to a measured sha, is the permitted form).
+// --- round-5 review defect: the escalation was strictly more permissive than
+// the `-D` the script bans ---------------------------------------------------
+//
+// `git branch -d` refuses for two unrelated reasons and delete_local_branch
+// treated them as one, escalating past BOTH to `git update-ref -d`:
+//
+//   "the branch 'X' is not fully merged."          -- -d judged against the
+//                                                     wrong HEAD, the case the
+//                                                     escalation was written for
+//   "cannot delete branch 'X' used by worktree at" -- a worktree has it out
+//
+// Measured on this host, git 2.43.0: `git branch -D` REFUSES a checked-out
+// branch and `git update-ref -d` deletes it anyway, so the escalation was more
+// dangerous than the instrument the file's header calls "the one command this
+// tool must never learn" -- while passing the string check that enforced that
+// prohibition. The reviewer reproduced a running lane's branch being deleted
+// under the exact argv hygiene/install-cron.sh installs.
+//
+// Second half, same finding: the sweep's worktree census is taken once, before
+// the loop, so a lane dispatched while the sweep runs is invisible to every
+// guard above the delete. `git worktree add -b` puts a new lane's branch at
+// main's tip, where land_assert_reap_safe correctly reports it carried -- so a
+// brand-new lane is deletable and absent from the census at the same time,
+// which is the ordinary state of every lane between dispatch and first commit.
+//
+// The two tests below stage that window deterministically rather than racing
+// it. Both were run against the pre-fix script first: both delete the branch.
+
+// A --liveness-cmd that DISPATCHES a lane -- a real `git worktree add` plus a
+// real process working inside it -- and then reports the worktree it was asked
+// about as live. Classification of one branch is thus the clock for "a lane
+// started while the sweep was running": no sleeps, no polling, and the branch
+// it creates is invisible to a census taken before the loop.
+function laneDispatchingProbe(
+  dir: string,
+  name: string,
+  repo: string,
+  branch: string,
+  at: string,
+  pidFile: string,
+): string {
+  const probe = join(dir, name);
+  writeFileSync(
+    probe,
+    [
+      "#!/usr/bin/env bash",
+      `at=${JSON.stringify(at)}`,
+      `pidfile=${JSON.stringify(pidFile)}`,
+      'if [[ ! -d "$at" ]]; then',
+      `  git -C ${JSON.stringify(repo)} worktree add -q "$at" ${JSON.stringify(branch)} >/dev/null 2>&1`,
+      '  ( cd "$at" && exec sleep 300 ) >/dev/null 2>&1 &',
+      '  printf %s "$!" > "$pidfile"',
+      '  target="$(cd "$at" && pwd -P)"',
+      "  for _ in $(seq 1 500); do",
+      '    if [[ "$(readlink "/proc/$(cat "$pidfile")/cwd" 2>/dev/null)" == "$target" ]]; then break; fi',
+      "    sleep 0.01",
+      "  done",
+      "fi",
+      "exit 0", // the worktree this probe was ASKED about is live
+      "",
+    ].join("\n"),
+  );
+  chmodSync(probe, 0o755);
+  return probe;
+}
+
+// Reads the pid the probe recorded and hands it to the suite's killer, so a
+// failing assertion cannot leave a 300-second sleep behind.
+function adoptProbeLane(pidFile: string): void {
+  if (!existsSync(pidFile)) return;
+  const pid = Number(readFileSync(pidFile, "utf8").trim());
+  if (Number.isInteger(pid) && pid > 0) livePids.push(pid);
+}
+
+// main, one merged branch at its tip (`zzz-victim`, the shape of a lane before
+// its first commit), one unmerged branch, and `aaa-trigger` -- named to sort
+// FIRST, because `for-each-ref refs/heads` walks refname order, so classifying
+// it happens while the victim is still ahead of the loop.
+function buildMidSweepFixture(): { dir: string; repo: string; trigger: string } {
+  const dir = fixtureDir();
+  const repo = join(dir, "repo");
+  mkdirSync(repo);
+  sh("git init -q -b main .", repo);
+  sh("git config user.email hygiene@example.test", repo);
+  sh("git config user.name Hygiene", repo);
+  writeFileSync(join(repo, "base.txt"), "base\n");
+  sh("git add base.txt && git commit -qm base", repo);
+  sh("git branch aaa-trigger", repo);
+  sh("git branch zzz-victim", repo);
+  const trigger = join(dir, "aaa-trigger-wt");
+  sh(`git worktree add -q ${JSON.stringify(trigger)} aaa-trigger`, repo);
+  return { dir, repo, trigger };
+}
+
+test("branches: a lane dispatched while the sweep is running keeps its branch, census or no census", () => {
+  const { dir, repo } = buildMidSweepFixture();
+  const victimWorktree = join(dir, "zzz-victim-wt");
+  const pidFile = join(dir, "probe.pid");
+  const probe = laneDispatchingProbe(dir, "dispatch.sh", repo, "zzz-victim", victimWorktree, pidFile);
+
+  // --with-worktrees is here only because --liveness-cmd is the one hook the
+  // `branches` sweep runs mid-loop; it opens the window deterministically. The
+  // code under test -- delete_local_branch -- is reached identically by the
+  // installed cron argv, which is how the reviewer reproduced this by timing.
+  const apply = run(["branches", "--repo", repo, "--with-worktrees", "--apply", "--liveness-cmd", probe]);
+  adoptProbeLane(pidFile);
+
+  expect(apply.status).toBe(0);
+  // The sweep genuinely got as far as deciding to delete it -- this is not a
+  // test that passes because nothing happened.
+  expect(apply.stdout).toContain("merged branch: zzz-victim");
+  expect(apply.stdout).toContain("deleting merged branch: zzz-victim");
+  expect(apply.stdout).toContain("a worktree holds this branch as of right now, refusing: zzz-victim");
+  expect(sh("git show-ref --verify --quiet refs/heads/zzz-victim && echo present", repo).trim()).toBe("present");
+  // And the lane it belongs to still has a branch under it.
+  expect(sh("git rev-parse --abbrev-ref HEAD", victimWorktree).trim()).toBe("zzz-victim");
+});
+
+// The other window, and the one no flag can open: between the `-d` refusal and
+// the escalation past it, delete_local_branch fetches. `ext::` makes that fetch
+// run a script, so the branch can acquire a worktree in exactly that gap --
+// under the installed cron argv, with no --with-worktrees and no
+// --liveness-cmd. This is the case the message classification, not the
+// re-measurement, has to catch: the second `-d` now refuses with "used by
+// worktree", and escalating past THAT is what deleted a running lane's branch.
+function remoteWhoseFetchDispatchesALane(
+  dir: string,
+  repo: string,
+  branch: string,
+  at: string,
+): void {
+  const bare = join(dir, "remote.git");
+  sh(`git init -q --bare ${JSON.stringify(bare)}`, dir);
+  const helper = join(dir, "fetch-helper.sh");
+  writeFileSync(
+    helper,
+    [
+      "#!/usr/bin/env bash",
+      `at=${JSON.stringify(at)}`,
+      'if [[ ! -d "$at" ]]; then',
+      `  git -C ${JSON.stringify(repo)} worktree add -q "$at" ${JSON.stringify(branch)} >/dev/null 2>&1`,
+      "fi",
+      'exec git upload-pack "$1"',
+      "",
+    ].join("\n"),
+  );
+  chmodSync(helper, 0o755);
+  sh(`git remote add origin ${JSON.stringify(`ext::bash ${helper} ${bare}`)}`, repo);
+  // ext:: transports are refused by default; this enables it for this fixture
+  // repository only, and it is the transport that makes the window observable.
+  sh("git config protocol.ext.allow always", repo);
+}
+
+test("branches: the escalation refuses a -d refusal it cannot read as merged-vs-HEAD", () => {
+  const { dir, repo } = buildFixture();
+  const victimWorktree = join(dir, "unmerged-wt");
+  remoteWhoseFetchDispatchesALane(dir, repo, "unmerged", victimWorktree);
+  const dispositions = join(dir, "dispositions.txt");
+  writeFileSync(dispositions, "unmerged operator ruling: abandoned experiment, safe to drop\n");
+
+  // The installed cron argv, plus the disposition file that is ordinary
+  // instance configuration. No flag opens this window.
+  const apply = run(["branches", "--repo", repo, "--dispositions", dispositions, "--apply"]);
+
+  expect(apply.status).toBe(0);
+  expect(apply.stdout).toContain("deleting dispositioned branch: unmerged");
+  expect(apply.stdout).toContain("git refused -d for unmerged, re-measuring rather than forcing");
+  expect(apply.stdout).toContain("git refused -d for a reason this tool does not escalate past, retaining: unmerged");
+  expect(apply.stdout).toContain("used by worktree");
+  // It must NOT have claimed the diagnosis it did not perform.
+  expect(apply.stdout).not.toContain("git -d judges against HEAD; deleting the exact measured ref instead");
+  expect(sh("git show-ref --verify --quiet refs/heads/unmerged && echo present", repo).trim()).toBe("present");
+  expect(sh("git rev-parse --abbrev-ref HEAD", victimWorktree).trim()).toBe("unmerged");
+});
+
+// --- the escalation primitive's other two outcomes -------------------------
+//
+// `grep -n update-ref hygiene/reap.test.ts` returned nothing before this round:
+// the one primitive in this tool that can delete a ref git itself declined to
+// delete had no test at any of its outcomes. The refusal is locked above; the
+// success and the git-said-no cases are locked here, so a future change cannot
+// quietly disarm the escalation either.
+
+test("branches: the escalation still deletes the branch it was actually written for", () => {
+  const { dir, repo } = buildFixture();
+  const dispositions = join(dir, "dispositions.txt");
+  writeFileSync(dispositions, "unmerged operator ruling: abandoned experiment, safe to drop\n");
+
+  const apply = run(["branches", "--repo", repo, "--dispositions", dispositions, "--apply"]);
+  expect(apply.status).toBe(0);
+  // `-d` judges against the repository's HEAD (main), which has never seen
+  // this branch; the operator's disposition is a judgement `-d` cannot see at
+  // all. That -- and only that -- is what the exact-ref delete exists for.
+  expect(apply.stdout).toContain(
+    "git -d judges against HEAD; deleting the exact measured ref instead (operator disposition): unmerged",
+  );
+  expect(apply.stdout).toContain("deleted dispositioned branch: unmerged");
+  const check = spawnSync("git", ["show-ref", "--verify", "--quiet", "refs/heads/unmerged"], { cwd: repo });
+  expect(check.status).not.toBe(0);
+});
+
+test("branches: an exact-ref delete that git itself refuses is retained, not retried harder", () => {
+  const { dir, repo } = buildFixture();
+  const dispositions = join(dir, "dispositions.txt");
+  writeFileSync(dispositions, "unmerged operator ruling: abandoned experiment, safe to drop\n");
+  // A stale ref lock -- what a crashed or concurrent git process leaves
+  // behind. `rev-parse` and `branch -d`'s merge check are unaffected, so the
+  // sweep reaches the escalation and the escalation is the thing that fails.
+  writeFileSync(join(repo, ".git", "refs", "heads", "unmerged.lock"), "");
+
+  const apply = run(["branches", "--repo", repo, "--dispositions", dispositions, "--apply"]);
+  expect(apply.status).toBe(0);
+  expect(apply.stdout).toContain("git -d judges against HEAD; deleting the exact measured ref instead");
+  expect(apply.stdout).toContain("exact-ref delete refused, retaining: unmerged");
+  expect(apply.stdout).not.toContain("deleted dispositioned branch: unmerged");
+  expect(sh("git show-ref --verify --quiet refs/heads/unmerged && echo present", repo).trim()).toBe("present");
+});
+
+test("remote-branches: a lane dispatched while the sweep is running keeps its remote branch", () => {
+  const { dir, repo } = buildRemoteFixture();
+  // Sorts before ag-merged-remote in `ls-remote --heads` output, so its
+  // classification runs while the victim is still ahead of the loop.
+  sh("git branch aaa-trigger main && git push -q origin aaa-trigger", repo);
+  const trigger = join(dir, "aaa-trigger-wt");
+  sh(`git worktree add -q ${JSON.stringify(trigger)} aaa-trigger`, repo);
+  const victimWorktree = join(dir, "ag-merged-remote-wt");
+  const pidFile = join(dir, "probe.pid");
+  const probe = laneDispatchingProbe(dir, "dispatch.sh", repo, "ag-merged-remote", victimWorktree, pidFile);
+
+  const apply = run(["remote-branches", "--repo", repo, "--apply", "--liveness-cmd", probe]);
+  adoptProbeLane(pidFile);
+
+  expect(apply.status).toBe(0);
+  expect(apply.stdout).toContain("deleting merged remote branch: origin/ag-merged-remote");
+  expect(apply.stdout).toContain(
+    "a lane holds this branch as of right now, refusing the remote delete: origin/ag-merged-remote",
+  );
+  // The refusal is grounded in a real process inside the new worktree, not in
+  // the probe's own answer: a remote ref has no reflog on the other side.
+  expect(apply.stdout).toContain("process-working-inside");
+  expect(sh("git ls-remote --heads origin", repo)).toContain("refs/heads/ag-merged-remote");
+  expect(sh("git rev-parse --abbrev-ref HEAD", victimWorktree).trim()).toBe("ag-merged-remote");
+});
+
+// Splits reap.sh into `name() { ... }` bodies so a claim about WHERE a
+// primitive may appear can be made about the script rather than about a
+// string in it.
+function shellFunctionBodies(source: string): Map<string, string> {
+  const bodies = new Map<string, string>();
+  let name = "";
+  let body: string[] = [];
+  for (const line of source.split("\n")) {
+    const opens = line.match(/^([a-z_][a-z0-9_]*)\(\)\s*\{\s*$/);
+    if (!name && opens) {
+      name = opens[1];
+      body = [];
+      continue;
+    }
+    if (name && line === "}") {
+      bodies.set(name, body.join("\n"));
+      name = "";
+      continue;
+    }
+    if (name) body.push(line);
+  }
+  return bodies;
+}
+
+test("no code path deletes a branch that is checked out or held by a live lane, whatever primitive it uses", () => {
+  // This test used to assert the ABSENCE OF A STRING -- that `git branch -D`
+  // appears nowhere. That check passed at every commit of the round-4 branch
+  // while `git update-ref -d` sat two lines below it deleting checked-out
+  // branches that `-D` itself would have refused. A prohibition defended by
+  // spelling is not a prohibition, so the claim is now made three ways: the
+  // behaviour, the location of every ref-deleting primitive, and only then the
+  // banned instruments.
+
+  // 1. BEHAVIOUR. A branch held by a live lane survives every route into a
+  //    deletion the tool has: the default sweep, the sweep that is allowed to
+  //    remove worktrees, and a lane that appears after the census (locked in
+  //    its own tests above, on both the local and the remote path).
+  const { repo, worktree } = buildFixture();
+  spawnLaneIn(worktree);
+
+  const cronArgv = run(["branches", "--repo", repo, "--apply"]);
+  expect(cronArgv.status).toBe(0);
+  expect(cronArgv.stdout).toContain("held by live worktree, refusing: worktree-held");
+  expect(sh("git show-ref --verify --quiet refs/heads/worktree-held && echo present", repo).trim()).toBe("present");
+
+  const armed = run(["branches", "--repo", repo, "--with-worktrees", "--apply"]);
+  expect(armed.status).toBe(0);
+  expect(armed.stdout).toContain("process-working-inside");
+  expect(armed.stdout).toContain("held by live worktree, refusing: worktree-held");
+  expect(sh("git show-ref --verify --quiet refs/heads/worktree-held && echo present", repo).trim()).toBe("present");
+  expect(existsSync(worktree)).toBe(true);
+
+  // 2. LOCATION. Every primitive that can remove a refs/heads ref lives in one
+  //    of the two functions that re-measure the holding worktree immediately
+  //    before acting. A third primitive added anywhere else fails here even if
+  //    it is spelled in a way no blocklist anticipated.
   const source = readFileSync(reap, "utf8");
+  const bodies = shellFunctionBodies(source);
+  const guarded = ["delete_local_branch", "delete_remote_branch"];
+  for (const fn of guarded) {
+    expect(bodies.has(fn)).toBe(true);
+    expect(bodies.get(fn)).toMatch(/worktree list --porcelain|holding_worktree_now/);
+  }
+  const deletesAHead = (line: string) =>
+    /^\s*[^#]*\bgit\b[^\n]*\bbranch\b[^\n]*\s-[dD]\b/.test(line) ||
+    /^\s*[^#]*\bgit\b[^\n]*\bupdate-ref\b[^\n]*\s-d\b/.test(line) ||
+    /^\s*[^#]*\bgit\b[^\n]*\bpush\b[^\n]*--delete\b/.test(line);
+  const outsideGuardedFunctions = source
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("#"))
+    .filter(deletesAHead)
+    .filter((line) => !guarded.some((fn) => bodies.get(fn)?.includes(line)));
+  expect(outsideGuardedFunctions).toEqual([]);
+  // The one other delete refspec in the file is the meteorite sweep's, and it
+  // is confined to its own reserved namespace by an anchored regex rather than
+  // by being a different verb.
+  expect(bodies.get("reap_meteorite_refs")).toMatch(/\^refs\/meteorite-candidates\//);
+
+  // 3. INSTRUMENTS. Kept, now that it is the third line of defence rather than
+  //    the only one. `git branch -D` is how a reaper becomes a work-destroyer;
+  //    `worktree remove --force` discards an uncommitted tree; a bare
+  //    `push --force` is unconditional where --force-with-lease is a
+  //    compare-and-swap.
   const code = source
     .split("\n")
     .filter((line) => !line.trimStart().startsWith("#"))
     .join("\n");
-
   expect(code).not.toMatch(/git\b[^\n]*\bbranch\b[^\n]*\s-D\b/);
   expect(code).not.toMatch(/worktree\s+remove\b[^\n]*--force\b/);
   expect(code).not.toMatch(/push\b[^\n]*\s--force(\s|$)/m);
-  // ...and the permitted form is actually the one in use.
   expect(code).toMatch(/--force-with-lease=/);
 });

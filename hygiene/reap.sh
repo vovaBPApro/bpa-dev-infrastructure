@@ -250,6 +250,16 @@ worktree_for_branch() {
   ' <<< "$worktree_list"
 }
 
+# Same question, asked of the repository as it is RIGHT NOW rather than of a
+# list captured earlier. A sweep's census is a plan-time measurement, and a
+# lane that starts after it is not in it -- see the note above
+# worktree_is_terminal, which says the same thing about the other direction.
+# Prints the holding worktree's path, or nothing.
+holding_worktree_now() {
+  local branch="$1"
+  worktree_for_branch "$branch" "$(git -C "$repo" worktree list --porcelain)"
+}
+
 # --- terminal-worktree machinery -------------------------------------------
 #
 # Why this exists at all: before it, `worktrees` pruned only ORPHANED metadata
@@ -404,10 +414,44 @@ remove_terminal_worktree() {
 # by hand, which is a judgement `-d` has no way to see at all. Naming the exact
 # expected sha makes the delete a compare-and-swap that FAILS if the branch
 # moved since it was measured; `-D` would happily delete the newer tip.
+#
+# That reasoning covers exactly ONE of the two reasons `git branch -d` refuses,
+# and round-2 review found the escalation firing on both:
+#
+#   "the branch 'X' is not fully merged."          -> -d judged against the
+#                                                      wrong HEAD. Escalate.
+#   "cannot delete branch 'X' used by worktree at" -> a worktree has it checked
+#                                                      out. NEVER escalate.
+#
+# Measured, git 2.43.0: `-d` and `-D` BOTH refuse a checked-out branch, and
+# `update-ref -d` deletes it regardless -- so escalating past an in-use refusal
+# made this script strictly more permissive than the `-D` its header bans, and
+# it deleted a running lane's branch under the argv hygiene/install-cron.sh
+# installs. The in-use refusal also takes precedence over the merge check, so
+# an unmerged branch behind a worktree reports "used by worktree" too.
+#
+# The classification is therefore fail-closed on the message: escalate only on
+# a refusal this tool recognizes as the merged-vs-HEAD case, retain on anything
+# else, including a message it cannot read at all. `LC_ALL=C` is set on the
+# probe so the message is the untranslated msgid rather than whatever locale
+# the timer happens to run under -- a translated refusal would be unreadable
+# here, and unreadable must not quietly become "escalate".
 delete_local_branch() {
-  local branch="$1" label="$2" proven="$3" sha out
+  local branch="$1" label="$2" proven="$3" sha out holder
+  # Liveness is re-measured HERE, immediately before the deletion, against a
+  # census taken now -- never the one reap_branches took before its loop. A
+  # lane dispatched while the sweep was running is invisible in that older
+  # list, and `git worktree add -b` puts its branch at main's tip, where
+  # land_assert_reap_safe correctly calls it carried. So the ordinary state of
+  # a brand-new lane is "deletable and absent from the census", and the census
+  # is the only thing that was standing between it and this function.
+  holder="$(holding_worktree_now "$branch")"
+  if [[ -n "$holder" ]]; then
+    say "a worktree holds this branch as of right now, refusing: $branch (worktree: $holder)"
+    return 1
+  fi
   sha="$(git -C "$repo" rev-parse "refs/heads/$branch")"
-  if out="$(git -C "$repo" branch -d "$branch" 2>&1)"; then
+  if out="$(LC_ALL=C git -C "$repo" branch -d "$branch" 2>&1)"; then
     say "deleted $label: $branch ($sha)"
     return 0
   fi
@@ -420,12 +464,25 @@ delete_local_branch() {
     say "branch moved while being reaped, retaining: $branch"
     return 1
   fi
-  if out="$(git -C "$repo" branch -d "$branch" 2>&1)"; then
+  if out="$(LC_ALL=C git -C "$repo" branch -d "$branch" 2>&1)"; then
     say "deleted $label after re-measuring: $branch ($sha)"
     return 0
   fi
   if [[ -z "$proven" ]]; then
     say "retaining branch, safety not independently proven: $branch (git: ${out##*$'\n'})"
+    return 1
+  fi
+  if [[ "$out" != *"is not fully merged"* ]]; then
+    say "git refused -d for a reason this tool does not escalate past, retaining: $branch (git: ${out%%$'\n'*})"
+    return 1
+  fi
+  # The window between the refusal above and the delete below is small and it
+  # is not empty: `git worktree add` takes milliseconds, and the fetch this
+  # function just performed can take seconds. Re-measure again rather than
+  # reuse the answer from the top of the function.
+  holder="$(holding_worktree_now "$branch")"
+  if [[ -n "$holder" ]]; then
+    say "a worktree took this branch while it was being reaped, refusing: $branch (worktree: $holder)"
     return 1
   fi
   say "git -d judges against HEAD; deleting the exact measured ref instead ($proven): $branch"
@@ -438,7 +495,20 @@ delete_local_branch() {
 }
 
 delete_remote_branch() {
-  local branch="$1" sha="$2" label="$3"
+  local branch="$1" sha="$2" label="$3" fresh_list holder reason rc=0
+  # The remote sweep's census is taken before its loop too, and a remote ref is
+  # HARDER to recover than a local one -- there is no reflog on the other side.
+  # So it re-measures on exactly the same terms as the local path: fresh list,
+  # taken now, at the moment of the deletion.
+  fresh_list="$(git -C "$repo" worktree list --porcelain)"
+  holder="$(worktree_for_branch "$branch" "$fresh_list")"
+  if [[ -n "$holder" ]]; then
+    reason="$(worktree_is_terminal "$holder" "$branch" "$fresh_list")" || rc=$?
+    if (( rc != 0 )); then
+      say "a lane holds this branch as of right now, refusing the remote delete: $remote/$branch (worktree: $holder, $reason)"
+      return 1
+    fi
+  fi
   # --force-with-lease pins the exact tip measured moments ago: anything pushed
   # to that branch in between makes the remote REFUSE the delete instead of
   # racing it away. On a delete refspec this is the only compare-and-swap git

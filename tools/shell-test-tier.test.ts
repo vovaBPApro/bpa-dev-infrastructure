@@ -21,13 +21,18 @@ const requiredTypeScriptExecutors = [
   // already RUNS; what a glob cannot do is notice it stopped existing. Deleting
   // it would take the workboard back to having no reader at all -- the exact
   // state in which `e0cd52b` committed a corrupted board and passed the gate.
+  //
+  // Registered by entry only, matching the two above: this list has no second
+  // independent record, so deleting a file TOGETHER with its line here is still
+  // silently green. That gap is pre-existing and covers all three entries; the
+  // fix has the shape the shell tier already uses -- a line-per-entry .tsv --
+  // and belongs with that inventory, not to this row. An aggregate count is
+  // explicitly NOT the fix: it is merge-blind, which is why the shell tier
+  // stopped using one.
   "tools/check-workboard-shape.test.ts",
 ] as const;
 
 test("independently pinned TypeScript gate executors still exist", () => {
-  // Length first, for the same reason the shell inventory below pins its own:
-  // without it, deleting a file AND its line here is a silently green removal.
-  expect(requiredTypeScriptExecutors).toHaveLength(3);
   for (const relativePath of requiredTypeScriptExecutors) {
     expect(existsSync(join(repoRoot, relativePath)), `${relativePath} is missing`).toBe(true);
   }

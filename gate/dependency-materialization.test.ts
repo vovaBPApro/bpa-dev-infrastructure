@@ -297,6 +297,55 @@ test("every external import in a tracked source resolves from inside the checkou
   expect(offenders).toEqual([]);
 });
 
+// A child that drives land_resolve_bun must not inherit the caller's resolve
+// overrides. land_resolve_bun REFUSES a caller-supplied BUN_BIN --
+// `LAND step=preflight status=fail detail=caller-bun-override-refused` -- and
+// that refusal is correct behavior: a caller does not get to choose which bun
+// the gate runs. But it means any test driving the function through an
+// inherited environment asserts whatever the caller happened to export rather
+// than the behavior under test. That caller is not hypothetical: every lane
+// exiting through gate/lane-exit.sh sources land-lib.sh and calls
+// land_resolve_bun, which EXPORTS BUN_BIN, so completion-guard.ts's verify run
+// -- and every test it spawns -- carries it.
+//
+// Measured at 54fb255, one SHA, one command, differing only in this variable:
+// with BUN_BIN unset the step reached the inventory read and failed by name,
+// exit 0 for the suite; with BUN_BIN set it never got past preflight and the
+// suite exited 1. A check whose verdict depends on ambient state is the exact
+// defect the rest of this file locks, one level up -- so the environment is
+// sanitized HERE, in the spawn, rather than by unsetting anything globally,
+// which would only move the ambience somewhere less visible.
+//
+// Both names are OUTPUTS of land_resolve_bun, never inputs. Only BUN_BIN
+// changes the outcome today; LAND_CHECK_PATH is stripped for the rule, not for
+// a measured failure, since land_resolve_bun assigns it unconditionally.
+const RESOLVE_OUTPUTS = ["BUN_BIN", "LAND_CHECK_PATH"];
+
+export function envWithoutResolveOverrides(
+  source: Record<string, string | undefined> = process.env,
+): Record<string, string | undefined> {
+  const sanitized = { ...source };
+  for (const name of RESOLVE_OUTPUTS) delete sanitized[name];
+  return sanitized;
+}
+
+// Takes its source as an argument so the property is asserted on an input the
+// ambient environment cannot supply or withhold -- and without mutating
+// process.env, which would leak into every other test in the file. Without
+// this, emptying the sanitizer would still read green in any environment that
+// happens not to export BUN_BIN, which is how this defect survived review in
+// the first place.
+test("the spawn sanitizer removes the resolve outputs and keeps everything else", () => {
+  const sanitized = envWithoutResolveOverrides({
+    BUN_BIN: "/somewhere/bun",
+    LAND_CHECK_PATH: "/somewhere/bin",
+    PATH: "/usr/bin",
+  });
+  expect(sanitized.BUN_BIN).toBeUndefined();
+  expect(sanitized.LAND_CHECK_PATH).toBeUndefined();
+  expect(sanitized.PATH).toBe("/usr/bin");
+});
+
 test("an unreadable workspace inventory fails the step closed, by name", () => {
   // F4: the inventory read was the one fail-OPEN path in a function that is
   // otherwise meticulous about never letting a failure read as an absence. With
@@ -314,8 +363,13 @@ test("an unreadable workspace inventory fails the step closed, by name", () => {
         repoRoot,
         notARepo,
       ],
-      { encoding: "utf8" },
+      { encoding: "utf8", env: envWithoutResolveOverrides() },
     );
+    // Named first, and separately from the assertions below, because it is the
+    // difference between "the step failed the way it must" and "the step never
+    // ran". Red against an inheriting spawn under any caller that exports
+    // BUN_BIN -- which is what the landing and lane-exit gates both are.
+    expect(run.stderr).not.toContain("caller-bun-override-refused");
     expect(run.status).toBe(1);
     expect(run.stderr).toContain("deps=install status=fail");
     expect(run.stderr).toContain("detail=inventory-unreadable");

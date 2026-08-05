@@ -51,6 +51,13 @@ three attempts, and the branch tip is unchanged across all of them, which is pre
 the fix, so the rebase is real work and yields a new SHA, which is genuine progress rather
 than a reset. It costs a re-attestation, because the ACCEPT is pinned to the old SHA.
 
+**`ag-v3-5.19-r2` is ACCEPTed but does NOT land** — measured at `9cb09bb`: it passes every
+gate step and then fails the **meteorite** on `the independently pinned shell-test inventory
+still exists`. The branch adds `orchestrator/fleet/lane-unit-namespace.test.sh` and the
+pinned inventory does not account for it in a clean container. Not investigated — the cause
+is one step past where I stopped. Its review artifact is
+`/root/.cache/infra-lanes/ag-v3-5.19-r2.review.md` and is valid.
+
 **The reaper is dangerous and unlanded.** Three reviews, three distinct ways it destroyed live
 work. Do not land it without a review that attacks it.
 

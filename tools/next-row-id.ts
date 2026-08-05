@@ -64,11 +64,43 @@
 //     invisible here. That is the collision direction: the tool then hands out
 //     an id the board already holds.
 //
-// So cell extraction uses awk's character class, character for character
-// (`LINE_SPACE` below), and the equality claim is locked by BEHAVIOUR, not only
-// by text: next-row-id.test.ts feeds one board to `fleet-nudge.sh --count-open`
-// and to this tool and diffs their verdicts. This file does not modify the
-// parser; it agrees with it under test.
+// So cell extraction uses awk's character class AS IT BEHAVES IN THE C LOCALE
+// (`LINE_SPACE` below). That is narrower than "awk's character class", and the
+// difference is the point: awk's `[[:space:]]` is `iswspace()` under the process
+// locale, not a fixed set. Measured on this host with gawk 5.2.1, one board per
+// code point: under `LC_ALL=C` it is exactly `LINE_SPACE`, while under `C.UTF-8`
+// or `en_US.UTF-8` it ALSO matches U+1680, U+2000–U+2006, U+2008–U+200A, U+2028,
+// U+2029, U+205F and U+3000. No unit in bootstrap/units/ sets a locale, so the
+// timer-run watchdog reads a board in the C locale and an agent running
+// `--count-open` from the operator's shell does not.
+//
+// Matching that set is the WRONG repair, because agreeing with the parser is not
+// the safety property. A line this tool cannot read does not merely disagree
+// with the parser — it CLOSES THE TABLE here, so every row below it is invisible
+// too. Measured on a five-row board whose third row is led by U+2003: this tool
+// saw two ids and allocated `V3-5.3`, which is written on that board, along with
+// `V3-5.4` and `V3-5.5` behind it. Under a UTF-8 locale the parser counts all
+// five and would refuse the resulting duplicate at exit 2; under `LC_ALL=C` the
+// parser goes blind at the SAME line, both readers agree at exit 0, and the
+// duplicate lands with nothing left to catch it. Pinning the locale to make the
+// two agree would therefore buy agreement and spend the backstop. The same holds
+// with no locale involved at all: U+0085, U+00A0, U+2007, U+202F and U+FEFF are
+// space to NEITHER reader in any locale, both count one row, and the allocator
+// still hands back an id the board holds.
+//
+// So this file fails closed on what it cannot classify. A line that reaches its
+// leading `|` across any character of the wider Unicode space set
+// (`AMBIGUOUS_SPACE` below) without matching `LINE_SPACE` is an ERROR naming the
+// line and the code point — never an invisible line, and never an allocation.
+// Prose is untouched: a `|` with ordinary text before it still merely closes the
+// table, exactly as it does for awk in every locale.
+//
+// What is locked, and no wider: next-row-id.test.ts feeds one board to
+// `fleet-nudge.sh --count-open` and to this tool and diffs their verdicts for the
+// ASCII cases, where the class is locale-independent and the two readers must
+// agree; and for each ambiguous code point it asserts that THIS TOOL REFUSES,
+// whatever the parser did, so that half of the lock holds in whatever locale the
+// suite is run under. This file does not modify the parser.
 //
 // ── The answer is checked like any other id ────────────────────────────────
 //
@@ -145,15 +177,39 @@ export const DECISIONS_DIR = join("instance", "decisions");
 export const TRIAGE_FILE = join("instance", "decisions", "triage.jsonl");
 export const FLEET_NUDGE_FILE = join("orchestrator", "fleet", "fleet-nudge.sh");
 
-// awk's `[[:space:]]` in the board parser, minus the newline the line split
-// already consumed. NOT `\s`, and never `.trim()`: both strip U+00A0 and U+FEFF,
-// which POSIX `[[:space:]]` does not, so a cell the parser refuses would be
-// trimmed clean here and blessed. Bare `\r` stays in the class because a lone CR
-// survives the `/\r?\n/` split and awk treats it as space.
+// awk's `[[:space:]]` in the board parser AS IT BEHAVES IN THE C LOCALE, minus
+// the newline the line split already consumed. NOT `\s`, and never `.trim()`:
+// both strip U+00A0 and U+FEFF, which POSIX `[[:space:]]` does not, so a cell the
+// parser refuses would be trimmed clean here and blessed. Bare `\r` stays in the
+// class because a lone CR survives the `/\r?\n/` split and awk treats it as
+// space. The locale dependence this set does NOT cover is handled by refusal —
+// see AMBIGUOUS_SPACE and the header.
 const LINE_SPACE = "[ \\t\\v\\f\\r]";
 const LEADING_PIPE = new RegExp(`^${LINE_SPACE}*\\|`);
 const TRAILING_PIPE = new RegExp(`\\|${LINE_SPACE}*$`);
 const CELL_EDGES = new RegExp(`^${LINE_SPACE}+|${LINE_SPACE}+$`, "g");
+
+// Every character that some reader of this board might treat as horizontal
+// space and `LINE_SPACE` does not: the Unicode `White_Space` property beyond
+// ASCII, plus U+FEFF because `.trim()` strips it and a byte-order mark is the
+// commonest invisible survivor of a copy-paste. This set is NOT used to classify
+// anything — it is used to REFUSE. Whether a given member is space to awk
+// depends on the process locale (U+2003 is under `C.UTF-8`, is not under `C`),
+// and whether it is space to a future reader depends on that reader, so a line
+// reaching its `|` across one of them is a line whose reading this tool cannot
+// state. Being wrong here is not a miscount: the line would close the table and
+// take every row below it out of sight, and the ids on those rows would be
+// handed straight back out.
+const AMBIGUOUS_SPACE = "[\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]";
+const AMBIGUOUS_LEADING_PIPE = new RegExp(`^(?:${LINE_SPACE}|${AMBIGUOUS_SPACE})*\\|`);
+const AMBIGUOUS_CHAR = new RegExp(AMBIGUOUS_SPACE);
+
+/** `U+2003`, so the refusal names the character nobody can see. */
+function codePoints(text: string): string {
+  return [...text]
+    .map((character) => `U+${character.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`)
+    .join(" ");
+}
 
 /** awk's `trim()`, character class included. */
 function trimCell(cell: string): string {
@@ -243,6 +299,18 @@ export function collectWorkboard(repo: string, errors: string[]): Taken {
     const line = lines[index]!;
     const at = `${WORKBOARD_FILE}:${index + 1}`;
     if (!LEADING_PIPE.test(line)) {
+      // A line that reaches its `|` across a character this tool cannot classify
+      // is refused by name, not skipped. Skipping it would close the table and
+      // hide every row below it, and those rows' ids would be handed out again.
+      const ambiguous = AMBIGUOUS_LEADING_PIPE.exec(line);
+      if (ambiguous) {
+        const lead = [...ambiguous[0]!.slice(0, -1)].filter((character) => AMBIGUOUS_CHAR.test(character));
+        errors.push(
+          `${at}: a table row reached across ${codePoints(lead.join(""))}, which this tool cannot classify — ` +
+            `awk's \`[[:space:]]\` is locale-dependent, so this line is a row to one reader and invisible to the other, ` +
+            `and an invisible line takes every row below it with it. Remove the character; an unreadable line is refused, never skipped.`,
+        );
+      }
       inTable = false;                                  // a stray pipe in prose is not a row
       continue;
     }

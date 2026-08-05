@@ -460,6 +460,83 @@ test.each([
   if (!allocator.refused) expect(allocator.ids).toBe(parser.open);
 });
 
+// ── One board, two readers: the characters no fixed set settles ────────────
+//
+// F4, round 2. The cases above are ASCII, where awk's `[[:space:]]` is the same
+// set in every locale and the two readers must agree. These are the characters
+// where it is not: awk's class is `iswspace()` under the process locale, so
+// U+1680 and its neighbours are space to gawk under `C.UTF-8`/`en_US.UTF-8` and
+// are not under `C`. Every character here is built from its CODE POINT rather
+// than typed, so the character under test is the one named and no editor,
+// terminal or copy-paste can quietly substitute another.
+//
+// The assertion is deliberately NOT "agrees with the parser", because agreement
+// is not safety. Replayed at `db4bd6a`, U+0085/U+00A0/U+2007/U+202F/U+FEFF made
+// both readers count one row — perfect agreement — while the tool handed back
+// `V3-5.2`, which is written on the board. So what is locked is that THIS TOOL
+// REFUSES, which holds in whatever locale the suite runs under.
+const AMBIGUOUS = [
+  ["U+0085 next line", 0x0085],
+  ["U+00A0 no-break space", 0x00a0],
+  ["U+1680 ogham space mark", 0x1680],
+  ["U+2000 en quad", 0x2000],
+  ["U+2003 em space", 0x2003],
+  ["U+2007 figure space", 0x2007],
+  ["U+2028 line separator", 0x2028],
+  ["U+2029 paragraph separator", 0x2029],
+  ["U+202F narrow no-break space", 0x202f],
+  ["U+205F medium mathematical space", 0x205f],
+  ["U+3000 ideographic space", 0x3000],
+  ["U+FEFF byte order mark", 0xfeff],
+] as const;
+
+test.each(AMBIGUOUS)("a row led by %s is refused by name, never made invisible", (name, codePoint) => {
+  const board = boardWith(`${String.fromCodePoint(codePoint)}| V3-5.2 | a second row | **open** |`);
+  const { id, errors } = nextId({ workboard: board });
+  // No allocation at all: at db4bd6a every one of these answered V3-5.2, an id
+  // the board in front of it holds.
+  expect(id, `allocated ${id} while the board holds V3-5.2`).toBeUndefined();
+  expect(errors.join("\n")).toContain(`instance/workboard.md:4: a table row reached across ${name.split(" ")[0]}`);
+});
+
+// The amplification: the line is not merely lost, it CLOSES THE TABLE, so every
+// row below it is lost with it. This is what makes an unclassifiable line worth
+// refusing rather than skipping — one stray character, three reissued ids.
+test("a row led by an unclassifiable character does not hide every row below it", () => {
+  const board = [
+    "| id | row | state |",
+    "|---|---|---|",
+    "| V3-5.1 | the first row | **open** |",
+    "| V3-5.2 | the second row | **open** |",
+    `${String.fromCodePoint(0x2003)}| V3-5.3 | the third row | **open** |`,
+    "| V3-5.4 | the fourth row | **open** |",
+    "| V3-5.5 | the fifth row | **open** |",
+    "",
+  ].join("\n");
+
+  const { id, errors } = nextId({ workboard: board });
+  // At db4bd6a this allocated V3-5.3 — the board holds V3-5.3, V3-5.4 and
+  // V3-5.5, and the tool could see none of them.
+  expect(id, `allocated ${id} while the board holds V3-5.3, V3-5.4 and V3-5.5`).toBeUndefined();
+  expect(errors.join("\n")).toContain("instance/workboard.md:5: a table row reached across U+2003");
+
+  // And the rows below it are seen again once the character is gone, so the
+  // refusal is about that one line and not about the board.
+  const repaired = board.replace(String.fromCodePoint(0x2003), "");
+  expect(nextId({ workboard: repaired })).toEqual({ id: "V3-5.6", errors: [] });
+});
+
+// The refusal is bounded to a leading run of SPACE. Prose before the pipe still
+// merely closes the table, exactly as it does for awk in every locale — a board
+// full of prose that happens to contain a pipe must not become unallocatable.
+test("prose before a pipe still closes the table rather than refusing the board", () => {
+  const board = boardWith(
+    `${String.fromCodePoint(0x2003)}prose with a | pipe`,
+    "| V3-5.2 | below a closed table | **open** |",
+  );
+  expect(nextId({ workboard: board })).toEqual({ id: "V3-5.2", errors: [] });
+});
+
 // ── The command surface ────────────────────────────────────────────────────
 
 test("the command prints the id alone on stdout and refuses a missing prefix", () => {

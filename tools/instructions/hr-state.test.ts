@@ -13,12 +13,14 @@
 // invented ids and invented prose only.
 
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  checkHrAging,
   checkHrStates,
   checkTriageClosures,
+  closureToken,
   hrDisposition,
   isHrOpen,
   parseHrFields,
@@ -26,8 +28,11 @@ import {
   dischargedMsgIds,
   collectWorkboardRows,
   resolvesTarget,
+  resolveTarget,
   collectResolvables,
   readExemptions,
+  readParkedHorizonDays,
+  DEFAULT_PARKED_HORIZON_DAYS,
   HR_STATES,
 } from "./ledger.ts";
 
@@ -200,7 +205,11 @@ describe("checkHrStates fails, by named rule", () => {
       expect(resolvesTarget(root, resolvables, "V3-9.1")).toBe(true);
       expect(resolvesTarget(root, resolvables, "sample-doc")).toBe(true);
       expect(resolvesTarget(root, resolvables, "instructions/sample-doc.md")).toBe(true);
-      expect(resolvesTarget(root, resolvables, "`sample-doc` (a wrapped prose value)")).toBe(true);
+      // Backtick wrapping is still accepted; the PROSE around it no longer is.
+      // Round 1 resolved this whole sentence because one token inside it named
+      // a doc — see the round-2 block at the bottom of this file.
+      expect(resolvesTarget(root, resolvables, "`sample-doc`")).toBe(true);
+      expect(resolvesTarget(root, resolvables, "`sample-doc` (a wrapped prose value)")).toBe(false);
 
       expect(resolvesTarget(root, resolvables, "workboard")).toBe(false); // names no row
       expect(resolvesTarget(root, resolvables, "NI-1")).toBe(false);
@@ -458,5 +467,233 @@ describe("delivery polarity", () => {
     expect(fields.trackedBy).toBe("V3-9.1");
     expect(fields.routesTo).toBe("sample-doc");
     expect(fields.supersededBy).toBe("HR-1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round-2 review, finding 3: a closure claim must resolve to a SPECIFIC target.
+//
+// Round 1 resolved a claim when AT LEAST ONE whitespace-separated token in it
+// named something real. The reviewer measured five values against a fresh
+// `state: routed` HR file; four of them were accepted, including one whose own
+// words say the work is not done. Those five are the fixtures below, verbatim
+// from the review, with `V3-9.1` standing in for this corpus's row id and
+// `sample-doc` for a doc id. The pass/fail column is what must hold NOW; the
+// OLD_TOKEN_OR predicate reproduces round 1's rule so each case is red-before
+// as well as green-after, and shows exactly which ones flipped.
+// ---------------------------------------------------------------------------
+
+// Round 1's resolver, kept verbatim in behaviour: split on whitespace, resolve
+// on any token that names something. It is the thing being refuted.
+function OLD_TOKEN_OR(root: string, resolvables: ReturnType<typeof collectResolvables>, value: string): boolean {
+  const tokens: string[] = [];
+  for (const match of value.matchAll(/`([^`]+)`/g)) tokens.push(match[1].trim());
+  for (const raw of value.split(/[\s,;()]+/)) {
+    const token = raw.replace(/^[`'"]+|[`'".,;:]+$/g, "").trim();
+    if (token !== "") tokens.push(token);
+  }
+  for (const token of tokens) {
+    if (resolvables.workboardRows.has(token)) return true;
+    if (resolvables.docIds.has(token)) return true;
+    if (/^[A-Za-z0-9._][A-Za-z0-9._/-]*$/.test(token) && !token.includes("..")) {
+      if (token.includes("/") && existsSync(join(root, token))) return true;
+    }
+  }
+  return false;
+}
+
+describe("a closure claim resolves to one specific target, not to a token in a sentence", () => {
+  // The reviewer's five measured cases, in their order, with the verdict each
+  // must now produce and the reason a reader gets.
+  const CASES: Array<{ value: string; resolution: string; oldVerdict: boolean }> = [
+    // A container: it exists no matter what happened to the row the claim was
+    // about, so it discharges nothing. This is the one that broke acceptance
+    // item 4 — with the board path accepted, renaming the row left the claim
+    // green, and 21 of 21 resolving claims in the real corpus used this shape.
+    { value: "instance/workboard.md", resolution: "container", oldVerdict: true },
+    // Prose. `sample-doc` is a real doc id, which is the ONLY reason round 1
+    // accepted a sentence that names no target at all.
+    { value: "handled in the sample-doc doc", resolution: "prose", oldVerdict: true },
+    { value: "see instructions/sample-doc.md for the rest", resolution: "prose", oldVerdict: true },
+    // The case that decides the design: a closure claim whose own words say the
+    // work is NOT done, accepted because it happened to mention the board file.
+    { value: "not done yet, tracked in instance/workboard.md", resolution: "prose", oldVerdict: true },
+    // Already correct before this change, and locked so it stays that way: the
+    // fix must not be a blanket refusal that would pass this test for the wrong
+    // reason.
+    { value: "V3-NONEXISTENT", resolution: "unresolved", oldVerdict: false },
+  ];
+
+  for (const { value, resolution, oldVerdict } of CASES) {
+    test(`'${value}' -> ${resolution}`, () => {
+      const root = makeRepo();
+      try {
+        const resolvables = collectResolvables(root);
+        // RED BEFORE: round 1's rule, run here, gives the verdict the review
+        // measured. Four of these five were accepted.
+        expect(OLD_TOKEN_OR(root, resolvables, value)).toBe(oldVerdict);
+        // GREEN AFTER: none of the five resolves.
+        expect(resolveTarget(root, resolvables, value)).toBe(resolution as never);
+        expect(resolvesTarget(root, resolvables, value)).toBe(false);
+
+        // And the whole checker goes red on a real HR file carrying it, with
+        // the rule name the exemption ledger keys on.
+        writeHr(root, "90001", ["id: hr-90001", "date: 2026-08-04", "state: routed", `routes-to: ${value}`]);
+        const finding = checkHrStates(root, NOW).find((f) => f.file.endsWith("HR-90001.md"));
+        expect(finding?.level).toBe("FAIL");
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
+
+  test("ACCEPTANCE ITEM 4: renaming the row an HR points at turns the suite red, untouched", () => {
+    // The property round 1 claimed and did not have. The HR file is written
+    // once and never edited; only the board changes.
+    const root = makeRepo();
+    try {
+      writeHr(root, "90002", ["id: hr-90002", "date: 2026-08-04", "state: routed", "routes-to: V3-9.1"]);
+      expect(checkHrStates(root, NOW).find((f) => f.file.endsWith("HR-90002.md"))?.level).toBe("PASS");
+
+      // Renumber the board. Nothing else moves.
+      writeFileSync(
+        join(root, "instance", "workboard.md"),
+        ["| id | need | acceptance | status |", "|---|---|---|---|", "| V3-9.2 | a real row | done | open |", ""].join("\n"),
+      );
+      expect(checkHrStates(root, NOW).find((f) => f.file.endsWith("HR-90002.md"))?.level).toBe("FAIL");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("RED BEFORE: the board-path shape survived the same renumbering", () => {
+    // Why the corpus had to be rewritten rather than left alone: under round 1
+    // this exact edit was invisible, because the board file resolved regardless.
+    const root = makeRepo();
+    try {
+      const value = "instance/workboard.md V3-9.1";
+      writeFileSync(
+        join(root, "instance", "workboard.md"),
+        ["| id | need | acceptance | status |", "|---|---|---|---|", "| V3-9.2 | renamed | done | open |", ""].join("\n"),
+      );
+      const resolvables = collectResolvables(root);
+      expect(OLD_TOKEN_OR(root, resolvables, value)).toBe(true);   // renumbering unnoticed
+      expect(resolvesTarget(root, resolvables, value)).toBe(false); // now noticed
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a directory and a README are containers; a file inside them is not", () => {
+    const root = makeRepo();
+    try {
+      writeFileSync(join(root, "instructions", "README.md"), "# generated index\n");
+      const resolvables = collectResolvables(root);
+      expect(resolveTarget(root, resolvables, "instructions/README.md")).toBe("container");
+      expect(resolveTarget(root, resolvables, "instance/decisions")).toBe("container");
+      expect(resolveTarget(root, resolvables, "instructions/sample-doc.md")).toBe("resolved");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("closureToken keeps one layer of wrapping and refuses everything with a space in it", () => {
+    expect(closureToken("V3-9.1")).toBe("V3-9.1");
+    expect(closureToken("  V3-9.1  ")).toBe("V3-9.1");
+    expect(closureToken("`V3-9.1`")).toBe("V3-9.1");
+    expect(closureToken('"V3-9.1"')).toBe("V3-9.1");
+    expect(closureToken("V3-9.1 and V3-9.2")).toBeUndefined();
+    expect(closureToken("")).toBeUndefined();
+    expect(closureToken(undefined)).toBeUndefined();
+  });
+
+  test("a triage `closes:` claim is held to the same rule", () => {
+    const root = makeRepo();
+    try {
+      writeTriage(root, [
+        {
+          msg_id: 90003,
+          verdict: "directive",
+          category: "infra",
+          reason: "routed",
+          triaged_by: "orch",
+          triaged_at: "2026-08-04",
+          quote: "an invented directive",
+          answer_status: "answered",
+          closes: "not done yet, tracked in instance/workboard.md",
+        },
+      ]);
+      const findings = checkTriageClosures(root, NOW);
+      expect(findings.some((f) => f.level === "FAIL" && f.detail.includes("is prose, not a target"))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round-2 review, finding 5: `parked` is bounded and counted.
+// ---------------------------------------------------------------------------
+
+describe("parked is bounded and counted, not a quiet hiding place", () => {
+  const parkedHr = (reviewBy: string) => [
+    "id: hr-90004",
+    "date: 2026-08-04",
+    "state: parked",
+    "parked: waiting on the operator",
+    `review-by: ${reviewBy}`,
+  ];
+
+  test("RED BEFORE: an unbounded horizon was green, undelivered and uncounted", () => {
+    const root = makeRepo();
+    try {
+      // The reviewer's example, verbatim. `review-by:` was mandatory and bit
+      // when past, but had no ceiling, so this parked the row for 73 years.
+      writeHr(root, "90004", parkedHr("2099-01-01"));
+      const findings = checkHrAging(root, NOW);
+      const finding = findings.find((f) => f.file.endsWith("HR-90004.md"));
+      expect(finding?.level).toBe("FAIL");
+      expect(finding?.detail).toContain("parked horizon");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a park inside the horizon still passes — the bound is a ceiling, not a ban", () => {
+    const root = makeRepo();
+    try {
+      writeHr(root, "90004", parkedHr("2026-09-15")); // 41 days out, inside 90
+      expect(checkHrAging(root, NOW).find((f) => f.file.endsWith("HR-90004.md"))?.level).toBe("PASS");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("the horizon is an instance parameter, not a hard-coded number", () => {
+    const root = makeRepo();
+    try {
+      expect(readParkedHorizonDays(root)).toBe(DEFAULT_PARKED_HORIZON_DAYS);
+      writeFileSync(join(root, "instance", "params.yaml"), "ledger:\n  parked_horizon_days: 7\n");
+      expect(readParkedHorizonDays(root)).toBe(7);
+      writeHr(root, "90004", parkedHr("2026-09-15")); // inside 90, outside 7
+      expect(checkHrAging(root, NOW).find((f) => f.file.endsWith("HR-90004.md"))?.level).toBe("FAIL");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("parked rows are counted next to open ones, never folded into them", () => {
+    const root = makeRepo();
+    try {
+      writeHr(root, "90004", parkedHr("2026-09-15"));
+      writeHr(root, "90005", ["id: hr-90005", "date: 2026-08-04", "state: owed", "tracked-by: V3-9.1"]);
+      const summary = checkHrStates(root, NOW).find((f) => f.file === "instance/decisions/");
+      expect(summary?.detail).toContain("1 open HR obligation(s)");
+      expect(summary?.detail).toContain("1 parked");
+      // A parked row is deferred: not open, not delivered, but on the count.
+      expect(hrDisposition(parseHrFields(["---", ...parkedHr("2026-09-15"), "---"].join("\n")))).toBe("deferred");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

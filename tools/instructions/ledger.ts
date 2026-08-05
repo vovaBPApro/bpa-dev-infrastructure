@@ -18,7 +18,7 @@
 // Time source is the caller's clock, injected as `nowMs` so the check is
 // deterministic under test. Thresholds are the constants below.
 
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -256,12 +256,17 @@ export type Resolvables = {
   hrIds: Set<string>;
 };
 
+// The board file row ids are enumerated OUT of. Named once, and used by both
+// collectWorkboardRows() below and isContainerTarget() further down, so the two
+// cannot drift into disagreeing about what the container is.
+export const WORKBOARD_PATH = "instance/workboard.md";
+
 // Workboard row ids, read from the leading cell of each table row. The FIELD is
 // generic mechanism; the id FORMAT is this installation's, so this reads the
 // ids actually present rather than matching a hard-coded row-id shape.
 export function collectWorkboardRows(repo: string): Set<string> {
   const rows = new Set<string>();
-  const path = join(repo, "instance", "workboard.md");
+  const path = join(repo, WORKBOARD_PATH);
   if (!existsSync(path)) return rows;
   for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
     const match = line.match(/^\|\s*\*{0,2}([A-Za-z][A-Za-z0-9]*-[0-9][0-9.]*)\*{0,2}\s*\|/);
@@ -302,44 +307,105 @@ export function collectResolvables(repo: string): Resolvables {
   };
 }
 
-// Candidate targets inside a field value. Values in the real corpus range from a
-// bare doc id to a wrapped prose sentence with backticks, so tokens are
-// extracted and the claim resolves when AT LEAST ONE names something real. This
-// is deliberately generous about SHAPE and strict about EXISTENCE: the failure
-// being caught is "names nothing that exists", not "is formatted oddly".
-export function targetTokens(value: string): string[] {
-  const tokens: string[] = [];
-  for (const match of value.matchAll(/`([^`]+)`/g)) tokens.push(match[1].trim());
-  for (const raw of value.split(/[\s,;()]+/)) {
-    const token = raw.replace(/^[`'"]+|[`'".,;:]+$/g, "").trim();
-    if (token !== "") tokens.push(token);
-  }
-  return tokens;
+// A closure field names ONE target. Round 1 accepted any value in which AT
+// LEAST ONE whitespace-separated token named something real, which made the
+// field unfalsifiable in the shape the corpus actually uses: measured on fresh
+// `state: routed` files, `handled in the roles doc` passed (`roles` is a doc
+// id), `see instructions/review-policy.md for the rest` passed, and
+// `not done yet, tracked in instance/workboard.md` passed -- a closure claim
+// whose own words say it is not done. The generosity was aimed at SHAPE and it
+// bought unfalsifiability instead.
+//
+// The field is now single-token: whatever remains after trimming, and after one
+// optional layer of surrounding backticks or quotes, must contain no
+// whitespace. Prose does not fail because it is untidy; it fails because a
+// sentence has no one target, so nothing about it can be re-verified. Say what
+// the claim closes and put the sentence in the body.
+export function closureToken(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  let token = value.trim();
+  const wrapped = token.match(/^([`'"])([\s\S]*)\1$/);
+  if (wrapped) token = wrapped[2].trim();
+  if (token === "" || /\s/.test(token)) return undefined;
+  return token;
 }
 
-// True when the value names a workboard row, an existing repo path, an
-// instructions doc id, or (for superseded-by) an HR id / msg id.
+// A container is a target that other targets are named out of, so naming it
+// discharges nothing: it exists no matter what happened to the thing the claim
+// was about. `instance/workboard.md` is the file row ids are enumerated from --
+// with the board path accepted, renaming the row a claim points at left the
+// claim green, which is precisely the property (surviving board renumbering)
+// this design calls its own. A directory is the same failure one level up, and
+// a README is the generated index over its directory.
+//
+// Root `CLAUDE.md`/`AGENTS.md` need no entry: a path token must contain a `/`
+// to be considered at all, so a bare root filename already resolves against
+// nothing.
+function isContainerTarget(repo: string, token: string): boolean {
+  if (token === WORKBOARD_PATH) return true;
+  if (token.split("/").pop() === "README.md") return true;
+  try {
+    return statSync(join(repo, token)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+export type TargetResolution = "resolved" | "empty" | "prose" | "container" | "unresolved";
+
+// Resolves a closure claim to a SPECIFIC target: a workboard row id, an
+// instructions doc id, an existing repo path that is not a container, or (for
+// superseded-by) an HR id. Re-evaluated on every run, never cached, so a
+// renumbering or a deletion reddens the claim the next time anything looks.
+//
+// Returns WHY it failed, because the three failures need different repairs:
+// `prose` means write the target down, `container` means name the row inside
+// it, `unresolved` means the thing being claimed does not exist.
+export function resolveTarget(
+  repo: string,
+  resolvables: Resolvables,
+  value: string | undefined,
+  allowHrIds = false,
+): TargetResolution {
+  if (value === undefined || value.trim() === "") return "empty";
+  const token = closureToken(value);
+  if (token === undefined) return "prose";
+  if (resolvables.workboardRows.has(token)) return "resolved";
+  if (resolvables.docIds.has(token)) return "resolved";
+  if (allowHrIds) {
+    const hrId = token.replace(/^HR-/i, "").replace(/\.md$/i, "");
+    if (resolvables.hrIds.has(hrId)) return "resolved";
+  }
+  // A path token must look repo-relative and actually exist. `..` is refused so
+  // a claim cannot resolve against something outside the repository.
+  if (/^[A-Za-z0-9._][A-Za-z0-9._/-]*$/.test(token) && !token.includes("..")) {
+    if (token.includes("/") && existsSync(join(repo, token))) {
+      return isContainerTarget(repo, token) ? "container" : "resolved";
+    }
+  }
+  return "unresolved";
+}
+
+// Boolean face of resolveTarget() for the callers that only need the verdict.
 export function resolvesTarget(
   repo: string,
   resolvables: Resolvables,
   value: string | undefined,
   allowHrIds = false,
 ): boolean {
-  if (value === undefined || value.trim() === "") return false;
-  for (const token of targetTokens(value)) {
-    if (resolvables.workboardRows.has(token)) return true;
-    if (resolvables.docIds.has(token)) return true;
-    if (allowHrIds) {
-      const hrId = token.replace(/^HR-/i, "").replace(/\.md$/i, "");
-      if (resolvables.hrIds.has(hrId)) return true;
-    }
-    // A path token must look repo-relative and actually exist. `..` is refused
-    // so a claim cannot resolve against something outside the repository.
-    if (/^[A-Za-z0-9._][A-Za-z0-9._/-]*$/.test(token) && !token.includes("..")) {
-      if (token.includes("/") && existsSync(join(repo, token))) return true;
-    }
+  return resolveTarget(repo, resolvables, value, allowHrIds) === "resolved";
+}
+
+// The repair a given failure calls for, in the message the author reads.
+export function resolutionDetail(resolution: TargetResolution, token: string): string {
+  switch (resolution) {
+    case "prose":
+      return `'${token}' is prose, not a target — name exactly one workboard row, doc id or repo path and put the sentence in the body`;
+    case "container":
+      return `'${token}' is a container that exists regardless — name the row, doc or file inside it`;
+    default:
+      return `'${token}' resolves to no workboard row, repo path, or doc id — the closure claim is not real`;
   }
-  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -359,6 +425,18 @@ export function capturedMsgIds(decisionsDir: string): Set<string> {
 
 // Msg-ids whose HR file is provably closed: a closed state AND a closure target
 // that resolves right now. An unresolvable claim is not a discharge.
+//
+// STAGED, not dead (round-2 review finding 6). Nothing in production calls this
+// yet; `session-load.ts` and `checkInboxAging()` both call capturedMsgIds(), and
+// that split is correct — the untriaged-inbox SLA asks whether a message was
+// READ, which an HR file of any state answers. The consumer this exists for is
+// the deferred clause "`answer_status: answered` must be backed by a resolving
+// `closes:`", which needs the discharged set to decide which `answered` rows are
+// already provable and which are the ~227 that need remediation. That clause is
+// its own workboard row, V3-2.18; until it lands, this function's
+// only caller is hr-state.test.ts. Said out loud because an exported, tested,
+// uncalled predicate is the same silhouette as the bug this row fixes, and the
+// next reader should not have to reconstruct which one it is.
 export function dischargedMsgIds(repo: string, resolvables?: Resolvables): Set<string> {
   const decisionsDir = join(repo, "instance", "decisions");
   const ids = new Set<string>();
@@ -470,6 +548,34 @@ export function checkInboxAging(
     findings.push({ level: "PASS", file: "instance/decisions/inbox.jsonl", detail: `${inbox.rows.length} rows, none aged untriaged` });
   }
   return findings;
+}
+
+// How far ahead a park may be scheduled. `review-by:` is mandatory and bites
+// when past, which is a real bound -- but round 1 put no ceiling on the horizon,
+// so `review-by: 2099-01-01` was green, undelivered and uncounted: a quiet
+// hiding place with the lock left open, in the row that exists to remove quiet
+// hiding places. The MECHANISM (a park has a bounded horizon) is generic; the
+// NUMBER is this installation's, so it lives in instance/params.yaml per the
+// instruction-layers Q1 split and this constant is only the fallback for a repo
+// that declares none.
+export const DEFAULT_PARKED_HORIZON_DAYS = 90;
+
+export function readParkedHorizonDays(repo: string): number {
+  const path = join(repo, "instance", "params.yaml");
+  if (!existsSync(path)) return DEFAULT_PARKED_HORIZON_DAYS;
+  let ledger = false;
+  for (const raw of readFileSync(path, "utf8").split(/\r?\n/)) {
+    if (/^ledger:\s*(?:#.*)?$/.test(raw)) {
+      ledger = true;
+      continue;
+    }
+    if (/^[A-Za-z]/.test(raw)) ledger = false;
+    if (ledger) {
+      const match = raw.match(/^\s+parked_horizon_days:\s*(\d+)\b/);
+      if (match) return Number(match[1]);
+    }
+  }
+  return DEFAULT_PARKED_HORIZON_DAYS;
 }
 
 export function readCaptureMode(repo: string): "manual" | "daemon" {
@@ -634,6 +740,7 @@ export function checkHrStates(repo: string, nowMs: number): LedgerFinding[] {
   const violations: Array<{ subject: string; rule: string; finding: LedgerFinding }> = [];
   const passes: LedgerFinding[] = [];
   let open = 0;
+  let parked = 0;
 
   for (const entry of readdirSync(decisionsDir).sort()) {
     if (!/^HR-.+\.md$/i.test(entry)) continue;
@@ -664,7 +771,9 @@ export function checkHrStates(repo: string, nowMs: number): LedgerFinding[] {
     }
 
     const state = fields.state as HrState;
-    if (hrDisposition(fields) === "open") open += 1;
+    const disposition = hrDisposition(fields);
+    if (disposition === "open") open += 1;
+    if (disposition === "deferred") parked += 1;
 
     const field = HR_CLOSURE_FIELD[state];
     if (field === undefined) {
@@ -687,14 +796,15 @@ export function checkHrStates(repo: string, nowMs: number): LedgerFinding[] {
       passes.push({ level: "PASS", file: rel, detail: `state: ${state} (${label}: ${value})` });
       continue;
     }
-    if (!resolvesTarget(repo, resolvables, value, state === "superseded")) {
+    const resolution = resolveTarget(repo, resolvables, value, state === "superseded");
+    if (resolution !== "resolved") {
       violations.push({
         subject: rel,
         rule: "hr-closure-unresolved",
         finding: {
           level: "FAIL",
           file: rel,
-          detail: `${label} '${value}' resolves to no workboard row, repo path, or doc id — the closure claim is not real`,
+          detail: `${label} ${resolutionDetail(resolution, value)}`,
         },
       });
       continue;
@@ -711,12 +821,18 @@ export function checkHrStates(repo: string, nowMs: number): LedgerFinding[] {
     new Set(["hr-state-missing", "hr-state-invalid", "hr-closure-unresolved"]),
   );
   findings.push(...passes);
-  // The count is stated on every run so no reader can believe the board is
+  // The counts are stated on every run so no reader can believe the board is
   // empty — the belief that produced two months of unread requirements.
+  //
+  // Parked is stated NEXT TO open, never folded into it (round-2 review finding
+  // 5). A parked row is deliberately not delivered, which is exactly why it must
+  // be countable: undelivered and uncounted is invisible, and invisible is the
+  // failure. Two numbers, because collapsing them would either re-deliver every
+  // park or hide it again.
   findings.push({
     level: open === 0 ? "PASS" : "WARN",
     file: "instance/decisions/",
-    detail: `${open} open HR obligation(s) — delivered to every session load and pack`,
+    detail: `${open} open HR obligation(s) — delivered to every session load and pack; ${parked} parked (deferred, not delivered, bounded by review-by)`,
   });
   return findings;
 }
@@ -741,13 +857,16 @@ export function checkTriageClosures(repo: string, nowMs: number): LedgerFinding[
     if (!row || typeof row !== "object") continue;
     const file = `instance/decisions/triage.jsonl:${line}`;
     const closes = typeof row.closes === "string" ? row.closes : undefined;
-    if (closes !== undefined && !resolvesTarget(repo, resolvables, closes, true)) {
-      findings.push({
-        level: "FAIL",
-        file,
-        detail: `closes '${closes}' resolves to no workboard row, repo path, or doc id — msg ${row.msg_id} reads as closed against nothing`,
-      });
-      continue;
+    if (closes !== undefined) {
+      const resolution = resolveTarget(repo, resolvables, closes, true);
+      if (resolution !== "resolved") {
+        findings.push({
+          level: "FAIL",
+          file,
+          detail: `closes ${resolutionDetail(resolution, closes)} — msg ${row.msg_id} reads as closed against nothing`,
+        });
+        continue;
+      }
     }
     if (row.verdict !== "directive") continue;
     if (row.answer_status === undefined) {
@@ -780,6 +899,8 @@ export function checkHrAging(repo: string, nowMs: number): LedgerFinding[] {
     return [{ level: "SKIP", file: "instance/decisions/", detail: "no decisions ledger" }];
   }
 
+  const horizonDays = readParkedHorizonDays(repo);
+  const horizonMs = nowMs + horizonDays * 24 * 60 * 60 * 1000;
   let checked = 0;
   for (const entry of readdirSync(decisionsDir)) {
     if (!/^HR-.+\.md$/i.test(entry)) continue;
@@ -808,6 +929,14 @@ export function checkHrAging(repo: string, nowMs: number): LedgerFinding[] {
         findings.push({ level: "FAIL", file: rel, detail: `unparseable review-by '${reviewBy}'` });
       } else if (nowMs > reviewMs) {
         findings.push({ level: "FAIL", file: rel, detail: `parked row past its review-by (${reviewBy})` });
+      } else if (reviewMs > horizonMs) {
+        // A self-chosen date with no ceiling is not a bound. Parking something
+        // for 70 years and parking it forever are the same act.
+        findings.push({
+          level: "FAIL",
+          file: rel,
+          detail: `review-by ${reviewBy} is beyond the ${horizonDays}-day parked horizon — a park that far out is a deletion; shorten it or close the row`,
+        });
       } else {
         findings.push({ level: "PASS", file: rel, detail: `parked, review-by ${reviewBy} not yet due` });
       }

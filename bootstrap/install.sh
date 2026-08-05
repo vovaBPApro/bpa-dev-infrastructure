@@ -24,15 +24,18 @@
 set -euo pipefail
 
 BUN_VERSION="${BUN_VERSION:-1.3.14}"
-INSTALL_ROOT="${INSTALL_ROOT:-/root/bpa-dev-infrastructure}"
 DRY_RUN=false
 VERIFY_SOURCE=false
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-ENV_FILE="${ENV_FILE:-/root/.config/bpa/orchestrator.env}"
-BUN_BIN="${BUN_BIN:-/usr/local/bin/bun}"
-BASH_BIN="${BASH_BIN:-/usr/bin/bash}"
+# INSTALL_ROOT, ENV_FILE, BUN_BIN, BASH_BIN and the two timer values are
+# defined ONLY in unit-render-lib.sh, which applies their defaults on source.
+# This script deliberately carries no copy of those names or values: the
+# installer's list and check-unit-drift.sh's list drifting apart is workboard
+# row V3-2.12, and it silently disarmed both watchdog timers.
+# shellcheck source=bootstrap/unit-render-lib.sh
+source "$SCRIPT_DIR/unit-render-lib.sh"
 SYSTEMD_SYSTEM_DIR="${SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
 RUNTIME_DIR="${RUNTIME_DIR:-$INSTALL_ROOT/runtime}"
 STATE_DB="${INFRA_STATE_DB:-$RUNTIME_DIR/state.db}"
@@ -108,11 +111,20 @@ hygiene_cron_status() {
 
 rendered_units_status() {
   local installed_root="$INSTALL_ROOT"
-  TEMPLATE_DIR="$installed_root/bootstrap/units" \
+  # The render variables are forwarded as ONE list built from
+  # unit-render-lib.sh. Naming them here individually is what made this check
+  # validate a different render than the one install.sh had just deployed
+  # (V3-2.12): the checker fell back to its own defaults for the two names
+  # this call did not pass, so it compared against units the installer never
+  # wrote.
+  local -a render_env=()
+  unit_render_env_assignments render_env
+  env TEMPLATE_DIR="$installed_root/bootstrap/units" \
     INSTANCE_TEMPLATE_DIR="$installed_root/instance/units" \
     MANIFEST_FILE="$installed_root/instance/expected-units.tsv" \
-    SYSTEMD_SYSTEM_DIR="$SYSTEMD_SYSTEM_DIR" INSTALL_ROOT="$installed_root" \
-    REPO_ROOT="$installed_root" ENV_FILE="$ENV_FILE" BUN_BIN="$BUN_BIN" BASH_BIN="$BASH_BIN" \
+    SYSTEMD_SYSTEM_DIR="$SYSTEMD_SYSTEM_DIR" \
+    REPO_ROOT="$installed_root" \
+    "${render_env[@]}" \
     "$installed_root/bootstrap/check-unit-drift.sh" >/dev/null
 }
 
@@ -283,6 +295,7 @@ render_units() {
     return 1
   fi
   command -v envsubst >/dev/null 2>&1 || { echo 'ERROR: envsubst is required to render units' >&2; return 1; }
+  unit_render_require_env || { echo 'ERROR: unit render environment is incomplete' >&2; return 1; }
 
   # Preflight the complete manifest before creating the destination or writing
   # a single unit. In particular, pin the four units independently named by
@@ -327,13 +340,29 @@ render_units() {
 
   # Render the whole set away from the destination. A malformed template or
   # envsubst failure therefore cannot leave a half-rendered deployed set.
+  #
+  # unit_render_template is the SAME function bootstrap/check-unit-drift.sh
+  # calls, with the same variable list from unit-render-lib.sh, so what is
+  # deployed here and what the drift checker validates cannot diverge. It also
+  # refuses its own output when a key lost its value or a `$` survived, which
+  # is the check that was missing when `OnCalendar=` shipped disarmed.
   staged="$(mktemp -d "${TMPDIR:-/tmp}/bpa-render-units.XXXXXX")"
   trap 'rm -rf "$staged"' RETURN
   for ((count = 0; count < ${#units[@]}; count += 1)); do
-    INSTALL_ROOT="$INSTALL_ROOT" ENV_FILE="$ENV_FILE" BUN_BIN="$BUN_BIN" BASH_BIN="$BASH_BIN" \
-      envsubst < "${templates[$count]}" > "$staged/${units[$count]}"
+    if ! unit_render_template "${templates[$count]}" "$staged/${units[$count]}" "${units[$count]}"; then
+      echo "ERROR: unit render rejected: ${units[$count]} (nothing installed)" >&2
+      return 1
+    fi
     chmod 644 "$staged/${units[$count]}"
   done
+
+  # systemd's own parser, on the staged set, before the destination directory
+  # is touched. Weaker than the assertions above -- it exits 0 on an
+  # unparsable timer value -- so it is an addition to them, never a substitute.
+  if ! unit_render_verify_staged "$staged"; then
+    echo 'ERROR: systemd-analyze rejected the staged units (nothing installed)' >&2
+    return 1
+  fi
 
   install -d -m 755 "$SYSTEMD_SYSTEM_DIR"
   backup_dir="$staged/prior"

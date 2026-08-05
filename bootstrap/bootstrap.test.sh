@@ -64,7 +64,32 @@ for real_dir in /usr/local/bin /usr/bin /bin /usr/sbin /sbin; do
 done
 
 # ── Static shape checks ──────────────────────────────────────────────────
-grep -Fxq 'INSTALL_ROOT="${INSTALL_ROOT:-/root/bpa-dev-infrastructure}"' "$INSTALLER"
+# The INSTALL_ROOT default now lives in bootstrap/unit-render-lib.sh, the one
+# place any renderer may learn a render variable's name or value. The check
+# below is the inverse of the old one on purpose: install.sh must NOT carry a
+# default for any render variable. A second copy is not a harmless duplicate
+# -- install.sh and check-unit-drift.sh keeping separate lists is V3-2.12,
+# and it shipped `OnCalendar=` (a cleared schedule) to a nightly timer.
+RENDER_LIB="$SCRIPT_DIR/unit-render-lib.sh"
+grep -Fq "[INSTALL_ROOT]='/root/bpa-dev-infrastructure'" "$RENDER_LIB"
+while IFS= read -r render_var; do
+  if grep -Eq "^[[:space:]]*${render_var}=\\\$\{${render_var}:-" "$INSTALLER"; then
+    echo "ERROR: install.sh carries its own default for render variable $render_var" >&2
+    echo '       Render variables have one home: bootstrap/unit-render-lib.sh' >&2
+    exit 1
+  fi
+  if grep -Eq "^[[:space:]]*${render_var}=\\\$\{${render_var}:-" "$SCRIPT_DIR/check-unit-drift.sh"; then
+    echo "ERROR: check-unit-drift.sh carries its own default for render variable $render_var" >&2
+    echo '       Render variables have one home: bootstrap/unit-render-lib.sh' >&2
+    exit 1
+  fi
+done < <(bash "$RENDER_LIB" --print-names)
+for render_required in FULL_SUITE_ON_CALENDAR ORCH_WATCHDOG_INTERVAL; do
+  # The two names the installer omitted. Pinned by name so that shrinking the
+  # list back to the four it used to export fails here, not on a rebuilt host
+  # with two dead watchdog timers.
+  bash "$RENDER_LIB" --print-names | grep -Fxq "$render_required"
+done
 # Dropped-scope proof: none of the out-of-scope donor surface leaked back in
 # as actual CODE. install.sh's own header comments name these on purpose (to
 # document why they were left out), so the scan first drops comment-only
@@ -613,21 +638,34 @@ printf '%s\t%s\n' \
   bpa-orchestrator-watchdog.service generic \
   bpa-orchestrator-watchdog.timer generic > "$stage2_fixture/expected.tsv"
 printf '%s\t%s' bpa-telegram-daemon.service generic >> "$stage2_fixture/expected.tsv"
+# Fixture templates must be units systemd will actually accept: render_units
+# now runs `systemd-analyze verify` over the staged set before publishing it
+# (V3-2.12), so a stub that is only a [Unit] section with a Description is no
+# longer a stand-in for a unit -- systemd refuses a .service with no
+# ExecStart. Keeping them realistic is the point: the render path is being
+# proven, and a fixture systemd would reject proves nothing about it.
 printf '%s\n' '[Service]' 'ExecStart=${BUN_BIN} ${INSTALL_ROOT}/first.ts' > \
   "$stage2_fixture/root/bootstrap/units/first.service.in"
 printf '%s\n' '[Timer]' 'OnCalendar=hourly' > "$stage2_fixture/root/instance/units/second.timer.in"
 for unit in bpa-orchestrator.service bpa-orchestrator-watchdog.service \
-  bpa-orchestrator-watchdog.timer bpa-telegram-daemon.service; do
-  printf '%s\n' '[Unit]' "Description=$unit" > \
-    "$stage2_fixture/root/bootstrap/units/$unit.in"
+  bpa-telegram-daemon.service; do
+  printf '%s\n' '[Unit]' "Description=$unit" '[Service]' 'Type=oneshot' \
+    'ExecStart=/bin/true' > "$stage2_fixture/root/bootstrap/units/$unit.in"
 done
+printf '%s\n' '[Unit]' 'Description=bpa-orchestrator-watchdog.timer' \
+  '[Timer]' 'OnUnitActiveSec=60s' > \
+  "$stage2_fixture/root/bootstrap/units/bpa-orchestrator-watchdog.timer.in"
 BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$stage2_fixture/root" BUN_BIN="$stage2_fixture/bin/bun" \
   SYSTEMD_SYSTEM_DIR="$stage2_fixture/systemd" EXPECTED_UNITS_FILE="$stage2_fixture/expected.tsv" \
   INSTALLER_PATH="$INSTALLER" "$BASH_BIN" -c 'source "$INSTALLER_PATH"; render_units'
 grep -Fq "ExecStart=$stage2_fixture/bin/bun $stage2_fixture/root/first.ts" \
   "$stage2_fixture/systemd/first.service"
 [[ "$(stat -c '%a' "$stage2_fixture/systemd/second.timer")" == 644 ]]
-if rg -n 'systemctl' "$stage2_fixture" >/dev/null; then
+# grep, not rg: `rg` is not a coreutil and is absent on this host, so
+# `if rg ...` exited 127 and the "no systemctl" assertion passed by never
+# running -- a check that quietly does nothing, which is the same class as the
+# render defect this row fixes. grep -r is always present via CORE_PATH.
+if grep -rn 'systemctl' "$stage2_fixture" >/dev/null; then
   echo 'ERROR: render_units invoked or emitted systemctl' >&2
   exit 1
 fi
@@ -897,7 +935,8 @@ if [[ -f "$REPO_ROOT/gate/land-lib.sh" ]]; then
   fi
   set +e
   secret_scan_output="$(LC_ALL=C grep -aE "$secret_pattern" "$REPO_ROOT/bootstrap/env.template" \
-    "$REPO_ROOT/bootstrap/install.sh" "$SCRIPT_DIR/bootstrap.test.sh" 2>&1)"
+    "$REPO_ROOT/bootstrap/install.sh" "$SCRIPT_DIR/unit-render-lib.sh" \
+    "$SCRIPT_DIR/bootstrap.test.sh" 2>&1)"
   secret_scan_rc=$?
   set -e
   if [ "$secret_scan_rc" -eq 0 ]; then
@@ -917,7 +956,11 @@ fi
 
 # ── Lint, if the local host provides shellcheck (no Docker for this row) ───
 if command -v shellcheck >/dev/null 2>&1; then
-  shellcheck "$INSTALLER" "$SCRIPT_DIR/bootstrap.test.sh"
+  # -x so the `# shellcheck source=` directive on install.sh's
+  # unit-render-lib.sh line is followed instead of reported as SC1091. The
+  # library is linted here too: it is the one place the render variables live,
+  # so it is the last file in this subsystem that should go unchecked.
+  shellcheck -x "$INSTALLER" "$SCRIPT_DIR/unit-render-lib.sh" "$SCRIPT_DIR/bootstrap.test.sh"
   echo 'PASS shellcheck (local binary, no Docker)'
 else
   echo 'SKIP shellcheck: not present on this host'

@@ -44,7 +44,12 @@ judgement, never paperwork. It is **parked by three attempts that all failed on 
 `BUN_BIN` defect**, i.e. by exactly the bookkeeping it removes. It cannot release itself: the
 gate reads the counter from `main`. Options are the operator signing an unpark (the trust root
 `.git/bpa-operator-unpark.allowed-signers` **does not exist** — that path has never been used)
-or re-attempting now that `f39dfc7` removed the cause. **Try the re-attempt first.**
+or re-attempting. **The re-attempt does NOT work — measured after `f39dfc7` landed:**
+`REVIEW_ROUNDS status=fail parked=no-progress`. Removing the cause does not un-charge the
+three attempts, and the branch tip is unchanged across all of them, which is precisely what
+"no progress" means. The honest route is a **rebase onto current `main`** — its base predates
+the fix, so the rebase is real work and yields a new SHA, which is genuine progress rather
+than a reset. It costs a re-attestation, because the ACCEPT is pinned to the old SHA.
 
 **The reaper is dangerous and unlanded.** Three reviews, three distinct ways it destroyed live
 work. Do not land it without a review that attacks it.

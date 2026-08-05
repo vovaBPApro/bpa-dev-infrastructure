@@ -137,6 +137,24 @@ what blocks the product**; everything else is reactive), HR-2377 (token and cost
 per model and per role — spec at `instance/specs/token-usage-accounting.md`), HR-2398 (the
 cap is per repository; reliability outranks speed), HR-2401 (active scope corrected).
 
+## Owed to him right now — written down because forgetting these is the defect under audit
+
+1. **`character` column in the token-accounting table** (Telegram 2449, *"скажи хай
+   додає"*). The V3-3.10 lane was already running when he asked and a running lane cannot
+   be given new instructions, so this is a short follow-up commit after it lands. Nullable,
+   empty until the cast exists — his own idea from messages 1915–1919 (жнець, архітект,
+   кодер, Менеджер, Вова), still unbuilt.
+2. **An MD file with the roles, their relationships, and an explanation of each character**
+   (message 1931, 2026-08-03: *"запусти агента, виділи список ролей… В MD-файл там"*). It
+   is in `triage.jsonl` as a **directive with `answer_status: owed`** — captured, triaged,
+   marked not-done, and then not done. He raised it again on 2026-08-05 with
+   *"ти благополучно проїбав"*, which is accurate. Deferred until the requirements audit
+   reports, because the audit may show the real role set differs from the assumed one.
+3. **Check the requirements audit actually found both** the Drive/backup case (HR-2171) and
+   message 1931. He asked for them to be included after the lane had started, so its brief
+   does not name them. If a sweep of the whole history misses two known instances, that is a
+   defect in the audit and must be reported as one rather than quietly patched.
+
 ## What he is waiting on
 
 1. A quota screenshot from him — `daemon/vendor-quota.ts` returns Claude as `unknown`, so

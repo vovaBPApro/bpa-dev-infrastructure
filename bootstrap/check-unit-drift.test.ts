@@ -58,14 +58,18 @@ test("the 2026-08-01 incident units are independently pinned in the manifest and
   }
 });
 
-const RENDER_ENV = {
-  INSTALL_ROOT: "/root/bpa-dev-infrastructure",
-  ENV_FILE: "/root/.config/bpa/orchestrator.env",
-  BUN_BIN: "/usr/local/bin/bun",
-  BASH_BIN: "/usr/bin/bash",
-  FULL_SUITE_ON_CALENDAR: "*-*-* 03:30:00",
-  ORCH_WATCHDOG_INTERVAL: "60",
-};
+// Read from bootstrap/unit-render-lib.sh, never restated. A literal copy of
+// this map here was a FOURTH list of render variables (install.sh had four
+// names, check-unit-drift.sh had six, this file had six) and it is precisely
+// why the test below could not see V3-2.12: it rendered with the complete set
+// while the installer shipped with a shorter one.
+const renderLib = join(repoRoot, "bootstrap", "unit-render-lib.sh");
+const RENDER_ENV: Record<string, string> = Object.fromEntries(
+  spawnSync("bash", [renderLib, "--print-env"], { encoding: "utf8" })
+    .stdout.split("\n")
+    .filter(Boolean)
+    .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
+);
 
 function runCheck(env: Record<string, string> = {}) {
   return spawnSync("bash", [script], {
@@ -445,19 +449,59 @@ test("a TSV whose final line lacks a trailing newline is still honored, not drop
   }
 });
 
-test("every tracked template renders cleanly with envsubst (no undefined-variable garbage)", () => {
+test("every tracked template renders cleanly through the production renderer", () => {
+  // V3-2.12: this test used to be a false green. It asserted only that no raw
+  // `${VAR}` token survived -- but unrestricted envsubst can never leave one;
+  // it replaces an unknown name with the EMPTY STRING and exits 0. The
+  // assertion was therefore unfalsifiable by the very defect it was shaped
+  // like, and `OnCalendar=` shipped past it to a nightly timer. It now asserts
+  // on the rendered VALUE, which is what a deployed unit actually depends on.
+  //
+  // Round-2 review (lens one, F3): the residual-`$` half was STILL
+  // unfalsifiable after that fix, for the same reason one layer down. It kept
+  // using renderDir, whose harness shells out to unrestricted envsubst -- so a
+  // template naming a variable no renderer supplies came out silently
+  // truncated (`ExecStart=/bin/true`), non-empty, and clean, while the shipped
+  // renderer refuses it outright. A test harness that does not mirror the
+  // renderer it claims to check cannot check it.
+  //
+  // So render through bootstrap/unit-render-lib.sh here -- the same code path
+  // install.sh and check-unit-drift.sh both use. Its non-zero exit IS the
+  // assertion for the unsupplied-variable case; the per-line checks below stay
+  // as an independent restatement, so a bug inside the library cannot hide
+  // behind itself.
+  const renderLibPath = join(repoRoot, "bootstrap", "unit-render-lib.sh");
   const scratch = mkdtempSync(join(tmpdir(), "bpa-unit-drift-render-check-"));
   try {
-    renderAllTemplates(scratch);
     for (const dir of [genericTemplateDir, instanceTemplateDir]) {
       for (const entry of readdirSync(dir)) {
         if (!entry.endsWith(".in")) continue;
-        const rendered = spawnSync("cat", [join(scratch, entry.slice(0, -3))], { encoding: "utf8" }).stdout;
-        // A template referencing a variable envsubst was not told about
-        // would still "succeed" but leave the raw ${VAR} token in the
-        // output -- that is itself a form of drift the deployed unit would
-        // carry.
-        expect(rendered).not.toMatch(/\$\{[A-Z_]+\}/);
+        const unit = entry.slice(0, -3);
+        const rendering = spawnSync(
+          "bash",
+          [renderLibPath, "--render", join(dir, entry), join(scratch, unit), unit],
+          { encoding: "utf8", env: { ...process.env, ...RENDER_ENV } },
+        );
+        expect(
+          rendering.status,
+          `${entry}: the production renderer refused this template:\n${rendering.stderr}`,
+        ).toBe(0);
+        const template = readFileSync(join(dir, entry), "utf8").split("\n");
+        const rendered = readFileSync(join(scratch, unit), "utf8").split("\n");
+        expect(rendered.length, `${entry}: rendering changed the line count`).toBe(template.length);
+        for (let i = 0; i < template.length; i++) {
+          expect(rendered[i], `${entry}:${i + 1}: unsubstituted variable survived`).not.toMatch(/\$/);
+          const key = template[i].match(/^([A-Za-z][A-Za-z0-9_-]*)=(.*)$/);
+          if (!key || key[2].trim() === "") continue;
+          // A key that carried a value in the template must still carry one:
+          // `OnCalendar=` with an empty value is systemd's documented way to
+          // CLEAR a schedule, so an emptied value is a disarmed unit, not a
+          // cosmetic difference.
+          expect(
+            rendered[i].slice(key[1].length + 1).trim(),
+            `${entry}:${i + 1}: ${key[1]}= rendered empty from "${key[2]}"`,
+          ).not.toBe("");
+        }
       }
     }
   } finally {

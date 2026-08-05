@@ -63,21 +63,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMPLATE_DIR="${TEMPLATE_DIR:-$SCRIPT_DIR/units}"
 INSTANCE_TEMPLATE_DIR="${INSTANCE_TEMPLATE_DIR:-$SCRIPT_DIR/../instance/units}"
 SYSTEMD_SYSTEM_DIR="${SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
-INSTALL_ROOT="${INSTALL_ROOT:-/root/bpa-dev-infrastructure}"
+# INSTALL_ROOT, ENV_FILE, BUN_BIN, BASH_BIN, FULL_SUITE_ON_CALENDAR and
+# ORCH_WATCHDOG_INTERVAL come from unit-render-lib.sh, which applies their
+# defaults on source and owns the render itself. This script used to keep its
+# own six-name list while bootstrap/install.sh kept a four-name one, so the
+# deployed units and the units checked here were rendered differently and this
+# check could not see it (V3-2.12).
+# shellcheck source=bootstrap/unit-render-lib.sh
+source "$SCRIPT_DIR/unit-render-lib.sh"
 # The path-existence check is deliberately independent of where the unit will
 # be deployed (INSTALL_ROOT). It asks "does THIS repository carry the file",
 # which is answerable in a plain checkout or a bare test, with no container
 # and no host install required.
 REPO_ROOT="${REPO_ROOT:-$SCRIPT_DIR/..}"
-ENV_FILE="${ENV_FILE:-/root/.config/bpa/orchestrator.env}"
-BUN_BIN="${BUN_BIN:-/usr/local/bin/bun}"
-BASH_BIN="${BASH_BIN:-/usr/bin/bash}"
-FULL_SUITE_ON_CALENDAR="${FULL_SUITE_ON_CALENDAR:-*-*-* 03:30:00}"
-ORCH_WATCHDOG_INTERVAL="${ORCH_WATCHDOG_INTERVAL:-60}"
 EXEMPTIONS_FILE="${EXEMPTIONS_FILE:-$SCRIPT_DIR/../instance/unit-drift-exemptions.tsv}"
 PATH_EXEMPTIONS_FILE="${PATH_EXEMPTIONS_FILE:-$SCRIPT_DIR/../instance/unit-path-exemptions.tsv}"
 MANIFEST_FILE="${MANIFEST_FILE:-$SCRIPT_DIR/../instance/expected-units.tsv}"
-export INSTALL_ROOT ENV_FILE BUN_BIN BASH_BIN FULL_SUITE_ON_CALENDAR ORCH_WATCHDOG_INTERVAL
 
 command -v envsubst >/dev/null 2>&1 || {
   echo 'ERROR: envsubst is required to check unit drift' >&2
@@ -215,7 +216,15 @@ for dir in "$TEMPLATE_DIR" "$INSTANCE_TEMPLATE_DIR"; do
     unit="$(basename "${template%.in}")"
     deployed="$SYSTEMD_SYSTEM_DIR/$unit"
     expected="$scratch/$unit"
-    envsubst < "$template" > "$expected"
+    # Shared with bootstrap/install.sh, byte for byte. A template that renders
+    # to an empty value or keeps a residual `$` is refused here rather than
+    # silently becoming the "expected" bytes a deployed unit is compared
+    # against -- a broken render matching a broken deployment is not a MATCH.
+    if ! unit_render_template "$template" "$expected" "$unit"; then
+      printf 'RENDER-REJECTED %s: template did not render to a usable unit\n' "$unit" >&2
+      result=1
+      continue
+    fi
 
     if ! check_referenced_paths "$template" "$unit"; then
       result=1

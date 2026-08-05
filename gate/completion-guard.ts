@@ -140,6 +140,31 @@ function parseVerificationCount(output: string): { passed: number; failed: numbe
   return { passed: Number(passed[0][1]), failed: Number(failed[0][1]) };
 }
 
+// The lane's verify: command runs through a shell, so a pipeline in it reports
+// only its LAST command's status. `bun test | tail -5` therefore reports tail's
+// success while the suite was red -- the exact false green verification-and-locks
+// forbids ("a kill is not a pass": use pipefail or inspect every element).
+//
+// pipefail is not POSIX, and `shell: true` means /bin/sh, which on this host is
+// dash and rejects `set -o pipefail`. So the interpreter is NAMED rather than
+// inherited, and the option is passed as an interpreter FLAG rather than
+// prepended to the command string -- no lane-supplied text can then sit in front
+// of the option, comment it out, or turn it off before its own pipeline runs.
+// bash is not a new dependency: every gate/*.sh is bash and this file already
+// spawns `bash` for the review checker below.
+//
+// Do NOT "simplify" this back to `shell: true` or to `pipefail; ${command}`.
+// Either one silently restores the false green this exists to prevent.
+const VERIFY_SHELL = "bash";
+
+// errexit is deliberately NOT enabled, and the gap that leaves is real: a
+// verify: of `cmd-a; cmd-b` still reports only cmd-b. It is left because
+// errexit changes WHICH commands run, not merely how their status is reported --
+// a verify: of `setup; bun test` whose setup exits non-zero harmlessly would
+// abort before the suite ran, reporting a failure while verifying nothing.
+// pipefail cannot do that: it can only surface a failure that already happened
+// inside the pipeline, so it has no false-red mode. Closing the `;` gap needs a
+// decision about what a multi-command verify: means, not another shell flag.
 function runVerification(repo: string, sha: string, command: string) {
   const temporaryRoot = mkdtempSync(join(tmpdir(), "completion-verify-"));
   const checkout = join(temporaryRoot, "checkout");
@@ -149,7 +174,13 @@ function runVerification(repo: string, sha: string, command: string) {
     return { status: added.status, stdout: added.stdout, stderr: added.stderr };
   }
   try {
-    return spawnSync(command, { cwd: checkout, shell: true, encoding: "utf8" });
+    const run = spawnSync(VERIFY_SHELL, ["-o", "pipefail", "-c", command], { cwd: checkout, encoding: "utf8" });
+    // An unusable interpreter must announce itself rather than reach the caller
+    // as a bare "exit=signal" with no output to read.
+    if (run.error) {
+      return { status: 127, stdout: "", stderr: `verify-shell-unusable shell=${VERIFY_SHELL} ${run.error.message}` };
+    }
+    return run;
   } finally {
     git(repo, ["worktree", "remove", "--force", checkout]);
     rmSync(temporaryRoot, { recursive: true, force: true });

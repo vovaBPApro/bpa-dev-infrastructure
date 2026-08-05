@@ -7,8 +7,12 @@ import { spawnSync } from "node:child_process";
 const temporaryDirectories: string[] = [];
 const guard = join(import.meta.dir, "completion-guard.ts");
 
+// Same shell contract as runVerification under test, for the same reason: these
+// fixture commands carry no pipe today, but leaving the `shell: true` shape here
+// leaves a copy of the defect for the next author to imitate, and a piped fixture
+// whose setup failed would be swallowed and surface as a confusing later failure.
 function command(command: string, cwd: string): void {
-  const result = spawnSync(command, { cwd, shell: true, encoding: "utf8" });
+  const result = spawnSync("bash", ["-o", "pipefail", "-c", command], { cwd, encoding: "utf8" });
   if (result.status !== 0) throw new Error(`${command}: ${result.stderr}`);
 }
 
@@ -67,6 +71,61 @@ describe("completion guard", () => {
     const result = run(report(item.directory, valid(item.sha)), item.repo, ["--branch", "master"]);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("GUARD verdict=pass");
+  });
+
+  // V3-0.40 regression lock: runVerification ran the lane's verify: through
+  // `shell: true`, i.e. /bin/sh, where a pipeline reports only its LAST command's
+  // status. A lane whose suite was red could declare `verify: bun test | tail -5`
+  // and the guard re-ran it, read tail's 0, and passed the report. Revert
+  // runVerification to `spawnSync(command, { shell: true })` and these go red.
+  test.each([
+    ["a bare failing producer", "false | true"],
+    ["a failing producer behind a succeeding tail", "sh -c 'echo boom >&2; exit 1' | tail -1"],
+    ["a failure in the middle of a longer pipeline", "true | false | cat | cat"],
+  ])("fails a verify: whose pipeline hides %s", (_case, verify) => {
+    const item = fixture();
+    const result = run(report(item.directory, valid(item.sha, "clean", verify)), item.repo, ["--branch", "master"]);
+    expect(result.status).toBe(2);
+    expect(result.stdout).toContain("FAIL verify-run exit=1");
+    expect(result.stdout).toContain("GUARD verdict=violation");
+  });
+
+  // Requirement 4: pipefail must not manufacture failures. An honest pipeline is
+  // still a pass, and a command with no pipe is unchanged -- including a failing
+  // one, which must still fail for its own reason and not be masked.
+  test.each([
+    ["a passing pipeline", "true | cat | cat", 0, "GUARD verdict=pass"],
+    ["a passing command with no pipe", "true", 0, "GUARD verdict=pass"],
+    ["a failing command with no pipe", "false", 2, "FAIL verify-run exit=1"],
+  ])("leaves %s alone", (_case, verify, status, expected) => {
+    const item = fixture();
+    const result = run(report(item.directory, valid(item.sha, "clean", verify)), item.repo, ["--branch", "master"]);
+    expect(result.status).toBe(status);
+    expect(result.stdout).toContain(expected);
+  });
+
+  // The verify: shell must be one that HAS pipefail, and the guard must keep
+  // reading the output of the tool this repository tests with. Both counts come
+  // from a pipeline, so before the fix this report passed with a red producer.
+  test("still reads a bun-shaped count through a pipeline, and fails when its producer does", () => {
+    const item = fixture();
+    const honest = `printf ' 2 pass\\n 0 fail\\n' | cat`;
+    const passing = run(
+      report(item.directory, valid(item.sha, "clean", honest).replace("result:", "verify-count: 2/0\nresult:")),
+      item.repo,
+      ["--branch", "master"],
+    );
+    expect(passing.status).toBe(0);
+    expect(passing.stdout).toContain("PASS verify-count 2/0");
+
+    const red = `sh -c 'printf " 2 pass\\n 1 fail\\n"; exit 1' | cat`;
+    const failing = run(
+      report(item.directory, valid(item.sha, "clean", red).replace("result:", "verify-count: 2/1\nresult:")),
+      item.repo,
+      ["--branch", "master"],
+    );
+    expect(failing.status).toBe(2);
+    expect(failing.stdout).toContain("FAIL verify-run exit=1");
   });
 
   test("rejects today's invented completed-review claim when its artifact is absent", () => {

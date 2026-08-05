@@ -758,7 +758,11 @@ if [ "$run_verify" = true ]; then
     land_pass reviewed-verify
   fi
   verify_output=$(mktemp)
-  if [ -z "$verify_command" ] || ! (cd "$repo" && sh -c "$verify_command") >"$verify_output" 2>&1; then
+  # bash -o pipefail, not sh -c: this script's own `set -o pipefail` does NOT
+  # cross into a child interpreter, so `sh -c 'bun test | tail -5'` reported
+  # tail's success while the suite was red. Same defect, same fix, same reasoning
+  # as runVerification in gate/completion-guard.ts -- keep the two in step.
+  if [ -z "$verify_command" ] || ! (cd "$repo" && bash -o pipefail -c "$verify_command") >"$verify_output" 2>&1; then
     cat "$verify_output"
     rm -f "$verify_output"
     if ! land_force_reset "$repo" "$pre_merge_sha"; then

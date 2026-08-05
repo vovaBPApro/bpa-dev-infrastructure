@@ -771,6 +771,23 @@ assert_output_has "$verify_fail_output" 'merge reset to ORIG_HEAD'
 assert test "$(git -C "$fixture_root/verify-fail-repo" rev-parse HEAD)" = "$verify_fail_before"
 assert git -C "$fixture_root/verify-fail-repo" show-ref --verify --quiet refs/heads/ag-verify-fail
 
+# V3-0.40 regression lock: post-merge verify ran `sh -c "$verify_command"`, and
+# this script's own `set -o pipefail` does not cross into a child interpreter. So
+# the same command as the verify-fail fixture above, piped through a succeeding
+# tail, reported 0 and the gate landed a red lane. Restore `sh -c` and this goes
+# red: the branch merges and pushes instead of resetting to ORIG_HEAD.
+make_fixture verify-pipefail
+verify_pipefail_sha=$(make_lane "$fixture_root/verify-pipefail-repo" ag-verify-pipefail)
+verify_pipefail_before=$(git -C "$fixture_root/verify-pipefail-repo" rev-parse HEAD)
+printf 'commit: %s fixture\nverify: test ! -f lane.txt | cat\nresult: clean\nsecret-scan: clean\nremaining: none\n' "$verify_pipefail_sha" > "$fixture_root/verify-pipefail-report.md"
+verify_pipefail_output="$fixture_root/verify-pipefail-output.txt"
+if "$land" --branch ag-verify-pipefail --item-id ag-verify-pipefail --report "$fixture_root/verify-pipefail-report.md" --repo "$fixture_root/verify-pipefail-repo" --run-verify >"$verify_pipefail_output" 2>&1; then exit 1; fi
+assert_output_has "$verify_pipefail_output" 'LAND step=post-merge-verify status=fail'
+assert_output_has "$verify_pipefail_output" 'merge reset to ORIG_HEAD'
+assert_output_lacks "$verify_pipefail_output" 'LAND step=push status=pass'
+assert test "$(git -C "$fixture_root/verify-pipefail-repo" rev-parse HEAD)" = "$verify_pipefail_before"
+assert git -C "$fixture_root/verify-pipefail-repo" show-ref --verify --quiet refs/heads/ag-verify-pipefail
+
 # W-16 regression lock: the old gate landed this report because it accepted the
 # typed 168/168 claim without comparing it with the mandated command's output.
 make_fixture verify-count-mismatch

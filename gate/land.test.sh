@@ -37,6 +37,31 @@ assert_output_lacks() {
   assert_not grep -Fq "$unexpected" "$output"
 }
 
+# HR-2285: what did this landing COST the item? Read the way a fresh clone reads
+# it -- from the origin's attempt namespace, where the ref name carries the
+# charge -- so this asserts the durable record itself and not the tracked JSON
+# cache, which a refused landing never writes. Prints "<charged> <total>".
+attempt_ledger() {
+  ledger_bare="$1"
+  ledger_key=$(printf '%s' "$2" | git hash-object --stdin)
+  ledger_all=$(git -C "$ledger_bare" for-each-ref --format='%(refname)' "refs/bpa-review-attempts/$ledger_key/")
+  ledger_charged=$(printf '%s' "$ledger_all" | grep -c -- '-reject-' || true)
+  ledger_total=$(printf '%s' "$ledger_all" | grep -c . || true)
+  printf '%s %s\n' "$ledger_charged" "$ledger_total"
+}
+
+# $3 is "<charged rounds> <total attempts>". A round is charged only when a
+# reviewer examined the change and rejected it; every other refusal is still
+# refused, still costs the lane a full re-run, and must leave the first number
+# alone.
+assert_charge() {
+  charge_actual=$(attempt_ledger "$1" "$2")
+  if [ "$charge_actual" != "$3" ]; then
+    echo "HR-2285 charge violation: item=$2 expected '<charged> <total>'='$3' but the durable record says '$charge_actual'" >&2
+    exit 1
+  fi
+}
+
 install_push_noop_wrapper() {
   wrapper_dir="$1"
   real_git=$(command -v git)
@@ -375,6 +400,26 @@ review_rejected_output="$fixture_root/review-rejected-output.txt"
 if "$land" --branch ag-review-rejected --item-id ag-review-rejected --report "$fixture_root/review-rejected-report.md" --repo "$fixture_root/review-rejected-repo" >"$review_rejected_output" 2>&1; then exit 1; fi
 assert_output_has "$review_rejected_output" 'ERROR review-rejected'
 assert_output_lacks "$review_rejected_output" 'LAND step=merge status=pass'
+# HR-2285 fixture -- A REVIEWER'S REJECTION CHARGES. This is the whole ruling in
+# one line, and it is the event the counter could never see: the gate refuses a
+# REJECT at this step and exits, and the charge used to sit below the exit. The
+# round is durable, so a fresh clone reconstructs it as a round and not merely
+# as an arrival.
+assert_charge "$fixture_root/review-rejected-origin.git" ag-review-rejected '1 1'
+assert test -n "$(git -C "$fixture_root/review-rejected-origin.git" for-each-ref --format='%(refname)' 'refs/bpa-review-attempt-mirrors/*/1-reject-*')"
+# And it parks at the cap like any other round: two more rejections reach the
+# no-progress limit without an orchestrator deciding anything.
+for round in 2 3; do
+  if "$land" --branch ag-review-rejected --item-id ag-review-rejected --report "$fixture_root/review-rejected-report.md" --repo "$fixture_root/review-rejected-repo" >"$fixture_root/review-rejected-r$round.txt" 2>&1; then exit 1; fi
+  assert_output_has "$fixture_root/review-rejected-r$round.txt" 'ERROR review-rejected'
+done
+assert_charge "$fixture_root/review-rejected-origin.git" ag-review-rejected '3 3'
+if "$land" --branch ag-review-rejected --item-id ag-review-rejected --report "$fixture_root/review-rejected-report.md" --repo "$fixture_root/review-rejected-repo" >"$fixture_root/review-rejected-r4.txt" 2>&1; then exit 1; fi
+assert_output_has "$fixture_root/review-rejected-r4.txt" 'parked=no-progress'
+assert_output_has "$fixture_root/review-rejected-r4.txt" 'LAND step=review-rounds status=fail'
+# The fourth landing is refused by the park, so it never reaches the reviewer
+# and never charges a fourth round.
+assert_charge "$fixture_root/review-rejected-origin.git" ag-review-rejected '3 3'
 
 make_fixture review-self
 review_self_sha=$(make_policy_lane "$fixture_root/review-self-repo" ag-review-self)
@@ -514,6 +559,12 @@ review "$fixture_root/ag-review-stale-sha.review.md" ACCEPT independent-reviewer
 review_stale_output="$fixture_root/review-stale-sha-output.txt"
 if "$land" --branch ag-review-stale-sha --item-id ag-review-stale-sha --report "$fixture_root/review-stale-sha-report.md" --repo "$fixture_root/review-stale-sha-repo" >"$review_stale_output" 2>&1; then exit 1; fi
 assert_output_has "$review_stale_output" 'ERROR review-required stale-artifact reviewed-sha-mismatch'
+# HR-2285 fixture -- A STALE REVIEW SHA DOES NOT CHARGE. Named in the ruling
+# explicitly: "a review artifact naming a superseded SHA after a rebase or a
+# re-issue". It fails at the same step as a REJECT and one branch away from it,
+# which is exactly why the distinction has to be made on the contract code
+# rather than on "land_review_check failed". Still refused; costs no round.
+assert_charge "$fixture_root/review-stale-sha-origin.git" ag-review-stale-sha '0 0'
 
 make_fixture review-missing-sha
 review_missing_sha=$(make_policy_lane "$fixture_root/review-missing-sha-repo" ag-review-missing-sha)
@@ -961,6 +1012,10 @@ git -C "$fixture_root/stale-main-peer" push origin main >/dev/null
 stale_main_output="$fixture_root/stale-main-output.txt"
 if "$land" --branch ag-stale-main --item-id ag-stale-main --report "$fixture_root/stale-main-report.md" --repo "$fixture_root/stale-main-repo" >"$stale_main_output" 2>&1; then exit 1; fi
 assert_output_has "$stale_main_output" 'LAND step=freshness status=fail'
+# HR-2285 fixture -- A BASE THAT MOVED DOES NOT CHARGE. The ruling names
+# freshness directly, and V3-5.1 is the evidence: three rebases and three review
+# passes, none caused by a defect in the change.
+assert_charge "$fixture_root/stale-main-origin.git" ag-stale-main '0 0'
 assert test "$(git -C "$fixture_root/stale-main-repo" rev-parse main)" != "$(git -C "$fixture_root/stale-main-repo" rev-parse origin/main)"
 
 make_fixture lock
@@ -974,8 +1029,83 @@ lock_output="$fixture_root/lock-output.txt"
 if "$land" --branch ag-lock --item-id ag-lock --report "$fixture_root/lock-report.md" --repo "$fixture_root/lock-repo" >"$lock_output" 2>&1; then exit 1; fi
 wait "$lock_pid"
 assert_output_has "$lock_output" 'LAND step=lock status=fail'
+# HR-2285 fixture -- LOCK CONTENTION DOES NOT CHARGE. Named in the ruling. The
+# lane did nothing except arrive while another landing held the lock, which is
+# the gate working as designed and no evidence at all about the work.
+assert_charge "$fixture_root/lock-origin.git" ag-lock '0 0'
 assert test "$(git -C "$fixture_root/lock-repo" rev-parse main)" = "$(git -C "$fixture_root/lock-repo" rev-parse origin/main)"
 assert git -C "$fixture_root/lock-repo" show-ref --verify --quiet refs/heads/ag-lock
+
+# HR-2285 fixture -- A RED TARGET BRANCH DOES NOT CHARGE. This is V3-0.40's own
+# case verbatim: both its landings died at baseline-checks because the
+# orchestrator had pushed a red `main`, a defect in neither the lane nor its
+# work. Under the old counter those aborts moved it toward a park and then
+# closed it, blocking the change that shuts a live Hard Floor 7 hole. The
+# attempt is still recorded -- the ordinal advances, the mirrored refs are
+# pushed -- and it charges nothing.
+make_fixture baseline-red
+baseline_red_sha=$(make_lane "$fixture_root/baseline-red-repo" ag-baseline-red)
+report "$fixture_root/baseline-red-report.md" "$baseline_red_sha"
+printf 'import { test, expect } from "bun:test"; test("target branch is red", () => expect(true).toBe(false));\n' > "$fixture_root/baseline-red-repo/base.test.ts"
+git -C "$fixture_root/baseline-red-repo" commit -am red-main >/dev/null
+git -C "$fixture_root/baseline-red-repo" push origin main >/dev/null
+for red_round in 1 2 3; do
+  baseline_red_output="$fixture_root/baseline-red-$red_round.txt"
+  if "$land" --branch ag-baseline-red --item-id ag-baseline-red --report "$fixture_root/baseline-red-report.md" --repo "$fixture_root/baseline-red-repo" --no-push >"$baseline_red_output" 2>&1; then exit 1; fi
+  assert_output_has "$baseline_red_output" 'LAND step=baseline-checks status=fail'
+  assert_output_has "$baseline_red_output" 'LAND step=review-rounds status=pass'
+  assert_output_lacks "$baseline_red_output" 'parked='
+  assert_charge "$fixture_root/baseline-red-origin.git" ag-baseline-red "0 $red_round"
+done
+
+# Regression lock introduced BY HR-2285: uncharged attempts do not park, so an
+# item is no longer bounded to three attempt refs. `ls-remote` answers in
+# lexicographic order, where `10-` sorts before `2-`; walking the refs in that
+# order calls the tenth one nonsequential and bricks the item permanently, with
+# no repair path that is not a hand-edit of the durable record. The replay sorts
+# numerically on the ordinal.
+make_fixture attempt-ordinal-order
+ordinal_sha=$(make_lane "$fixture_root/attempt-ordinal-order-repo" ag-ordinal-order)
+git -C "$fixture_root/attempt-ordinal-order-repo" push origin ag-ordinal-order >/dev/null
+report "$fixture_root/attempt-ordinal-order-report.md" "$ordinal_sha"
+ordinal_key=$(printf '%s' ag-ordinal-order | git hash-object --stdin)
+for ordinal in 1 2 3 4 5 6 7 8 9 10; do
+  git -C "$fixture_root/attempt-ordinal-order-origin.git" update-ref "refs/bpa-review-attempts/$ordinal_key/$ordinal-abort-$ordinal_sha" "$ordinal_sha"
+  git -C "$fixture_root/attempt-ordinal-order-origin.git" update-ref "refs/bpa-review-attempt-mirrors/$ordinal_key/$ordinal-abort-$ordinal_sha" "$ordinal_sha"
+done
+ordinal_output="$fixture_root/attempt-ordinal-order-output.txt"
+"$land" --branch ag-ordinal-order --item-id ag-ordinal-order --report "$fixture_root/attempt-ordinal-order-report.md" --repo "$fixture_root/attempt-ordinal-order-repo" --no-push >"$ordinal_output" 2>&1 || true
+assert_output_lacks "$ordinal_output" 'nonsequential-attempt-ref'
+assert_output_has "$ordinal_output" 'LAND step=review-rounds status=pass'
+assert_charge "$fixture_root/attempt-ordinal-order-origin.git" ag-ordinal-order '0 11'
+
+# HR-2285 fixture -- V3-0.40'S OWN SHAPE, and the one that unparks it. Three
+# pre-HR-2285 attempt refs, in the old `<n>-<sha>` leaf grammar, and nothing on
+# the target branch: exactly what origin carries for V3-0.40 today, because a
+# refused landing pushes its ref and never writes the tracked JSON. Under the old
+# counter these three replayed as three rounds and parked the item at
+# no-progress. They cannot be rejections -- the gate refused a REJECT at its
+# review step and exited above the charge, so no rejection ever reached this
+# namespace -- so they replay as uncharged and the item is admissible again. By
+# rule, with no item named anywhere in the mechanism.
+make_fixture legacy-attempt-refs
+legacy_sha=$(make_lane "$fixture_root/legacy-attempt-refs-repo" ag-legacy-refs)
+git -C "$fixture_root/legacy-attempt-refs-repo" push origin ag-legacy-refs >/dev/null
+report "$fixture_root/legacy-attempt-refs-report.md" "$legacy_sha"
+legacy_key=$(printf '%s' ag-legacy-refs | git hash-object --stdin)
+for legacy_round in 1 2 3; do
+  git -C "$fixture_root/legacy-attempt-refs-origin.git" update-ref "refs/bpa-review-attempts/$legacy_key/$legacy_round-$legacy_sha" "$legacy_sha"
+  git -C "$fixture_root/legacy-attempt-refs-origin.git" update-ref "refs/bpa-review-attempt-mirrors/$legacy_key/$legacy_round-$legacy_sha" "$legacy_sha"
+done
+legacy_output="$fixture_root/legacy-attempt-refs-output.txt"
+"$land" --branch ag-legacy-refs --item-id ag-legacy-refs --report "$fixture_root/legacy-attempt-refs-report.md" --repo "$fixture_root/legacy-attempt-refs-repo" --no-push >"$legacy_output" 2>&1 || true
+assert_output_lacks "$legacy_output" 'parked='
+assert_output_has "$legacy_output" 'LAND step=review-rounds status=pass'
+assert grep -Fq '"rounds": 0' "$fixture_root/legacy-attempt-refs-repo/.git/bpa-review-rounds.json"
+assert grep -Fq '"attempts": 4' "$fixture_root/legacy-attempt-refs-repo/.git/bpa-review-rounds.json"
+# The legacy refs are untouched: reclassifying what they MEAN never rewrites the
+# record itself.
+assert test "$(git -C "$fixture_root/legacy-attempt-refs-origin.git" for-each-ref --format='%(refname)' "refs/bpa-review-attempts/$legacy_key/" | grep -cE "/[0-9]+-$legacy_sha\$")" = 3
 
 make_fixture push-rollback
 push_rollback_sha=$(make_lane "$fixture_root/push-rollback-repo" ag-push-rollback)

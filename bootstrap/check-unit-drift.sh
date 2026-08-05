@@ -39,6 +39,12 @@
 #      unit+path pair -- a whole-unit exemption would let an unrelated new
 #      dangling reference ride in on an old, unrelated justification (this was
 #      round-1 review round-2 defect 2; proven in check-unit-drift.test.ts).
+#      An exemption also EXPIRES (V3-2.16): the day the repository carries the
+#      path, the reason the entry was granted for is gone, so a row naming a
+#      path that now exists is itself a failure -- the same rule V3-2.13
+#      settled for the sibling ledger instance/doc-path-exemptions.tsv. Every
+#      row names an owner too, because an unowned debt is the one nobody
+#      closes.
 #
 # instance/units/ holds unit templates specific to THIS installation's product
 # (currently the three agentic-bpa-* units: db-grants, staleness, and
@@ -76,6 +82,27 @@ source "$SCRIPT_DIR/unit-render-lib.sh"
 # which is answerable in a plain checkout or a bare test, with no container
 # and no host install required.
 REPO_ROOT="${REPO_ROOT:-$SCRIPT_DIR/..}"
+
+# One home for "does this repository carry the path a unit names". Both users
+# of the predicate -- the REFERENCED-PATH check below and the discharged-
+# exemption check that guards it -- MUST answer identically, because they are
+# exact inverses: an absent path needs an exemption, and a present path may not
+# have one. Two predicates would make a path that one call answers "absent" and
+# the other "present" simultaneously required and forbidden in the ledger, and
+# no ledger content would pass. So the answer is computed in one place.
+#
+# The sibling ledger's checker (tools/instructions/paths.ts, V3-2.13) answers
+# the same question from `git ls-files` instead, because ITS subject includes
+# gitignored and host-only paths whose presence differs per tree. Same rule,
+# different predicate, and deliberately so: each expiry check must inherit the
+# predicate of the check it guards, not the other one's. The consequence is
+# inherited too and is worth naming -- an untracked file present only on this
+# host answers "exists" here, which has been true of the REFERENCED-PATH check
+# since V3-1.2 and is a property of that predicate, not of the expiry rule.
+repo_path_exists() {
+  [[ -e "$REPO_ROOT$1" ]]
+}
+
 EXEMPTIONS_FILE="${EXEMPTIONS_FILE:-$SCRIPT_DIR/../instance/unit-drift-exemptions.tsv}"
 PATH_EXEMPTIONS_FILE="${PATH_EXEMPTIONS_FILE:-$SCRIPT_DIR/../instance/unit-path-exemptions.tsv}"
 MANIFEST_FILE="${MANIFEST_FILE:-$SCRIPT_DIR/../instance/expected-units.tsv}"
@@ -165,14 +192,34 @@ fi
 # per-unit exemption would silently license ANY future dangling reference
 # added to that template, wearing the original, unrelated justification. The
 # key separator (US, 0x1F) cannot appear in a TSV field or a systemd path.
+#
+# Every entry also carries an OWNER, and the parser refuses one that does not
+# (V3-2.16). An exemption is a debt, and a debt with nobody's name on it is the
+# one nobody closes: two rows in this repository's own ledger recorded "no
+# workboard row yet" and stayed that way. The evidence column therefore begins
+# with `owner=<id>;` -- a tracking id, or the literal `none` when the entry
+# deliberately needs no row, in which case the prose after the `;` is the
+# statement of WHY none is needed. What an id looks like is this installation's
+# business, not bootstrap/'s (CLAUDE.md Mission, HR-309), so this pattern
+# matches the FIELD and never a row-id shape.
+OWNER_FIELD='^owner=[^[:space:];]+;[[:space:]]*[^[:space:]]'
 KEY_SEP=$'\x1f'
 declare -A path_exemptions=()
+declare -A path_exemption_lines=()
+declare -a path_exemption_keys=()
 require_readable_or_absent "$PATH_EXEMPTIONS_FILE" "unit-path-exemptions"
 if [[ -e "$PATH_EXEMPTIONS_FILE" ]]; then
+  path_exemption_line=0
   while IFS=$'\t' read -r unit relpath evidence extra || [[ -n "${unit:-}" ]]; do
+    ((path_exemption_line += 1))
     [[ -z "$unit" || "$unit" == \#* ]] && continue
     if [[ -n "${extra:-}" || "$unit" != *.service && "$unit" != *.timer || "$relpath" != /* || -z "$evidence" ]]; then
       printf 'ERROR invalid unit-path exemption: %s\n' "$unit" >&2
+      exit 2
+    fi
+    if [[ ! "$evidence" =~ $OWNER_FIELD ]]; then
+      printf 'ERROR unit-path exemption without an owner: %s %s (line %d: evidence must start with owner=<id>; or owner=none; followed by the reason)\n' \
+        "$unit" "$relpath" "$path_exemption_line" >&2
       exit 2
     fi
     key="$unit$KEY_SEP$relpath"
@@ -181,8 +228,39 @@ if [[ -e "$PATH_EXEMPTIONS_FILE" ]]; then
       exit 2
     fi
     path_exemptions["$key"]="$evidence"
+    path_exemption_lines["$key"]="$path_exemption_line"
+    path_exemption_keys+=("$key")
   done < "$PATH_EXEMPTIONS_FILE"
 fi
+
+# ── Discharged exemptions (V3-2.16) ─────────────────────────────────────────
+# An exemption excuses a unit for naming a path this repository does not carry.
+# The day the repository carries it, the reason the entry was granted for is
+# gone -- and until now nothing re-tested that, so `bpa-meteorite.service` kept
+# an exemption for `/meteorite/run.sh` for the whole of the row that built it
+# (V3-1.5, landed 133541c). It suppressed a check that would have passed, which
+# is harmless in itself and proves the ledger could not tell a live debt from a
+# discharged one.
+#
+# This is the rule V3-2.13 already settled for the sibling ledger
+# instance/doc-path-exemptions.tsv (tools/instructions/paths.ts: "a row naming a
+# path that now exists FAILS, so an exemption cannot outlive the reason it was
+# granted"). Deliberately the SAME rule and not a second design -- two ledgers
+# disagreeing about one discipline is itself the defect.
+#
+# The ledger is checked on its own terms, not only for the rows a template
+# happens to reference, so a row that has quietly stopped applying cannot hide
+# behind the fact that nothing consults it any more. This expires DISCHARGED
+# debt; a row whose path is still absent is live debt and is left alone.
+for key in ${path_exemption_keys[@]+"${path_exemption_keys[@]}"}; do
+  exempt_unit="${key%%"$KEY_SEP"*}"
+  exempt_path="${key#*"$KEY_SEP"}"
+  if repo_path_exists "$exempt_path"; then
+    printf 'PATH-EXEMPT-STALE %s: %s now exists in this repository -- the reason for this exemption is discharged; remove line %s of %s (was: %s)\n' \
+      "$exempt_unit" "$exempt_path" "${path_exemption_lines[$key]}" "$PATH_EXEMPTIONS_FILE" "${path_exemptions[$key]}" >&2
+    result=1
+  fi
+done
 
 # Extract every ${INSTALL_ROOT}- or $INSTALL_ROOT-anchored path referenced in a
 # RAW (pre-envsubst) template and check it exists in this repository. Operates
@@ -196,7 +274,7 @@ check_referenced_paths() {
     [[ -z "$ref" ]] && continue
     relpath="${ref#@@IROOT@@}"
     [[ -z "$relpath" ]] && continue
-    if [[ ! -e "$REPO_ROOT$relpath" ]]; then
+    if ! repo_path_exists "$relpath"; then
       key="$unit$KEY_SEP$relpath"
       if [[ -n "${path_exemptions[$key]+x}" ]]; then
         printf 'PATH-EXEMPT %s: %s not in repo (%s)\n' "$unit" "$relpath" "${path_exemptions[$key]}"

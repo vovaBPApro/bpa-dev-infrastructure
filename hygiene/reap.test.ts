@@ -1,6 +1,16 @@
 import { test, expect, afterEach } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, chmodSync } from "node:fs";
+import {
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  readFileSync,
+  mkdirSync,
+  existsSync,
+  chmodSync,
+  readlinkSync,
+  realpathSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -588,4 +598,376 @@ test("install-cron.sh installs an idempotent, deterministic managed block and ca
   const contentsAfterUninstall = sh(`cat ${JSON.stringify(cronFile)}`, dir);
   expect(contentsAfterUninstall).not.toContain("# BEGIN bpa-dev-infrastructure hygiene");
   expect(contentsAfterUninstall).toContain("MAILTO=hygiene@example.test");
+});
+
+// --- V3-5.13: the two operations the reaper did not have -------------------
+//
+// Measured at the base commit, before any of this existed:
+//   - `reap.sh remote-branches` -> "unknown subcommand". There was no remote
+//     operation at all, so every remote deletion in the last sweep was done by
+//     hand, guarded ad hoc.
+//   - a merged branch behind a worktree that still exists: `branches --apply`
+//     exits 0 and deletes nothing, because git will not delete a checked-out
+//     branch; `worktrees --apply` prints "no orphaned worktrees" and removes
+//     nothing, because it only pruned ORPHANED metadata. Neither command could
+//     break the other's deadlock, and that is why 54 branches were unreapable.
+//   - a merged branch that exists only on the remote appears in NO output: the
+//     inventory walked refs/heads and never said so.
+//
+// These tests prove the refusals as hard as the deletions. A reaper that
+// deletes everything passes any test that only checks that something was
+// deleted -- and this tool's failure mode is not "it does not run", it is "it
+// removes work nobody has a copy of".
+
+const livePids: number[] = [];
+afterEach(() => {
+  while (livePids.length) {
+    const pid = livePids.pop();
+    if (pid === undefined) continue;
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // already gone -- the point was that it was alive DURING the sweep
+    }
+  }
+});
+
+// Starts a real process whose working directory is inside `dir`, and does not
+// return until the kernel actually reports it there. A fake /proc would prove
+// nothing about the probe that runs on the host; this is the same signal a
+// running lane produces, produced the same way.
+function spawnLaneIn(dir: string): number {
+  const started = spawnSync(
+    "bash",
+    ["-c", `cd ${JSON.stringify(dir)} && exec sleep 300 >/dev/null 2>&1 & echo $!`],
+    { encoding: "utf8" },
+  );
+  const pid = Number(started.stdout.trim());
+  if (!Number.isInteger(pid) || pid <= 0) {
+    throw new Error(`fixture setup failed: no lane pid\n${started.stdout}\n${started.stderr}`);
+  }
+  livePids.push(pid);
+  const target = realpathSync(dir);
+  for (let attempt = 0; attempt < 500; attempt++) {
+    let cwd = "";
+    try {
+      cwd = readlinkSync(`/proc/${pid}/cwd`);
+    } catch {
+      cwd = "";
+    }
+    if (cwd === target) return pid;
+    spawnSync("sleep", ["0.01"]);
+  }
+  throw new Error(`fixture setup failed: lane process ${pid} never entered ${dir}`);
+}
+
+// A repo with a real remote, holding one landed lane branch, one lane branch
+// that never landed, and one protected branch -- all three present on the
+// remote, which is where the reaper could not previously look.
+function buildRemoteFixture(): { dir: string; repo: string; remote: string } {
+  const dir = fixtureDir();
+  const repo = join(dir, "repo");
+  const remote = join(dir, "remote.git");
+  mkdirSync(repo);
+  sh("git init -q -b main .", repo);
+  sh("git config user.email hygiene@example.test", repo);
+  sh("git config user.name Hygiene", repo);
+  writeFileSync(join(repo, "base.txt"), "base\n");
+  sh("git add base.txt && git commit -qm base", repo);
+  sh(`git init -q --bare ${JSON.stringify(remote)}`, repo);
+  sh(`git remote add origin ${JSON.stringify(remote)}`, repo);
+  sh("git push -q origin main", repo);
+
+  sh("git checkout -qb ag-merged-remote", repo);
+  writeFileSync(join(repo, "landed.txt"), "landed\n");
+  sh("git add landed.txt && git commit -qm landed", repo);
+  sh("git push -q origin ag-merged-remote", repo);
+  sh("git checkout -q main", repo);
+  sh("git merge -q --no-ff -m 'merge ag-merged-remote' ag-merged-remote", repo);
+  sh("git push -q origin main", repo);
+
+  sh("git checkout -qb ag-unmerged-remote main", repo);
+  writeFileSync(join(repo, "wip.txt"), "wip nobody else has\n");
+  sh("git add wip.txt && git commit -qm wip", repo);
+  sh("git push -q origin ag-unmerged-remote", repo);
+  sh("git checkout -q main", repo);
+
+  sh("git branch v3 main", repo); // on the instance protect list
+  sh("git push -q origin v3", repo);
+
+  return { dir, repo, remote };
+}
+
+test("remote-branches: reaps a merged remote branch, retains an unmerged one, refuses a protected one", () => {
+  const { repo } = buildRemoteFixture();
+  // Drop the local refs: these are now exactly the remote-only branches that
+  // were invisible to the old inventory as well as to the old reaper.
+  sh("git branch -D ag-merged-remote ag-unmerged-remote", repo);
+
+  const dry = run(["remote-branches", "--repo", repo]);
+  expect(dry.status).toBe(0);
+  expect(dry.stdout).toContain("merged remote branch: origin/ag-merged-remote");
+  expect(dry.stdout).toContain("unmerged remote branch (report-only, no disposition): origin/ag-unmerged-remote");
+  expect(dry.stdout).toContain("protected remote branch, refusing: origin/v3");
+  expect(dry.stdout).toContain("protected remote branch, refusing: origin/main");
+  // Dry run mutates nothing at all.
+  expect(sh("git ls-remote --heads origin", repo)).toContain("refs/heads/ag-merged-remote");
+
+  const apply = run(["remote-branches", "--repo", repo, "--apply"]);
+  expect(apply.status).toBe(0);
+  expect(apply.stdout).toContain("deleted merged remote branch: origin/ag-merged-remote");
+  const heads = sh("git ls-remote --heads origin", repo);
+  expect(heads).not.toContain("refs/heads/ag-merged-remote");
+  expect(heads).toContain("refs/heads/ag-unmerged-remote");
+  expect(heads).toContain("refs/heads/v3");
+  expect(heads).toContain("refs/heads/main");
+});
+
+test("remote-branches: a merged remote branch whose lane is still running is refused", () => {
+  const { dir, repo } = buildRemoteFixture();
+  const lane = join(dir, "lane-wt");
+  sh(`git worktree add -q ${JSON.stringify(lane)} ag-merged-remote`, repo);
+  spawnLaneIn(lane);
+
+  const apply = run(["remote-branches", "--repo", repo, "--apply"]);
+  expect(apply.status).toBe(0);
+  expect(apply.stdout).toContain("remote branch held by a live lane, refusing: origin/ag-merged-remote");
+  expect(apply.stdout).toContain("process-working-inside");
+  expect(sh("git ls-remote --heads origin", repo)).toContain("refs/heads/ag-merged-remote");
+});
+
+test("remote-branches: a remote branch whose tip moved since it was measured is retained, not raced away", () => {
+  const { dir, repo } = buildRemoteFixture();
+  const lane = join(dir, "lane-wt");
+  sh(`git worktree add -q ${JSON.stringify(lane)} ag-merged-remote`, repo);
+  // --liveness-cmd is the one hook this script runs immediately before it
+  // acts, which makes it the honest place to stage a concurrent push: a real
+  // racing lane lands in exactly this window. The probe reports the lane
+  // terminal (exit 1) so the sweep proceeds to the delete it must then refuse.
+  const racer = join(dir, "racer.sh");
+  writeFileSync(
+    racer,
+    [
+      "#!/usr/bin/env bash",
+      `git -C ${JSON.stringify(repo)} push -q --force origin main:ag-merged-remote`,
+      "exit 1",
+    ].join("\n"),
+  );
+  chmodSync(racer, 0o755);
+
+  const apply = run(["remote-branches", "--repo", repo, "--apply", "--liveness-cmd", racer]);
+  expect(apply.status).toBe(0);
+  expect(apply.stdout).toContain(
+    "remote refused the delete (tip moved since it was measured?), retaining: origin/ag-merged-remote",
+  );
+  expect(sh("git ls-remote --heads origin", repo)).toContain("refs/heads/ag-merged-remote");
+});
+
+test("branches: names and counts the remote-only branches it cannot see, instead of reading as complete", () => {
+  const { repo } = buildRemoteFixture();
+  sh("git branch -D ag-merged-remote ag-unmerged-remote", repo);
+
+  const out = run(["branches", "--repo", repo]);
+  expect(out.status).toBe(0);
+  expect(out.stdout).toContain("remote-only branch, invisible to refs/heads: origin/ag-merged-remote");
+  expect(out.stdout).toContain("remote-only branch, invisible to refs/heads: origin/ag-unmerged-remote");
+  expect(out.stdout).toContain("remote-only branches: 2");
+});
+
+test("branches: says out loud when it could not look at the remote at all", () => {
+  const { dir, repo } = buildRemoteFixture();
+  sh(`git remote set-url origin ${JSON.stringify(join(dir, "no-such-remote.git"))}`, repo);
+
+  const out = run(["branches", "--repo", repo]);
+  expect(out.status).toBe(0);
+  expect(out.stdout).toContain("remote inventory: UNAVAILABLE from 'origin'");
+  expect(out.stdout).toContain("covered refs/heads ONLY");
+});
+
+test("a merged branch behind a terminal worktree is reaped, worktree FIRST -- the deadlock that stranded the branches", () => {
+  const { repo, worktree } = buildFixture();
+
+  // The default is unchanged: any worktree still refuses its branch outright.
+  const guarded = run(["branches", "--repo", repo, "--apply"]);
+  expect(guarded.status).toBe(0);
+  expect(guarded.stdout).toContain("held by live worktree, refusing: worktree-held");
+  expect(existsSync(worktree)).toBe(true);
+
+  const apply = run(["branches", "--repo", repo, "--with-worktrees", "--apply"]);
+  expect(apply.status).toBe(0);
+  const removedAt = apply.stdout.indexOf(`removed terminal worktree: ${worktree}`);
+  const deletedAt = apply.stdout.indexOf("deleted merged branch: worktree-held");
+  expect(removedAt).toBeGreaterThan(-1);
+  expect(deletedAt).toBeGreaterThan(-1);
+  // Order is the whole point, not a coincidence of both happening: git cannot
+  // delete a checked-out branch, so worktree-then-branch is the only sequence
+  // that works, and the reverse would silently leave the branch behind.
+  expect(removedAt).toBeLessThan(deletedAt);
+  expect(existsSync(worktree)).toBe(false);
+  const check = spawnSync("git", ["show-ref", "--verify", "--quiet", "refs/heads/worktree-held"], { cwd: repo });
+  expect(check.status).not.toBe(0);
+});
+
+test("worktrees: a running lane's worktree is refused, and its branch survives with it", () => {
+  const { repo, worktree } = buildFixture();
+  spawnLaneIn(worktree);
+
+  const apply = run(["worktrees", "--repo", repo, "--apply", "--terminal"]);
+  expect(apply.status).toBe(0);
+  expect(apply.stdout).toContain(`live worktree, refusing: ${worktree}`);
+  expect(apply.stdout).toContain("process-working-inside");
+  expect(existsSync(worktree)).toBe(true);
+  expect(sh("git show-ref --verify --quiet refs/heads/worktree-held && echo present", repo).trim()).toBe(
+    "present",
+  );
+});
+
+test("worktrees: classification is always reported; removal needs --apply --terminal", () => {
+  const { repo, worktree } = buildFixture();
+
+  const report = run(["worktrees", "--repo", repo]);
+  expect(report.status).toBe(0);
+  expect(report.stdout).toContain(`terminal worktree: ${worktree}`);
+  expect(existsSync(worktree)).toBe(true);
+
+  const unarmed = run(["worktrees", "--repo", repo, "--apply"]);
+  expect(unarmed.status).toBe(0);
+  expect(unarmed.stdout).toContain(`not removing without --terminal: ${worktree}`);
+  expect(existsSync(worktree)).toBe(true);
+
+  const armed = run(["worktrees", "--repo", repo, "--apply", "--terminal"]);
+  expect(armed.status).toBe(0);
+  expect(armed.stdout).toContain(`removed terminal worktree: ${worktree}`);
+  expect(existsSync(worktree)).toBe(false);
+});
+
+test("a dirty worktree is refused even when its branch is merged, and the uncommitted file survives", () => {
+  const { repo, worktree } = buildFixture();
+  writeFileSync(join(worktree, "uncommitted.txt"), "work nobody else has a copy of\n");
+
+  const apply = run(["branches", "--repo", repo, "--with-worktrees", "--apply"]);
+  expect(apply.status).toBe(0);
+  expect(apply.stdout).toContain("held by live worktree, refusing: worktree-held");
+  expect(apply.stdout).toContain("dirty-worktree");
+  expect(existsSync(join(worktree, "uncommitted.txt"))).toBe(true);
+  expect(sh("git show-ref --verify --quiet refs/heads/worktree-held && echo present", repo).trim()).toBe(
+    "present",
+  );
+});
+
+test("an interrupted rebase in a clean-looking worktree is refused", () => {
+  const { repo, worktree } = buildFixture();
+  const gitDir = sh("git rev-parse --absolute-git-dir", worktree).trim();
+  mkdirSync(join(gitDir, "rebase-merge"), { recursive: true });
+
+  const apply = run(["worktrees", "--repo", repo, "--apply", "--terminal"]);
+  expect(apply.status).toBe(0);
+  expect(apply.stdout).toContain("operation-in-progress=rebase-merge");
+  expect(existsSync(worktree)).toBe(true);
+});
+
+test("liveness is re-measured at the moment of removal, not once at classification", () => {
+  const { dir, repo, worktree } = buildFixture();
+  const counter = join(dir, "probe-calls");
+  const probe = join(dir, "liveness.sh");
+  // Terminal on the first call (classification), running on the second (the
+  // call the removal itself makes). A sweep that trusted its plan-phase
+  // verdict would delete a worktree whose lane had come back to life; lanes
+  // start and finish while a sweep runs, which is the entire reason the
+  // probe is re-run rather than cached.
+  writeFileSync(
+    probe,
+    [
+      "#!/usr/bin/env bash",
+      'calls=$(cat "$PROBE_COUNTER" 2>/dev/null || echo 0)',
+      "calls=$((calls + 1))",
+      'printf %s "$calls" > "$PROBE_COUNTER"',
+      'if [[ "$calls" -ge 2 ]]; then exit 0; fi',
+      "exit 1",
+    ].join("\n"),
+  );
+  chmodSync(probe, 0o755);
+
+  const apply = spawnSync(
+    "bash",
+    [reap, "branches", "--repo", repo, "--with-worktrees", "--apply", "--liveness-cmd", probe],
+    { encoding: "utf8", env: { ...process.env, PROBE_COUNTER: counter } },
+  );
+  expect(apply.status).toBe(0);
+  expect(apply.stdout).toContain("terminal worktree holds branch: worktree-held");
+  expect(apply.stdout).toContain("worktree stopped being terminal between classification and removal, refusing");
+  expect(apply.stdout).toContain("leaving branch in place because its worktree survived: worktree-held");
+  expect(readFileSync(counter, "utf8")).toBe("2");
+  expect(existsSync(worktree)).toBe(true);
+  expect(sh("git show-ref --verify --quiet refs/heads/worktree-held && echo present", repo).trim()).toBe(
+    "present",
+  );
+});
+
+test("a liveness probe that cannot answer is UNKNOWN, and UNKNOWN refuses", () => {
+  const { dir, repo, worktree } = buildFixture();
+  const broken = join(dir, "broken-probe.sh");
+  writeFileSync(broken, "#!/usr/bin/env bash\nexit 3\n");
+  chmodSync(broken, 0o755);
+
+  const odd = run(["worktrees", "--repo", repo, "--apply", "--terminal", "--liveness-cmd", broken]);
+  expect(odd.status).toBe(0);
+  expect(odd.stdout).toContain("liveness-cmd exit=3 (UNKNOWN, refusing)");
+  expect(existsSync(worktree)).toBe(true);
+
+  // A probe that is not there at all is the same answer, not a free pass.
+  const missing = run([
+    "worktrees",
+    "--repo",
+    repo,
+    "--apply",
+    "--terminal",
+    "--liveness-cmd",
+    join(dir, "no-such-probe"),
+  ]);
+  expect(missing.status).toBe(0);
+  expect(missing.stdout).toContain("(UNKNOWN, refusing)");
+  expect(existsSync(worktree)).toBe(true);
+});
+
+test("an unreadable proc root is UNKNOWN, never an empty list of processes", () => {
+  const { dir, repo, worktree } = buildFixture();
+
+  const apply = run([
+    "branches",
+    "--repo",
+    repo,
+    "--with-worktrees",
+    "--apply",
+    "--proc-root",
+    join(dir, "no-such-proc"),
+  ]);
+  expect(apply.status).toBe(0);
+  expect(apply.stdout).toContain("proc-root-unreadable");
+  expect(apply.stdout).toContain("held by live worktree, refusing: worktree-held");
+  expect(existsSync(worktree)).toBe(true);
+  expect(sh("git show-ref --verify --quiet refs/heads/worktree-held && echo present", repo).trim()).toBe(
+    "present",
+  );
+});
+
+test("the reaper contains no force-delete of any kind", () => {
+  // A static lock, deliberately. Every other test here proves a guard the
+  // script currently has; this one proves an instrument it must never acquire.
+  // `git branch -D` is how a reaper becomes a work-destroyer: a `-d` refusal
+  // is evidence that the premise is wrong, so the script fetches and
+  // re-measures instead. The same reasoning bars `worktree remove --force`
+  // (which discards an uncommitted tree) and a bare `push --force`
+  // (--force-with-lease, pinned to a measured sha, is the permitted form).
+  const source = readFileSync(reap, "utf8");
+  const code = source
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("#"))
+    .join("\n");
+
+  expect(code).not.toMatch(/git\b[^\n]*\bbranch\b[^\n]*\s-D\b/);
+  expect(code).not.toMatch(/worktree\s+remove\b[^\n]*--force\b/);
+  expect(code).not.toMatch(/push\b[^\n]*\s--force(\s|$)/m);
+  // ...and the permitted form is actually the one in use.
+  expect(code).toMatch(/--force-with-lease=/);
 });

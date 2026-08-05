@@ -41,6 +41,13 @@ export FLEET_NUDGE_HEARTBEAT="$TMP/runtime/heartbeat"
 export FLEET_NUDGE_ALERT_STATE="$TMP/runtime/alerted"
 export FLEET_NUDGE_FAILING_ALERT_STATE="$TMP/runtime/failing-alerted"
 export FLEET_NUDGE_ALERT_DIR="$TMP/runtime"
+# Without this the suite appends to the HOST's fleet log. It did: 334 of the 369
+# zero-lane firings recorded there by 2026-08-05 are this file's one-row board
+# (`open_rows=1`), not the timer — enough to bury the 35 real firings that V3-5.9
+# had to reason about. A test that writes into the evidence it is testing is a
+# false-green generator, and this one corrupted the record used to size the
+# watchdog's own dwell.
+export FLEET_NUDGE_LOGFILE="$TMP/fleet.log"
 export FLEET_NUDGE_TEST_NOTIFY_LOG="$TMP/notify.log"
 : >"$FLEET_NUDGE_TEST_NOTIFY_LOG"
 

@@ -70,6 +70,50 @@ ALERT_DIR=${FLEET_NUDGE_ALERT_DIR:-/run/bpa-orchestrator}
 # locks can fire a full night of nudges without spending a real second on each.
 PASTE_DELAY=${FLEET_NUDGE_PASTE_DELAY:-1}
 
+# ── Idle hysteresis ─────────────────────────────────────────────────────────
+# The dedup above is per EPISODE, and an episode used to end the instant one lane
+# appeared. So a fleet oscillating around zero — lane exits, next lane starts,
+# repeat — ended and reopened an episode every cycle and paid the operator TWO
+# messages per cycle: the raise and its clear. That is the ~9 consecutive
+# messages he screenshotted. It is not a threshold set wrong; it is an episode
+# boundary drawn at the wrong place.
+#
+# So both edges get a dwell. The fleet must be idle for a while before he is
+# told, and back at work for a while before the episode is declared over.
+#
+# WHERE THE NUMBER COMES FROM. The sampling quantum is the timer period,
+# `OnUnitActiveSec=10min` in bootstrap/units/orch-fleet-nudge.timer.in — the
+# watchdog cannot resolve anything shorter, so nothing shorter can be a
+# meaningful dwell. That the quantum is also the right dwell is measured, not
+# assumed: of the 14 genuine idle episodes in the timer's own log
+# (/root/.cache/infra-lanes/fleet-nudge.log, 2026-08-05, restricted to firings
+# that read the real board), SEVEN lasted exactly one tick — idle at one sample,
+# working at the next. Half of all idle episodes were handovers that resolved
+# themselves inside one period, and every one of them paged him. Requiring
+# idleness to outlive one full period removes exactly that population and
+# nothing else; the longest real idle run was 9 ticks and would still alert.
+# The busy dwell is the same number for the same reason: single-busy-tick
+# interruptions occur too, and one of them must not be read as recovery.
+#
+# The tracked timer is the source, so a change to it must not silently leave
+# this behind: fleet-nudge.test.sh reads OnUnitActiveSec out of the unit template
+# and fails if this default stops matching it.
+TIMER_PERIOD=$(int_or "${FLEET_NUDGE_TIMER_PERIOD:-600}" 600)
+IDLE_SUSTAIN=$(int_or "${FLEET_NUDGE_IDLE_SUSTAIN:-$TIMER_PERIOD}" "$TIMER_PERIOD")
+BUSY_DWELL=$(int_or "${FLEET_NUDGE_BUSY_DWELL:-$TIMER_PERIOD}" "$TIMER_PERIOD")
+# How long after telling him before telling him AGAIN about the same stall, for
+# the first repeat; it doubles from there (see raise_idle). Same measured source
+# as the dwells: the longest genuine idle run in the timer's log was 9 ticks, so
+# 9 periods is the point past which a stall has outlasted anything this fleet has
+# ever done in normal operation. Repeating sooner would be reporting behaviour
+# that has been observed to resolve itself.
+IDLE_REALERT=$(int_or "${FLEET_NUDGE_IDLE_REALERT:-$((TIMER_PERIOD * 9))}" "$((TIMER_PERIOD * 9))")
+
+# Every time-dependent decision reads this, never `date` directly, so the
+# regression locks can drive days of fleet behaviour without sleeping through
+# them — the same reason PASTE_DELAY above is a knob.
+now() { printf '%s' "${FLEET_NUDGE_NOW:-$(date +%s)}"; }
+
 write_heartbeat() { # exit_status
   local heartbeat_dir heartbeat_tmp
   heartbeat_dir=$(dirname "$HEARTBEAT")
@@ -252,6 +296,31 @@ notify() { # text
 # repeated alert is noise, a swallowed one is a dead fleet nobody is watching.
 alert_state() { printf '%s/fleet-nudge-%s.alerted' "$ALERT_DIR" "$1"; }
 
+# How long the current unbroken run of a condition has lasted. The file holds the
+# epoch the run STARTED, so the answer survives a firing and does not depend on
+# how many times the timer happened to fire — this script is invoked irregularly
+# (its own log shows firings seconds apart as well as ten minutes apart), so
+# counting firings would measure the invoker, not the fleet.
+streak_file() { printf '%s/fleet-nudge-%s.since' "$ALERT_DIR" "$1"; }
+
+streak_since() { # key now -> epoch the run began, starting one if none is open
+  local file began
+  file=$(streak_file "$1")
+  began=$(cat "$file" 2>/dev/null)
+  case "$began" in
+    '' | *[!0-9]*)
+      began=$2
+      if ! printf '%s\n' "$began" >"$file"; then
+        echo "fleet-nudge: cannot write streak state: $file" >&2
+        return 1
+      fi
+      ;;
+  esac
+  printf '%s' "$began"
+}
+
+streak_break() { rm -f "$(streak_file "$1")"; }
+
 raise() { # key text
   local state
   state=$(alert_state "$1")
@@ -271,6 +340,52 @@ clear_alert() { # key text
   [ -e "$state" ] || return 0
   notify "$2" || return 1
   rm -f "$state"
+}
+
+# The idle alert is the one condition that may speak more than once per episode,
+# and this is deliberate. A fleet stuck at zero for eight hours told once at 02:00
+# is a fleet nobody is watching by 03:00: if he misses that single message there
+# is no second signal, ever, and the mission brief is explicit that suppression
+# which cannot be escaped is worse than the flood, because the flood is at least
+# honest.
+#
+# So it repeats on a DOUBLING interval, the first repeat IDLE_REALERT after the
+# first message. A stall is announced at +10m and re-announced at +100m, +280m,
+# +640m... — the message count grows with the LOGARITHM of the stall, so a six
+# hour night costs three messages where the timer would have sent thirty-six, a
+# full week costs seven, and no stall however long ever goes permanently silent.
+# There is deliberately no ceiling on the interval: a cap would reintroduce a
+# fixed message rate, and an uncapped double is the only shape that is both
+# eventually-quiet and never-silent.
+#
+# The state file carries "<epoch of last message> <messages so far>"; removing it
+# (clear_alert, or a reboot clearing the tmpfs) resets the backoff to the start,
+# so the next real stall is reported promptly rather than inheriting a stale
+# interval.
+raise_idle() { # now text
+  local state last count interval
+  state=$(alert_state idle)
+  count=0
+  if [ -e "$state" ]; then
+    read -r last count <"$state" 2>/dev/null || true
+    case "$last" in '' | *[!0-9]*) last='' ;; esac
+    case "$count" in '' | *[!0-9]*) count=0 ;; esac
+    if [ -n "$last" ]; then
+      # IDLE_REALERT * 2^(count-1), by doubling: bash has no pow, and this keeps
+      # the arithmetic integer and inspectable.
+      interval=$IDLE_REALERT
+      local i=1
+      while [ "$i" -lt "$count" ]; do interval=$((interval * 2)); i=$((i + 1)); done
+      [ $(($1 - last)) -ge "$interval" ] || return 0
+    fi
+  fi
+  # Written only AFTER delivery succeeds, for the same reason raise() is: a
+  # message that never arrived must not advance the backoff past him.
+  notify "$2" || return 1
+  if ! printf '%s %s\n' "$1" "$((count + 1))" >"$state"; then
+    echo "fleet-nudge: cannot write alert state: $state" >&2
+    return 1
+  fi
 }
 
 if ! open=$(count_open_rows "$BOARD"); then
@@ -294,8 +409,23 @@ tmux has-session -t "$SESSION" 2>/dev/null || session_up=false
   { clear_alert empty "✅ На дошці знову є робота: $open відкритих рядків. Alert cleared." || exit 3; }
 [ "$session_up" = true ] &&
   { clear_alert session "✅ Оркестратор знову запущений. Alert cleared." || exit 3; }
-[ "$running" -ge "$CRITICAL" ] &&
-  { clear_alert idle "✅ Флот знову працює: активних лейнів $running. Alert cleared." || exit 3; }
+
+# The idle edges. Whichever way the fleet is, the OTHER run is broken and this
+# one is opened, so both durations are always measured from a real transition.
+NOW=$(now)
+if [ "$running" -ge "$CRITICAL" ]; then
+  streak_break idle
+  busy_since=$(streak_since busy "$NOW") || exit 5
+  # A single busy tick is not recovery — the log shows the fleet returning for
+  # one period and dropping straight back. Clearing on it would end the episode,
+  # and the next drop to zero would then read as new and page him again: the
+  # clear is the other half of the flood, not the cure for it.
+  [ $((NOW - busy_since)) -ge "$BUSY_DWELL" ] &&
+    { clear_alert idle "✅ Флот знову працює: активних лейнів $running. Alert cleared." || exit 3; }
+else
+  streak_break busy
+  idle_since=$(streak_since idle "$NOW") || exit 5
+fi
 
 # 1 or 2 lanes at the default settings land here and the watchdog stays silent:
 # HR-2342 permits them, so they are not a fault and must not be reported as one.
@@ -329,8 +459,14 @@ fi
 
 # Work remains but the fleet is doing none of it => something on the orchestrator
 # side is wrong. Wake IT, and tell the Human once.
-if [ "$running" -lt "$CRITICAL" ]; then
-  raise idle "⚠️ Флот простоює: активних лейнів $running, на дошці $open відкритих рядків. Піднімаю оркестратор." || exit 3
+#
+# The ORCHESTRATOR is still woken on every single firing, below the dwell and
+# above it — that is the tmux paste further down, it costs nothing, and waking it
+# is how the idleness gets fixed without anyone being told about it. Only the
+# HUMAN waits for the dwell. That split is the whole design: react immediately,
+# escalate only if the reaction did not work.
+if [ "$running" -lt "$CRITICAL" ] && [ $((NOW - idle_since)) -ge "$IDLE_SUSTAIN" ]; then
+  raise_idle "$NOW" "⚠️ Флот простоює: активних лейнів $running, на дошці $open відкритих рядків. Піднімаю оркестратор." || exit 3
 fi
 
 msg="[fleet-nudge] running lanes=$running, workboard open rows=$open. HR-2538 caps parallel lanes at $CAP — a ceiling, not a target. Collect finished lane reports, land what is ACCEPTed, dispatch the next wave. Per HR-281 report the lane count to Vova unprompted."

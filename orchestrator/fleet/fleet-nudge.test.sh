@@ -4,7 +4,10 @@
 set -euo pipefail
 
 DIR=$(cd "$(dirname "$0")" && pwd)
-SCRIPT="$DIR/fleet-nudge.sh"
+# Overridable so the hysteresis locks below can be replayed against a PRE-change
+# copy of the watchdog and shown to fail. Red-before evidence that cannot be
+# re-executed by the next reader is a claim, not evidence.
+SCRIPT=${FLEET_NUDGE_TEST_SCRIPT:-$DIR/fleet-nudge.sh}
 REPO=$(cd "$DIR/../.." && pwd)
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -244,6 +247,20 @@ exit 0
 EOF
 chmod +x "$TMP/bin/systemctl" "$TMP/bin/tmux" "$TMP/bin/curl"
 
+# The watchdog's timer period, and the unit of simulated time below. Read from
+# the tracked unit rather than written here: the script's dwell defaults are
+# derived from this number, and a suite that hard-coded its own copy would keep
+# passing after someone changed the timer and left the dwells behind.
+PERIOD=$(sed -n 's/^OnUnitActiveSec=\([0-9]*\)min$/\1/p' "$REPO/bootstrap/units/orch-fleet-nudge.timer.in")
+[ -n "$PERIOD" ] || fail "cannot read OnUnitActiveSec from the tracked timer unit"
+PERIOD=$((PERIOD * 60))
+
+# Simulated wall clock. The dwells are measured in seconds, so a suite that fired
+# 36 times in the same millisecond would prove nothing about a night — and
+# sleeping through a real one is not an option. FLEET_NUDGE_NOW exists for this.
+SIM_NOW=1000000000
+tick() { SIM_NOW=$((SIM_NOW + ${1:-$PERIOD})); }
+
 # FLEET_NUDGE_ALERT_DIR is pinned into $TMP with the heartbeat: the alert state
 # is what makes deduplication work, so a test that let it default would both
 # write into the host's /run and read another test's episodes.
@@ -254,17 +271,20 @@ run_watchdog() {
   FLEET_NUDGE_ALERT_DIR="$TMP/runtime" \
   FLEET_NUDGE_LOGFILE="$TMP/fleet.log" \
   FLEET_NUDGE_PASTE_DELAY=0 \
+  FLEET_NUDGE_NOW="$SIM_NOW" \
   FLEET_NUDGE_TEST_NOTIFY_LOG="$TMP/notify.log" \
   FLEET_NUDGE_TEST_TMUX_LOG="$TMP/tmux.log" \
   "$SCRIPT"
 }
 
-# A fresh episode: no alert state, no history. Every count below starts here, so
-# a number in this file is always "messages caused by THIS scenario".
+# A fresh episode: no alert state, no history, clock back at the start. Every
+# count below starts here, so a number in this file is always "messages caused by
+# THIS scenario".
 reset_state() {
   rm -rf "$TMP/runtime"
   : >"$TMP/notify.log"
   : >"$TMP/tmux.log"
+  SIM_NOW=1000000000
 }
 notifies() { wc -l <"$TMP/notify.log" | tr -d ' '; }
 pastes() { grep -c 'paste-buffer' "$TMP/tmux.log" || true; }
@@ -276,14 +296,18 @@ fire_night() { # board [env assignments applied by caller]
   local i
   for ((i = 0; i < NIGHT; i++)); do
     run_watchdog "$1" >/dev/null 2>&1 || true
+    tick
   done
 }
 
 board "$TMP/valid.md" '| V3-1 | row | acc | **open** |' '| V3-2 | row | acc | **done** |'
 board "$TMP/empty.md" '| V3-1 | row | acc | **done** |'
 
+# Plumbing smoke check: the timer path reaches both process boundaries. The dwell
+# is collapsed because this asserts that a message CAN be delivered at all, not
+# when — an idle fleet's first sample is now deliberately silent.
 reset_state
-run_watchdog "$TMP/valid.md"
+FLEET_NUDGE_IDLE_SUSTAIN=0 run_watchdog "$TMP/valid.md"
 grep -q '/notify' "$TMP/notify.log"
 grep -q 'has-session' "$TMP/tmux.log"
 grep -q 'paste-buffer' "$TMP/tmux.log"
@@ -312,12 +336,26 @@ test "$(notifies)" -eq 2 || fail "the cleared board alert kept talking after it 
 # the HUMAN is deduplicated. Conflating the two is how B1 and B2 became one fix.
 reset_state
 fire_night "$TMP/valid.md"
-test "$(notifies)" -eq 1 ||
-  fail "an idle fleet sent $(notifies) messages over $NIGHT firings, expected 1"
 test "$(pastes)" -eq "$NIGHT" ||
   fail "the orchestrator was woken $(pastes) times over $NIGHT firings, expected $NIGHT"
+# A fleet genuinely stuck at zero all night is told, and told again on a doubling
+# interval — bounded, but never silent. The exact count is asserted by the
+# backoff lock further down; here the point is only that it is neither the
+# 36-message storm nor the single 02:00 message that leaves the rest of the night
+# unwatched.
+night_msgs=$(notifies)
+test "$night_msgs" -gt 1 ||
+  fail "a fleet stuck idle all night sent $night_msgs messages — silent after the first is a fleet nobody is watching"
+test "$night_msgs" -le 6 ||
+  fail "a fleet stuck idle all night sent $night_msgs messages over $NIGHT firings — that is the flood again"
+# Recovery: one busy tick is NOT recovery (the dwell), two consecutive ones are.
 FLEET_NUDGE_TEST_LANES=3 run_watchdog "$TMP/valid.md"
-test "$(notifies)" -eq 2 || fail "a fleet back at work did not clear the idle alert exactly once"
+test "$(notifies)" -eq "$night_msgs" ||
+  fail "a single busy tick ended the episode; the clear must wait out the busy dwell"
+tick
+FLEET_NUDGE_TEST_LANES=3 run_watchdog "$TMP/valid.md"
+test "$(notifies)" -eq "$((night_msgs + 1))" ||
+  fail "a fleet back at work did not clear the idle alert exactly once"
 grep -Fq "$(esc 'Флот знову працює')" "$TMP/notify.log" || fail "the idle alert cleared silently"
 
 # An empty board asks the Human what comes next — once, not once per firing.
@@ -357,9 +395,14 @@ test "$(notifies)" -eq 3 ||
 # Delivery failure must not mark the operator as told. If the state file were
 # written before the notify succeeded, the retry ten minutes later would be
 # swallowed as a duplicate and the condition would never reach him.
+#
+# FLEET_NUDGE_IDLE_SUSTAIN=0 here and in the blocks below: these locks are about
+# delivery, the cap, and the knobs — not about the dwell. Collapsing the dwell
+# keeps each one testing the single thing it was written to test, and the dwell
+# has its own locks at the end of this file.
 reset_state
 set +e
-FLEET_NUDGE_TEST_NOTIFY_FAIL=1 run_watchdog "$TMP/valid.md" >"$TMP/out" 2>"$TMP/err"
+FLEET_NUDGE_IDLE_SUSTAIN=0 FLEET_NUDGE_TEST_NOTIFY_FAIL=1 run_watchdog "$TMP/valid.md" >"$TMP/out" 2>"$TMP/err"
 status=$?
 set -e
 test "$status" -eq 3 || fail "notification failure exited $status, expected 3"
@@ -367,7 +410,7 @@ grep -q 'operator notification failed' "$TMP/err"
 test ! -e "$TMP/runtime/fleet-nudge-idle.alerted" ||
   fail "an undelivered alert still marked the operator as told"
 test "$(pastes)" -eq 0 || fail "orchestrator was nudged after operator notification failed"
-run_watchdog "$TMP/valid.md"
+FLEET_NUDGE_IDLE_SUSTAIN=0 run_watchdog "$TMP/valid.md"
 test "$(notifies)" -eq 2 || fail "the retry after a failed delivery did not reach the operator"
 
 # ── B3: the cap is a ceiling, not a floor ───────────────────────────────────
@@ -378,7 +421,7 @@ test "$(notifies)" -eq 2 || fail "the retry after a failed delivery did not reac
 # operator every ten minutes at zero.
 for lanes in 0 1 2 3; do
   reset_state
-  FLEET_NUDGE_TEST_LANES=$lanes run_watchdog "$TMP/valid.md"
+  FLEET_NUDGE_IDLE_SUSTAIN=0 FLEET_NUDGE_TEST_LANES=$lanes run_watchdog "$TMP/valid.md"
   if [ "$lanes" -eq 0 ]; then
     test "$(notifies)" -eq 1 || fail "an idle fleet sent $(notifies) messages, expected 1"
     test "$(pastes)" -eq 1 || fail "an idle fleet did not wake the orchestrator"
@@ -395,7 +438,7 @@ done
 # was silently unreachable. A zero or a non-integer clamps to 1 instead.
 for critical in 0 '' abc; do
   reset_state
-  FLEET_NUDGE_CRITICAL="$critical" run_watchdog "$TMP/valid.md"
+  FLEET_NUDGE_IDLE_SUSTAIN=0 FLEET_NUDGE_CRITICAL="$critical" run_watchdog "$TMP/valid.md"
   test "$(notifies)" -eq 1 ||
     fail "FLEET_NUDGE_CRITICAL='$critical' made the severe tier unreachable"
 done
@@ -415,7 +458,7 @@ test "$(pastes)" -eq 0 || fail "a fleet at its target was nudged anyway"
 # That sentence is what turned HR-2342's ceiling into a floor, and it read
 # correctly right up until the ruling arrived.
 reset_state
-run_watchdog "$TMP/valid.md"
+FLEET_NUDGE_IDLE_SUSTAIN=0 run_watchdog "$TMP/valid.md"
 grep -Fq "$(esc 'Флот простоює: активних лейнів 0')" "$TMP/notify.log" ||
   fail "the idle warning does not report the actual lane count"
 if grep -Fq "$(esc 'потрібно')" "$TMP/notify.log"; then
@@ -442,6 +485,149 @@ set -e
 test "$status" -eq 2 || fail "malformed runtime board exited $status, expected 2"
 grep -q '/notify' "$TMP/notify.log"
 grep -q 'refusing to run with an unparseable workboard' "$TMP/err"
+
+# ── V3-5.9: the alert flood that wakes him ──────────────────────────────────
+# The dedup above is per EPISODE and the episode used to end the instant a lane
+# appeared, so a fleet oscillating around zero paid two messages per cycle — the
+# raise and its clear. Every lock in this block fails against the pre-change
+# watchdog; replay it with FLEET_NUDGE_TEST_SCRIPT=<old copy> to see that.
+
+BASE=1000000000
+
+# Fire `$2` ticks against board `$1` and print the elapsed time at which each new
+# operator message appeared. Times, not just a count: "five messages" and "five
+# messages spread ever wider apart" are different claims and only the second is
+# the design.
+stall_message_times() { # board ticks
+  local i before after
+  for ((i = 0; i < $2; i++)); do
+    before=$(notifies)
+    run_watchdog "$1" >/dev/null 2>&1 || true
+    after=$(notifies)
+    [ "$after" -gt "$before" ] && printf '%s\n' "$((SIM_NOW - BASE))"
+    tick
+  done
+  return 0
+}
+
+# 1. THE FLOOD. A fleet cycling zero → one → zero → one, which is what his
+#    screenshot actually showed: not a threshold set wrong, a fleet handing over
+#    between lanes. The pre-change watchdog raised on every drop and cleared on
+#    every start, so this sequence alone cost 2 messages per cycle.
+reset_state
+oscillate() { # board cycles
+  local i
+  for ((i = 0; i < $2; i++)); do
+    FLEET_NUDGE_TEST_LANES=0 run_watchdog "$1" >/dev/null 2>&1 || true
+    tick
+    FLEET_NUDGE_TEST_LANES=1 run_watchdog "$1" >/dev/null 2>&1 || true
+    tick
+  done
+  return 0
+}
+oscillate "$TMP/valid.md" $((NIGHT / 2))
+test "$(notifies)" -eq 0 ||
+  fail "an oscillating fleet sent $(notifies) messages over $NIGHT firings — the flood is still there"
+# It is silent because the fleet is WORKING, not because it was gagged: the
+# orchestrator was still woken on every idle tick.
+test "$(pastes)" -eq "$((NIGHT / 2))" ||
+  fail "an oscillating fleet woke the orchestrator $(pastes) times, expected $((NIGHT / 2))"
+
+# 2. THE ALERT IS STILL REACHABLE. The same oscillating fleet, then a real stall.
+#    Suppression that cannot be escaped is worse than the flood, so this is the
+#    lock that matters most in this block.
+reset_state
+oscillate "$TMP/valid.md" 4
+test "$(notifies)" -eq 0 || fail "the oscillation preamble already sent a message"
+stall_message_times "$TMP/valid.md" 4 >"$TMP/reach"
+test "$(notifies)" -ge 1 ||
+  fail "a fleet that oscillated and then genuinely stalled never reached the operator — that is the suppression trap"
+grep -Fq "$(esc 'Флот простоює')" "$TMP/notify.log" ||
+  fail "the stall after an oscillation reported something other than an idle fleet"
+
+# 3. A STUCK FLEET ESCALATES ONCE, THEN BACKS OFF. Not once per firing (the
+#    flood), and not once and then never again (the silence).
+reset_state
+stall_message_times "$TMP/valid.md" "$NIGHT" >"$TMP/stall"
+stall_n=$(wc -l <"$TMP/stall" | tr -d ' ')
+# The first escalation is a single message, not one per tick: over the first hour
+# of a stall he is told exactly once.
+first_hour=$(awk -v p="$PERIOD" '$1 <= 6 * p' "$TMP/stall" | wc -l | tr -d ' ')
+test "$first_hour" -eq 1 ||
+  fail "a stuck fleet sent $first_hour messages in its first hour, expected exactly 1"
+# The first one waits out the dwell rather than firing on the first idle sample.
+test "$(head -1 "$TMP/stall")" -eq "$PERIOD" ||
+  fail "the first escalation came at $(head -1 "$TMP/stall")s, expected one dwell ($PERIOD s)"
+# And the gaps double, so the count grows with the logarithm of the stall.
+awk -v n="$stall_n" '
+  { t[NR] = $1 }
+  END {
+    if (n < 3) { print "too few messages to prove a backoff: " n > "/dev/stderr"; exit 1 }
+    for (i = 3; i <= n; i++) {
+      prev = t[i - 1] - t[i - 2]; cur = t[i] - t[i - 1]
+      if (cur < prev * 2) {
+        printf "gap %d (%ds) did not at least double the previous (%ds)\n", i, cur, prev > "/dev/stderr"
+        exit 1
+      }
+    }
+  }' "$TMP/stall" || fail "the stuck-fleet escalation does not back off"
+
+# 4. A LONG STALL NEVER FALLS SILENT. A full week at zero lanes: the operator is
+#    still being told, and the doubling keeps the total tiny.
+reset_state
+stall_message_times "$TMP/valid.md" $((7 * 24 * 6)) >"$TMP/week"
+week_n=$(wc -l <"$TMP/week" | tr -d ' ')
+test "$week_n" -gt "$stall_n" ||
+  fail "a week-long stall sent no more messages than a six-hour one — the alert went silent"
+test "$week_n" -le 12 ||
+  fail "a week-long stall sent $week_n messages; the backoff is not bounding anything"
+# The last message lands in the final third of the week, not all of them on the
+# first evening: "still stuck" must remain a live signal, not an archive entry.
+last_msg=$(tail -1 "$TMP/week")
+test "$last_msg" -gt $((7 * 24 * 3600 / 3)) ||
+  fail "the last message of a week-long stall came at ${last_msg}s — it fell silent for the rest of the week"
+
+# 5. THE BUSY DWELL. One lane appearing for a single tick is a handover, not a
+#    recovery: it must neither clear the episode nor let the next drop to zero
+#    read as new. Half of the real idle episodes in the timer's log were exactly
+#    one tick long, which is where the derivation of this dwell comes from.
+reset_state
+stall_message_times "$TMP/valid.md" 3 >/dev/null
+raised=$(notifies)
+test "$raised" -ge 1 || fail "the stall preamble never alerted"
+FLEET_NUDGE_TEST_LANES=1 run_watchdog "$TMP/valid.md"   # one busy tick
+tick
+test "$(notifies)" -eq "$raised" || fail "a single busy tick cleared the episode"
+test -e "$TMP/runtime/fleet-nudge-idle.alerted" ||
+  fail "a single busy tick removed the episode marker, so the next zero re-raises"
+
+# 6. THE DWELL DEFAULT FOLLOWS THE TRACKED TIMER. The dwell is derived from the
+#    timer period; if someone retimes the unit and leaves the script behind, the
+#    number stops meaning what its comment says it means.
+reset_state
+FLEET_NUDGE_TEST_LANES=0 run_watchdog "$TMP/valid.md"   # opens the idle run at t=0
+tick $((PERIOD - 60))
+FLEET_NUDGE_TEST_LANES=0 run_watchdog "$TMP/valid.md"
+test "$(notifies)" -eq 0 ||
+  fail "the operator was told $((PERIOD - 60))s into a stall; the dwell is shorter than the timer period"
+tick 60
+FLEET_NUDGE_TEST_LANES=0 run_watchdog "$TMP/valid.md"
+test "$(notifies)" -eq 1 ||
+  fail "a stall of one full timer period ($PERIOD s) did not reach the operator; the dwell is longer than the timer period"
+
+# 7. A LEGACY EPISODE FILE MUST NOT WEDGE. The live host has a zero-byte
+#    fleet-nudge-idle.alerted written by the pre-change watchdog. It carries no
+#    timestamp, so the backoff cannot be computed from it — the migration must
+#    fail toward speaking, never toward silence.
+reset_state
+mkdir -p "$TMP/runtime"
+: >"$TMP/runtime/fleet-nudge-idle.alerted"
+# The dwell is collapsed because this lock is about the unreadable state file,
+# not about the wait — with the dwell in force the first firing would be silent
+# for the ordinary reason and prove nothing about the legacy file.
+FLEET_NUDGE_IDLE_SUSTAIN=0 FLEET_NUDGE_TEST_LANES=0 run_watchdog "$TMP/valid.md"
+test "$(notifies)" -eq 1 ||
+  fail "a legacy zero-byte episode file swallowed the alert instead of re-announcing it"
 
 # ── Reproducible from git: the units run from the checkout ───────────────────
 # The mechanism has exactly one copy, the tracked one. A unit pointing at a

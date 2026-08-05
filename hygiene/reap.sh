@@ -286,6 +286,7 @@ processes_inside() {
     # kernel's fully-resolved path, and `-f` FAILS outright when the directory
     # has been deleted -- which would turn "a process is sitting in a deleted
     # worktree" into an unreadable-cwd UNKNOWN for no reason.
+    if [[ ! -d "$entry" ]]; then continue; fi
     if ! target="$(readlink "$entry/cwd" 2>/dev/null)" || [[ -z "$target" ]]; then
       # An unreadable cwd is only ambiguous if the process could HAVE one.
       # Measured on this host: a zombie's /proc/<pid>/cwd readlink fails
@@ -295,12 +296,15 @@ processes_inside() {
       # anything -- the same report-success-do-nothing failure this whole
       # change exists to remove. So: gone or reaped-but-not-waited is ignored;
       # anything else genuinely unreadable stays UNKNOWN.
-      if ! proc_state="$(cat "$entry/stat" 2>/dev/null)"; then continue ; fi
+      if ! proc_state="$(cat "$entry/stat" 2>/dev/null)"; then continue; fi
       # comm (field 2) is parenthesised and may itself contain spaces and ')',
       # so everything after the LAST ') ' is fixed-position; state is first
       # there. Same parse as orchestrator/proc-identity.sh, for the same reason.
       proc_state="${proc_state##*) }"
-      [[ "${proc_state%% *}" == "Z" ]] && continue
+      # `if`, not `[[ ... ]] && continue`, throughout this file -- see the note
+      # in load_protected_file for what the short form silently does to a
+      # `set -e` script when the left side is false.
+      if [[ "${proc_state%% *}" == "Z" ]]; then continue; fi
       unknown_pid="$pid"
       continue
     fi
@@ -573,7 +577,7 @@ report_remote_only_branches() {
   while read -r sha ref; do
     [[ -n "${ref:-}" ]] || continue
     branch="${ref#refs/heads/}"
-    git -C "$repo" show-ref --verify --quiet "refs/heads/$branch" && continue
+    if git -C "$repo" show-ref --verify --quiet "refs/heads/$branch"; then continue; fi
     say "remote-only branch, invisible to refs/heads: $remote/$branch"
     count=$((count + 1))
   done < <(printf '%s\n' "$heads")
@@ -667,7 +671,7 @@ report_worktrees() {
   main_worktree="$(awk '$1 == "worktree" { print $2; exit }' <<< "$worktree_list")"
   while IFS=$'\t' read -r path branch; do
     [[ -n "${path:-}" ]] || continue
-    [[ "$path" == "$main_worktree" ]] && continue
+    if [[ "$path" == "$main_worktree" ]]; then continue; fi
     rc=0
     reason="$(worktree_is_terminal "$path" "$branch" "$worktree_list")" || rc=$?
     if (( rc != 0 )); then

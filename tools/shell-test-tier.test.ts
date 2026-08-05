@@ -43,6 +43,13 @@ const runnableShellTests = [
   "orchestrator/watchdog.test.sh",
   "orchestrator/fleet/fleet-nudge.test.sh",
   "orchestrator/fleet/fleet-nudge-liveness.test.sh",
+  // V3-5.6. Both locks below guard launch.sh's fail-closed mechanism wiring,
+  // and both were unreachable from this inventory when they were written — a
+  // lock nothing runs is the same class of defect as a relay nothing wired.
+  // heartbeat-writer.test.sh is new here; session-hook-wiring.test.sh landed
+  // with V3-5.2 r2 and had never been registered, so nothing in the gate ran it.
+  "orchestrator/heartbeat-writer.test.sh",
+  "orchestrator/session-hook-wiring.test.sh",
 ] as const;
 
 const excludedShellTests = {} as const;

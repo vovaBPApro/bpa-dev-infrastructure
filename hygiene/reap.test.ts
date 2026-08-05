@@ -1488,6 +1488,15 @@ function buildLiveFleetFixture(): { dir: string; repo: string; dispositions: str
     sh(`git add filler${n}.txt && git commit -qm filler${n}`, repo);
   }
 
+  // ag-unmerged: unique content and NO disposition. Nothing authorizes deleting
+  // it, ever. This is the ref `git branch -D` is banned over -- git itself
+  // refuses -D for a branch a worktree holds, so the banned instrument's real
+  // hazard is unheld work like this, not a checked-out lane.
+  sh("git checkout -qb ag-unmerged main", repo);
+  writeFileSync(join(repo, "unmerged.txt"), "work nobody else has\n");
+  sh("git add unmerged.txt && git commit -qm unmerged && git push -q origin ag-unmerged", repo);
+  sh("git checkout -q main", repo);
+
   // ag-rebasing: unique content, dispositioned, so the reaper wants it too.
   sh("git checkout -qb ag-rebasing main", repo);
   writeFileSync(join(repo, "rebasing.txt"), "rebasing\n");
@@ -1538,29 +1547,31 @@ function sweepEverything(script: string, repo: string, dispositions: string): st
   return combined;
 }
 
-const liveLanes = ["ag-working", "ag-rebasing", "ag-bisecting"];
+// Every ref in this fixture that nothing authorizes deleting: three lanes that
+// are alive, and one branch of unmerged work with no disposition behind it.
+const mustSurvive = ["ag-working", "ag-rebasing", "ag-bisecting", "ag-unmerged"];
 
-// The measurement itself: which refs a live lane depends on stopped existing.
-function laneRefsDestroyedBy(script: string): { destroyed: string[]; log: string; after: RefInventory } {
+// The measurement itself: which of those stopped existing.
+function refsDestroyedBy(script: string): { destroyed: string[]; log: string; after: RefInventory } {
   const { repo, dispositions } = buildLiveFleetFixture();
   const before = refInventory(repo);
-  for (const lane of liveLanes) {
-    if (!before.local.includes(lane) || !before.remote.includes(lane)) {
-      throw new Error(`fixture setup failed: ${lane} is not present on both sides`);
+  for (const ref of mustSurvive) {
+    if (!before.local.includes(ref) || !before.remote.includes(ref)) {
+      throw new Error(`fixture setup failed: ${ref} is not present on both sides`);
     }
   }
   const log = sweepEverything(script, repo, dispositions);
   const after = refInventory(repo);
   const destroyed: string[] = [];
-  for (const lane of liveLanes) {
-    if (!after.local.includes(lane)) destroyed.push(`local:${lane}`);
-    if (!after.remote.includes(lane)) destroyed.push(`remote:${lane}`);
+  for (const ref of mustSurvive) {
+    if (!after.local.includes(ref)) destroyed.push(`local:${ref}`);
+    if (!after.remote.includes(ref)) destroyed.push(`remote:${ref}`);
   }
   return { destroyed, log, after };
 }
 
-test("PROPERTY: no entry point removes a ref a live lane depends on, whatever primitive it is spelled with", () => {
-  const { destroyed, after } = laneRefsDestroyedBy(reap);
+test("PROPERTY: no entry point removes a ref nothing authorized it to remove, whatever primitive it is spelled with", () => {
+  const { destroyed, after } = refsDestroyedBy(reap);
   expect(destroyed).toEqual([]);
   // ...and it is not passing by refusing everything: the one branch that IS
   // finished was reaped on both sides in the same run.
@@ -1573,7 +1584,16 @@ test("PROPERTY: no entry point removes a ref a live lane depends on, whatever pr
 // property test proves only that the current script passes it.
 function reapWithInjection(anchor: string, injected: string): string {
   const root = fixtureDir();
-  sh(`git archive HEAD | tar -x -C ${JSON.stringify(root)}`, repoRoot);
+  // Copied from the tree under test, not from `git archive HEAD`: the script
+  // this suite is executing is the one an injection has to be measured against,
+  // and an uncommitted change to it must not be silently swapped for its last
+  // committed version. reap.sh resolves gate/land-lib.sh and the instance lists
+  // relative to its own root, so those come with it.
+  mkdirSync(join(root, "hygiene"));
+  for (const dir of ["gate", "instance"]) {
+    sh(`cp -a ${JSON.stringify(join(repoRoot, dir))} ${JSON.stringify(join(root, dir))}`, root);
+  }
+  sh(`cp -a ${JSON.stringify(reap)} ${JSON.stringify(join(root, "hygiene", "reap.sh"))}`, root);
   const target = join(root, "hygiene", "reap.sh");
   const source = readFileSync(target, "utf8");
   const occurrences = source.split(anchor).length - 1;
@@ -1586,10 +1606,14 @@ function reapWithInjection(anchor: string, injected: string): string {
 
 const injections: Array<{ name: string; anchor: string; injected: string }> = [
   {
-    // `git branch -D`, spelled long. The round-2 regexes require `\s-[dD]\b`.
+    // `git branch -D`, spelled long: the round-2 regexes require `\s-[dD]\b`.
+    // Placed on the report-only path, because that is where it can actually do
+    // harm -- git refuses --delete --force for a branch it can associate with a
+    // worktree (measured: it refuses even for a lane detached mid-rebase), so
+    // the work this instrument destroys is unmerged work nobody is holding.
     name: "git branch --delete --force",
-    anchor: '        say "held by live worktree, refusing: $branch (worktree: $worktree)"',
-    injected: '        git -C "$repo" branch --delete --force "$branch" >/dev/null 2>&1 || true',
+    anchor: '      say "unmerged branch (report-only, no disposition): $branch (${age}d old)"',
+    injected: '      git -C "$repo" branch --delete --force "$branch" >/dev/null 2>&1 || true',
   },
   {
     // A third ref-deleting primitive, on the path that has just REFUSED a live
@@ -1613,7 +1637,7 @@ const injections: Array<{ name: string; anchor: string; injected: string }> = [
 test("the property has teeth: each injected deletion primitive is caught by it", () => {
   for (const injection of injections) {
     const script = reapWithInjection(injection.anchor, injection.injected);
-    const { destroyed } = laneRefsDestroyedBy(script);
+    const { destroyed } = refsDestroyedBy(script);
     if (destroyed.length === 0) {
       throw new Error(`the property test did not catch the injection: ${injection.name}`);
     }

@@ -229,8 +229,25 @@ fi
 mkdir "$TMP/bin"
 cat >"$TMP/bin/systemctl" <<'EOF'
 #!/usr/bin/env bash
+# Glob-aware, because the real one is. The V3-5.19 locks below turn entirely on
+# whether a unit's NAME matches the pattern the census passes, so a stub that
+# ignored the pattern and always emitted its units would answer "counted" for
+# every name and could not fail. The last non-flag argument is the pattern,
+# which is how both real call sites pass it.
+pattern='*'
+for arg in "$@"; do
+  case "$arg" in --*) ;; list-units) ;; *) pattern="$arg" ;; esac
+done
+emit() {
+  case "$1" in
+    $pattern) printf '%s loaded active running\n' "$1" ;;
+  esac
+}
 n=${FLEET_NUDGE_TEST_LANES:-0}
-for ((i = 0; i < n; i++)); do printf 'lane-%d.service loaded active running\n' "$i"; done
+for ((i = 0; i < n; i++)); do emit "lane-$i.service"; done
+# Test-fixture units, named exactly as the payload fixture names its own.
+p=${FLEET_NUDGE_TEST_PROBES:-0}
+for ((i = 0; i < p; i++)); do emit "${FLEET_NUDGE_TEST_PROBE_UNIT:-infra-probe-unnamed}-$i.service"; done
 exit 0
 EOF
 cat >"$TMP/bin/tmux" <<'EOF'
@@ -628,6 +645,90 @@ mkdir -p "$TMP/runtime"
 FLEET_NUDGE_IDLE_SUSTAIN=0 FLEET_NUDGE_TEST_LANES=0 run_watchdog "$TMP/valid.md"
 test "$(notifies)" -eq 1 ||
   fail "a legacy zero-byte episode file swallowed the alert instead of re-announcing it"
+
+# ── V3-5.19: a test fixture is not a lane ───────────────────────────────────
+# The census counts `lane-*` units, and orchestrator/fleet/lane-payload-systemd.test.sh
+# used to name its transient units `lane-payload-probe-<pid>-*`. Each such unit
+# alive during a census was counted as a running lane — and since the V3-5.9
+# dwell landed above, `streak_break idle` runs on ANY busy sample before the
+# dwell is consulted, so a phantom does not merely add one to a number: it
+# destroys the idle clock. One phantom costs a full period of delay, and a
+# phantom on alternating firings costs the operator EVERY message of a six-hour
+# stall.
+#
+# The probe name is not written here. It is evaluated out of the fixture's own
+# UNIT_TAG assignment, so this block is red exactly when a fixture re-enters the
+# lane namespace — the structural rule itself is held by
+# orchestrator/fleet/lane-unit-namespace.test.sh.
+PROBE_UNIT=$(cd "$REPO" && bash -c '
+  set -eu
+  . orchestrator/fleet/probe-unit-namespace.sh
+  assignment=$(grep -c "^UNIT_TAG=" orchestrator/fleet/lane-payload-systemd.test.sh)
+  [ "$assignment" = 1 ] || { echo "expected exactly one UNIT_TAG assignment, found $assignment" >&2; exit 1; }
+  eval "$(grep -m1 "^UNIT_TAG=" orchestrator/fleet/lane-payload-systemd.test.sh)"
+  printf %s "$UNIT_TAG"') ||
+  fail "could not evaluate the payload fixture's unit name"
+[ -n "$PROBE_UNIT" ] || fail "the payload fixture's unit name evaluated to nothing"
+export FLEET_NUDGE_TEST_PROBE_UNIT="$PROBE_UNIT"
+
+# Baseline, with no fixture running: what a genuinely stalled fleet costs him.
+reset_state
+stall_message_times "$TMP/valid.md" "$NIGHT" >"$TMP/no-probe"
+baseline_msgs=$(wc -l <"$TMP/no-probe" | tr -d ' ')
+baseline_first=$(head -1 "$TMP/no-probe")
+test "$baseline_msgs" -ge 1 || fail "the no-fixture baseline never alerted; the comparisons below are meaningless"
+
+# 1. A fixture alive across the WHOLE night — the long-lived unit the old naming
+#    could not survive — changes nothing the operator sees.
+reset_state
+FLEET_NUDGE_TEST_PROBES=6 stall_message_times "$TMP/valid.md" "$NIGHT" >"$TMP/probe-all"
+test "$(wc -l <"$TMP/probe-all" | tr -d ' ')" -eq "$baseline_msgs" ||
+  fail "six fixture units running all night changed the stall from $baseline_msgs messages to $(wc -l <"$TMP/probe-all" | tr -d ' ')"
+test "$(head -1 "$TMP/probe-all")" -eq "$baseline_first" ||
+  fail "a fixture delayed the first stall message to $(head -1 "$TMP/probe-all")s, expected ${baseline_first}s"
+
+# 2. The measured case: a fixture present on every OTHER firing. Against the
+#    pre-change fixture naming this produced zero messages across six hours of a
+#    genuinely idle fleet, because each phantom tick reset the idle clock before
+#    the dwell could ever elapse.
+reset_state
+alternating=0
+for ((i = 0; i < NIGHT; i++)); do
+  before=$(notifies)
+  FLEET_NUDGE_TEST_PROBES=$((i % 2)) run_watchdog "$TMP/valid.md" >/dev/null 2>&1 || true
+  [ "$(notifies)" -gt "$before" ] && alternating=$((alternating + 1))
+  tick
+done
+test "$alternating" -eq "$baseline_msgs" ||
+  fail "a fixture on alternating firings sent $alternating messages over a six-hour stall, expected $baseline_msgs"
+test "$alternating" -ge 1 ||
+  fail "an alternating fixture silenced a six-hour stall completely — that is the V3-5.19 defect"
+
+# 3. The number he is told is the number of LANES. A count inflated by fixtures
+#    is a false report even on the firings where he is told something.
+reset_state
+FLEET_NUDGE_IDLE_SUSTAIN=0 FLEET_NUDGE_TEST_PROBES=4 run_watchdog "$TMP/valid.md"
+grep -Fq "$(esc 'Флот простоює: активних лейнів 0')" "$TMP/notify.log" ||
+  fail "four fixture units were counted into the lane number reported to the operator"
+
+# 4. Real lanes are still counted, and 0/1/2/3 behave exactly as they do without
+#    a fixture present. The fix must be invisible to the lane census, not a
+#    change to it.
+for lanes in 0 1 2 3; do
+  reset_state
+  FLEET_NUDGE_IDLE_SUSTAIN=0 FLEET_NUDGE_TEST_PROBES=3 FLEET_NUDGE_TEST_LANES=$lanes run_watchdog "$TMP/valid.md"
+  if [ "$lanes" -eq 0 ]; then
+    test "$(notifies)" -eq 1 ||
+      fail "an idle fleet with $((3)) fixtures running sent $(notifies) messages, expected 1"
+    test "$(pastes)" -eq 1 || fail "an idle fleet with fixtures running did not wake the orchestrator"
+  else
+    test "$(notifies)" -eq 0 ||
+      fail "$lanes running lanes with fixtures present were reported to the operator"
+    test "$(pastes)" -eq 0 ||
+      fail "$lanes running lanes with fixtures present nudged the orchestrator"
+  fi
+done
+unset FLEET_NUDGE_TEST_PROBE_UNIT
 
 # ── Reproducible from git: the units run from the checkout ───────────────────
 # The mechanism has exactly one copy, the tracked one. A unit pointing at a

@@ -14,12 +14,13 @@
 #   - dropping its executable bit (in git or on disk)
 #   - unwiring EITHER provider branch
 #   - loosening the session-hook guard back to a fail-open `[[ -x ]]` test
-#   - letting the hook go down with the absent Stop/turn-end relay
-#   - dropping the V3-5.6 citation from either deliberately fail-open relay guard
+#   - letting the hook go down with a refused Stop/turn-end relay
 #   - letting the break-glass be taken silently or without a reason
 #
-# The two relay guards are fail-open on purpose and temporarily; section 4
-# explains the bargain and section 6 keeps its expiry date attached.
+# The two relay guards were fail-open on purpose and temporarily. V3-5.6 landed
+# the tracked relays and closed both; section 4 now holds the property that
+# outlives that bargain — the hook and the relay stand or fall INDEPENDENTLY —
+# and orchestrator/heartbeat-writer.test.sh owns the relays themselves.
 #
 # A mechanism that exists only as a path some host might satisfy is not
 # reproducible from git (Hard Floor 5). "Tracked, executable, and referenced by
@@ -152,37 +153,44 @@ else
   fail "a non-executable hook refuses and says why — rc=$RENDER_RC err=$RENDER_ERR"
 fi
 
-# ── 4. The relay guards stay fail-open, on purpose and temporarily ──────────
-# The two relays are the same defect class as the hook and both are absent from
-# every commit and every host — but the turn-end relay also owns the heartbeat
-# write, so refusing on them would stop the live orchestrator, the operator's
-# only channel here, and repairing them means authoring a contract this lane
-# does not own. V3-5.6 does. Until then the guards remain fail-open, and these
-# assertions pin BOTH halves of that bargain: the launch still renders, and the
-# session hook does not go down with the relay.
-render claude ORCH_CLAUDE_STOP_RELAY="$SCRATCH/does-not-exist.sh"
-if (( RENDER_RC == 0 )) && [[ "$RENDER_OUT" == *"exec claude"* ]]; then
-  pass "a missing Stop relay does not refuse the claude launch (V3-5.6 closes this)"
+# ── 4. The hook and the relay are independent mechanisms ───────────────────
+# Both relay guards were fail-open while the relays existed in no commit; the
+# bargain those assertions pinned expired when V3-5.6 landed them as tracked
+# files, and both guards now refuse (proved in heartbeat-writer.test.sh). What
+# survives, and is asserted here, is the property that made the separation
+# right in the first place: neither mechanism may take the other down.
+#
+# The break-glass is the case where they genuinely diverge — the hook is
+# skipped while the relay stands — so it is the honest way to assert the
+# independence now that a missing relay refuses outright.
+: > "$SCRATCH/runtime/ops-journal.log"
+render claude ORCH_SKIP_SESSION_HOOK="V3-5.6 independence check"
+if (( RENDER_RC == 0 )) && [[ "$RENDER_OUT" == *"exec claude"* ]] \
+  && [[ -f "$settings_file" ]] && grep -q '"Stop"' "$settings_file" \
+  && ! grep -q "SessionStart" "$settings_file"; then
+  pass "a skipped hook leaves the Stop relay wired and the launch renders"
 else
-  fail "a missing Stop relay does not refuse the claude launch — rc=$RENDER_RC err=$RENDER_ERR"
+  fail "a skipped hook leaves the Stop relay wired and the launch renders — rc=$RENDER_RC err=$RENDER_ERR $(cat "$settings_file" 2>/dev/null)"
 fi
 
-# The live host's actual condition: relay absent, hook present. The standing
-# context must still arrive — that is the whole point of separating the two.
-if [[ -f "$settings_file" ]] && grep -q "SessionStart" "$settings_file" \
-  && grep -qF "$HOOK_PATH" "$settings_file" && ! grep -q '"Stop"' "$settings_file"; then
-  pass "the hook is still wired when the Stop relay is absent"
-else
-  fail "the hook is still wired when the Stop relay is absent — $(cat "$settings_file" 2>/dev/null)"
-fi
-
-render codex ORCH_TURNEND_RELAY="$SCRATCH/does-not-exist.sh"
+render codex ORCH_SKIP_SESSION_HOOK="V3-5.6 independence check"
 if (( RENDER_RC == 0 )) && [[ "$RENDER_OUT" == *"exec codex"* ]] \
-  && [[ "$RENDER_OUT" != *"--config notify="* ]] \
-  && [[ "$RENDER_OUT" == *"$HOOK_PATH"* ]]; then
-  pass "a missing turn-end relay does not refuse codex, and the hook survives it"
+  && [[ "$RENDER_OUT" == *"--config notify="* ]] \
+  && [[ "$RENDER_OUT" != *"$HOOK_PATH"* ]]; then
+  pass "a skipped hook leaves the codex turn-end relay wired"
 else
-  fail "a missing turn-end relay does not refuse codex, and the hook survives it — rc=$RENDER_RC out=$RENDER_OUT err=$RENDER_ERR"
+  fail "a skipped hook leaves the codex turn-end relay wired — rc=$RENDER_RC out=$RENDER_OUT err=$RENDER_ERR"
+fi
+
+# The converse direction: a refused relay must name the RELAY, never be
+# reported as a hook failure. Conflating the two is how a repair gets pointed
+# at the wrong mechanism.
+render claude ORCH_CLAUDE_STOP_RELAY="$SCRATCH/does-not-exist.sh"
+if (( RENDER_RC != 0 )) && [[ "$RENDER_ERR" == *"claude-stop-relay-unavailable"* ]] \
+  && [[ "$RENDER_ERR" != *"session-hook-unavailable"* ]]; then
+  pass "a missing Stop relay refuses as a RELAY failure, not a hook failure"
+else
+  fail "a missing Stop relay refuses as a RELAY failure, not a hook failure — rc=$RENDER_RC err=$RENDER_ERR"
 fi
 
 # ── 5. Break-glass is explicit, loud, journaled, and never empty ────────────
@@ -229,37 +237,24 @@ else
   fail "ORCH_SKIP_SESSION_HOOK=1 works and is journaled — rc=$RENDER_RC err=$RENDER_ERR"
 fi
 
-# ── 6. The session hook never returns to a fail-open guard ─────────────────
+# ── 6. No mechanism in build_command returns to a fail-open guard ──────────
 # The source-level half of the lock: the rendered-command assertions above prove
-# behaviour, this proves the dead path was not merely bypassed. Fail-open is
-# permitted at EXACTLY the two relay guards and nowhere else, and only while each
-# one carries the citation that makes its removal someone's job.
+# behaviour, this proves the dead path was not merely bypassed. Fail-open used
+# to be permitted at exactly the two relay guards; V3-5.6 closed them, so the
+# permitted count is now ZERO and any reappearance is an unnamed silent skip.
 # Anchored on `esac`, not on a closing `}`: build_command embeds a bun -e script
 # whose JS puts a `}` in column 0, which ends a `/^}/` range early and would have
 # hidden the whole codex branch from this check.
 body="$(awk '/^build_command\(\)/,/^  esac$/' "$LAUNCH")"
 
-open_guards="$(printf '%s\n' "$body" | grep -c '\[\[ -x' || true)"
-[[ "$open_guards" == "2" ]]
-check "build_command has exactly the two relay fail-open guards" $? \
-  "found $open_guards — a third would be an unnamed silent skip"
-
-# Each fail-open guard must be preceded by its citation. Checked as "every
-# `[[ -x` line has a V3-5.6 mention in the 15 lines above it", so deleting the
-# comment turns this red without depending on exact line numbers.
-uncited=0
-while IFS=: read -r lineno _; do
-  [[ -n "$lineno" ]] || continue
-  start=$(( lineno > 15 ? lineno - 15 : 1 ))
-  context="$(printf '%s\n' "$body" | sed -n "${start},${lineno}p")"
-  if ! grep -q 'V3-5\.6' <<<"$context" \
-    || ! grep -q '2026-08-05-the-heartbeat-has-had-no-writer-since-yesterday' <<<"$context"; then
-    uncited=$((uncited + 1))
-  fi
-done < <(printf '%s\n' "$body" | grep -n '\[\[ -x' || true)
-(( uncited == 0 ))
-check "every fail-open guard cites V3-5.6 and the incident file" $? \
-  "$uncited guard(s) carry no citation — the marker is exactly what this repository keeps losing"
+# Comments are stripped first: the citations kept at each repaired guard QUOTE
+# the `[[ -x ]]` shape they replaced, and a checker that cannot tell a quoted
+# defect from a live one would force the repair to erase its own history.
+code="$(printf '%s\n' "$body" | grep -v '^[[:space:]]*#' || true)"
+open_guards="$(printf '%s\n' "$code" | grep -c '\[\[ -x' || true)"
+[[ "$open_guards" == "0" ]]
+check "build_command has no fail-open [[ -x ]] guard left" $? \
+  "found $open_guards — every mechanism there routes through require_mechanism"
 
 # The session hook itself resolves through require_mechanism, never through a
 # bare -x test that could skip it in silence again.

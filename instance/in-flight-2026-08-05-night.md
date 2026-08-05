@@ -99,6 +99,34 @@ that hands over an inference rather than a measurement.**
   repo and neither `gcloud` nor `rclone` is installed**, so "verify the folder works" is
   build work, not a check. This is the only loss that is irreversible.
 
+## Measured at 07:30, recorded and deliberately not acted on
+
+Watchdog health after ~9 hours armed: both timers `active`, `Result=success`, **0 restarts**,
+heartbeat 21s old with `status=0`, and **exactly one** operator alert file across hours of
+idle — B1's per-episode deduplication holding in production, against 36 messages a night
+before it.
+
+Lane sprawl, `/root/.cache/infra-lanes`:
+
+| | count |
+|---|---|
+| registered git worktrees (`land-main`) | 165 |
+| registered git worktrees (primary repo) | 48 |
+| instruction pack directories | 306 |
+| total size | 1.9G |
+
+Root filesystem is 36% used with 247G free, so this is not urgent. It is recorded because
+**Hard Floor 12 says worktrees must not breed and the operator has ruled `/root/.cache`
+off-limits for cleaning** (Telegram 2132/2134, message 1839: *"не треба прибирати, ми все
+одно все вичистимо і почнемо з нуля коли в3 буде готова"*). Those two are in tension, his
+ruling wins, and the tension should be visible rather than quietly resolved by a reaper.
+
+It is also a cutover question with a subtlety: a large share of these worktrees carry
+`state: failed` statuses that **were lies** until `aaf7ec6` landed. Going forward a status
+means something; historically it does not. So "discard the failed ones" is not a safe rule
+for anything created before that commit, and the safe reading is that pre-`aaf7ec6` lane
+statuses carry no information at all.
+
 ## Operator rulings recorded overnight
 
 HR-1494 (estimates are converted at measured fleet width, recorded two days late — the

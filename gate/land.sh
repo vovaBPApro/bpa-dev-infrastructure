@@ -71,6 +71,34 @@ land_fail_rollback() {
   echo "LAND verdict=rollback-failed sha=$merge_sha" >&2
   exit "${4:-3}"
 }
+# Runs the decisions-ledger checker against whatever $repo's tree currently is
+# and RETURNS its status; the caller decides what a red verdict costs, because
+# the two call sites pay different prices (baseline aborts, post-merge rolls
+# back). $1 is the step name, $2 the phase label.
+#
+# Unpiped, with $? read directly. A bounded or killed command behind a pipe
+# reports the LAST element's status, so `check | tail` would launder a kill into
+# a pass (verification-and-locks, "a kill is not a pass").
+#
+# Scoped on `git ls-files`, not on `[[ -f ]]`. This gate is generic and must
+# also land lanes in a product repo that never carried this control plane's
+# instruction tooling, but a filesystem-existence guard is the fail-open shape
+# this repository keeps getting burned by: deleting the checker would silently
+# skip the check. Keyed on TRACKED-ness, removing it is a reviewable diff on
+# evidence-gate logic; a tracked-but-deleted file still runs and still fails.
+land_ledger_state() {
+  ledger_step="$1"
+  ledger_phase="$2"
+  if ! git -C "$repo" ls-files --error-unmatch tools/instructions/check.ts >/dev/null 2>&1; then
+    echo "LAND step=$ledger_step phase=$ledger_phase status=not-applicable reason=repo-does-not-track-tools/instructions/check.ts"
+    return 0
+  fi
+  "$BUN_BIN" "$repo/tools/instructions/check.ts" --repo "$repo" --strict
+  ledger_status=$?
+  echo "LAND ledger-state phase=$ledger_phase tree=$(git -C "$repo" rev-parse HEAD) exit=$ledger_status"
+  return "$ledger_status"
+}
+
 land_reap_fail() {
   echo "LAND step=reap status=${1:-fail}" >&2
   if [ "$pushed" = true ]; then
@@ -544,23 +572,25 @@ land_pass payload-guard
 # predicate nobody runs is the same shape as a rule nobody enforces, so the
 # mechanism and its execution site land together or not at all.
 #
-# Deliberately BEFORE the merge and unpiped: a red ledger must block landing,
-# and reading $? through a pipe reports the filter's status, not the checker's.
+# This is the BASELINE run, on the target branch before the merge. It is NOT the
+# check that decides the landing -- see ledger-state-merged below. Round-2 review
+# finding 1: the first version of this row ran only here, and $repo has already
+# been asserted onto $default_branch at line ~204, so it inspected the tree the
+# candidate was about to change and never the candidate or the merged result. A
+# lane introducing a stateless HR file, an unresolvable closure or an expired
+# exemption landed green, and the violation surfaced later on an unrelated
+# lane's landing, blocking a lane for a defect it did not introduce. A check
+# that is present, reads plausibly, and cannot fail on the thing it names is the
+# exact defect class this row exists to remove.
 #
-# Scoped on `git ls-files`, not on `[[ -f ]]`. This gate is generic and must
-# also land lanes in a product repo that never carried this control plane's
-# instruction tooling, but a filesystem-existence guard is the fail-open shape
-# this repository keeps getting burned by: deleting the checker would silently
-# skip the check. Keyed on TRACKED-ness, removing it is a reviewable diff on
-# evidence-gate logic; a tracked-but-deleted file still runs and still fails.
-if git -C "$repo" ls-files --error-unmatch tools/instructions/check.ts >/dev/null 2>&1; then
-  if ! "$BUN_BIN" "$repo/tools/instructions/check.ts" --repo "$repo" --strict; then
-    land_fail ledger-state 2
-  fi
-  land_pass ledger-state
-else
-  echo "LAND step=ledger-state status=not-applicable reason=repo-does-not-track-tools/instructions/check.ts"
+# Kept because a baseline separates "the candidate broke it" from "it was
+# already broken", which is what makes the post-merge verdict actionable. It
+# blocks on its own too: landing onto an already-red target branch is refused
+# rather than merged into.
+if ! land_ledger_state ledger-state baseline; then
+  land_fail ledger-state 2
 fi
+land_pass ledger-state
 
 if ! land_run_declared_checks "$repo" 'LAND BASELINE'; then
   land_fail baseline-checks
@@ -601,6 +631,30 @@ if ! install -m 600 "$review_round_state" "$review_round_history" ||
 fi
 merge_sha=$(git -C "$repo" rev-parse HEAD)
 land_pass merge
+
+# THE ledger check that decides the landing (round-2 review finding 1). Run on
+# the MERGED RESULT -- the tree that is about to become $default_branch -- after
+# the merge and before the push, on the same fail-closed rollback path as the
+# meteorite and the post-merge declared checks below.
+#
+# `verification-and-locks`: "Every change is reverified at the landed
+# integration boundary." The baseline run above cannot satisfy that, because the
+# integration boundary does not exist until the merge commit does. Running it
+# only against the candidate would not satisfy it either: two lanes can each be
+# green alone and red together -- one deletes the workboard row the other's
+# closure claim resolves against -- and only the merged tree shows that.
+#
+# Placed before the meteorite so a red ledger costs seconds rather than a full
+# container prove-out; the rollback is identical either way.
+if ! land_ledger_state ledger-state-merged merged; then
+  if ! land_force_reset "$repo" "$pre_merge_sha"; then
+    land_fail_rollback ledger-state-merged "$pre_merge_sha" "$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)"
+  fi
+  merged=false
+  merge_sha="none"
+  land_fail ledger-state-merged
+fi
+land_pass ledger-state-merged
 
 if [ "$meteorite_required" = true ]; then
   # The runner is read from the independently accepted pre-merge tree. The

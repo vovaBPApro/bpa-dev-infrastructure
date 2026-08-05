@@ -28,6 +28,7 @@ const runnableShellTests = [
   "gate/meteorite-gate.test.sh",
   "gate/land-target-branch.test.sh",
   "gate/lane-exit.test.sh",
+  "gate/push-guard.test.sh",
   "orchestrator/launch-handshake-bounded.test.sh",
   "orchestrator/singleton-failclosed.test.sh",
   "gate/land-rollback.test.sh",
@@ -44,7 +45,7 @@ const excludedShellTests = {} as const;
 const allShellTests = [...runnableShellTests, ...Object.keys(excludedShellTests)];
 
 test("the independently pinned shell-test inventory still exists", () => {
-  expect(allShellTests).toHaveLength(15);
+  expect(allShellTests).toHaveLength(16);
   for (const relativePath of allShellTests) {
     expect(existsSync(join(repoRoot, relativePath)), `${relativePath} is missing`).toBe(true);
   }

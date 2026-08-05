@@ -78,11 +78,44 @@ break-glass (`DISPATCH_OVERRIDE`) is only for lanes repairing the tooling.
 
 Every Human directive is recorded in the decisions ledger as
 `instance/decisions/HR-<telegram-msg-id>.md`: the verbatim block (sacred), date,
-tentative routing, and a `state` of `pending | routed | parked | superseded`.
+tentative routing, and a **mandatory** `state` from this closed vocabulary:
 
-Only `state: pending` rows are interim-binding and pack-delivered: the composer
-appends them to every pack until the routed doc exists, and aging checks re-redden
-stale rows. A `state: routed` row is **provenance only** — its binding force lives
+| `state` | meaning | required field | disposition |
+|---|---|---|---|
+| `pending` | captured, not yet triaged or routed | — (72h SLA on `date:`) | **open** — delivered in full to every pack and session load |
+| `owed` | triaged, obligation identified, work not done | `tracked-by:` | **open** — listed in every session load until closed |
+| `routed` | binding force moved into a doc or param | `routes-to:` | closed |
+| `parked` | deliberately set aside | `review-by:` (must be in the future) | deferred — neither delivered nor discharged |
+| `superseded` | replaced by a later ruling | `superseded-by:` | closed |
+
+`owed` exists because the older vocabulary conflated "ruling routed into a doc"
+with "work request discharged". That conflation is why a perfect capture had
+nowhere honest to sit, and it is what made a good capture the act that hid a
+requirement.
+
+**Absence is open, and unknown is a FAIL.** A file with no `state:`, or a value
+outside this set, is a checker FAIL **and is treated as open and delivered**
+until fixed — fail-visible, never fail-hidden. A stateless file must never be
+quietly skipped by the thing that reads it.
+
+**Every closure claim must resolve, on every run.** `routes-to:`,
+`tracked-by:`, `superseded-by:` and a triage row's structured `closes:` must
+name a workboard row id present in `instance/workboard.md`, an existing repo
+path, or a doc id in the generated index. A claim that resolves to nothing is a
+FAIL and the row is **not** treated as closed. Resolution is re-verified on
+every run rather than at write time, which is what makes board renumbering
+safe: the NI→V3 rebuild orphaned three closures pointing at `NI-1`/`NI-2`/`NI-3`,
+and under this rule the renumbering commit goes red at the gate. Free-text
+`reason` prose cannot close anything.
+
+Enforced by `tools/instructions/ledger.ts` (`checkHrStates`,
+`checkTriageClosures`), surfaced by `tools/instructions/check.ts`, and run by
+`gate/lane-exit.sh` and `gate/land.sh` on every lane exit and every landing.
+Pre-existing debt is enumerated with an owner and an expiry in
+`instance/hr-state-exemptions.tsv`; a new violation is not in that file, so it
+fails immediately.
+
+A `state: routed` row is **provenance only** — its binding force lives
 in the doc named by `routes-to`, which MUST actually carry the restriction. A
 routed row whose target does not carry the restriction has silently dropped it;
 before routing, land the restriction in its target (a doc, or `instance/params.yaml`

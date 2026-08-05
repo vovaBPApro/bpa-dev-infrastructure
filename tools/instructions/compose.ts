@@ -29,6 +29,7 @@ import { execFileSync } from "node:child_process";
 import { resolve, join } from "node:path";
 import { collectDocs, type InstructionDoc } from "./docs.ts";
 import { AUDIENCES, type Audience } from "./schema.ts";
+import { isHrOpen } from "./ledger.ts";
 
 export const PACK_MARKER_PREFIX = "<!-- compose.ts pack v1";
 
@@ -357,8 +358,27 @@ function parseBody(contents: string): string {
   return match ? contents.slice(match[0].length) : contents;
 }
 
+// Counts HR rows that are not provably closed -- `pending`, `owed`, and every
+// file whose `state:` is missing or outside the vocabulary (ledger.ts:isHrOpen).
+//
+// This number is stated in every pack preamble deliberately. Full delivery
+// stays scoped to `pending` so a pack does not become the whole backlog, but a
+// silent pack let every lane believe the board was empty while 33 stateless
+// captures sat undelivered. A count cannot be misread as zero.
+export function countOpenObligations(repo: string): number {
+  const dir = join(repo, "instance", "decisions");
+  if (!existsSync(dir)) return 0;
+  let open = 0;
+  for (const entry of readdirSync(dir)) {
+    if (!/^HR-.+\.md$/i.test(entry)) continue;
+    if (isHrOpen(readFileSync(join(dir, entry), "utf8"))) open += 1;
+  }
+  return open;
+}
+
 // Collects interim directives: instance/decisions/*.md whose `state: pending`.
-// routed / parked / superseded rows are not delivered.
+// owed / routed / parked / superseded rows are not delivered in full; `owed`
+// rows are counted by countOpenObligations() and carried in the session load.
 export function collectPendingDecisions(repo: string): Decision[] {
   const dir = join(repo, "instance", "decisions");
   if (!existsSync(dir)) return [];
@@ -401,6 +421,7 @@ export function renderPreamble(
   entries: PackEntry[],
   decisions: Decision[],
   facts: InstanceFacts,
+  openObligations = 0,
 ): string {
   const lines: string[] = [];
   lines.push(`${PACK_MARKER_PREFIX} role=${role} l1=${l1} -->`);
@@ -432,7 +453,18 @@ export function renderPreamble(
   lines.push("## INSTANCE FACTS");
   lines.push("");
   lines.push(`phase=${facts.phase} active_scope=${facts.active_scope} capture.mode=${facts.capture_mode} operator.language=${facts.operator_language}`);
+  lines.push(`open_obligations=${openObligations}`);
   lines.push("");
+  if (openObligations > 0) {
+    lines.push(
+      `${openObligations} Human requirement(s) are recorded and NOT provably closed. ` +
+        "Only the interim `pending` rows are delivered in full below; the rest are " +
+        "listed by `bun tools/instructions/session-load.ts` and failed by " +
+        "`bun tools/instructions/check.ts --strict`. This pack being short is not " +
+        "evidence that the board is empty.",
+    );
+    lines.push("");
+  }
 
   // Doc bodies, in order.
   lines.push("## DOCUMENTS");
@@ -478,7 +510,14 @@ export function compose(options: Options): ComposeResult {
   const decisions = collectPendingDecisions(options.repo);
   const instanceFacts = readInstanceFacts(options.repo);
   const l1 = gitSha(options.repo);
-  const preamble = renderPreamble(options.role, l1, entries, decisions, instanceFacts);
+  const preamble = renderPreamble(
+    options.role,
+    l1,
+    entries,
+    decisions,
+    instanceFacts,
+    countOpenObligations(options.repo),
+  );
 
   return {
     preamble,

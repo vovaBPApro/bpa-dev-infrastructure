@@ -82,6 +82,33 @@ if ! land_resolve_bun; then
   exit 2
 fi
 
+# Decisions-ledger state (V3-3.1). The same check gate/land.sh runs, moved to
+# the moment a lane declares itself done -- the same reasoning that put
+# completion-guard.ts here rather than only at landing time: a red ledger is
+# cheapest to fix while the lane that reddened it still exists.
+#
+# Unpiped, and $? read directly, because a bounded or killed command behind a
+# pipe reports the LAST element's status: `check | tail` would report tail's
+# success and launder a failure into a pass.
+#
+# Scoped on `git ls-files`, not on `[[ -f ]]`. This gate is generic -- it must
+# also land lanes in a product repo that never carried this control plane's
+# instruction tooling -- but a filesystem-existence guard is the fail-open shape
+# this repository keeps getting burned by: deleting the checker would silently
+# skip the check. Keyed on TRACKED-ness, removing it is a diff on evidence-gate
+# logic, which needs Tier-A review; and a tracked-but-deleted file still runs
+# and still fails.
+if git -C "$repo" ls-files --error-unmatch tools/instructions/check.ts >/dev/null 2>&1; then
+  "$BUN_BIN" "$repo/tools/instructions/check.ts" --repo "$repo" --strict
+  ledger_status=$?
+  if [ "$ledger_status" -ne 0 ]; then
+    echo "LANE-EXIT verdict=blocked role=$role step=ledger-state repo=$repo exit=$ledger_status" >&2
+    exit 2
+  fi
+else
+  echo "LANE-EXIT step=ledger-state status=not-applicable reason=repo-does-not-track-tools/instructions/check.ts"
+fi
+
 "$BUN_BIN" "$script_dir/completion-guard.ts" --report "$report" --repo "$repo" --branch "$branch" --role "$role"
 status=$?
 

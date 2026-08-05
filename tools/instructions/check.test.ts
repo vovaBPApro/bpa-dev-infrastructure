@@ -135,9 +135,16 @@ describe("check.ts", () => {
     expect(before.stdout).toContain("decision-reference");
 
     // Add the ledger file; the reference now resolves and the check is clean.
+    // It carries `state: routed` with a resolving `routes-to:` because since
+    // V3-3.1 a stateless HR file is itself a FAIL (absence is open, unknown is
+    // loud) — this fixture is about decision-reference resolution, so it must
+    // not also be an open obligation.
     const ledger = join(repo, "instance", "decisions");
     mkdirSync(ledger, { recursive: true });
-    writeFileSync(join(ledger, "HR-9999.md"), doc({ ...VALID, id: "hr-9999" }));
+    writeFileSync(
+      join(ledger, "HR-9999.md"),
+      doc({ ...VALID, id: "hr-9999", state: "routed", "routes-to": "referrer" }),
+    );
     const after = runCheck(repo);
     expect(after.status).toBe(0);
     expect(after.stdout).toContain("0 FAIL");

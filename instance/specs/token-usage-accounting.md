@@ -163,8 +163,47 @@ than a new one).
 
 ## Review record
 
-Reserved. Findings, resolutions and explicit non-actions go here.
-
 Non-action recorded now: graph rendering is **not** in this spec. The operator asked for
 graphs, and graphs need data first; a page that draws from an empty table would be the
 same false comfort as a green check with nothing to check.
+
+### Implementation, 2026-08-05 (V3-3.10)
+
+**Step 1 resolved: shape (a).** `--output-format stream-json --verbose` preserves a
+readable lane log, so the side channel was not needed. `daemon/mask-stream.ts` renders the
+terminal result event's text and drops the machinery events `--print` never showed;
+`daemon/mask-stream.test.ts` asserts the rendered log is **byte-identical** to a captured
+sample of the old plain-text output. Evidence: `instance/evidence/v3-3.10/`.
+
+Two facts found by execution that the spec could not have known:
+
+- `--output-format stream-json` is **refused** without `--verbose` under `--print`. The
+  flag is a launch requirement, not a logging preference.
+- The result event carries `modelUsage`, a per-model breakdown whose costs sum exactly to
+  `total_cost_usd`, alongside the single top-level `usage` block the spec sampled. The
+  breakdown is what the record shape's "one row per model invocation" means in the data
+  that actually arrives: a single probe lane spent on **two** models (`claude-sonnet-5`
+  and `claude-haiku-4-5-20251001`), and a one-row-per-lane design would have attributed
+  the second to the first. Top-level `usage` remains the fallback when no breakdown is
+  reported.
+
+**Two columns beyond the proposed shape.** `event_id` holds the provider's record
+identity so a re-ingest is idempotent rather than a doubled bill. `model` is nullable,
+because an unmeasured turn has no reported model and the spec's own rule forbids
+inventing one.
+
+**`cost_usd` is nullable, and for the orchestrator it is null.** The orchestrator runs as
+an interactive CLI in a tmux pane, not behind a pipe, so its consumption is read from the
+CLI's session transcripts (`daemon/usage-ingest-transcripts.ts`, filtered to interactive
+entrypoints so lanes already measured are not counted twice). That source reports tokens
+and **no cost**. Deriving cost from a price table would have put an invented number in the
+same column as the provider's own figures with nothing downstream able to separate them,
+and "backfill nothing, do not guess" is the standing rule. **Open gap, named rather than
+hidden:** the largest single spender therefore has token counts but no cost. Closing it
+needs a decision this spec does not contain — whether a maintained price table is worth
+its drift — and that is a row, not a silent addition. `source: estimated` exists in the
+enum and currently has no writer; it is where such rows would go.
+
+**Not done, deliberately.** No unit was installed, enabled or started, so the transcript
+ingester runs on demand rather than on a timer. Wiring it to a schedule touches live
+systemd state and belongs to whoever owns that change.

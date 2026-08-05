@@ -24,6 +24,22 @@ import type { UsageEventInput, UsageRole } from "../core/schema";
 
 export type UsageAttribution = { role: UsageRole; lane?: string | null; itemId?: string | null };
 
+/**
+ * The event types this renderer is allowed to consume, MEASURED from an
+ * agentic stream on this host rather than assumed: `system` (init and
+ * thinking_tokens), `rate_limit_event`, `assistant`, `user` (tool results) and
+ * `result`. Everything else is written to the log verbatim.
+ *
+ * An allowlist rather than "anything with a `type` field", because the two
+ * failure directions are not equally bad. An unrecognized line passed through
+ * shows up as one ugly JSON line in the log -- visible, and someone fixes it. A
+ * line consumed by a catch-all disappears with no trace, and this stream also
+ * carries a plain-text provider's output (the codex confs) and merged stderr,
+ * where a single-line JSON object is entirely possible. Silent loss from the
+ * operator's main window is the worse outcome, so unknown means "show it".
+ */
+const STREAM_EVENT_TYPES = new Set(["system", "rate_limit_event", "assistant", "user", "result"]);
+
 type Json = Record<string, unknown>;
 
 const isObject = (value: unknown): value is Json => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -155,7 +171,7 @@ export class LaneUsageCollector {
     if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return line;
     let event: unknown;
     try { event = JSON.parse(trimmed); } catch { return line; }
-    if (!isObject(event) || typeof event.type !== "string") return line;
+    if (!isObject(event) || typeof event.type !== "string" || !STREAM_EVENT_TYPES.has(event.type)) return line;
 
     if (event.type === "assistant" && isObject(event.message)) {
       // The model as REPORTED, kept only as the fallback attribution for a

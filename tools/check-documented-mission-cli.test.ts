@@ -9,9 +9,13 @@ test("repository documentation names only dispatchable mission-cli actions", () 
   const files = Bun.spawnSync(["git", "-C", repo, "ls-files", "instructions", "instance"]).stdout.toString().split("\n").filter((file) => file.endsWith(".md"));
   expect(checkDocumentedMissionCli(repo, files)).toEqual([]);
   const invocations = documentedInvocations(repo, files);
-  expect(invocations.length).toBe(7);
+  // A pin, not a target: it exists so a documented invocation cannot appear or
+  // vanish unnoticed. Raised to 8 by V3-3.10's `usage` query action, whose
+  // dispatchability the assertion above is what actually proves.
+  expect(invocations.length).toBe(8);
   expect(invocations).toContainEqual({ file: "instructions/orchestrator-cold-start.md", line: 154, group: "lane", action: "complete" });
   expect(invocations).toContainEqual({ file: "instructions/orchestrator-cold-start.md", line: 262, group: "mission", action: "complete" });
+  expect(invocations).toContainEqual({ file: "instructions/orchestrator-cold-start.md", line: 291, group: "usage", action: undefined });
   const executed = Bun.spawnSync([process.execPath, "tools/check-documented-mission-cli.ts", "--repo", repo], { cwd: repo });
   expect(executed.exitCode, executed.stderr.toString()).toBe(0);
 });

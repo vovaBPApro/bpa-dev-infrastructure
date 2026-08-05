@@ -7,7 +7,11 @@ const open=(now=1000)=>{const path=`/tmp/v3-state-seam-${process.pid}-${serial++
 afterEach(()=>{for(const path of paths.splice(0))for(const suffix of ["","-wal","-shm"])if(existsSync(path+suffix))rmSync(path+suffix);});
 const seed=(store:DurableStore)=>{store.createMission({id:"mission-1",correlationId:"corr-1",acceptanceId:"mission-accept"});store.createManager({id:"manager-1",missionId:"mission-1",parentId:"mission-1",depth:1});store.createLane({id:"lane-1",missionId:"mission-1",managerId:"manager-1",parentId:"manager-1",depth:2,retryBudget:1,acceptanceId:"lane-accept"});};
 
-test("state import seam is the schema store, not a parallel database",()=>{expect(StateStore).toBe(DurableStore);const {store}=open();expect(store.db.query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all()).toEqual([{name:"lanes"},{name:"managers"},{name:"missions"},{name:"outbox"}]);store.close();});
+// The table list is pinned so a second store cannot appear beside this one.
+// `usage_events` joined it in V3-3.10 (instance/specs/token-usage-accounting.md)
+// precisely BECAUSE of that rule: token accounting was required to live in the
+// existing state database rather than invent a store of its own.
+test("state import seam is the schema store, not a parallel database",()=>{expect(StateStore).toBe(DurableStore);const {store}=open();expect(store.db.query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all()).toEqual([{name:"lanes"},{name:"managers"},{name:"missions"},{name:"outbox"},{name:"usage_events"}]);store.close();});
 
 test("OLD mailbox-replay fixture executes against restart reconstruction",()=>{const {path,store}=open();seed(store);store.enqueueOutbox({id:"message-1",channel:"mailbox",dedupeKey:"corr-1:message-1",payload:{taskId:"task-1"}});store.markOutboxAttempt("message-1","delivered");store.close();const restarted=new StateStore(path);expect(restarted.reconstruct().outbox).toEqual([expect.objectContaining({id:"message-1",dedupeKey:"corr-1:message-1",deliveryState:"delivered",attempts:1,payload:{taskId:"task-1"}})]);expect(()=>restarted.enqueueOutbox({id:"replay",channel:"mailbox",dedupeKey:"corr-1:message-1",payload:{taskId:"task-1"}})).toThrow();restarted.close();});
 

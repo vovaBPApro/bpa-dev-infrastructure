@@ -101,7 +101,10 @@ export const usageGroupByColumns: Record<UsageGroupBy, string> = {
 // put an invented number next to observed ones.
 const usageEventsDdl = `
     CREATE TABLE IF NOT EXISTS usage_events (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      -- Plain rowid alias, deliberately not AUTOINCREMENT: nothing references a
+      -- usage id, so guaranteeing ids are never reused would buy nothing and
+      -- cost a second internal table (sqlite_sequence) plus a write per insert.
+      id INTEGER PRIMARY KEY,
       observed_at INTEGER NOT NULL,
       model TEXT,
       role TEXT NOT NULL,

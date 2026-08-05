@@ -280,3 +280,36 @@ remaining: none
 Otherwise report `result: NO-GO`, the concrete blocker, and the next bounded
 action. Never infer completion from lane output, partial verification, or a
 gate attempt without `LAND verdict=landed`.
+
+## 6. What the work cost
+
+Every lane records the tokens and cost it spent, per model and per role, as it
+runs; nothing needs to be done at dispatch time to make that happen. Read the
+series back with:
+
+```sh
+INFRA_STATE_DB="$REPO/runtime/state.db" bun "$REPO/core/mission-cli.ts" \
+  usage --since 2026-01-01T00:00:00Z --group-by model,role
+```
+
+`--group-by` accepts any of `model`, `role`, `hour`; omit it for one total, and
+add `--json` for a machine-readable series.
+
+Read `unmeasured=` on every line. It counts turns whose consumption could not be
+observed -- a provider that reports no usage block, or a lane killed mid-turn --
+and those turns contribute nothing to the sums beside them. A window whose
+`unmeasured` count is high is not a cheap window; it is an unmeasured one, and
+the two must never be reported as the same thing.
+
+The orchestrator's own consumption is the one role not captured at the point of
+use, because it runs as an interactive CLI rather than behind a pipe. Ingest it
+from the CLI's session transcripts, which is idempotent and safe to repeat:
+
+```sh
+bun "$REPO/daemon/usage-ingest-transcripts.ts" --cwd "$REPO" --role orchestrator
+```
+
+That source reports token counts but no cost, so those rows carry a null
+`cost_usd` and the query prints `cost_usd=unmeasured` for them. Do not fill it in
+from a price table: an estimate sitting in the same column as the provider's own
+figures cannot be told apart from one afterwards.

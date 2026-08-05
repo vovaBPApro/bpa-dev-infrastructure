@@ -42,6 +42,33 @@ test("stream-json mode reproduces the plain-text lane log byte for byte", async 
   expect(stdout).toBe(plain);
 });
 
+test("an agentic lane with tool use also reproduces its plain-text log byte for byte", async () => {
+  // The single-turn sample cannot show what a lane actually does. This pair was
+  // captured from a run that called the Bash tool, so its stream carries `user`
+  // events (tool results) and several assistant turns -- none of which
+  // `claude --print` ever showed, and none of which may appear in the log now.
+  // Both halves are independent live captures of the same pinned prompt, not
+  // one derived from the other.
+  const root = await workspace();
+  const stream = await Bun.file(resolve(repo, "tests", "fixtures", "usage", "lane-stream-json-tooluse.jsonl")).text();
+  const plain = await Bun.file(resolve(repo, "tests", "fixtures", "usage", "lane-plain-print-tooluse.txt")).text();
+  const events = stream.split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  expect(new Set(events.map((event) => event.type))).toContain("user");
+  const { stdout } = await run(stream, ["--format", "stream-json", "--role", "coder", "--db", resolve(root, "state.db")]);
+  expect(stdout).toBe(plain);
+});
+
+test("an unrecognized event type is shown rather than silently swallowed", async () => {
+  const root = await workspace();
+  // The renderer consumes a measured allowlist. A future CLI event, or a
+  // single-line JSON object printed by a plain-text provider on this same
+  // stream, must reach the log: one ugly line is recoverable, a vanished one
+  // is not.
+  const input = `${JSON.stringify({ type: "some_future_event", detail: "x" })}\n${JSON.stringify({ type: "package_manifest_echoed_by_an_agent" })}\n`;
+  const { stdout } = await run(input, ["--format", "stream-json", "--role", "coder", "--db", resolve(root, "state.db")]);
+  expect(stdout).toBe(input);
+});
+
 test("the default mode is still an untouched pass-through masker", async () => {
   // instance/lane-agent-command-codex.conf lanes emit plain text and never gain
   // a result event. Their log must not change at all because of this row.

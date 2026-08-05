@@ -275,6 +275,16 @@ disposition_reason() {
 # And absence FAILS: a worktree whose association cannot be determined at all
 # (unparseable record, admin directory missing, files unreadable) is reported as
 # `?` and every caller refuses on it rather than falling through to a delete.
+# The fallthrough is keyed on TWO signals, because an unfinished operation does
+# not always leave a file named after itself:
+#
+#   marker file    any of the nine in-progress names under <admin> (round 4)
+#   unmerged index unmerged stage entries in <admin>/index (round 8) -- the
+#                  state `git apply --3way` leaves on conflict, which writes NO
+#                  marker at all, so the marker list alone answered `-`
+#
+# `-` therefore survives for exactly one state: a quiescent worktree detached
+# off nothing, with no marker on disk and a fully merged index.
 # The porcelain path is taken with `${line#worktree }` rather than awk's `$2`,
 # so a path containing spaces is no longer truncated -- round-3 review found the
 # refusal message handing the operator `/tmp/clsdef-uWvu/is` for a worktree at
@@ -327,7 +337,7 @@ worktree_admin_dir() {
 # are contiguous and in listing order, which report_worktrees relies on.
 worktree_associations() {
   local worktree_list="$1"
-  local line path head kind bad admin tips name sha emitted
+  local line path head kind bad admin tips name sha emitted unmerged
   local -a paths=() heads=() kinds=()
   path=""; head=""; kind=""; bad=""
   # Parse first, resolve second: an unrecognized attribute line means the record
@@ -466,6 +476,35 @@ worktree_associations() {
         continue 2
       fi
     done
+    # The marker list is not the whole enumeration, because not every
+    # unfinished operation writes a file named after itself. `git apply --3way`
+    # on a conflict leaves stage 1/2/3 entries in the index and NOTHING else --
+    # no MERGE_HEAD, no AUTO_MERGE, no rebase-apply, no head-name -- so round 7
+    # resolved it here, at `-`. branch_holder then answered "provably held by
+    # nothing", worktree_is_terminal was never consulted (it would have said
+    # dirty-worktree), and `branches --apply` deleted the lane's branch with the
+    # conflict still unresolved on disk. Round-8 review named this state and the
+    # signal that decides it: an unmerged index is a worktree holding SOMETHING,
+    # which is `?` for the same reason every marker is.
+    #
+    # Read through GIT_INDEX_FILE rather than by running git inside the
+    # worktree, so the answer survives the directory being gone while its
+    # metadata -- and its conflict -- is not. A missing index reads as an EMPTY
+    # one (exit 0, no output), so its presence is asserted separately: an index
+    # this function cannot read is absence of knowledge, never absence of a
+    # holder.
+    if [[ ! -r "$admin/index" ]]; then
+      printf '%s\t?\n' "$path"
+      continue
+    fi
+    if ! unmerged="$(GIT_INDEX_FILE="$admin/index" git -C "$repo" ls-files --unmerged 2>/dev/null)"; then
+      printf '%s\t?\n' "$path"
+      continue
+    fi
+    if [[ -n "$unmerged" ]]; then
+      printf '%s\t?\n' "$path"
+      continue
+    fi
     printf '%s\t-\n' "$path"
   done
 }

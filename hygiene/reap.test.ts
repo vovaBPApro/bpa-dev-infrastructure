@@ -1404,14 +1404,37 @@ test("a lane detached in the middle of a bisect keeps the branch bisect will ret
 // cherry-pick still resolves through that leftover by accident. A lane that
 // ever ran `git reset` has no such leftover, and the enumeration must not
 // depend on one.
-type UnnameableOp = "merge" | "revert" | "cherry-pick" | "am" | "sequencer";
-const unnameableOpMarker: Record<UnnameableOp, string> = {
+//
+// `apply-3way` joined the enumeration in round 8, and it is the state that
+// proves the marker list was never the whole rule: a conflicted
+// `git apply --3way` writes NO marker file whatsoever -- not MERGE_HEAD, not
+// AUTO_MERGE, not rebase-apply -- and records the conflict only as unmerged
+// stage entries in the worktree's index. `null` below means exactly that, and
+// the fixture asserts the absence rather than assuming it.
+type UnnameableOp = "merge" | "revert" | "cherry-pick" | "am" | "sequencer" | "apply-3way";
+const unnameableOpMarker: Record<UnnameableOp, string | null> = {
   merge: "MERGE_HEAD",
   revert: "REVERT_HEAD",
   "cherry-pick": "CHERRY_PICK_HEAD",
   am: "rebase-apply",
   sequencer: "sequencer",
+  "apply-3way": null,
 };
+
+// Every marker name the resolver and worktree_is_terminal enumerate. For
+// `apply-3way` the fixture asserts that NONE of them is on disk, so the test
+// cannot quietly start passing through some marker git grew later.
+const allOperationMarkers = [
+  "rebase-merge",
+  "rebase-apply",
+  "MERGE_HEAD",
+  "CHERRY_PICK_HEAD",
+  "REVERT_HEAD",
+  "BISECT_LOG",
+  "BISECT_START",
+  "sequencer",
+  "AUTO_MERGE",
+];
 
 function buildUnnameableOperationFixture(op: UnnameableOp): {
   dir: string;
@@ -1450,6 +1473,7 @@ function buildUnnameableOperationFixture(op: UnnameableOp): {
     am: "git format-patch -1 other --stdout > ../other.patch && git am ../other.patch",
     sequencer:
       "git cherry-pick other other2; echo resolved > f.txt && git add f.txt && git -c core.editor=true commit -q --no-edit",
+    "apply-3way": "git format-patch -1 other --stdout > ../other.patch && git apply --3way ../other.patch",
   };
   spawnSync("bash", ["-c", produce[op]], { cwd: lane, encoding: "utf8" });
 
@@ -1458,8 +1482,20 @@ function buildUnnameableOperationFixture(op: UnnameableOp): {
     throw new Error(`fixture setup failed: the ${op} lane is not detached\n${listed}`);
   }
   const admin = sh("git rev-parse --absolute-git-dir", lane).trim();
-  if (!existsSync(join(admin, unnameableOpMarker[op]))) {
-    throw new Error(`fixture setup failed: the ${op} did not leave ${unnameableOpMarker[op]} on disk`);
+  const marker = unnameableOpMarker[op];
+  if (marker === null) {
+    // The whole point of this state: no marker at all, and the conflict lives
+    // only in the index. If either half stopped holding, the test below would
+    // be proving a different state than the one round-7 review rejected on.
+    const present = allOperationMarkers.filter((name) => existsSync(join(admin, name)));
+    if (present.length > 0) {
+      throw new Error(`fixture setup failed: the ${op} left marker(s) on disk: ${present.join(", ")}`);
+    }
+    if (sh("git ls-files --unmerged", lane) === "") {
+      throw new Error(`fixture setup failed: the ${op} left no unmerged index entries, so nothing records the conflict`);
+    }
+  } else if (!existsSync(join(admin, marker))) {
+    throw new Error(`fixture setup failed: the ${op} did not leave ${marker} on disk`);
   }
   if (op === "sequencer" && sh("git status --porcelain", lane) !== "") {
     throw new Error("fixture setup failed: the stopped-sequencer lane is dirty, so the refusal would not prove the marker");
@@ -1469,7 +1505,7 @@ function buildUnnameableOperationFixture(op: UnnameableOp): {
   return { dir, repo, lane, dispositions };
 }
 
-const unnameableOps: UnnameableOp[] = ["merge", "revert", "cherry-pick", "am", "sequencer"];
+const unnameableOps: UnnameableOp[] = ["merge", "revert", "cherry-pick", "am", "sequencer", "apply-3way"];
 
 test("PROPERTY: a worktree the resolver cannot associate refuses every local deletion -- conflicted merge/revert/cherry-pick/am and a stopped sequencer", () => {
   for (const op of unnameableOps) {
@@ -1539,15 +1575,97 @@ function reapWithReplacement(anchor: string, replacement: string): string {
   return target;
 }
 
-test("the refusal has teeth: restoring round-3's `-` fallback destroys the mid-merge lane's branch on both sides", () => {
+// Measured against the states only the MARKER LOOP protects, which round 8
+// changed. Round 4 wrote this against a conflicted merge; the round-8
+// unmerged-index check now catches that state too, so a merge fixture would
+// have measured the two guards together and reported the marker loop as
+// load-bearing whether or not it still was. `sequencer` and `am` isolate it:
+// both leave a marker on disk with a fully merged index, so nothing but the
+// marker loop stands between them and the delete.
+const markerOnlyOps: UnnameableOp[] = ["sequencer", "am"];
+
+test("the refusal has teeth: restoring round-3's `-` fallback destroys a marker-only lane's branch on both sides", () => {
   const weakened = reapWithReplacement(unnameableRefusalBlock, "    :");
-  const { repo, dispositions } = buildUnnameableOperationFixture("merge");
+  for (const op of markerOnlyOps) {
+    const { repo, lane, dispositions } = buildUnnameableOperationFixture(op);
+    if (sh("git ls-files --unmerged", lane) !== "") {
+      throw new Error(`the ${op} fixture has an unmerged index, so it does not isolate the marker loop`);
+    }
+    const local = spawnSync("bash", [weakened, "branches", "--repo", repo, "--dispositions", dispositions, "--apply"], {
+      encoding: "utf8",
+    });
+    expect(local.status).toBe(0);
+    if (sh("git show-ref refs/heads/ag-lane || true", repo).trim() !== "") {
+      throw new Error(`the weakened script did NOT destroy the ${op} branch -- the \`?\` fallback is not what protects this state`);
+    }
+    const remoteRun = spawnSync(
+      "bash",
+      [weakened, "remote-branches", "--repo", repo, "--dispositions", dispositions, "--apply"],
+      { encoding: "utf8" },
+    );
+    expect(remoteRun.status).toBe(0);
+    if (sh("git ls-remote --heads origin", repo).includes("refs/heads/ag-lane")) {
+      throw new Error(`the weakened script did NOT destroy the ${op} remote branch -- the \`?\` fallback is not what protects it`);
+    }
+  }
+});
+
+// Round-7 review's blocking finding, named as its own state rather than left to
+// the property loop: `git apply --3way` on a conflict is the one unfinished
+// operation that writes NO marker file, so the round-4 marker list -- the whole
+// of the fallthrough at the time -- did not see it and the resolver answered
+// `-`. The signal that decides it is the unmerged index, which is why the
+// assertions below are about stage entries and marker absence, not about a
+// refusal string that several other states also produce.
+test("a lane conflicted mid `git apply --3way` holds its branch through an unmerged index, with no marker file anywhere", () => {
+  const { repo, lane, dispositions } = buildUnnameableOperationFixture("apply-3way");
+  const admin = sh("git rev-parse --absolute-git-dir", lane).trim();
+  expect(allOperationMarkers.filter((name) => existsSync(join(admin, name)))).toEqual([]);
+  expect(sh("git ls-files --unmerged", lane)).not.toBe("");
+
+  const local = run(["branches", "--repo", repo, "--dispositions", dispositions, "--apply"]);
+  expect(local.status).toBe(0);
+  expect(local.stdout).toContain("a worktree's branch could not be determined, refusing: ag-lane");
+  expect(local.stdout).toContain(lane);
+  expect(sh("git show-ref --verify --quiet refs/heads/ag-lane && echo present", repo).trim()).toBe("present");
+
+  const remoteRun = run(["remote-branches", "--repo", repo, "--dispositions", dispositions, "--apply"]);
+  expect(remoteRun.status).toBe(0);
+  expect(remoteRun.stdout).toContain("remote branch held by a worktree this tool cannot resolve, refusing: origin/ag-lane");
+  expect(sh("git ls-remote --heads origin", repo)).toContain("refs/heads/ag-lane");
+
+  // The conflict is still on disk, unresolved. That is what was being deleted.
+  expect(sh("git status --porcelain", lane)).toContain("UU f.txt");
+  expect(existsSync(lane)).toBe(true);
+});
+
+// The unmerged-index half of the fallthrough, removed verbatim. The marker loop
+// above it is left intact, so this measures exactly one thing: whether the
+// index check is what protects the state, or whether some other guard would
+// have caught it anyway. Round 7 shipped with the marker loop and lost the
+// branch, so the answer must be "the index check".
+const unmergedIndexRefusalBlock = `    if [[ ! -r "$admin/index" ]]; then
+      printf '%s\\t?\\n' "$path"
+      continue
+    fi
+    if ! unmerged="$(GIT_INDEX_FILE="$admin/index" git -C "$repo" ls-files --unmerged 2>/dev/null)"; then
+      printf '%s\\t?\\n' "$path"
+      continue
+    fi
+    if [[ -n "$unmerged" ]]; then
+      printf '%s\\t?\\n' "$path"
+      continue
+    fi`;
+
+test("the index check has teeth: removing it destroys the mid `apply --3way` lane's branch on both sides", () => {
+  const weakened = reapWithReplacement(unmergedIndexRefusalBlock, "    :");
+  const { repo, dispositions } = buildUnnameableOperationFixture("apply-3way");
   const local = spawnSync("bash", [weakened, "branches", "--repo", repo, "--dispositions", dispositions, "--apply"], {
     encoding: "utf8",
   });
   expect(local.status).toBe(0);
   if (sh("git show-ref refs/heads/ag-lane || true", repo).trim() !== "") {
-    throw new Error("the weakened script did NOT destroy the branch -- the `?` fallback is not what protects this state");
+    throw new Error("the weakened script did NOT destroy the branch -- the unmerged-index check is not what protects this state");
   }
   const remoteRun = spawnSync(
     "bash",
@@ -1556,8 +1674,41 @@ test("the refusal has teeth: restoring round-3's `-` fallback destroys the mid-m
   );
   expect(remoteRun.status).toBe(0);
   if (sh("git ls-remote --heads origin", repo).includes("refs/heads/ag-lane")) {
-    throw new Error("the weakened script did NOT destroy the remote branch -- the `?` fallback is not what protects it");
+    throw new Error("the weakened script did NOT destroy the remote branch -- the unmerged-index check is not what protects it");
   }
+});
+
+// The other direction, and the reason this fix is a narrowing rather than a
+// blanket refusal: `-` must still be reachable. A quiescent worktree detached
+// off nothing, with no marker and a merged index, is the one state that is
+// genuinely held by nothing, and its branch is still reaped.
+test("the legitimate `-` survives the index check: a quiescent detached worktree still holds nothing", () => {
+  const dir = fixtureDir();
+  const repo = join(dir, "repo");
+  mkdirSync(repo);
+  sh("git init -q -b main .", repo);
+  sh("git config user.email hygiene@example.test", repo);
+  sh("git config user.name Hygiene", repo);
+  writeFileSync(join(repo, "base.txt"), "base\n");
+  sh("git add base.txt && git commit -qm base", repo);
+  sh("git checkout -qb ag-merged && echo m > m.txt && git add m.txt && git commit -qm m", repo);
+  sh("git checkout -q main && git merge -q ag-merged", repo);
+  const wt = join(dir, "quiet-wt");
+  sh(`git worktree add -q --detach ${JSON.stringify(wt)} main`, repo);
+  // Detached scratch commit, then a reset: HEAD and ORIG_HEAD both sit on a
+  // revision no branch points at, so nothing associates this worktree by
+  // content either. The index is clean and no marker exists.
+  sh("echo scratch > s.txt && git add s.txt && git commit -qm scratch", wt);
+  sh("git reset -q --hard HEAD", wt);
+  const admin = sh("git rev-parse --absolute-git-dir", wt).trim();
+  expect(allOperationMarkers.filter((name) => existsSync(join(admin, name)))).toEqual([]);
+  expect(sh("git ls-files --unmerged", wt)).toBe("");
+
+  const apply = run(["branches", "--repo", repo, "--apply"]);
+  expect(apply.status).toBe(0);
+  // No "could not be determined" refusal anywhere: this worktree resolved.
+  expect(apply.stdout).not.toContain("could not be determined");
+  expect(sh("git show-ref refs/heads/ag-merged || true", repo).trim()).toBe("");
 });
 
 test("a worktree whose porcelain record does not parse is UNKNOWN, and UNKNOWN refuses every branch", () => {
@@ -1811,6 +1962,15 @@ const injections: Array<{ name: string; anchor: string; injected: string }> = [
   },
 ];
 
+// The declared bound is the point. This test builds a full live-fleet fixture
+// and runs every entry point of a rewritten script once per injection, and it
+// lands at ~5.5s against bun's undeclared 5s default -- so the suite reported
+// `this test timed out after 5000ms`, which is a KILL, and a kill is not a
+// pass. Measured at 3697284 (round 7, before the unmerged-index check existed)
+// it already failed the same way, so the bound has been mis-set for longer than
+// this round; the round-8 index check adds one `ls-files` per detached worktree
+// and does not move it materially. Raising the bound changes no assertion: the
+// test still fails if any injected deletion primitive escapes the property.
 test("the property has teeth: each injected deletion primitive is caught by it", () => {
   for (const injection of injections) {
     const script = reapWithInjection(injection.anchor, injection.injected);
@@ -1819,7 +1979,7 @@ test("the property has teeth: each injected deletion primitive is caught by it",
       throw new Error(`the property test did not catch the injection: ${injection.name}`);
     }
   }
-});
+}, 120_000);
 
 // Splits reap.sh into `name() { ... }` bodies so a claim about WHERE a
 // primitive may appear can be made about the script rather than about a

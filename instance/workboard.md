@@ -160,6 +160,35 @@ Only after Phases 0–2 hold.
 
 ---
 
+## Phase 5 — his words reach the work
+
+Opened 2026-08-05 on the operator's ruling that this is the most important problem in the
+system: *«це ультраважлива річ через яку я страждаю вже 2 місяці»* (Telegram 2469). He then
+set the order himself (Telegram 2491): finish the structural fix and bring it to a point
+before touching the individual debts it has produced — *«кращє вирішити критичне, довести до
+крапки, навести порядок і тоді просто піднімати консиліум на планування наступного спрінта»*.
+
+Design: `instance/plans/requirements-reading-fix-2026-08-05.md` (Fable, seven ranked items).
+Evidence: `instance/audits/requirements-reading-2026-08-05.md` (on `ag-v3-req-audit`, F1–F8).
+
+**Branch-name defect, recorded rather than hidden:** rows V3-5.1 and V3-5.2 run on branches
+`ag-v3-3.1` and `ag-v3-3.2`, because the orchestrator dispatched them against row ids that
+were already taken by the Phase 3 backlog rows of the same number. The lanes were already
+running when the collision was found; renaming a live lane's branch is worse than recording
+the mismatch. Read the branch name as an artifact of that error, not as a row id.
+
+| id | row | acceptance | state |
+|---|---|---|---|
+| V3-5.1 | **Plan items 1+2 — invert the ledger.** Every list an agent reads is built by an allowlist (`state === "pending"`), and across 80 HR files there are **zero** `pending`: 45 `routed`, 31 with no state field at all, 2 `open`, 1 `backlog`, 1 `captured`. Meanwhile `routedMsgIds()` marks a message handled from the **filename alone**. So writing a good HR file makes the requirement reach no pack and no session *and* suppresses the raw inbox row — capturing a requirement well is the act that hides it (F3). Item 2 adds the closure-target rule: `routes-to:`/`tracked-by:`/`superseded-by:` must resolve, re-verified on every run rather than at write time, which is what makes board renumbering safe (F1: a requirement closed against `NI-1/NI-2/NI-3`, rows that do not exist, reading as closed in git since 07-31 across four asks). | a stateless HR file is a suite FAIL *and* is delivered as open; an `owed` without a resolving `tracked-by` fails; a `tracked-by` naming a non-existent workboard row fails; each has a fixture that fails against the old predicate and passes against the new one; legacy debt sits in an expiring exemption ledger that drains to empty | **in flight** — `ag-v3-3.1`. |
+| V3-5.2 | **Plan item 4 — the session load must actually run.** The live orchestrator is `provider=claude`; the claude branch of `build_command` (`orchestrator/launch.sh:252–295`) wires **no** SessionStart hook at all, and the codex branch points at `.claude/hooks/session-load.sh`, which does not exist and is untracked. The `[[ -x ]]` guard skips it in silence while the comment above it claims "the hook source is this repository". 28 inbox rows are reachable only through that path, including his shared-drive answer — which he had already given and was then asked for again seven hours later (F4). Also a Hard Floor 5 defect: a mechanism existing only as a path some host might satisfy is not reproducible from git. | one tracked provider-neutral `orchestrator/hooks/session-start.sh` wired by both provider branches; a non-zero load is a NO-GO banner, not a quiet degradation; every `[[ -x ]]` fail-open guard in `build_command` fails closed; break-glass is a single loud `ORCH_SKIP_SESSION_HOOK=1`; a drift test goes red when the file is deleted or a branch unwired; adoption proven on a scratch session, never by restarting the live orchestrator | **in flight** — `ag-v3-3.2`. |
+| V3-5.3 | **Plan item 3 — one generated open-obligations file**, guarded by the freshness pattern that already turns the suite red for `instructions/README.md`. Consumes V3-5.1's state semantics, so it cannot start before that lands. His requirement (HR-2451): answering *"did he already say this?"* must not be archaeology. | not started — blocked on V3-5.1 | **open** |
+| V3-5.4 | **Plan item 5 — HR-2451 becomes a gate, not a habit.** He chose the strict form himself: an unhandled message from him **blocks the next dispatch**. Today that rule lives only in the orchestrator's intention, which is the same shape as every other mechanism this phase exists to replace. Consumes V3-5.1's definition of "handled". | not started — blocked on V3-5.1 | **open** |
+| V3-5.5 | **Plan item 6 — drain the backlog the audit found.** One-time remediation, not mechanism: the 31 stateless HR files, the three provably false closures (triage rows for msgs 563, 162, 564, which are **reopened, not exempted**), and the debts his own message 2491 defers until the structure holds. | not started — deliberately last, by his instruction | **open** |
+| V3-2.17 | **The completion guard cannot read bun's own test output.** `gate/completion-guard.ts:130` anchors `^([0-9]+) pass$` while bun indents its summary by one space (measured through `cat -A`: `" 2 pass$"`). So `parseVerificationCount` returns `undefined` for the output of the tool this repository runs its tests with, and an honest `verify-count:` is refused as `command-output-missing-unambiguous-pass/fail-count`. **13 lanes have paid for it** in hand-collection or a whole extra lane. The guard's own fixtures (`completion-guard.test.ts:277`, `:288`, `:305`) build counts with `printf '162 pass\n6 fail\n'` — no leading space — so the suite proves the parser works against a shape bun never emits. Ordered directly by the operator: *«то виправляй, а не відволікай мене»*. | a genuine `bun test` summary parses; at least one fixture carries bun's real leading space; a regression test fails against the old regex; the ambiguity guard (exactly one match of each) still holds | **in flight** — `ag-v3-2.17`. |
+| V3-2.18 | **The 👀 reaction must mean "stored".** HR-2486: he declared the contract himself — *«якщо на моєму повідомлені є реакція (очі) то я вважаю що ти його отримав і зберіг»*. Today it cannot mean that: `daemon/server.ts:3725` wraps `appendInboxLine` in `try { … } catch { /* best-effort; never block delivery on mirroring */ }`, and the reaction sites at `:3767` and `:3885` fire with no knowledge of the outcome — `:3885` proves delivery to the session, not storage. So the eyes can land on a message that was never written to disk: absence rendering as success, on the one channel he uses to run the system. | no 👀 without a successful mirror write; delivery is still never blocked by the mirror; a mirror failure produces a **pinged** message naming the unstored message id; the regression makes the write fail for real via `ORCH_INBOX_JSONL` rather than by stubbing | **in flight** — `ag-v3-2.18`. |
+
+---
+
 ## Two live report contracts — read before touching lane completion again
 
 V3-0.2 set out to wire `gate/completion-guard.ts` at lane-exit time (done: see

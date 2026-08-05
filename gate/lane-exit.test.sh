@@ -14,12 +14,18 @@
 # ...and that a genuinely valid, externally-pinned report is accepted.
 #
 # Nested-gate note (instance/workboard.md "Nested gate invocations"): this
-# script does not itself invoke gate/land.sh, so it is not subject to the
-# BUN_BIN caller-override refusal and needs no `env -u BUN_BIN` when run
-# standalone. A caller that wraps THIS test under gate/land.sh's own verify
-# step would need it, same as any other gate test.
+# script does not invoke gate/land.sh, but that is not what makes a test immune
+# -- gate/lane-exit.sh calls land_resolve_bun itself, so it refuses an inherited
+# BUN_BIN exactly as gate/land.sh does. Measured: with BUN_BIN set, this file
+# fails with "LAND step=preflight status=fail detail=caller-bun-override-refused"
+# and an assertion reporting exit 2 where 0 was expected. The earlier version of
+# this note claimed the opposite and was wrong. The rule is "does this test drive
+# a gate entry point", not "does it name land.sh".
 set -u
 set -o pipefail
+
+# The fixture owns its own environment; same one line as gate/land.test.sh:3.
+unset BUN_BIN
 
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 lane_exit="$root/gate/lane-exit.sh"

@@ -20,6 +20,7 @@ is not finished (Telegram 2398) and will decide about product work in the mornin
 | V3-2.13 | `cae28ff` | "this document names a file that exists" is now a check. |
 | V3-2.13 R2/R3 | `b68f651` | pair-keying lock + extensionless citations. |
 | V3-2.12 | `b5f1cad` | unit rendering no longer silently empties the nightly-suite and watchdog timers on a rebuilt host. **Four coder rounds, five reviews, three landing attempts.** |
+| V3-2.16 | `d8a2731` | the unit-path exemption ledger expires an entry. `meteorite/run.sh` had stayed excused as "not yet built on v3" while executing in every landing all night. Two ledgers in one repository had settled the same rule differently; they now agree. |
 
 ## V3-2.12 is the row to read if you read only one
 

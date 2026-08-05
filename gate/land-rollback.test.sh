@@ -22,6 +22,20 @@
 set -u
 set -o pipefail
 
+# The nested gate must resolve its own bun, never the caller's. gate/land.sh's
+# land_resolve_bun refuses any inherited BUN_BIN outright
+# ("LAND step=preflight status=fail detail=caller-bun-override-refused") and
+# exits 2 before a landing reaches any of the rollback paths below -- so an
+# inherited BUN_BIN turns every fixture in this file into a failure whose
+# message names the missing post-merge-verify line rather than the refusal that
+# caused it. gate/land.sh, gate/lane-exit.sh and gate/completion-guard.ts all
+# EXPORT BUN_BIN, so this fixture is handed one whenever it runs under a gate
+# wrapper (a lane's `verify:` chain at lane exit, or the landing gate's own
+# post-merge verify) and is handed none when a human runs it from a shell.
+# That difference -- not host load -- is what made this file look flaky.
+# The fixture owns its own environment: same one line as gate/land.test.sh:3.
+unset BUN_BIN
+
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 land="$root/gate/land.sh"
 # The lane itself can inherit TMPDIR below /root, whose parent directories are

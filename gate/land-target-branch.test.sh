@@ -11,6 +11,12 @@
 set -u
 set -o pipefail
 
+# Same one-line cause as gate/land-rollback.test.sh: gate/land.sh refuses an
+# inherited BUN_BIN and exits 2 at preflight, so every assertion below reports
+# the exit code it expected rather than the caller-override refusal that
+# produced it. The fixture owns its own environment.
+unset BUN_BIN
+
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 land="$root/gate/land.sh"
 fixture_root=$(mktemp -d)

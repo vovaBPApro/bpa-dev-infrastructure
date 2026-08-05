@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# FIXTURE, not a live test. Deliberately defective input for the scan in
+# gate/bun-override-isolation.test.ts, which copies this file into a scratch
+# tree under the name it would really have and asserts the scan names it.
+#
+# It is stored with a `.fixture` suffix on purpose: the scan walks the tree for
+# `*.test.sh`, so a file named that way HERE would make the lock permanently
+# red rather than proving anything.
+#
+# ## What this fixture encodes
+#
+# It is a genuine member of the defect class: it drives the exit-side gate
+# entry point and does NOT own its environment, so it exits 0 from a clean
+# shell and non-zero the moment a caller exports BUN_BIN -- failing at
+# `LAND step=preflight status=fail detail=caller-bun-override-refused`, which
+# names the refusal and not the behaviour the caller was testing. The lock
+# executes it in both directions rather than asserting that from a comment.
+#
+# The evasion is the reference below: a directory variable plus a bare
+# filename. That is this repository's own house idiom for a sibling inside
+# `gate/` -- the entry point itself sources `"$script_dir/land-lib.sh"` and
+# invokes `"$script_dir/completion-guard.ts"` exactly that way -- and it is
+# what a newly added gate test would naturally write. A scan matching the full
+# relative path of an entry point cannot see it.
+#
+# THEREFORE: no full entry-point path may appear as a literal anywhere in this
+# file, or it stops encoding the evasion and starts passing the very scan it
+# exists to defeat. The lock asserts both halves of that.
+set -u
+set -o pipefail
+
+# Deliberately absent: `unset BUN_BIN`. That absence is the defect.
+
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
+gate_dir="$root/gate"
+lane_exit="$gate_dir/lane-exit.sh"
+fixture_root=$(mktemp -d)
+trap 'rm -rf "$fixture_root"' EXIT
+
+repo="$fixture_root/repo"
+git init --initial-branch=main "$repo" >/dev/null
+git -C "$repo" config user.email lane@example.test
+git -C "$repo" config user.name Lane
+printf 'base\n' > "$repo/base.txt"
+git -C "$repo" add base.txt
+git -C "$repo" commit -m base >/dev/null
+git -C "$repo" checkout -b ag-lane-1 >/dev/null 2>&1
+
+tip=$(git -C "$repo" rev-parse HEAD)
+report="$fixture_root/valid.report.md"
+{
+  printf 'commit: %s fixture\n' "$tip"
+  printf 'verify: true\n'
+  printf 'result: clean\n'
+  printf 'secret-scan: clean\n'
+  printf 'remaining: none\n'
+} > "$report"
+
+out="$fixture_root/valid.out"
+"$lane_exit" --report "$report" --repo "$repo" --branch ag-lane-1 >"$out" 2>&1
+status=$?
+cat "$out"
+if [ "$status" -ne 0 ]; then
+  echo "assertion failed: the exit-side gate exited $status, expected 0" >&2
+  exit 1
+fi
+echo "ALL PASS"

@@ -137,7 +137,12 @@ orchestrator:
   # Pinned in source (orchestrator/launch.sh CLAUDE_MODEL) for the same reason
   # as fallback_model below: an unpinned claude launch emits no --model and the
   # top orchestrator silently becomes the account default.
-  top_model: claude-fable-5        # HUMAN RULING: instance/decisions/HR-709.md (Vova, 2026-08-01).
+  top_model: claude-fable-5        # HUMAN RULING: instance/decisions/HR-2613.md (Vova, 2026-08-05),
+  # which supersedes HR-2315's Opus pin and restores the HR-709 choice. Recorded
+  # because the pair had DRIFTED: HR-2315 was binding for a day while this line
+  # still said fable and cited the ruling HR-2315 had superseded, so any restart
+  # in that window would have come up against the then-binding pin and nothing
+  # would have caught it. No checker ties this value to its ruling -- V3-5.23.
   # SUPERSEDES HR-269 item 1 and HR-271's "Claude reserved entirely" framing.
   # Rest on FABLE, not Sonnet, not Opus, not Codex. His words: "на fable було
   # мінімальне навантаження... всі дочірні агенти піднімаються на кодексах".

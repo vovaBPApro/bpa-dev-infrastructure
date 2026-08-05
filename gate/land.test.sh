@@ -31,6 +31,12 @@ assert_output_has() {
   assert grep -Fq "$expected" "$output"
 }
 
+assert_output_lacks() {
+  output="$1"
+  unexpected="$2"
+  assert_not grep -Fq "$unexpected" "$output"
+}
+
 install_push_noop_wrapper() {
   wrapper_dir="$1"
   real_git=$(command -v git)
@@ -128,7 +134,7 @@ mkdir -p "$clone_a/.bpa"
 round_state="$clone_a/.bpa/review-rounds.json"
 env -u BUN_BIN bun "$root/gate/review-rounds.ts" init --state "$round_state" --cap 3 --no-progress-limit 3 >/dev/null
 for digit in 1 2 3; do
-  env -u BUN_BIN bun "$root/gate/review-rounds.ts" attempt --state "$round_state" --item-id ag-durable-rounds >/dev/null
+  env -u BUN_BIN bun "$root/gate/review-rounds.ts" attempt --charge reject --state "$round_state" --item-id ag-durable-rounds >/dev/null
   env -u BUN_BIN bun "$root/gate/review-rounds.ts" landed --state "$round_state" --item-id ag-durable-rounds --sha "$(printf '%040d' "$digit")" >/dev/null
 done
 git -C "$clone_a" add .bpa/review-rounds.json
@@ -146,9 +152,16 @@ assert_output_has "$durable_output" 'item=ag-durable-rounds cap=3 parked=cap'
 assert test -f "$clone_b/.git/bpa-review-rounds.json"
 assert grep -Fq '"rounds": 3' "$clone_b/.git/bpa-review-rounds.json"
 
-# Original regression: Clone A counts reviewed attempts which fail after the
-# count and rolls main back. Clone B must recover those attempts from origin,
-# even though neither the merge nor Clone A's Git-common-dir cache survives.
+# Original regression: Clone A records attempts which fail after the record and
+# rolls main back. Clone B must recover those attempts from origin, even though
+# neither the merge nor Clone A's Git-common-dir cache survives.
+#
+# HR-2285 fixture -- ROLLED-BACK MERGE DOES NOT CHARGE. A candidate whose own
+# declared checks fail is merged, refused, and rolled back; no reviewer ever
+# rejected it, so the ruling names this a gate-internal abort. It costs the lane
+# a full re-run and charges nothing. Before this change the same three landings
+# parked the item at no-progress -- which is precisely the "приземлення, що
+# впало на бухгалтерії" the ruling was written to end.
 make_fixture failed-review-attempts
 clone_a="$repo"
 git -C "$clone_a" checkout -b ag-failed-attempts >/dev/null
@@ -158,16 +171,18 @@ failed_sha=$(git -C "$clone_a" rev-parse HEAD)
 git -C "$clone_a" checkout main >/dev/null
 git -C "$clone_a" push origin ag-failed-attempts >/dev/null
 report "$fixture_root/failed-review-attempts.md" "$failed_sha"
-for attempt in 1 2; do
+for attempt in 1 2 3; do
   failed_output="$fixture_root/failed-review-attempts-$attempt.out"
   if "$land" --branch ag-failed-attempts --item-id ag-failed-attempts --report "$fixture_root/failed-review-attempts.md" --repo "$clone_a" --no-push >"$failed_output" 2>&1; then exit 1; fi
   assert_output_has "$failed_output" 'LAND step=review-rounds status=pass'
   assert_output_has "$failed_output" 'LAND step=declared-checks status=fail'
   assert test "$(git -C "$clone_a" rev-parse main)" = "$(git -C "$clone_a" rev-parse origin/main)"
+  # The attempt is durably recorded, and recorded as what it was: an arrival
+  # that charged nothing. Three of them, and the item is still admissible.
+  assert_output_lacks "$failed_output" 'parked='
 done
-# The third reviewed attempt is durably recorded before no-progress parks it.
-if "$land" --branch ag-failed-attempts --item-id ag-failed-attempts --report "$fixture_root/failed-review-attempts.md" --repo "$clone_a" --no-push >"$fixture_root/failed-review-attempts-3.out" 2>&1; then exit 1; fi
-assert_output_has "$fixture_root/failed-review-attempts-3.out" 'parked=no-progress'
+assert test "$(git -C "$bare" for-each-ref --format='%(refname)' 'refs/bpa-review-attempts/*/*-abort-*' | wc -l)" = 3
+assert test -z "$(git -C "$bare" for-each-ref --format='%(refname)' 'refs/bpa-review-attempts/*/*-reject-*')"
 
 clone_b="$fixture_root/failed-review-attempts-clone-b"
 git clone "$bare" "$clone_b" >/dev/null
@@ -175,11 +190,17 @@ git -C "$clone_b" config user.email land@example.test
 git -C "$clone_b" config user.name Land
 git -C "$clone_b" branch ag-failed-attempts origin/ag-failed-attempts >/dev/null
 if "$land" --branch ag-failed-attempts --item-id ag-failed-attempts --report "$fixture_root/failed-review-attempts.md" --repo "$clone_b" --no-push >"$fixture_root/failed-review-attempts-clone-b.out" 2>&1; then exit 1; fi
-assert_output_has "$fixture_root/failed-review-attempts-clone-b.out" 'parked=no-progress'
-assert grep -Fq '"rounds": 3' "$clone_b/.git/bpa-review-rounds.json"
+# A fresh clone reconstructs the same two facts from origin alone: four arrivals,
+# zero rounds. The attempt record stayed durable; only what it MEANS changed.
+assert_output_has "$fixture_root/failed-review-attempts-clone-b.out" 'LAND step=review-rounds status=pass'
+assert_output_lacks "$fixture_root/failed-review-attempts-clone-b.out" 'parked='
+assert grep -Fq '"attempts": 4' "$clone_b/.git/bpa-review-rounds.json"
+assert grep -Fq '"rounds": 0' "$clone_b/.git/bpa-review-rounds.json"
 rm "$clone_b/.git/bpa-review-rounds.json"
 if "$land" --branch ag-failed-attempts --item-id ag-failed-attempts --report "$fixture_root/failed-review-attempts.md" --repo "$clone_b" --no-push >"$fixture_root/failed-review-attempts-cache-deleted.out" 2>&1; then exit 1; fi
-assert_output_has "$fixture_root/failed-review-attempts-cache-deleted.out" 'parked=no-progress'
+assert_output_lacks "$fixture_root/failed-review-attempts-cache-deleted.out" 'parked='
+assert grep -Fq '"attempts": 5' "$clone_b/.git/bpa-review-rounds.json"
+assert grep -Fq '"rounds": 0' "$clone_b/.git/bpa-review-rounds.json"
 
 # Root-equivalent lanes can mutate either origin namespace. Independent
 # forgery or suppression must nevertheless be detected by the mirrored record.
@@ -326,12 +347,6 @@ review() {
   reviewed_sha="$4"
   independence="$5"
   printf 'verdict: %s\nreviewer: %s\nreviewed-sha: %s\nindependence: %s\n' "$verdict" "$reviewer" "$reviewed_sha" "$independence" > "$path"
-}
-
-assert_output_lacks() {
-  output="$1"
-  unexpected="$2"
-  assert_not grep -Fq "$unexpected" "$output"
 }
 
 make_fixture review-missing
@@ -1007,7 +1022,7 @@ mkdir -p "$unpark_repo/.bpa"
 env -u BUN_BIN bun "$root/gate/review-rounds.ts" init --state "$unpark_state" --cap 10 --no-progress-limit 3 >/dev/null
 for unpark_item in ag-unpark-decision ag-unpark-second; do
   for _unpark_round in 1 2 3; do
-    env -u BUN_BIN bun "$root/gate/review-rounds.ts" attempt --defer-park-exit --state "$unpark_state" --item-id "$unpark_item" >/dev/null
+    env -u BUN_BIN bun "$root/gate/review-rounds.ts" attempt --charge reject --defer-park-exit --state "$unpark_state" --item-id "$unpark_item" >/dev/null
   done
 done
 git -C "$unpark_repo" add .bpa/review-rounds.json
@@ -1153,7 +1168,7 @@ unpark_forged_state="$unpark_forged_repo/.bpa/review-rounds.json"
 mkdir -p "$unpark_forged_repo/.bpa"
 env -u BUN_BIN bun "$root/gate/review-rounds.ts" init --state "$unpark_forged_state" --cap 10 --no-progress-limit 3 >/dev/null
 for _unpark_round in 1 2 3; do
-  env -u BUN_BIN bun "$root/gate/review-rounds.ts" attempt --defer-park-exit --state "$unpark_forged_state" --item-id ag-unpark-forged >/dev/null
+  env -u BUN_BIN bun "$root/gate/review-rounds.ts" attempt --charge reject --defer-park-exit --state "$unpark_forged_state" --item-id ag-unpark-forged >/dev/null
 done
 git -C "$unpark_forged_repo" add .bpa/review-rounds.json
 git -C "$unpark_forged_repo" commit -m 'seed parked item' >/dev/null
@@ -1209,7 +1224,7 @@ unpark_abort_state="$unpark_abort_repo/.bpa/review-rounds.json"
 mkdir -p "$unpark_abort_repo/.bpa"
 env -u BUN_BIN bun "$root/gate/review-rounds.ts" init --state "$unpark_abort_state" --cap 3 --no-progress-limit 3 >/dev/null
 for _unpark_round in 1 2 3; do
-  env -u BUN_BIN bun "$root/gate/review-rounds.ts" attempt --defer-park-exit --state "$unpark_abort_state" --item-id ag-unpark-abort >/dev/null
+  env -u BUN_BIN bun "$root/gate/review-rounds.ts" attempt --charge reject --defer-park-exit --state "$unpark_abort_state" --item-id ag-unpark-abort >/dev/null
 done
 git -C "$unpark_abort_repo" add .bpa/review-rounds.json
 git -C "$unpark_abort_repo" commit -m 'seed parked item' >/dev/null
@@ -1308,7 +1323,7 @@ unpark_nul_auth_state="$unpark_nul_auth_repo/.bpa/review-rounds.json"
 mkdir -p "$unpark_nul_auth_repo/.bpa" "$unpark_nul_auth_repo/instance/decisions"
 env -u BUN_BIN bun "$root/gate/review-rounds.ts" init --state "$unpark_nul_auth_state" --cap 10 --no-progress-limit 3 >/dev/null
 for _unpark_round in 1 2 3; do
-  env -u BUN_BIN bun "$root/gate/review-rounds.ts" attempt --defer-park-exit --state "$unpark_nul_auth_state" --item-id ag-unpark-nul-auth >/dev/null
+  env -u BUN_BIN bun "$root/gate/review-rounds.ts" attempt --charge reject --defer-park-exit --state "$unpark_nul_auth_state" --item-id ag-unpark-nul-auth >/dev/null
 done
 printf -- '---\nid: HR-9999\n-\000--\noperator-unpark: v2 item=ag-unpark-nul-auth decision=HR-9999 park=no-progress\n---\n' \
   > "$unpark_nul_auth_repo/instance/decisions/HR-9999.md"
@@ -1338,7 +1353,7 @@ origin_redirect_state="$origin_redirect_repo/.bpa/review-rounds.json"
 mkdir -p "$origin_redirect_repo/.bpa" "$origin_redirect_repo/instance"
 env -u BUN_BIN bun "$root/gate/review-rounds.ts" init --state "$origin_redirect_state" --cap 10 --no-progress-limit 3 >/dev/null
 for _unpark_round in 1 2 3; do
-  env -u BUN_BIN bun "$root/gate/review-rounds.ts" attempt --defer-park-exit --state "$origin_redirect_state" --item-id ag-origin-redirect >/dev/null
+  env -u BUN_BIN bun "$root/gate/review-rounds.ts" attempt --charge reject --defer-park-exit --state "$origin_redirect_state" --item-id ag-origin-redirect >/dev/null
 done
 # The pin has one home: instance/params.yaml, read from the SHA origin answers
 # with. A redirected clone must forge durable tracked content, not a config line.

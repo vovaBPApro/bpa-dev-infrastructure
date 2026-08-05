@@ -4,8 +4,16 @@ import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 
 type Unpark = { decisionId: string; authorizedBy: string; at: string; previous: string; digest: string; source?: string };
-type Item = { rounds: number; noProgress: number; landedSha: string | null; park: null | "cap" | "no-progress"; unparkCredits?: number; unparks?: Unpark[] };
-type State = { version: 1; cap: number; noProgressLimit: number; items: Record<string, Item>; decisions?: Record<string, string> };
+// `attempts` and `rounds` are deliberately two numbers, because HR-2285 made
+// them two different facts. `attempts` is how many times this item walked the
+// landing gate -- the ordinal that keeps the durable attempt refs sequential and
+// therefore tamper-evident. `rounds` is how many times a reviewer examined the
+// change and rejected it, which is the only thing that moves an item toward a
+// park. Under version 1 there was one number doing both jobs, and it was doing
+// the wrong one: it counted arrivals at the gate.
+type Item = { attempts: number; rounds: number; noProgress: number; landedSha: string | null; park: null | "cap" | "no-progress"; unparkCredits?: number; unparks?: Unpark[] };
+type State = { version: 2; cap: number; noProgressLimit: number; items: Record<string, Item>; decisions?: Record<string, string> };
+const STATE_VERSION = 2;
 
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 // The tracked-decision authority. gate/land.sh reserves this directory against
@@ -72,9 +80,14 @@ function natural(value: string, name: string): number {
   if (!/^[1-9][0-9]*$/.test(value)) die(`invalid-${name}`);
   return Number(value);
 }
-function validateItem(item: unknown): item is Item {
+function validateItem(item: unknown, version: number): item is Item {
   if (!item || typeof item !== "object") return false;
   const value = item as Record<string, unknown>;
+  // Version 1 has no `attempts` -- migrate() derives it. Version 2 must carry
+  // it, so a hand-edited state cannot drop the ordinal the attempt refs are
+  // sequenced against.
+  if (version >= 2 && !(Number.isSafeInteger(value.attempts) && (value.attempts as number) >= 0)) return false;
+  if (version < 2 && value.attempts !== undefined) return false;
   return Number.isSafeInteger(value.rounds) && (value.rounds as number) >= 0 &&
     Number.isSafeInteger(value.noProgress) && (value.noProgress as number) >= 0 &&
     (value.landedSha === null || (typeof value.landedSha === "string" && /^[0-9a-f]{40}$/.test(value.landedSha))) &&
@@ -123,6 +136,31 @@ function verifyUnparkChain(id: string, item: Item): boolean {
   }
   return true;
 }
+// Version 1 -> 2, and the whole of HR-2285 in one function.
+//
+// A version-1 `rounds` counted arrivals at the landing gate, charged before any
+// verdict was read. It cannot contain a single reviewer rejection, and that is
+// structural rather than a guess: gate/land.sh refused a REJECT at its `review`
+// step and exited BEFORE it ever reached the charge, so the one event HR-2285
+// says is a round was the one event version 1 could never record. Everything it
+// did record -- a report whose shape was wrong, a review artifact naming a
+// superseded SHA, a base that moved, lock contention, a rolled-back merge -- is
+// what the ruling enumerates as paperwork.
+//
+// So the honest migration is not a rescale. Every recorded number becomes an
+// attempt, the charged count becomes zero, and any park built out of those
+// numbers goes with them: a park must mean "we could not prove this is good",
+// and none of these parks meant that. `landedSha` and the unpark audit records
+// survive untouched -- the ruling changes what counts, never what is recorded.
+function migrate(state: State): void {
+  for (const item of Object.values(state.items)) {
+    item.attempts = item.rounds;
+    item.rounds = 0;
+    item.noProgress = 0;
+    item.park = null;
+  }
+  state.version = STATE_VERSION;
+}
 function load(path: string): State {
   let stat;
   try { stat = lstatSync(path); } catch { die(`state-missing file=${path}`); }
@@ -130,11 +168,13 @@ function load(path: string): State {
   let parsed: unknown;
   try { parsed = JSON.parse(readFileSync(path, "utf8")); } catch { die(`state-malformed file=${path}`); }
   const state = parsed as State;
-  if (!state || state.version !== 1 || !Number.isSafeInteger(state.cap) || state.cap < 1 ||
+  const version = (parsed as Record<string, unknown>).version;
+  if (!state || (version !== 1 && version !== 2) || !Number.isSafeInteger(state.cap) || state.cap < 1 ||
       !Number.isSafeInteger(state.noProgressLimit) || state.noProgressLimit < 1 ||
       !state.items || typeof state.items !== "object" || Array.isArray(state.items) ||
-      !Object.values(state.items).every(validateItem) ||
+      !Object.values(state.items).every((entry) => validateItem(entry, version as number)) ||
       !validateDecisions((parsed as Record<string, unknown>).decisions)) die(`state-malformed file=${path}`);
+  if (version === 1) migrate(state);
   for (const [id, item] of Object.entries(state.items)) {
     if (!verifyUnparkChain(id, item)) die(`unpark-chain-broken file=${path} item=${id}`);
     // The consumed-decision ledger is what makes a decision spendable once. A
@@ -216,19 +256,24 @@ if (command === "init") {
   const noProgressLimit = natural(arg("--no-progress-limit"), "no-progress-limit");
   mkdirSync(dirname(path), { recursive: true });
   try { closeSync(openSync(path, "wx", 0o600)); } catch { die(`state-already-exists file=${path}`); }
-  save(path, { version: 1, cap, noProgressLimit, items: {} });
+  save(path, { version: STATE_VERSION, cap, noProgressLimit, items: {} });
   console.log(`REVIEW_ROUNDS status=initialized cap=${cap} no_progress_limit=${noProgressLimit}`);
   process.exit(0);
 }
 const state = load(path);
 const itemId = arg("--item-id");
 if (!ID_PATTERN.test(itemId)) die("invalid-item-id");
-const item = state.items[itemId] ?? { rounds: 0, noProgress: 0, landedSha: null, park: null };
+const item = state.items[itemId] ?? { attempts: 0, rounds: 0, noProgress: 0, landedSha: null, park: null };
 if (command === "round") {
   console.log(item.rounds);
+} else if (command === "attempts") {
+  // The attempt ordinal, which is what gate/land.sh sequences its durable refs
+  // against. Asking `round` for it -- as the gate did while the two facts were
+  // one number -- is what tied the ref sequence to the charge.
+  console.log(item.attempts);
 } else if (command === "check") {
   if (item.park) die(`item=${itemId} parked=${item.park}`);
-  console.log(`REVIEW_ROUNDS status=admissible item=${itemId} round=${item.rounds}`);
+  console.log(`REVIEW_ROUNDS status=admissible item=${itemId} round=${item.rounds} attempts=${item.attempts}`);
 } else if (command === "attempt") {
   // `--replay` reconstructs a round that origin already proves happened (a
   // durable attempt ref), as opposed to admitting a new one. The distinction
@@ -244,25 +289,62 @@ if (command === "round") {
   // a `no-progress` park is releasable by an operator decision and a `cap` park
   // is not, so re-deriving one here would strand the decision a second way.
   const replay = Bun.argv.includes("--replay");
+  // HR-2285, and the only place the ruling is decided. A round is charged when
+  // a reviewer examined the change and rejected it, and at no other time. The
+  // classification is never inferred here -- this command cannot see why a
+  // landing is arriving -- so the caller that observed the verdict states it,
+  // and `--charge` has NO default: a caller cannot charge, or fail to charge,
+  // by omitting a flag. That is the fail-closed half of the ruling's own
+  // qualification that none of this relaxes the gate.
+  //
+  //   --charge reject : a reviewer rejected the work. Charges a round, advances
+  //                     no-progress, and parks at the cap.
+  //   --charge none   : the landing was refused before anyone judged the work --
+  //                     report shape, a stale review SHA, a base that moved,
+  //                     lock contention, a rolled-back merge. Still refused,
+  //                     still a full re-run for the lane, but it does not move
+  //                     the row toward a park.
+  //
+  // Both are recorded: an uncharged attempt still takes the next ordinal and
+  // still gets its durable ref, so "this item walked the gate five times and was
+  // rejected once" stays reconstructable from origin alone.
+  const charge = arg("--charge");
+  if (charge !== "reject" && charge !== "none") die("invalid-charge");
   if (item.park && !replay) die(`item=${itemId} parked=${item.park}`);
   if (item.park) {
-    item.rounds += 1;
-    item.noProgress += 1;
+    // A park carried forward from the target branch, being replayed. Do not
+    // re-derive it: a `no-progress` park is releasable by an operator decision
+    // and a `cap` park is not, so manufacturing a fresh one here would strand
+    // the decision the authorities below are about to spend.
+    item.attempts += 1;
+    if (charge === "reject") { item.rounds += 1; item.noProgress += 1; }
   } else {
+    // The cap bounds REVIEW ROUNDS -- so it is measured on `rounds`, which now
+    // only rejections advance -- but it is enforced on every arrival, charged or
+    // not. An item already rejected `cap` times is one only an operator can
+    // release, and admitting it for another walk through the gate would be the
+    // orchestrator quietly deciding that instead. Checked before the ordinal
+    // moves: nothing is pushed for a refused arrival, and a cached ordinal
+    // ahead of the durable refs would hide the next real attempt from replay.
     if (item.rounds >= state.cap && !(item.unparkCredits && item.unparkCredits > 0)) { item.park = "cap"; state.items[itemId] = item; save(path, state); die(`item=${itemId} cap=${state.cap} parked=cap`); }
-    if (item.rounds >= state.cap) item.unparkCredits!--;
-    item.rounds += 1;
-    item.noProgress += 1;
-    if (item.noProgress >= state.noProgressLimit) item.park = "no-progress";
+    item.attempts += 1;
+    if (charge === "reject") {
+      if (item.rounds >= state.cap) item.unparkCredits!--;
+      item.rounds += 1;
+      item.noProgress += 1;
+      if (item.noProgress >= state.noProgressLimit) item.park = "no-progress";
+    }
   }
   state.items[itemId] = item;
   save(path, state);
-  if (item.park && !Bun.argv.includes("--defer-park-exit")) die(`item=${itemId} consecutive_no_progress=${item.noProgress} parked=no-progress`);
-  console.log(`REVIEW_ROUNDS status=pass item=${itemId} round=${item.rounds} no_progress=${item.noProgress}`);
+  if (item.park && !Bun.argv.includes("--defer-park-exit")) die(`item=${itemId} consecutive_no_progress=${item.noProgress} parked=${item.park}`);
+  console.log(`REVIEW_ROUNDS status=pass item=${itemId} attempt=${item.attempts} round=${item.rounds} no_progress=${item.noProgress} charge=${charge}`);
 } else if (command === "landed") {
   const sha = arg("--sha").toLowerCase();
   if (!/^[0-9a-f]{40}$/.test(sha)) die("invalid-sha");
-  if (item.rounds < 1) die(`item=${itemId} landed-without-attempt`);
+  // Against `attempts`, not `rounds`: a landing that no reviewer rejected now
+  // charges nothing, so `rounds` is legitimately 0 for a clean first landing.
+  if (item.attempts < 1) die(`item=${itemId} landed-without-attempt`);
   item.landedSha = sha; item.noProgress = 0;
   state.items[itemId] = item; save(path, state);
   console.log(`REVIEW_ROUNDS status=landed item=${itemId} sha=${sha}`);

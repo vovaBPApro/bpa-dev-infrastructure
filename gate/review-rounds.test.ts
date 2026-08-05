@@ -11,8 +11,14 @@ function fixture(cap = 3, limit = 3) {
   expect(Bun.spawnSync([process.execPath, cli, "init", "--state", state, "--cap", `${cap}`, "--no-progress-limit", `${limit}`]).exitCode).toBe(0);
   return state;
 }
+// Every round test in this file describes a reviewer who read the change and
+// rejected it, which under HR-2285 is exactly what a round IS -- so `attempt`
+// defaults to `--charge reject` HERE, in the harness. The CLI itself has no
+// default and refuses a missing `--charge`; the "charge is never implied" lock
+// below is what proves that, and the uncharged path is exercised explicitly.
 function run(state: string, command: string, item = "V3-3.4", extra: string[] = []) {
-  return Bun.spawnSync([process.execPath, cli, command, "--state", state, "--item-id", item, ...extra], { stdout: "pipe", stderr: "pipe" });
+  const charge = command === "attempt" && !extra.includes("--charge") ? ["--charge", "reject"] : [];
+  return Bun.spawnSync([process.execPath, cli, command, "--state", state, "--item-id", item, ...charge, ...extra], { stdout: "pipe", stderr: "pipe" });
 }
 function text(result: ReturnType<typeof Bun.spawnSync>) { return result.stdout.toString() + result.stderr.toString(); }
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });

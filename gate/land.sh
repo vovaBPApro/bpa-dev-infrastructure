@@ -537,6 +537,31 @@ if ! land_payload_guard "$repo" "$branch"; then
 fi
 land_pass payload-guard
 
+# Decisions-ledger state (V3-3.1). Until this line existed, `check.ts --strict`
+# and the ledger checkers behind it were wired into NOTHING -- no gate, no unit,
+# no timer ran them against the real corpus, so they reported green over 82
+# uncleared HR records and three false closures for as long as they existed. A
+# predicate nobody runs is the same shape as a rule nobody enforces, so the
+# mechanism and its execution site land together or not at all.
+#
+# Deliberately BEFORE the merge and unpiped: a red ledger must block landing,
+# and reading $? through a pipe reports the filter's status, not the checker's.
+#
+# Scoped on `git ls-files`, not on `[[ -f ]]`. This gate is generic and must
+# also land lanes in a product repo that never carried this control plane's
+# instruction tooling, but a filesystem-existence guard is the fail-open shape
+# this repository keeps getting burned by: deleting the checker would silently
+# skip the check. Keyed on TRACKED-ness, removing it is a reviewable diff on
+# evidence-gate logic; a tracked-but-deleted file still runs and still fails.
+if git -C "$repo" ls-files --error-unmatch tools/instructions/check.ts >/dev/null 2>&1; then
+  if ! "$BUN_BIN" "$repo/tools/instructions/check.ts" --repo "$repo" --strict; then
+    land_fail ledger-state 2
+  fi
+  land_pass ledger-state
+else
+  echo "LAND step=ledger-state status=not-applicable reason=repo-does-not-track-tools/instructions/check.ts"
+fi
+
 if ! land_run_declared_checks "$repo" 'LAND BASELINE'; then
   land_fail baseline-checks
 fi

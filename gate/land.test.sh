@@ -1763,6 +1763,79 @@ fi
 assert_output_has "$ledger_del_output" 'LAND step=working-tree status=fail'
 assert test "$(git -C "$ledger_del_repo" rev-parse main)" = "$ledger_del_before"
 
+# Round-3 review, finding B: the run that DECIDES the landing must read its
+# checker from an independently accepted tree, not from the candidate's own.
+#
+# The candidate here does two things at once, which is the shape that matters:
+# it introduces the violation AND replaces tools/instructions/check.ts with a
+# stub that approves of everything. Under the round-2 wiring -- which executed
+# "$repo/tools/instructions/check.ts", and post-merge $repo IS the candidate --
+# that stub was the thing that ran, and the step passed on a merged tree the
+# real checker fails. The trusted tree is $pre_merge_sha, whose checker is still
+# the tree-sensitive one, so the step must go red on the marker and the
+# candidate's stub must never speak at all.
+make_fixture ledger-candidate-checker
+ledger_own_repo="$fixture_root/ledger-candidate-checker-repo"
+install_tree_sensitive_checker "$ledger_own_repo"
+ledger_own_before=$(git -C "$ledger_own_repo" rev-parse main)
+git -C "$ledger_own_repo" checkout -b ag-ledger-own >/dev/null
+printf 'a violation the real checker refuses\n' > "$ledger_own_repo/instance/ledger-red.marker"
+cat > "$ledger_own_repo/tools/instructions/check.ts" <<'EOF'
+#!/usr/bin/env bun
+// The candidate's own checker: it approves of everything, including itself.
+console.log("all clear");
+process.exit(0);
+EOF
+git -C "$ledger_own_repo" add instance/ledger-red.marker tools/instructions/check.ts
+git -C "$ledger_own_repo" commit -m "introduce a violation and a checker that cannot see it" >/dev/null
+ledger_own_sha=$(git -C "$ledger_own_repo" rev-parse HEAD)
+git -C "$ledger_own_repo" checkout main >/dev/null
+# The lane touches tools/, which is a reviewed path, so the scenario supplies a
+# real review artifact rather than reaching for --skip-review: the step under
+# test is downstream of review, and skipping it would test a shorter pipeline.
+review "$fixture_root/ag-ledger-own.review.md" ACCEPT independent-reviewer "$ledger_own_sha" separate-session
+report "$fixture_root/ledger-candidate-checker-report.md" "$ledger_own_sha"
+ledger_own_output="$fixture_root/ledger-candidate-checker-output.txt"
+if "$land" --branch ag-ledger-own --item-id ag-ledger-own --report "$fixture_root/ledger-candidate-checker-report.md" --repo "$ledger_own_repo" --no-push >"$ledger_own_output" 2>&1; then
+  echo 'ledger-candidate-checker: a lane replaced the observer that judges it and landed' >&2
+  exit 1
+fi
+assert_output_has "$ledger_own_output" 'LAND step=ledger-state-merged status=fail'
+assert_output_has "$ledger_own_output" 'red=true'                 # the trusted checker spoke
+assert_not grep -Fq 'all clear' "$ledger_own_output"              # the candidate's never did
+assert_output_has "$ledger_own_output" "checker=$ledger_own_before"
+assert test "$(git -C "$ledger_own_repo" rev-parse main)" = "$ledger_own_before"
+assert test -z "$(git -C "$ledger_own_repo" status --porcelain)"
+# The trusted tree is materialized per run and removed again: a landing that
+# leaves worktrees behind breeds refs, which branching-policy refuses.
+assert test "$(git -C "$ledger_own_repo" worktree list | wc -l)" -eq 1
+
+# The same trusted-tree rule decides APPLICABILITY, so `git rm`ing the checker
+# in the candidate cannot buy a not-applicable skip either. (The working-tree
+# guard covers an unstaged `rm`; this covers the committed one, which is clean
+# and reaches the ledger step.)
+make_fixture ledger-checker-untracked
+ledger_rm_repo="$fixture_root/ledger-checker-untracked-repo"
+install_tree_sensitive_checker "$ledger_rm_repo"
+ledger_rm_before=$(git -C "$ledger_rm_repo" rev-parse main)
+git -C "$ledger_rm_repo" checkout -b ag-ledger-rm >/dev/null
+printf 'a violation, with the checker removed in the same commit\n' > "$ledger_rm_repo/instance/ledger-red.marker"
+git -C "$ledger_rm_repo" rm -q tools/instructions/check.ts
+git -C "$ledger_rm_repo" add instance/ledger-red.marker
+git -C "$ledger_rm_repo" commit -m "remove the checker and add a violation" >/dev/null
+ledger_rm_sha=$(git -C "$ledger_rm_repo" rev-parse HEAD)
+git -C "$ledger_rm_repo" checkout main >/dev/null
+review "$fixture_root/ag-ledger-rm.review.md" ACCEPT independent-reviewer "$ledger_rm_sha" separate-session
+report "$fixture_root/ledger-checker-untracked-report.md" "$ledger_rm_sha"
+ledger_rm_output="$fixture_root/ledger-checker-untracked-output.txt"
+if "$land" --branch ag-ledger-rm --item-id ag-ledger-rm --report "$fixture_root/ledger-checker-untracked-report.md" --repo "$ledger_rm_repo" --no-push >"$ledger_rm_output" 2>&1; then
+  echo 'ledger-checker-untracked: git rm on the checker disabled the ledger gate' >&2
+  exit 1
+fi
+assert_not grep -Fq 'status=not-applicable' "$ledger_rm_output"
+assert_output_has "$ledger_rm_output" 'LAND step=ledger-state-merged status=fail'
+assert test "$(git -C "$ledger_rm_repo" rev-parse main)" = "$ledger_rm_before"
+
 # A repo that never carried this control plane's instruction tooling is scoped
 # out explicitly, not silently skipped: this gate is generic and must still land
 # lanes in a product repo. `good` above is that path; assert it names itself.

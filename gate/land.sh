@@ -74,28 +74,62 @@ land_fail_rollback() {
 # Runs the decisions-ledger checker against whatever $repo's tree currently is
 # and RETURNS its status; the caller decides what a red verdict costs, because
 # the two call sites pay different prices (baseline aborts, post-merge rolls
-# back). $1 is the step name, $2 the phase label.
+# back). $1 is the step name, $2 the phase label, $3 the trusted checker SHA.
 #
 # Unpiped, with $? read directly. A bounded or killed command behind a pipe
 # reports the LAST element's status, so `check | tail` would launder a kill into
 # a pass (verification-and-locks, "a kill is not a pass").
 #
-# Scoped on `git ls-files`, not on `[[ -f ]]`. This gate is generic and must
+# The checker is read from an independently accepted tree, never from the one
+# being judged. $3 is that tree's SHA -- the pre-merge target branch, the same
+# trusted-prover argument land_run_meteorite takes, under the same principle it
+# states in its own comment: the candidate cannot replace its own observer.
+#
+# Round 2 ran `"$repo/tools/instructions/check.ts"`, and post-merge $repo IS the
+# candidate. A lane shipping a check.ts that prints `all clear` and exits 0 was
+# measured passing this step against a merged tree the real checker fails. The
+# tree under INSPECTION is still the candidate's -- that is the whole point of
+# the merged-result run -- so only --repo points at it, and the executable comes
+# from $3.
+#
+# Applicability is asked of the trusted tree too, and for the same reason: with
+# the question asked of the candidate, `git rm tools/instructions/check.ts`
+# would have bought a not-applicable skip. Asked of $3, a candidate cannot
+# remove the observer that is about to judge it. This gate is generic and must
 # also land lanes in a product repo that never carried this control plane's
-# instruction tooling, but a filesystem-existence guard is the fail-open shape
-# this repository keeps getting burned by: deleting the checker would silently
-# skip the check. Keyed on TRACKED-ness, removing it is a reviewable diff on
-# evidence-gate logic; a tracked-but-deleted file still runs and still fails.
+# instruction tooling, and such a repo has no checker at $3 either, so it still
+# skips honestly. The converse -- a lane that INTRODUCES the tooling -- is not
+# checked by it at its own landing and is checked from the next one onward,
+# which is the same trade the meteorite's trusted prover already makes.
 land_ledger_state() {
   ledger_step="$1"
   ledger_phase="$2"
-  if ! git -C "$repo" ls-files --error-unmatch tools/instructions/check.ts >/dev/null 2>&1; then
+  ledger_trusted_sha="$3"
+  if [[ ! "$ledger_trusted_sha" =~ ^[0-9a-fA-F]{40}$ ]] ||
+     [ "$(git -C "$repo" rev-parse "$ledger_trusted_sha^{commit}" 2>/dev/null || true)" != "${ledger_trusted_sha,,}" ]; then
+    echo "LAND step=$ledger_step phase=$ledger_phase status=fail reason=trusted-checker-sha-invalid" >&2
+    return 2
+  fi
+  if ! git -C "$repo" cat-file -e "$ledger_trusted_sha:tools/instructions/check.ts" 2>/dev/null; then
     echo "LAND step=$ledger_step phase=$ledger_phase status=not-applicable reason=repo-does-not-track-tools/instructions/check.ts"
     return 0
   fi
-  "$BUN_BIN" "$repo/tools/instructions/check.ts" --repo "$repo" --strict
+  ledger_tree=$(mktemp -d "${TMPDIR:-/tmp}/bpa-land-ledger-trusted.XXXXXX") || {
+    echo "LAND step=$ledger_step phase=$ledger_phase status=fail reason=trusted-checker-allocation-failed" >&2
+    return 2
+  }
+  if ! git -C "$repo" worktree add --detach "$ledger_tree" "$ledger_trusted_sha" >/dev/null 2>&1 ||
+     [ ! -r "$ledger_tree/tools/instructions/check.ts" ]; then
+    git -C "$repo" worktree remove --force "$ledger_tree" >/dev/null 2>&1 || true
+    rm -rf "$ledger_tree"
+    echo "LAND step=$ledger_step phase=$ledger_phase status=fail reason=trusted-checker-unavailable" >&2
+    return 2
+  fi
+  "$BUN_BIN" "$ledger_tree/tools/instructions/check.ts" --repo "$repo" --strict
   ledger_status=$?
-  echo "LAND ledger-state phase=$ledger_phase tree=$(git -C "$repo" rev-parse HEAD) exit=$ledger_status"
+  git -C "$repo" worktree remove --force "$ledger_tree" >/dev/null 2>&1 || true
+  rm -rf "$ledger_tree"
+  echo "LAND ledger-state phase=$ledger_phase tree=$(git -C "$repo" rev-parse HEAD) checker=$ledger_trusted_sha exit=$ledger_status"
   return "$ledger_status"
 }
 
@@ -587,7 +621,7 @@ land_pass payload-guard
 # already broken", which is what makes the post-merge verdict actionable. It
 # blocks on its own too: landing onto an already-red target branch is refused
 # rather than merged into.
-if ! land_ledger_state ledger-state baseline; then
+if ! land_ledger_state ledger-state baseline "$pre_merge_sha"; then
   land_fail ledger-state 2
 fi
 land_pass ledger-state
@@ -646,7 +680,7 @@ land_pass merge
 #
 # Placed before the meteorite so a red ledger costs seconds rather than a full
 # container prove-out; the rollback is identical either way.
-if ! land_ledger_state ledger-state-merged merged; then
+if ! land_ledger_state ledger-state-merged merged "$pre_merge_sha"; then
   if ! land_force_reset "$repo" "$pre_merge_sha"; then
     land_fail_rollback ledger-state-merged "$pre_merge_sha" "$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)"
   fi

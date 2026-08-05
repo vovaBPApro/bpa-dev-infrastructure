@@ -3,6 +3,50 @@
 Supersedes `instance/in-flight-2026-08-04-evening.md`, which describes the state before the
 orchestrator crashed and was recovered by hand. Read this one; that one only for background.
 
+---
+
+## STATE AT 07:55 — read this first if you are a compacted or restarted session
+
+Do not restart to "reload context". It will not reload — that is exactly what V3-5.2 is
+being built to fix, and until it lands the session load runs by hand or not at all.
+
+**He set the order himself this morning (Telegram 2491), and it overrides anything below:**
+finish the critical structural work, bring it to a point, tidy up, *then* raise a consilium
+to plan the next sprint. The individual debts owed to him wait — he said so explicitly, and
+predicted an honest audit would find more of them. Do not spend a lane on a debt before
+Phase 5 holds.
+
+Also standing from him this morning: *«Квоту бережи, рухаємось повільно але головне надійно
+і в правильному напрямку»*. The cap is 5 (HR-2456); running at 4 and leaving a slot free is
+the intended reading, not caution.
+
+**`main` is `6ed3571`, green, pushed.** Everything below is on a branch and pushed.
+
+| lane | branch | what |
+|---|---|---|
+| V3-2.17 | `ag-v3-2.17` @ `0acca9c` | **coded, in review** — completion guard reads bun's indented summary |
+| V3-2.17 review | `ag-v3-2.17-review` | running |
+| V3-2.18 | `ag-v3-2.18` | running — 👀 must mean stored (HR-2486) |
+| V3-5.1 | `ag-v3-3.1` | running — invert the ledger (Fable plan items 1+2) |
+| V3-5.2 | `ag-v3-3.2` | running — the session hook must actually run (item 4) |
+
+**The branch names of V3-5.1/5.2 are wrong and deliberately not fixed** — the orchestrator
+dispatched against row ids already held by the Phase 3 backlog. Renaming a live lane's
+branch is worse than recording the mismatch. See the Phase 5 preamble in the workboard.
+
+Awaiting review or landing, all pushed: `ag-v3-2.15-r2` (cap-to-5, report written by a
+follow-up lane after the first ended without one), `ag-v3-req-audit`, `ag-v3-instance-readme`,
+`ag-v3-3.10`, `ag-v3-fable-plan`, `ag-v3-2.9-r7` (needs re-attestation).
+
+**Two rulings landed this morning that change how you work:**
+
+- **HR-2451** — his messages are first priority, above self-selected work and above the
+  board. An unhandled message from him **blocks the next dispatch**. He rejected the 24-hour
+  aging threshold in his own words.
+- **HR-2486** — the 👀 reaction is his receipt and means *received and stored*. He audits the
+  system by that belief, so the code must earn it. Until V3-2.18 lands, react only after you
+  have confirmed the message is recorded.
+
 ## The state in one paragraph
 
 Autonomy is back. The fleet watchdog is armed and honest, lane statuses stopped lying, and

@@ -196,14 +196,21 @@ export function mirrorFailureNotice(msgId: number | string): string {
 export const RECEIPT_EMOJI = "\u{1F440}"; // 👀
 
 // Reactions arrive as free text, so the comparison must not be defeated by a
-// decoration Telegram itself ignores: a variation selector, a zero-width
-// character, or surrounding whitespace all render as the same eyes the Human
-// reads as a receipt. Fold those away before comparing — a reservation that
-// "👀️" walks through is not a reservation.
+// decoration that carries no glyph: a variation selector, a zero-width
+// character, a bidi control, a tag character, or surrounding whitespace all
+// leave the same bare eyes on screen. Fold those away before comparing — a
+// reservation that "👀️" walks through is not a reservation.
+//
+// Fold the CLASS, not a hand-written list. The first version of this enumerated
+// seven codepoints and stopped one short of U+200E/U+200F, letting eleven more
+// invisible spellings through; an enumeration is only ever as complete as the
+// day it was written. `\p{Default_Ignorable_Code_Point}` is Unicode's own name
+// for "renders as nothing", `\p{Cc}` covers the C0/C1 controls including NUL,
+// and `\s` covers padding. What survives is what a reader can SEE is different.
 function normalizeEmoji(emoji: string): string {
   return emoji
     .normalize("NFC")
-    .replace(/[\s\u{FE0E}\u{FE0F}\u{200B}-\u{200D}\u{2060}\u{FEFF}]/gu, "");
+    .replace(/[\s\p{Cc}\p{Default_Ignorable_Code_Point}]/gu, "");
 }
 
 export function isReceiptEmoji(emoji: string): boolean {

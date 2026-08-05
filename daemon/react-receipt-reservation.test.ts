@@ -44,8 +44,12 @@ describe("the receipt emoji is reserved against a model-driven react call", () =
   });
 
   test("lookalike spellings of the same rendered eyes are refused too", () => {
-    // Telegram renders all of these as the receipt; a reservation they walk
-    // through is not a reservation.
+    // What is verified here is the guard's own behavior: it folds each of these
+    // spellings onto the reserved symbol and refuses it. Whether Telegram would
+    // ALSO render them as the receipt is a property of Telegram's
+    // setMessageReaction validator, which no lane here can reach — it is
+    // untested in both directions and deliberately not asserted. Folding the
+    // whole invisible class is what makes that external answer stop mattering.
     for (const forged of [
       "👀️", // variation selector
       "👀︎",
@@ -56,6 +60,59 @@ describe("the receipt emoji is reserved against a model-driven react call", () =
     ]) {
       expect(isReceiptEmoji(forged)).toBe(true);
       expect(() => assertReactionEmojiAllowed(forged)).toThrow(/reserved/);
+    }
+  });
+
+  // Built from codepoints, never pasted: a table of invisible characters
+  // written as literals is unreadable in a diff and unmaintainable in review —
+  // the reader cannot see what the row asserts, which is how the gap below got
+  // in. Each row names the character it stands for.
+  const INVISIBLE_DECORATIONS: Array<[string, number]> = [
+    ["U+200E left-to-right mark", 0x200e],
+    ["U+200F right-to-left mark", 0x200f],
+    ["U+202A left-to-right embedding", 0x202a],
+    ["U+202C pop directional formatting", 0x202c],
+    ["U+2062 invisible times", 0x2062],
+    ["U+2066 left-to-right isolate", 0x2066],
+    ["U+2069 pop directional isolate", 0x2069],
+    ["U+00AD soft hyphen", 0x00ad],
+    ["U+034F combining grapheme joiner", 0x034f],
+    ["U+180E Mongolian vowel separator", 0x180e],
+    ["U+E0061 tag character", 0xe0061],
+    ["U+0000 NUL", 0x0000],
+  ];
+
+  test.each(INVISIBLE_DECORATIONS)(
+    "an invisible decoration is folded, not a loophole: %s",
+    (_name, codepoint) => {
+      // The first fold enumerated seven codepoints and stopped one short of
+      // U+200E; these eleven-plus spellings walked straight through it while
+      // leaving bare eyes on screen. The fold now covers the CLASS
+      // (\p{Cc} + \p{Default_Ignorable_Code_Point} + \s), so a decoration
+      // nobody thought of on the day is covered too.
+      const ch = String.fromCodePoint(codepoint as number);
+      for (const forged of [RECEIPT_EMOJI + ch, ch + RECEIPT_EMOJI]) {
+        expect(isReceiptEmoji(forged)).toBe(true);
+        expect(() => assertReactionEmojiAllowed(forged)).toThrow(/reserved/);
+      }
+    },
+  );
+
+  test("a VISIBLY different string is not folded into the receipt", () => {
+    // The other half of the fold's contract, and the reason it cannot simply
+    // strip everything: each of these renders as something the Human can see
+    // is not the receipt, so refusing it would be over-refusal.
+    const visiblyDifferent: Array<[string, string]> = [
+      ["skin-tone suffix", RECEIPT_EMOJI + "\u{1F3FB}"],
+      ["ZWJ + skin-tone modifier", RECEIPT_EMOJI + "\u{200D}\u{1F3FB}"],
+      ["doubled eyes", RECEIPT_EMOJI + RECEIPT_EMOJI],
+      ["enclosing keycap", "\u{0031}\u{FE0F}\u{20E3}"],
+      ["U+1F441 single eye", "\u{1F441}"],
+      ["U+1F441 single eye + VS16", "\u{1F441}\u{FE0F}"],
+    ];
+    for (const [name, allowed] of visiblyDifferent) {
+      expect([name, isReceiptEmoji(allowed)]).toEqual([name, false]);
+      expect(() => assertReactionEmojiAllowed(allowed)).not.toThrow();
     }
   });
 

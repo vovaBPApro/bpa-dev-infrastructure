@@ -87,7 +87,7 @@ import {
   resolveModelChoice,
   upsertEnvAssignment,
 } from './model-registry';
-import { appendInboxLine } from './inbox-mirror';
+import { mirrorInbound, type MirrorReceipt } from './inbox-mirror';
 import { readRestartContext } from './restart-context';
 import {
   type HumanMissionCommand,
@@ -3714,16 +3714,33 @@ async function handleInbound(
     }
   }
 
-  if (text.trim()) {
+  // HR-2486 receipt: the reaction the Human sees on his own message means
+  // *received AND stored*, so the MIRROR outcome — not the delivery outcome —
+  // decides whether either reaction site below may ack. `undefined` means no
+  // row was even attempted and is treated exactly like a failure at those
+  // sites (fail-closed: nothing on disk, no receipt).
+  let receipt: MirrorReceipt | undefined;
+
+  // An attachment-bearing message is mirrored even when its caption is empty
+  // or whitespace-only: it is still something he sent, and it still has an
+  // inbox row's worth of identity (attachment_file_id, W-15, which is what
+  // makes the attachment recoverable later). Gating the mirror on text alone
+  // would have left every caption-less photo permanently un-storable while
+  // still wearing 👀 — a receipt for a row that does not exist.
+  if (text.trim() || hasAttachment) {
     // Daemon-side auto-mirror (INSTRUCTIONS_CONSILIUM_FINAL.md §2.4): append the
     // raw inbound Human message to instance/decisions/inbox.jsonl so capture is
     // mechanical at the source and survives an OOM-kill before the next session.
-    // Append-only, runtime artifact (kept out of git); best-effort so a mirror
-    // failure never blocks delivery. Only whitelisted fields — no token. The
-    // attachment identity (W-15) makes a lost delivery recoverable later via
-    // download_attachment; the transcript row keeps the voice content itself.
-    try {
-      appendInboxLine(INSTALL_ROOT, {
+    // Append-only, runtime artifact (kept out of git). Only whitelisted fields —
+    // no token. The attachment identity (W-15) makes a lost delivery recoverable
+    // later via download_attachment; the transcript row keeps the voice content.
+    //
+    // This write is NOT best-effort any more. It still never blocks delivery —
+    // mirrorInbound cannot throw, and everything below it runs either way — but
+    // a failure is no longer swallowed: it withholds the receipt and pings him.
+    receipt = mirrorInbound(
+      INSTALL_ROOT,
+      {
         msg_id: msgId ?? '',
         chat_id,
         ts: new Date((ctx.message?.date ?? 0) * 1000).toISOString(),
@@ -3743,10 +3760,31 @@ async function handleInbound(
         ...(transcriptError !== undefined
           ? { transcript_error: transcriptError }
           : {}),
-      });
-    } catch {
-      /* best-effort; never block delivery on mirroring */
-    }
+      },
+      (notice, error) => {
+        process.stderr.write(
+          `${LOG_PREFIX} inbox mirror FAILED for msg ${msgId ?? '?'}: ${error}\n`,
+        );
+        // Loud on purpose: a withheld 👀 is only useful if he learns WHICH
+        // message it was withheld from. Same ping route the daemon already
+        // uses everywhere else (sendMessage with an explicit
+        // disable_notification: false), replying to the offending message so
+        // it is unambiguous. Fire-and-forget: a failing notification must not
+        // delay the delivery that is still about to happen below.
+        void bot.api
+          .sendMessage(chat_id, notice, {
+            disable_notification: false,
+            ...(msgId != null
+              ? { reply_parameters: { message_id: msgId } }
+              : {}),
+          })
+          .catch((err) =>
+            process.stderr.write(
+              `${LOG_PREFIX} mirror-failure ping to ${chat_id} failed: ${err}\n`,
+            ),
+          );
+      },
+    );
   }
 
   // Schedule off the delivery path. Never persist the body: its fingerprint
@@ -3766,9 +3804,16 @@ async function handleInbound(
 
   // A permission-reply caption already got its ✅/❌ ack reaction above —
   // don't overwrite it with the generic ack/👀 reactions.
+  //
+  // HR-2486: this reaction is a RECEIPT, not decoration — he reads it as
+  // "отримав і зберіг" and will not re-send a message wearing it. So it is
+  // gated on `receipt?.stored === true`, i.e. on the inbox mirror row actually
+  // reaching disk, never on delivery alone. If you add another reaction here,
+  // it inherits that meaning; see the contract in daemon/inbox-mirror.ts.
   if (
     access.ackReaction &&
     msgId != null &&
+    receipt?.stored === true &&
     captionHandled !== 'permission-reply'
   ) {
     void bot.api
@@ -3881,7 +3926,18 @@ async function handleInbound(
       // Silent ack via reaction so user knows it landed — and whether codex is
       // busy (✍️ = queued, will answer when free) or idle (👀 = answering now).
       // (⏳ is not in Telegram's allowed reaction set; ✍️ is.)
-      if (msgId != null && captionHandled !== 'permission-reply') {
+      //
+      // HR-2486: 👀 is a RECEIPT meaning "отримав і зберіг", so a successful
+      // tmuxPasteText is NOT enough to earn it — that proves delivery to the
+      // session, not storage. Gated on `receipt?.stored === true` so the mirror
+      // row exists on disk before he is told it does; a message he never
+      // re-sends because of a false 👀 is a silently lost requirement. See the
+      // contract in daemon/inbox-mirror.ts.
+      if (
+        msgId != null &&
+        receipt?.stored === true &&
+        captionHandled !== 'permission-reply'
+      ) {
         let emoji: ReactionTypeEmoji['emoji'] = '👀';
         if (currentBinding()?.provider === 'codex') {
           const p = await tmuxCapture(6);

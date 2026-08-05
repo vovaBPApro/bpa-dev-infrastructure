@@ -89,8 +89,10 @@ export function serializeInboxLine(record: InboxRecord): string {
 
 // Appends one mirror row to the inbox file, creating the file (and its parent
 // directory) if missing. Append-only: existing content is never read or
-// rewritten. Returns the path written. Best-effort by contract of the caller —
-// the daemon wraps this in try/catch so mirroring never blocks delivery.
+// rewritten. Returns the path written, and THROWS when the write fails — the
+// failure is the caller's to act on. Do not wrap this in a bare `catch {}`:
+// a swallowed mirror failure is exactly the defect mirrorInbound below exists
+// to close (HR-2486). Use mirrorInbound unless you want the exception.
 export function appendInboxLine(
   repoRoot: string,
   record: InboxRecord,
@@ -100,4 +102,79 @@ export function appendInboxLine(
   mkdirSync(dirname(path), { recursive: true });
   appendFileSync(path, serializeInboxLine(record));
   return path;
+}
+
+// ---------------------------------------------------------------------------
+// The receipt contract (HR-2486)
+// ---------------------------------------------------------------------------
+// The Human ruled, verbatim:
+//
+//   «якщо на моєму повідомлені є реакція (очі) то я вважаю що ти його отримав
+//    і зберіг»
+//
+// So the 👀 reaction on one of his messages is a RECEIPT, not decoration and
+// not a delivery indicator: it asserts *received AND stored*. He audits the
+// system by that belief — a message wearing 👀 is one he will not re-send.
+//
+// That makes the two failure directions wildly asymmetric:
+//   • no reaction on a stored message  -> he re-sends; cost is a duplicate.
+//   • a reaction on an UNSTORED message -> he never re-sends; cost is a lost
+//     requirement, silently, with no one able to tell afterwards.
+//
+// Therefore the receipt is fail-closed: it is earned only by a mirror row that
+// actually reached disk. Delivery, however, is NEVER gated on the mirror — he
+// must not lose a message because storage broke. When the write fails the
+// daemon still delivers, withholds the reaction, and pings him loudly with the
+// message id so he knows which of his own messages to re-send.
+//
+// `mirrorInbound` is the only entry point that satisfies both halves: it never
+// throws (so it cannot block delivery) and it never hides the outcome (so the
+// reaction sites can obey the contract).
+
+export type MirrorReceipt =
+  | { stored: true; path: string }
+  | { stored: false; error: string };
+
+// Writes one mirror row and reports the outcome instead of swallowing it.
+// Never throws: a caller on the delivery path can call this and keep going.
+// On failure, `onFailure` receives the operator-facing notice so the caller
+// only has to route it through whatever ping channel it already owns.
+export function mirrorInbound(
+  repoRoot: string,
+  record: InboxRecord,
+  onFailure?: (notice: string, error: string) => void,
+  override?: string,
+): MirrorReceipt {
+  try {
+    return { stored: true, path: appendInboxLine(repoRoot, record, override) };
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    const receipt: MirrorReceipt = { stored: false, error };
+    // The notice is built here, next to the contract it explains, so every
+    // caller reports the same thing and names the message id.
+    //
+    // The sink is fenced: "never throws" is what lets a caller put this on the
+    // delivery path, so a sink that blows up must not take delivery down with
+    // it. Losing the notification is bad; losing his message is worse.
+    try {
+      if (onFailure) onFailure(mirrorFailureNotice(record.msg_id), error);
+    } catch {
+      /* a broken notifier still must not reach the delivery path */
+    }
+    return receipt;
+  }
+}
+
+// The loud operator-facing notice for a mirror failure. It names the message id
+// because that is the only thing that tells him WHICH of his messages to send
+// again. Kept to three short lines (operator-feedback: chat is a notification,
+// not a report) and free of the underlying error text — that goes to stderr,
+// where it is durable and cannot echo a path or payload back into the chat.
+export function mirrorFailureNotice(msgId: number | string): string {
+  const id = msgId === "" || msgId == null ? "(без id)" : String(msgId);
+  return (
+    `⚠️ Повідомлення ${id} НЕ збережено на диск.\n` +
+    `Доставив у сесію, але 👀 не поставлю — реакція означає «отримав і зберіг».\n` +
+    `Перешли його ще раз.`
+  );
 }

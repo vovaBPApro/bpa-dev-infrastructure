@@ -1,10 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   DEFAULT_INBOX_RELATIVE,
+  type InboxRecord,
+  type MirrorReceipt,
   appendInboxLine,
+  mirrorFailureNotice,
+  mirrorInbound,
   resolveInboxPath,
   serializeInboxLine,
 } from "./inbox-mirror";
@@ -248,5 +252,205 @@ describe("appendInboxLine", () => {
     appendInboxLine(repo, { msg_id: 1, chat_id: 1, ts: "t1", text: "new" });
     const rows = readFileSync(path, "utf8").trim().split("\n").map((r) => JSON.parse(r));
     expect(rows.map((r) => r.msg_id)).toEqual([0, 1]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HR-2486 — the reaction is a receipt meaning "received AND stored"
+// ---------------------------------------------------------------------------
+// The Human ruled: «якщо на моєму повідомлені є реакція (очі) то я вважаю що ти
+// його отримав і зберіг». These locks encode the two halves of that contract
+// together, because either one alone is wrong:
+//   • a mirror failure must withhold the reaction and ping him loudly, AND
+//   • it must never cost him the message — delivery happens either way.
+//
+// The failure is REAL, not stubbed: ORCH_INBOX_JSONL points at a path whose
+// parent is an existing regular file, so mkdirSync throws EEXIST inside the
+// production write. (Deliberately not a chmod: these suites run as root, where
+// a 0o500 directory is still writable and the "failure" would silently pass.)
+
+// Models handleInbound's real ordering: mirror first, then deliver
+// unconditionally, then react ONLY on a stored receipt. Delivery is outside
+// every mirror branch on purpose — that is requirement 2 made executable.
+function inboundLikeServer(
+  repoRoot: string,
+  record: InboxRecord,
+): {
+  receipt: MirrorReceipt;
+  delivered: string[];
+  reacted: string[];
+  pinged: string[];
+} {
+  const delivered: string[] = [];
+  const reacted: string[] = [];
+  const pinged: string[] = [];
+
+  const receipt = mirrorInbound(repoRoot, record, (notice) => {
+    pinged.push(notice);
+  });
+
+  delivered.push(record.text); // never gated on the mirror
+  if (receipt.stored === true) reacted.push("👀");
+
+  return { receipt, delivered, reacted, pinged };
+}
+
+function blockedInboxPath(repo: string): string {
+  // A regular file where the mirror needs a directory.
+  const wall = join(repo, "blocked");
+  writeFileSync(wall, "not a directory");
+  return join(wall, "inbox.jsonl");
+}
+
+describe("mirrorInbound — the HR-2486 receipt", () => {
+  test("a successful write earns the receipt and pings nobody", () => {
+    const repo = tempRepo();
+    const result = inboundLikeServer(repo, {
+      msg_id: 2486,
+      chat_id: 1001,
+      ts: "2026-08-05T09:00:00.000Z",
+      text: "directive",
+    });
+
+    expect(result.receipt.stored).toBe(true);
+    expect(result.reacted).toEqual(["👀"]);
+    expect(result.pinged).toEqual([]);
+    expect(result.delivered).toEqual(["directive"]);
+
+    const rows = readFileSync(join(repo, DEFAULT_INBOX_RELATIVE), "utf8")
+      .trim()
+      .split("\n")
+      .map((r) => JSON.parse(r));
+    expect(rows.map((r) => r.msg_id)).toEqual([2486]);
+  });
+
+  test("REGRESSION HR-2486: a failed mirror write produces no 👀, pings loudly, and still delivers", () => {
+    const repo = tempRepo();
+    const previous = process.env.ORCH_INBOX_JSONL;
+    process.env.ORCH_INBOX_JSONL = blockedInboxPath(repo);
+
+    try {
+      const result = inboundLikeServer(repo, {
+        msg_id: 4242,
+        chat_id: 1001,
+        ts: "2026-08-05T09:01:00.000Z",
+        text: "a requirement he must not lose",
+      });
+
+      // No receipt: the reaction is withheld.
+      expect(result.receipt.stored).toBe(false);
+      expect(result.reacted).toEqual([]);
+
+      // Loud, and it names the message id so he knows which one to re-send.
+      expect(result.pinged.length).toBe(1);
+      expect(result.pinged[0]).toContain("4242");
+
+      // ...and he did NOT lose the message.
+      expect(result.delivered).toEqual(["a requirement he must not lose"]);
+
+      // Nothing was written anywhere: no row, and no receipt claiming one.
+      expect(existsSync(join(repo, DEFAULT_INBOX_RELATIVE))).toBe(false);
+      if (result.receipt.stored === false) {
+        expect(result.receipt.error.length).toBeGreaterThan(0);
+      }
+    } finally {
+      if (previous === undefined) delete process.env.ORCH_INBOX_JSONL;
+      else process.env.ORCH_INBOX_JSONL = previous;
+    }
+  });
+
+  test("mirrorInbound never throws, so a caller on the delivery path keeps running", () => {
+    const repo = tempRepo();
+    const previous = process.env.ORCH_INBOX_JSONL;
+    process.env.ORCH_INBOX_JSONL = blockedInboxPath(repo);
+
+    try {
+      // The bare call, with no failure sink at all, must still not throw:
+      // nothing downstream of it may be skipped by an exception.
+      expect(() =>
+        mirrorInbound(repo, { msg_id: 1, chat_id: 1, ts: "t", text: "x" }),
+      ).not.toThrow();
+      // ...whereas the raw append still reports the failure to whoever wants it.
+      expect(() =>
+        appendInboxLine(repo, { msg_id: 1, chat_id: 1, ts: "t", text: "x" }),
+      ).toThrow();
+    } finally {
+      if (previous === undefined) delete process.env.ORCH_INBOX_JSONL;
+      else process.env.ORCH_INBOX_JSONL = previous;
+    }
+  });
+
+  test("an attachment-only message with no caption still earns a row and a receipt", () => {
+    // A photo with no caption is still something he sent, and the file_id
+    // (W-15) is exactly what makes it recoverable. It must be storable, so the
+    // receipt means the same thing for it as for a text directive.
+    const repo = tempRepo();
+    const result = inboundLikeServer(repo, {
+      msg_id: 77,
+      chat_id: 1001,
+      ts: "2026-08-05T09:02:00.000Z",
+      text: "",
+      attachment_kind: "photo",
+      attachment_file_id: "PHOTO-FILE-ID",
+    });
+
+    expect(result.receipt.stored).toBe(true);
+    expect(result.reacted).toEqual(["👀"]);
+
+    const row = JSON.parse(
+      readFileSync(join(repo, DEFAULT_INBOX_RELATIVE), "utf8").trim(),
+    );
+    expect(row.attachment_file_id).toBe("PHOTO-FILE-ID");
+    expect(row.msg_id).toBe(77);
+  });
+
+  test("the failure notice names the message id and stays short", () => {
+    const notice = mirrorFailureNotice(9152);
+    expect(notice).toContain("9152");
+    expect(notice.split("\n").length).toBeLessThanOrEqual(5);
+    // A message with no id still produces a usable notice rather than "undefined".
+    expect(mirrorFailureNotice("")).not.toContain("undefined");
+  });
+
+  test("a throwing failure sink still cannot reach the delivery path", () => {
+    // "never throws" is what allows this call to sit ahead of delivery, so a
+    // broken notifier must not take the message down with it. Losing the
+    // notification is bad; losing his message is the failure this whole
+    // contract exists to prevent.
+    const repo = tempRepo();
+    const blocked = blockedInboxPath(repo);
+    let receipt: MirrorReceipt | undefined;
+
+    expect(() => {
+      receipt = mirrorInbound(
+        repo,
+        { msg_id: 8, chat_id: 1, ts: "t", text: "x" },
+        () => {
+          throw new Error("telegram is down");
+        },
+        blocked,
+      );
+    }).not.toThrow();
+
+    // ...and the receipt is still honest about the write having failed.
+    expect(receipt?.stored).toBe(false);
+  });
+
+  test("the notice carries no filesystem detail — that belongs on stderr", () => {
+    const repo = tempRepo();
+    const blocked = blockedInboxPath(repo);
+    let notice = "";
+    let error = "";
+    mirrorInbound(
+      repo,
+      { msg_id: 5, chat_id: 1, ts: "t", text: "x" },
+      (n, e) => {
+        notice = n;
+        error = e;
+      },
+      blocked,
+    );
+    expect(error).toContain("blocked"); // the caller gets the real reason...
+    expect(notice).not.toContain(repo); // ...but the chat message does not.
   });
 });

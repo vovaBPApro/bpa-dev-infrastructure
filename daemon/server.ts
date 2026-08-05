@@ -87,7 +87,11 @@ import {
   resolveModelChoice,
   upsertEnvAssignment,
 } from './model-registry';
-import { mirrorInbound, type MirrorReceipt } from './inbox-mirror';
+import {
+  assertReactionEmojiAllowed,
+  mirrorInbound,
+  type MirrorReceipt,
+} from './inbox-mirror';
 import { readRestartContext } from './restart-context';
 import {
   type HumanMissionCommand,
@@ -1061,7 +1065,8 @@ function createMcpServer(): Server {
       },
       {
         name: 'react',
-        description: 'Add an emoji reaction to a Telegram message.',
+        description:
+          'Add an emoji reaction to a Telegram message. 👀 is reserved to the daemon (HR-2486: on his message it means "received and stored on disk") and this tool refuses it.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1234,6 +1239,11 @@ function createMcpServer(): Server {
         }
         case 'react': {
           assertAllowedChat(args.chat_id as string);
+          // HR-2486 / V3-5.8: 👀 belongs to the daemon's stored-row path and
+          // cannot be forged here. Refuse loudly rather than substituting or
+          // dropping the emoji — a silent success teaches the caller that a
+          // receipt it did not earn was granted.
+          assertReactionEmojiAllowed(String(args.emoji ?? ''));
           await bot.api.setMessageReaction(
             args.chat_id as string,
             Number(args.message_id),

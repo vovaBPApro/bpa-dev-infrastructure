@@ -178,3 +178,47 @@ export function mirrorFailureNotice(msgId: number | string): string {
     `Перешли його ще раз.`
   );
 }
+
+// ---------------------------------------------------------------------------
+// The receipt emoji is RESERVED to the daemon (HR-2486, workboard V3-5.8)
+// ---------------------------------------------------------------------------
+// Everything above makes the daemon's own reaction sites earn the receipt. That
+// is only half a contract while any model-driven path can set the same symbol
+// by hand: the `react` MCP tool did exactly that, and the orchestrator used it
+// to hand-react 👀 to the Human's messages — the very false green the ruling
+// was written to remove, produced by the party that recorded the ruling.
+//
+// So the symbol itself is reserved here, next to the contract that gives it its
+// meaning, rather than left to whoever is holding the tool remembering. A model
+// asking for 👀 is REFUSED with a named reason — never silently swapped for
+// another emoji and never silently dropped, because both of those teach the
+// caller that the request succeeded.
+export const RECEIPT_EMOJI = "\u{1F440}"; // 👀
+
+// Reactions arrive as free text, so the comparison must not be defeated by a
+// decoration Telegram itself ignores: a variation selector, a zero-width
+// character, or surrounding whitespace all render as the same eyes the Human
+// reads as a receipt. Fold those away before comparing — a reservation that
+// "👀️" walks through is not a reservation.
+function normalizeEmoji(emoji: string): string {
+  return emoji
+    .normalize("NFC")
+    .replace(/[\s\u{FE0E}\u{FE0F}\u{200B}-\u{200D}\u{2060}\u{FEFF}]/gu, "");
+}
+
+export function isReceiptEmoji(emoji: string): boolean {
+  return normalizeEmoji(emoji) === RECEIPT_EMOJI;
+}
+
+// Throws for the reserved emoji; returns silently for everything else. The
+// message names the symbol, the rule, and the way out, because the caller is a
+// model that will otherwise retry the same call.
+export function assertReactionEmojiAllowed(emoji: string): void {
+  if (!isReceiptEmoji(emoji)) return;
+  throw new Error(
+    `${RECEIPT_EMOJI} is reserved to the daemon's receipt path (HR-2486): on ` +
+      `the Human's own message it means «отримав і зберіг» and is set only ` +
+      `once the inbox mirror row has reached disk. It cannot be set by hand. ` +
+      `Use a different emoji.`,
+  );
+}

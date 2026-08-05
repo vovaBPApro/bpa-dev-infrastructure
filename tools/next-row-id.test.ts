@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ID_SHAPE, FLEET_NUDGE_FILE, allocate, collectTaken } from "./next-row-id";
+import { ID_SHAPE, FLEET_NUDGE_FILE, allocate, collectTaken, collectWorkboard, validateAnswer } from "./next-row-id";
 
 // A minimal repository carrying only the declared sources. Every default is
 // valid and nearly empty, so each case below adds exactly one thing and the
@@ -13,8 +13,10 @@ function fixture(options: {
   hrStateExemptions?: string;
   docPathExemptions?: string;
   parked?: string[];
+  parkedDirs?: string[];
   decisions?: { name: string; body: string }[];
-  omit?: ("workboard" | "review-items" | "hr-state-exemptions" | "doc-path-exemptions" | "parked" | "decisions")[];
+  triage?: string;
+  omit?: ("workboard" | "review-items" | "hr-state-exemptions" | "doc-path-exemptions" | "parked" | "decisions" | "triage")[];
 }): string {
   const repo = mkdtempSync(join(tmpdir(), "next-row-id-"));
   const omit = new Set(options.omit ?? []);
@@ -32,7 +34,11 @@ function fixture(options: {
     writeFileSync(join(repo, "instance", "doc-path-exemptions.tsv"), options.docPathExemptions ?? "# source\tpath\treason (pending-<row>)\tnote\n");
   }
   for (const name of options.parked ?? []) writeFileSync(join(repo, "instance", "parked", name), "parked\n");
+  for (const name of options.parkedDirs ?? []) mkdirSync(join(repo, "instance", "parked", name), { recursive: true });
   for (const row of options.decisions ?? []) writeFileSync(join(repo, "instance", "decisions", row.name), row.body);
+  if (!omit.has("triage") && !omit.has("decisions")) {
+    writeFileSync(join(repo, "instance", "decisions", "triage.jsonl"), options.triage ?? "");
+  }
   return repo;
 }
 
@@ -197,6 +203,7 @@ test.each([
   ["doc-path-exemptions", "instance/doc-path-exemptions.tsv"],
   ["parked", "instance/parked"],
   ["decisions", "instance/decisions"],
+  ["triage", "instance/decisions/triage.jsonl"],
 ] as const)("an absent %s source is an error, not an empty result", (source, path) => {
   const { id, errors } = nextId({ omit: [source] });
   expect(id).toBeUndefined();
@@ -282,6 +289,175 @@ test("a prefix that is not the stem of a well-formed id is refused", () => {
   const { id, errors } = nextId({}, "foo/");
   expect(id).toBeUndefined();
   expect(errors).toContain("--prefix foo/: foo/1 is not a well-formed id — the prefix must be the stem of one, e.g. V3-5.");
+});
+
+// F1. Monotone allocation fences in a vanished id only BELOW the family
+// maximum. `V3-1.13` is that case in this repository today: two tracked
+// instance records name it as a spent row id, it was never a board row, and so
+// the tool hands it out. The behaviour is the stated limit rather than a bug to
+// be silently carried, so what is locked is that the limit is STATED — in the
+// file that makes the monotone argument, and on stderr at the moment of use.
+// Strip either and this goes red.
+test("the limit of monotone allocation: a vanished id AT the family maximum is reissued", () => {
+  const board = [
+    "| id | row | state |",
+    "|---|---|---|",
+    "| V3-1.11 | present | **done** |",
+    "| V3-1.12 | the highest V3-1 id any structured source holds | **done** |",
+    "",
+  ].join("\n");
+  // V3-1.13 is spent, and no structured source can say so: the tool reissues it.
+  expect(nextId({ workboard: board }, "V3-1.")).toEqual({ id: "V3-1.13", errors: [] });
+});
+
+test("the reissue limit is stated where the monotone argument is made", () => {
+  const source = readFileSync(join(import.meta.dir, "next-row-id.ts"), "utf8");
+  expect(source).toContain("only BELOW the family");
+  expect(source).toContain("V3-1.13");
+  expect(source).toContain("instance/branch-inventory-2026-08-05.md");
+});
+
+test("every allocation prints the reissue limit as a caveat", () => {
+  withFixture({}, (repo) => {
+    const tool = join(import.meta.dir, "next-row-id.ts");
+    const run = Bun.spawnSync([process.execPath, tool, "--repo", repo, "--prefix", "V3-5."]);
+    expect(run.exitCode, run.stderr.toString()).toBe(0);
+    expect(run.stdout.toString()).toBe("V3-5.2\n");
+    expect(run.stderr.toString()).toContain("NEXT-ID caveat: an id retired from every tracked source AT the family maximum is reissued");
+  });
+});
+
+// F2. ID_SHAPE permits an unbounded digit run; Number() does not. Both of these
+// used to be ANSWERED: the first as `V3-5.1e+21`, which is the malformed id
+// that makes fleet-nudge refuse the whole board, and the second as an id one
+// BELOW the one already on the board.
+test.each([
+  ["a digit run past what Number() can hold", "V3-5.1000000000000000000000"],
+  ["an ordinal one past 2^53", "V3-5.9007199254740993"],
+  ["a leading-zero ordinal", "V3-5.007"],
+])("%s is refused, not counted", (_name, id) => {
+  const board = [DEFAULT_BOARD, `| ${id} | a fat-fingered ordinal | **open** |`, ""].join("\n");
+  const { id: answer, errors } = nextId({ workboard: board });
+  expect(answer).toBeUndefined();
+  expect(errors[0]).toContain(`${id}: the ordinal is not a number this tool can count on`);
+});
+
+test("the answer is checked like any other id: malformed or taken is refused", () => {
+  const taken = new Map([["V3-5.2", new Set(["workboard"])]]);
+  expect(validateAnswer("V3-5.3", taken)).toEqual([]);
+  expect(validateAnswer("V3-5.1e+21", taken)[0]).toContain("which is not a well-formed id");
+  expect(validateAnswer("V3-5.2", taken)[0]).toContain("already held by workboard");
+});
+
+// F3. Every one of these is a parked row whose id was silently dropped, at exit
+// 0, by `if (!entry.endsWith(".md")) continue` — and the id then handed out.
+test.each([
+  ["an editor backup", "V3-5.2-deferred.md.bak"],
+  ["a renamed file", "V3-5.2-deferred.txt"],
+  ["an extensionless leftover", "V3-5.2-deferred"],
+])("a parked entry that is %s is an error, not a skipped file", (_name, entry) => {
+  const { id, errors } = nextId({ parked: [entry] });
+  expect(id).toBeUndefined();
+  expect(errors).toContain(
+    `instance/parked/${entry}: not a \`.md\` parked row — a declared source's unexpected entry is an error, not a skipped file`,
+  );
+});
+
+test("a directory inside instance/parked/ is an error, not a skipped entry", () => {
+  const { id, errors } = nextId({ parkedDirs: ["V3-5.2-deferred"] });
+  expect(id).toBeUndefined();
+  expect(errors).toContain(
+    "instance/parked/V3-5.2-deferred: not a `.md` parked row — a declared source's unexpected entry is an error, not a skipped file",
+  );
+});
+
+// F5. `closes` is a triage-row field. It was declared as a read source and
+// looked for in instance/decisions/HR-*.md, where it never appears.
+test("an id present only in a triage row's closes field is skipped", () => {
+  const triage = `{"msg_id":1,"verdict":"directive","closes":"V3-5.2"}\n`;
+  expect(nextId({ triage })).toEqual({ id: "V3-5.3", errors: [] });
+});
+
+test("a triage line that is not a JSON object is an error, not an empty ledger", () => {
+  const { id, errors } = nextId({ triage: `{"msg_id":1,"closes":"V3-5.2"}\nnot json\n` });
+  expect(id).toBeUndefined();
+  expect(errors[0]).toContain("instance/decisions/triage.jsonl:2: not a JSON row");
+});
+
+// F6. ledger.ts matches decision files case-insensitively at all three of its
+// call sites; a file it enforces and this tool cannot see holds an id the
+// allocator believes is free.
+test("an HR file is an HR file whatever the case of its name", () => {
+  const decisions = [{ name: "hr-9.md", body: "---\nstate: owed\ntracked-by: V3-5.2\n---\n" }];
+  expect(nextId({ decisions })).toEqual({ id: "V3-5.3", errors: [] });
+});
+
+// F7, the unsafe half: an INDENTED closure field still names a row.
+test("an indented closure field is read, not missed", () => {
+  const decisions = [{ name: "HR-9.md", body: "---\nstate: routed\nrouting:\n  routes-to: V3-5.2\n---\n" }];
+  expect(nextId({ decisions })).toEqual({ id: "V3-5.3", errors: [] });
+});
+
+// ── One board, two readers ─────────────────────────────────────────────────
+//
+// F4. The text-equality test above locks the RECOGNIZER; it cannot see the cell
+// extraction that feeds it, and that is where the two implementations diverged.
+// `.trim()` strips U+00A0 and U+FEFF where POSIX `[[:space:]]` does not, so a
+// board the parser refused outright was reported healthy here and an id handed
+// out; `[ \t]` at line start where awk has `[[:space:]]` hid a row the parser
+// counted, which is the direction that hands out an id the board already holds.
+// So the claim is locked by behaviour: identical bytes to both readers, verdicts
+// diffed.
+const NBSP = "\u00a0";
+const BOM = "\ufeff";
+
+function boardWith(...rows: string[]): string {
+  return ["| id | row | state |", "|---|---|---|", "| V3-5.1 | the first row | **open** |", ...rows, ""].join("\n");
+}
+
+/** `--count-open` on the identical bytes: exit 2 is the parser refusing the board. */
+function nudge(board: string): { exit: number; open: number } {
+  const dir = mkdtempSync(join(tmpdir(), "nudge-"));
+  try {
+    const file = join(dir, "workboard.md");
+    writeFileSync(file, board);
+    const run = Bun.spawnSync(["bash", join(import.meta.dir, "..", FLEET_NUDGE_FILE), "--count-open", file]);
+    return { exit: run.exitCode ?? -1, open: Number(run.stdout.toString().trim() || "-1") };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** The same board through this tool: refused, or the ids it saw. */
+function tool(board: string): { refused: boolean; ids: number } {
+  return withFixture({ workboard: board }, (repo) => {
+    const errors: string[] = [];
+    const taken = collectWorkboard(repo, errors);
+    return { refused: errors.length > 0, ids: taken.size };
+  });
+}
+
+test.each([
+  ["a clean board", boardWith("| V3-5.2 | a second row | **open** |")],
+  ["NBSP after the id", boardWith(`| V3-5.2${NBSP} | a second row | **open** |`)],
+  ["NBSP before the id", boardWith(`| ${NBSP}V3-5.2 | a second row | **open** |`)],
+  ["BOM before the id", boardWith(`| ${BOM}V3-5.2 | a second row | **open** |`)],
+  ["a vertical tab leading the row", boardWith("\v| V3-5.2 | a second row | **open** |")],
+  ["a form feed leading the row", boardWith("\f| V3-5.2 | a second row | **open** |")],
+  ["a carriage return leading the row", boardWith("\r| V3-5.2 | a second row | **open** |")],
+  ["a space leading the row", boardWith("  | V3-5.2 | a second row | **open** |")],
+  ["a tab leading the row", boardWith("\t| V3-5.2 | a second row | **open** |")],
+  ["a duplicate id", boardWith("| V3-5.1 | the same id again | **open** |")],
+  ["a bolded id cell", boardWith("| **V3-5.2** | a second row | **open** |")],
+  ["a stray pipe in prose closing the table", boardWith("prose with a | pipe", "| V3-5.2 | not a row | **open** |")],
+  ["an id-shaped row above the header", ["| V3-5.9 | before any header | **open** |", boardWith()].join("\n")],
+])("one board, two readers: %s", (_name, board) => {
+  const parser = nudge(board);
+  const allocator = tool(board);
+  expect(allocator.refused, `parser exit=${parser.exit}, tool refused=${allocator.refused}`).toBe(parser.exit === 2);
+  // Every row above is `**open**`, so the parser's open count is its row count:
+  // a row one reader counts and the other cannot see is the collision shape.
+  if (!allocator.refused) expect(allocator.ids).toBe(parser.open);
 });
 
 // ── The command surface ────────────────────────────────────────────────────

@@ -1,13 +1,14 @@
 // ── What this timer measures ────────────────────────────────────────────────
 //
-// IDLENESS, not shortfall. HR-2342 caps parallel lanes at three and says so in
-// the sentence after the cap: "Three is a ceiling, not a target: fewer is
-// allowed whenever the work does not need them." HR-2398 scopes that cap per
-// repository. A backstop that installs the ceiling as a floor turns the two
-// lane counts the ruling expressly permits — one and two — into a permanent
-// fault, and at a cap of three sub-floor IS the normal state, so it would nudge
-// forever. That is exactly what `floor: 10` did here (audit F1): every census
-// under ten read as below floor.
+// IDLENESS, not shortfall. HR-2456 caps parallel lanes at five, raising
+// HR-2342's three without touching its framing: "a ceiling, not a target: fewer
+// is allowed whenever the work does not need them." HR-2398 scopes that cap per
+// repository. A backstop that installs the ceiling as a floor turns every lane
+// count the ruling expressly permits into a permanent fault, and sub-floor IS
+// the normal state, so it would nudge forever. That is exactly what `floor: 10`
+// did here (audit F1): every census under ten read as below floor. Note which
+// way a raise cuts — a wider cap widens the permitted band, so the fault
+// threshold stays at zero rather than rising with the cap.
 //
 // The semantics are not re-derived here. `orchestrator/fleet/fleet-nudge.sh`
 // landed them (workboard V3-2.11 B3, twice reviewed) and this file is the same
@@ -174,7 +175,7 @@ export class AutonomyKeepalive {
     if (open === 0) return;
 
     const ceiling =
-      cap === null ? '' : ` HR-2342 caps parallel lanes at ${cap} — a ceiling, not a target.`;
+      cap === null ? '' : ` HR-2456 caps parallel lanes at ${cap} — a ceiling, not a target.`;
     await this.opts.nudge(
       idle
         ? `fleet idle: ${running} running with ${open} open workboard rows; dispatch or inspect blocked lanes.${ceiling}`

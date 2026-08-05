@@ -15,10 +15,15 @@
 //
 // ── What this check covers ─────────────────────────────────────────────────
 //
-//   1. The cap in params.yaml equals the cap declared by EVERY binding decision
-//      record that declares one (`lane_cap:`), and at least one such record
-//      exists. A ruling with no parameter, or a parameter with no ruling, both
-//      fail — absence is never a skip.
+//   1. The cap in params.yaml equals the cap declared by every binding decision
+//      record that declares a LIVE one (`lane_cap:` without a
+//      `lane_cap_superseded_by:` pointer), and at least one such record exists.
+//      A ruling with no parameter, or a parameter with no ruling, both fail —
+//      absence is never a skip. A superseded number stays in the ledger as
+//      history and must forward to a ruling that declares its own cap, so a
+//      pointer cannot mute a binding number instead of replacing it.
+//   1b. A binding record that AMENDS a cap-declaring record declares a cap
+//      itself. See the HR-2456 note below.
 //   2. The superseded knob names (`floor`, `ceiling`) cannot come back. They are
 //      rejected by name, so re-adding the exact defect is a hard failure rather
 //      than a silent regression.
@@ -36,7 +41,30 @@
 //      daemon parser, cannot drift away from it silently.
 //   6. Every HR record cited inside the fleet block exists on disk.
 //
+// ── Why 1b exists (HR-2456, 2026-08-05) ────────────────────────────────────
+//
+// The operator raised the cap to five while the lane implementing the cap of
+// three was already running. The ruling was recorded as prose with no
+// `lane_cap:` field, so this check could not see it: it read `clean cap=3`
+// with the superseding ruling sitting in the same directory. Nothing was
+// wrong with the number in params.yaml at that moment — what was wrong is that
+// a binding ruling changing the cap could be silently ignored rather than
+// flagged, which is the exact failure mode this file was written to end.
+//
+// The cheap catch is the amendment edge: a cap-changing ruling names the
+// ruling it amends, because that is how the ledger already records
+// supersession. So a binding record that amends a cap-declaring record and
+// declares no cap of its own is refused, and the fix is one line of
+// frontmatter. It is a narrow net by design — see below for what it misses.
+//
 // ── What it does NOT cover ─────────────────────────────────────────────────
+//
+// 1b catches a cap-changing ruling that declares an `amends:`/`supersedes:`
+// edge to a cap-declaring record. A ruling that changes the cap while naming
+// no such edge is still invisible here, and no cheap assertion closes that:
+// deciding "does this prose change the cap" from text is the judgement the
+// structured field exists to replace. The residual guard is the triage step
+// that writes a ledger row, not this checker.
 //
 // Only the fleet block, and only numbers. It does not validate the rest of
 // params.yaml (the schema-plus-per-key verifier is its own row), it cannot read
@@ -97,23 +125,57 @@ export function readFleetBlock(yaml: string): Map<string, FleetEntry> {
   return entries;
 }
 
-/** Decision records declaring a `lane_cap:`, with the status they declare it under. */
-export function declaredLaneCaps(repo: string): { id: string; cap: number; binding: boolean }[] {
+export type DecisionRecord = {
+  id: string;
+  binding: boolean;
+  /** The `lane_cap:` this record declares, if any. */
+  cap?: number;
+  /** The ruling that replaced this record's number, from `lane_cap_superseded_by:`. */
+  supersededBy?: string;
+  /** Rulings named by `amends:`/`supersedes:` frontmatter. */
+  amends: string[];
+};
+
+/**
+ * Rulings named by a record's `amends:`/`supersedes:` frontmatter, continuation
+ * lines included — the ledger wraps those values. Lower-case keys only, so
+ * "Supersedes the hardcoded fleet floor" in prose is not mistaken for a field.
+ */
+export function amendedRulings(contents: string): string[] {
+  const lines = contents.split(/\r?\n/);
+  const ids = new Set<string>();
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!/^(?:amends|supersedes):/.test(lines[index]!)) continue;
+    let text = lines[index]!;
+    for (let next = index + 1; next < lines.length && /^\s+\S/.test(lines[next]!); next += 1) text += `\n${lines[next]}`;
+    for (const match of text.matchAll(/\bHR-(\d+)\b/gi)) ids.add(`HR-${match[1]}`);
+  }
+  return [...ids];
+}
+
+/** Every decision record, with the cap fields and amendment edges this check reads. */
+export function decisionRecords(repo: string): DecisionRecord[] {
   const dir = join(repo, DECISIONS_DIR);
   if (!existsSync(dir)) return [];
-  const found: { id: string; cap: number; binding: boolean }[] = [];
+  const found: DecisionRecord[] = [];
   for (const entry of readdirSync(dir).sort()) {
     if (!/^HR-.+\.md$/.test(entry)) continue;
     const contents = readFileSync(join(dir, entry), "utf8");
     const cap = contents.match(/^lane_cap:\s*(\d+)\s*$/m)?.[1];
-    if (cap === undefined) continue;
     found.push({
       id: entry.replace(/\.md$/, ""),
-      cap: Number(cap),
       binding: /^status:\s*binding\s*$/m.test(contents),
+      cap: cap === undefined ? undefined : Number(cap),
+      supersededBy: contents.match(/^lane_cap_superseded_by:\s*(HR-\d+)\s*$/m)?.[1],
+      amends: amendedRulings(contents),
     });
   }
   return found;
+}
+
+/** Decision records declaring a `lane_cap:`, with the status they declare it under. */
+export function declaredLaneCaps(repo: string): DecisionRecord[] {
+  return decisionRecords(repo).filter((row) => row.cap !== undefined);
 }
 
 function integer(entry: FleetEntry | undefined): number | undefined {
@@ -141,23 +203,59 @@ export function checkFleetCap(repo: string): string[] {
     if (fleet.has(key)) errors.push(`${at(key)}: retired by instance/decisions/HR-2342.md — ${why}`);
   }
 
-  // 1. The cap, against every ruling that declares one.
+  // 1. The cap, against every ruling that declares a live one.
   const cap = integer(fleet.get("cap"));
-  const declared = declaredLaneCaps(repo);
-  const binding = declared.filter((row) => row.binding);
+  const records = decisionRecords(repo);
+  const byId = new Map(records.map((row) => [row.id, row]));
+  const declared = records.filter((row) => row.cap !== undefined);
   for (const row of declared.filter((row) => !row.binding)) {
     errors.push(`${DECISIONS_DIR}/${row.id}.md: declares lane_cap: ${row.cap} without \`status: binding\` — a cap nobody is bound by is not a cap`);
   }
+
+  // A superseded number stays in the ledger as history — HR-2342's cap of three
+  // is still the record of what he ruled on 2026-08-04 — but it must forward to
+  // the ruling that replaced it, and that ruling must declare its own number.
+  // Otherwise the pointer deletes a binding cap instead of replacing it, which
+  // is a quieter version of the drift this file exists to catch.
+  for (const row of declared) {
+    if (!row.supersededBy) continue;
+    const replacement = byId.get(row.supersededBy);
+    if (!replacement) {
+      errors.push(`${DECISIONS_DIR}/${row.id}.md: lane_cap_superseded_by names ${row.supersededBy}, which does not exist`);
+    } else if (replacement.cap === undefined) {
+      errors.push(
+        `${DECISIONS_DIR}/${row.id}.md: lane_cap_superseded_by names ${row.supersededBy}, which declares no lane_cap — ` +
+          `a pointer that forwards to no number mutes this one rather than replacing it`,
+      );
+    }
+  }
+
+  const live = declared.filter((row) => row.binding && !row.supersededBy);
   if (cap === undefined) {
     errors.push(`${at("cap")}: missing or not a positive integer — the operator's cap must be stated as a number`);
-  } else if (binding.length === 0) {
-    errors.push(`${DECISIONS_DIR}/: no binding decision record declares \`lane_cap:\` — ${PARAMS_FILE} states a cap of ${cap} that no ruling backs`);
+  } else if (live.length === 0) {
+    errors.push(`${DECISIONS_DIR}/: no binding decision record declares a live \`lane_cap:\` — ${PARAMS_FILE} states a cap of ${cap} that no ruling backs`);
   } else {
-    for (const row of binding) {
+    for (const row of live) {
       if (row.cap !== cap) {
         errors.push(`${at("cap")}: ${cap} contradicts ${DECISIONS_DIR}/${row.id}.md, which declares lane_cap: ${row.cap}`);
       }
     }
+  }
+
+  // 1b. A binding ruling that amends a cap-declaring ruling states the number
+  // itself. HR-2456 raised the cap in prose, named the rulings it amended, and
+  // declared no `lane_cap:` — so this check read `clean cap=3` while the ruling
+  // that replaced three sat in the same directory.
+  const capDeclaring = new Set(declared.map((row) => row.id));
+  for (const row of records) {
+    if (!row.binding || row.cap !== undefined) continue;
+    const amended = row.amends.filter((id) => capDeclaring.has(id));
+    if (amended.length === 0) continue;
+    errors.push(
+      `${DECISIONS_DIR}/${row.id}.md: amends ${amended.join(", ")}, which declare \`lane_cap:\`, but declares none itself — ` +
+        `state the cap it leaves in force, or a ruling that changes the cap is invisible to this check`,
+    );
   }
 
   // 3. Wake thresholds. Only zero running lanes can be a fault.
@@ -244,7 +342,9 @@ if (import.meta.main) {
     process.exit(1);
   }
   const fleet = readFleetBlock(readFileSync(join(repo, PARAMS_FILE), "utf8"));
-  const declared = declaredLaneCaps(repo).filter((row) => row.binding).map((row) => row.id);
+  const declared = declaredLaneCaps(repo)
+    .filter((row) => row.binding && !row.supersededBy)
+    .map((row) => row.id);
   console.log(
     `FLEET-CAP clean cap=${fleet.get("cap")?.value} wake_below=${fleet.get("wake_below")?.value} ` +
       `notify_human_below=${fleet.get("notify_human_below")?.value} target=${fleet.get("target")?.value ?? 0} ` +

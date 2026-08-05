@@ -21,12 +21,13 @@ set -uo pipefail
 SESSION=${FLEET_NUDGE_SESSION:-bpa-orchestrator}
 
 # ── What counts as a fault ──────────────────────────────────────────────────
-# This watchdog measures IDLENESS, not shortfall. HR-2342 caps parallel lanes at
-# three and says so in the sentence after the cap: "Three is a ceiling, not a
-# target: fewer is allowed whenever the work does not need them." A watchdog that
-# installs that ceiling as a floor turns the two lane counts the ruling expressly
-# permits — one and two — into a permanent fault, and at a cap of three sub-floor
-# IS the normal state, so the nudge would fire forever.
+# This watchdog measures IDLENESS, not shortfall. HR-2456 caps parallel lanes at
+# five (raising HR-2342's three, whose framing it leaves standing): "a ceiling,
+# not a target: fewer is allowed whenever the work does not need them." A
+# watchdog that installs that ceiling as a floor turns every lane count the
+# ruling expressly permits into a permanent fault, and sub-floor IS the normal
+# state, so the nudge would fire forever. Raising the cap widens that band rather
+# than narrowing it, which is why CRITICAL below does not move with the cap.
 #
 # `autonomy-and-capacity` states the same rule for the orchestrator in prose:
 # "report when the fleet is idle against available work, not on a fixed number."
@@ -53,9 +54,11 @@ CRITICAL=$(int_or "${FLEET_NUDGE_CRITICAL:-1}" 1)
 # underived constant here is the defect that row exists to end. Replacing an
 # underived 10 with an underived 3 would re-commit it.
 TARGET=$(int_or "${FLEET_NUDGE_TARGET:-0}" 0)
-# The HR-2342 ceiling, quoted to the orchestrator so it knows how wide it may go.
-# It is not a trigger: nothing in this script compares the lane count against it.
-CAP=$(int_or "${FLEET_NUDGE_CAP:-3}" 3)
+# The HR-2456 ceiling (five, raised from HR-2342's three), quoted to the
+# orchestrator so it knows how wide it may go. It is not a trigger: nothing in
+# this script compares the lane count against it, and CRITICAL above stays at 1
+# regardless of what this becomes.
+CAP=$(int_or "${FLEET_NUDGE_CAP:-5}" 5)
 
 BOARD=${FLEET_NUDGE_BOARD:-/root/bpa-dev-infrastructure/instance/workboard.md}
 DAEMON=${FLEET_NUDGE_DAEMON:-http://127.0.0.1:4822}
@@ -330,7 +333,7 @@ if [ "$running" -lt "$CRITICAL" ]; then
   raise idle "⚠️ Флот простоює: активних лейнів $running, на дошці $open відкритих рядків. Піднімаю оркестратор." || exit 3
 fi
 
-msg="[fleet-nudge] running lanes=$running, workboard open rows=$open. HR-2342 caps parallel lanes at $CAP — a ceiling, not a target. Collect finished lane reports, land what is ACCEPTed, dispatch the next wave. Per HR-281 report the lane count to Vova unprompted."
+msg="[fleet-nudge] running lanes=$running, workboard open rows=$open. HR-2456 caps parallel lanes at $CAP — a ceiling, not a target. Collect finished lane reports, land what is ACCEPTed, dispatch the next wave. Per HR-281 report the lane count to Vova unprompted."
 buf="nudge$$"
 tmux set-buffer -b "$buf" -- "$msg" 2>/dev/null || exit 0
 tmux paste-buffer -t "$SESSION" -b "$buf" -d 2>/dev/null || exit 0

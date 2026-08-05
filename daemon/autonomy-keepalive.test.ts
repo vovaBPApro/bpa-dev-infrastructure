@@ -45,7 +45,9 @@ async function timerAt(running: number, open: number | null, params = PARAMS): P
 
 test("the parameter file this repository ships parses to the landed semantics", () => {
   const config = parseFleetConfig(readFileSync(join(REPO, "instance", "params.yaml"), "utf8"));
-  expect(config).toEqual({ cap: 3, wakeBelow: 1, target: 0, intervalMs: 900_000 });
+  // The cap is HR-2456's five; the wake threshold does NOT move with it, which
+  // is the decoupling V3-2.11's B3 landed and V3-2.15 wrote into the file.
+  expect(config).toEqual({ cap: 5, wakeBelow: 1, target: 0, intervalMs: 900_000 });
 });
 
 // The behaviour the workboard row asks to be shown, at every lane count the cap
@@ -54,7 +56,7 @@ test("the parameter file this repository ships parses to the landed semantics", 
 test("with open work: 0 running lanes nudges, 1, 2 and 3 are silent", async () => {
   expect(await timerAt(0, 61)).toEqual([
     "fleet idle: 0 running with 61 open workboard rows; dispatch or inspect blocked lanes." +
-      " HR-2342 caps parallel lanes at 3 — a ceiling, not a target.",
+      " HR-2456 caps parallel lanes at 3 — a ceiling, not a target.",
   ]);
   expect(await timerAt(1, 61)).toEqual([]);
   expect(await timerAt(2, 61)).toEqual([]);
@@ -97,7 +99,7 @@ test("the target seam is off by default and reaches only the orchestrator when s
   const withTarget = PARAMS.replace("  cap: 3", "  cap: 3\n  target: 2");
   expect(await timerAt(1, 61, withTarget)).toEqual([
     "fleet below target: 1/2 running with 61 open workboard rows; dispatch more work." +
-      " HR-2342 caps parallel lanes at 3 — a ceiling, not a target.",
+      " HR-2456 caps parallel lanes at 3 — a ceiling, not a target.",
   ]);
   expect(await timerAt(2, 61, withTarget)).toEqual([]);
 });

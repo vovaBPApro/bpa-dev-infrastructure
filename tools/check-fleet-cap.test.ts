@@ -52,7 +52,9 @@ test("the repository's own fleet block agrees with the ruling it cites", () => {
   expect(checkFleetCap(repo)).toEqual([]);
   const executed = Bun.spawnSync([process.execPath, "tools/check-fleet-cap.ts", "--repo", repo], { cwd: repo });
   expect(executed.exitCode, executed.stderr.toString()).toBe(0);
-  expect(executed.stdout.toString()).toContain("FLEET-CAP clean cap=3");
+  expect(executed.stdout.toString()).toContain("FLEET-CAP clean cap=5");
+  // The live ruling, not a superseded one — HR-2342/HR-2398 still declare three.
+  expect(executed.stdout.toString()).toContain("declared_by=HR-2456");
 });
 
 // The regression lock for workboard V3-2.15 / audit F1. This is the exact block
@@ -81,9 +83,144 @@ test("a cap that disagrees with a binding ruling is named against that ruling", 
   );
 });
 
+// Requirement 2 of V3-2.15-r2: the check must fail in BOTH directions. A check
+// that only catches a params value below the ruling would have passed the raise
+// to five silently the moment someone typed a larger number.
+test("the cap is refused whether it sits above or below the ruling", () => {
+  const rulings = [{ id: "HR-2456", body: "status: binding\nlane_cap: 5\n" }];
+  const below = errorsFor({ fleet: DEFAULT_FLEET.replace("cap: 3", "cap: 4"), rulings });
+  expect(below).toContain(
+    "instance/params.yaml:5 fleet.cap: 4 contradicts instance/decisions/HR-2456.md, which declares lane_cap: 5",
+  );
+  const above = errorsFor({ fleet: DEFAULT_FLEET.replace("cap: 3", "cap: 6"), rulings });
+  expect(above).toContain(
+    "instance/params.yaml:5 fleet.cap: 6 contradicts instance/decisions/HR-2456.md, which declares lane_cap: 5",
+  );
+});
+
+// ── Supersession ───────────────────────────────────────────────────────────
+// HR-2456 raised the cap to five without deleting HR-2342's three, so two
+// binding records now declare different numbers. "Every binding record must
+// agree" is unsatisfiable in that state; the superseded number is history and
+// forwards to the ruling that replaced it.
+const SUPERSEDED_PAIR = [
+  { id: "HR-2342", body: "status: binding\nlane_cap: 3\nlane_cap_superseded_by: HR-2456\n" },
+  { id: "HR-2456", body: "status: binding\nlane_cap: 5\n" },
+];
+
+test("a superseded lane_cap is history and does not contradict the live one", () => {
+  const errors = errorsFor({
+    fleet: DEFAULT_FLEET.replace("cap: 3", "cap: 5"),
+    rulings: SUPERSEDED_PAIR,
+    nudge: 'CRITICAL=$(int_or "${FLEET_NUDGE_CRITICAL:-1}" 1)\nTARGET=$(int_or "${FLEET_NUDGE_TARGET:-0}" 0)\nCAP=$(int_or "${FLEET_NUDGE_CAP:-5}" 5)\n',
+  });
+  expect(errors).toEqual([]);
+});
+
+test("the live ruling still governs once an older number is superseded", () => {
+  const errors = errorsFor({ fleet: DEFAULT_FLEET, rulings: SUPERSEDED_PAIR });
+  expect(errors).toContain(
+    "instance/params.yaml:5 fleet.cap: 3 contradicts instance/decisions/HR-2456.md, which declares lane_cap: 5",
+  );
+});
+
+test("superseding every declaration leaves no live cap at all", () => {
+  const errors = errorsFor({
+    rulings: [
+      { id: "HR-2342", body: "status: binding\nlane_cap: 3\nlane_cap_superseded_by: HR-2456\n" },
+      { id: "HR-2456", body: "status: binding\n" },
+    ],
+  });
+  expect(errors.some((error) => error.includes("no binding decision record declares a live `lane_cap:`"))).toBe(true);
+});
+
+// A pointer is how a number gets replaced, so it must not become how a number
+// gets deleted: forwarding to a record that states no cap would silence a
+// binding ruling with one line of frontmatter.
+test("a supersession pointer that forwards to no number is refused", () => {
+  const errors = errorsFor({
+    rulings: [
+      { id: "HR-2342", body: "status: binding\nlane_cap: 3\nlane_cap_superseded_by: HR-2456\n" },
+      { id: "HR-2456", body: "status: binding\n" },
+      { id: "HR-2451", body: "status: binding\nlane_cap: 3\n" },
+    ],
+  });
+  expect(errors).toContain(
+    "instance/decisions/HR-2342.md: lane_cap_superseded_by names HR-2456, which declares no lane_cap — " +
+      "a pointer that forwards to no number mutes this one rather than replacing it",
+  );
+});
+
+test("a supersession pointer to a record that does not exist is refused", () => {
+  const errors = errorsFor({
+    rulings: [
+      { id: "HR-2342", body: "status: binding\nlane_cap: 3\nlane_cap_superseded_by: HR-9999\n" },
+      { id: "HR-2456", body: "status: binding\nlane_cap: 3\n" },
+    ],
+  });
+  expect(errors).toContain(
+    "instance/decisions/HR-2342.md: lane_cap_superseded_by names HR-9999, which does not exist",
+  );
+});
+
+// ── The HR-2456 shape (V3-2.15-r2) ─────────────────────────────────────────
+// The operator raised the cap to five in prose. The ruling was binding, named
+// the rulings it amended, and declared no `lane_cap:` — so this check reported
+// `clean cap=3` with the ruling that replaced three in the same directory. The
+// number in params.yaml was not wrong yet; what was wrong is that it could not
+// become wrong. This is the fail-before for that.
+test("a binding ruling that amends a cap ruling without declaring a cap is flagged", () => {
+  const errors = errorsFor({
+    rulings: [
+      { id: "HR-2342", body: "status: binding\nlane_cap: 3\n" },
+      { id: "HR-2456", body: "status: binding\namends: [[HR-2342]] (the number only — three becomes five)\n" },
+    ],
+  });
+  expect(errors).toContain(
+    "instance/decisions/HR-2456.md: amends HR-2342, which declare `lane_cap:`, but declares none itself — " +
+      "state the cap it leaves in force, or a ruling that changes the cap is invisible to this check",
+  );
+});
+
+test("the amendment edge is read across the continuation lines the ledger wraps", () => {
+  const errors = errorsFor({
+    rulings: [
+      { id: "HR-2342", body: "status: binding\nlane_cap: 3\n" },
+      {
+        id: "HR-2456",
+        body: "status: binding\namends: the cap ruling of 2026-08-04\n  namely [[HR-2342]], the number only\n",
+      },
+    ],
+  });
+  expect(errors.some((error) => error.includes("HR-2456.md: amends HR-2342"))).toBe(true);
+});
+
+test("declaring the cap it leaves in force clears the amendment check", () => {
+  const errors = errorsFor({
+    fleet: DEFAULT_FLEET.replace("cap: 3", "cap: 5"),
+    rulings: SUPERSEDED_PAIR.map((ruling) =>
+      ruling.id === "HR-2456" ? { ...ruling, body: `${ruling.body}amends: [[HR-2342]]\n` } : ruling,
+    ),
+  });
+  expect(errors.some((error) => error.includes("but declares none itself"))).toBe(false);
+});
+
+// Prose is not frontmatter. HR-2342's body opens a paragraph with "Supersedes
+// the hardcoded fleet floor for operational purposes", and reading that as an
+// amendment edge would flag rulings that amend nothing.
+test("a sentence beginning with Supersedes is not an amendment edge", () => {
+  const errors = errorsFor({
+    rulings: [
+      { id: "HR-2342", body: "status: binding\nlane_cap: 3\n" },
+      { id: "HR-2456", body: "status: binding\n\nSupersedes the hardcoded fleet floor named by [[HR-2342]].\n" },
+    ],
+  });
+  expect(errors.some((error) => error.includes("HR-2456.md: amends"))).toBe(false);
+});
+
 test("a cap no ruling declares fails as loudly as a wrong one", () => {
   const errors = errorsFor({ rulings: [{ id: "HR-2342", body: "status: binding\n" }] });
-  expect(errors.some((error) => error.includes("no binding decision record declares `lane_cap:`"))).toBe(true);
+  expect(errors.some((error) => error.includes("no binding decision record declares a live `lane_cap:`"))).toBe(true);
 });
 
 test("a lane_cap declared outside a binding record does not license the parameter", () => {

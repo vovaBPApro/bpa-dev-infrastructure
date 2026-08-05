@@ -30,11 +30,15 @@ ask for a routine “go” when the work is outside the irreversible set.
   host's real capacity does not merely slow the fleet, it corrupts the fleet's
   evidence: the suite is the measurement instrument and it stretches under load
   until deadlines kill passing runs. A wider fleet that produces less trustworthy
-  greens is a worse fleet. The current cap and its measurement are in
-  `instance/decisions/HR-2342.md`.
-- **A reviewer is a lane.** Count review slots against the cap. At a cap of
-  three that means at most two coder lanes plus one review slot, and a row on an
-  escalated review tier consumes two of the three.
+  greens is a worse fleet. The current cap is `instance/params.yaml: fleet.cap`,
+  ruled by `instance/decisions/HR-2456.md` and measured by workboard row
+  V3-0.34; `instance/decisions/HR-2342.md` carries the reasoning it was first
+  written with.
+- **A reviewer is a lane.** Count review slots against the cap, so a cap of N
+  buys N−1 coder lanes plus one review slot, and a row on an escalated review
+  tier consumes two of the N. Read the number from `fleet.cap` rather than from
+  this sentence — a cap written into prose is the drift `tools/check-fleet-cap.ts`
+  exists to catch.
 - **The cap is per repository; the host limit is not.** Each repository may run
   up to the cap (`instance/decisions/HR-2398.md`), because concentrating lanes on
   one repository buys merge work rather than progress. Caps do **not** sum across
@@ -54,8 +58,8 @@ ask for a routine “go” when the work is outside the irreversible set.
   треба накидать». Verbatim record: `instance/decisions/HR-281.md`.)
 
   HR-281 was given when the configured floor was ten, so "fewer than three" named
-  a fleet that had nearly stopped. Under HR-2342's cap of three the literal
-  threshold collapses — at a cap of three, "below three" is ordinary operation and
+  a fleet that had nearly stopped. Under a cap of three or five the literal
+  threshold collapses — "below three" is ordinary operation at either cap, and
   reporting it every time would be noise, which is the opposite of what he asked
   for. The **intent** is preserved and the arithmetic is not: report when the
   fleet is idle against available work, not on a fixed number. If the operator

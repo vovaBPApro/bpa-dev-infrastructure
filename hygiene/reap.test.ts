@@ -1383,6 +1383,183 @@ test("a lane detached in the middle of a bisect keeps the branch bisect will ret
   expect(sh("git show-ref --verify --quiet refs/heads/ag-lane && echo present", repo).trim()).toBe("present");
 });
 
+// --- round 4: operations git cannot name a branch for -----------------------
+//
+// Round 3 resolved a detached worktree from what git records on disk: a
+// rebase's head-name, a bisect's BISECT_START, and any branch tip matching
+// HEAD / ORIG_HEAD / REBASE_HEAD / a rebase's orig-head. A conflicted merge,
+// revert, cherry-pick or am writes NONE of those: MERGE_HEAD /
+// CHERRY_PICK_HEAD / REVERT_HEAD name the OTHER side, ORIG_HEAD is the
+// detached pre-operation HEAD, and no head-name file exists. So the worktree
+// resolved to `-` -- the claim "provably held by nothing" -- branch_holder
+// answered "unheld", and both sweeps walked past every liveness guard.
+// Measured at the pre-fix script: the branches sweep deleted the
+// dispositioned lane branch out from under a mid-merge lane, and
+// `worktrees --apply --terminal` removed a clean worktree that held a
+// stopped sequencer run with a pick still pending.
+//
+// The `git reset -q --hard HEAD` in this fixture is what makes it hostile
+// rather than lucky: `git worktree add --detach <branch>` happens to leave
+// ORIG_HEAD at the branch tip, so without the reset a conflicted revert or
+// cherry-pick still resolves through that leftover by accident. A lane that
+// ever ran `git reset` has no such leftover, and the enumeration must not
+// depend on one.
+type UnnameableOp = "merge" | "revert" | "cherry-pick" | "am" | "sequencer";
+const unnameableOpMarker: Record<UnnameableOp, string> = {
+  merge: "MERGE_HEAD",
+  revert: "REVERT_HEAD",
+  "cherry-pick": "CHERRY_PICK_HEAD",
+  am: "rebase-apply",
+  sequencer: "sequencer",
+};
+
+function buildUnnameableOperationFixture(op: UnnameableOp): {
+  dir: string;
+  repo: string;
+  lane: string;
+  dispositions: string;
+} {
+  const dir = fixtureDir();
+  const repo = join(dir, "repo");
+  mkdirSync(repo);
+  sh("git init -q -b main .", repo);
+  sh("git config user.email hygiene@example.test", repo);
+  sh("git config user.name Hygiene", repo);
+  writeFileSync(join(repo, "f.txt"), "base\n");
+  sh("git add f.txt && git commit -qm base", repo);
+  sh("git checkout -qb other && echo other > f.txt && git commit -qam other", repo);
+  sh("git checkout -qb other2 && echo o2 > o2.txt && git add o2.txt && git commit -qm o2", repo);
+  sh("git checkout -q main", repo);
+  const remote = join(dir, "remote.git");
+  sh(`git init -q --bare ${JSON.stringify(remote)}`, repo);
+  sh(`git remote add origin ${JSON.stringify(remote)}`, repo);
+  sh("git checkout -qb ag-lane && echo lane > lane.txt && git add lane.txt && git commit -qm lane", repo);
+  sh("git checkout -q main && git push -q origin main ag-lane", repo);
+
+  const lane = join(dir, "lane-wt");
+  sh(`git worktree add -q --detach ${JSON.stringify(lane)} ag-lane`, repo);
+  // Detached scratch work moves HEAD off every branch tip; the reset repoints
+  // ORIG_HEAD at the scratch commit, exactly as any real reset would.
+  sh("echo mine1 > f.txt && git commit -qam scratch1", lane);
+  if (op === "revert") sh("echo mine2 > f.txt && git commit -qam scratch2", lane);
+  sh("git reset -q --hard HEAD", lane);
+  const produce: Record<UnnameableOp, string> = {
+    merge: "git merge other",
+    revert: "git revert --no-edit HEAD^",
+    "cherry-pick": "git cherry-pick other",
+    am: "git format-patch -1 other --stdout > ../other.patch && git am ../other.patch",
+    sequencer:
+      "git cherry-pick other other2; echo resolved > f.txt && git add f.txt && git -c core.editor=true commit -q --no-edit",
+  };
+  spawnSync("bash", ["-c", produce[op]], { cwd: lane, encoding: "utf8" });
+
+  const listed = sh("git worktree list --porcelain", repo);
+  if (!listed.includes("detached")) {
+    throw new Error(`fixture setup failed: the ${op} lane is not detached\n${listed}`);
+  }
+  const admin = sh("git rev-parse --absolute-git-dir", lane).trim();
+  if (!existsSync(join(admin, unnameableOpMarker[op]))) {
+    throw new Error(`fixture setup failed: the ${op} did not leave ${unnameableOpMarker[op]} on disk`);
+  }
+  if (op === "sequencer" && sh("git status --porcelain", lane) !== "") {
+    throw new Error("fixture setup failed: the stopped-sequencer lane is dirty, so the refusal would not prove the marker");
+  }
+  const dispositions = join(dir, "dispositions.txt");
+  writeFileSync(dispositions, "ag-lane operator ruling: superseded, safe to drop\n");
+  return { dir, repo, lane, dispositions };
+}
+
+const unnameableOps: UnnameableOp[] = ["merge", "revert", "cherry-pick", "am", "sequencer"];
+
+test("PROPERTY: a worktree the resolver cannot associate refuses every local deletion -- conflicted merge/revert/cherry-pick/am and a stopped sequencer", () => {
+  for (const op of unnameableOps) {
+    const { repo, dispositions } = buildUnnameableOperationFixture(op);
+    for (const argv of [
+      ["branches", "--repo", repo, "--dispositions", dispositions, "--apply"],
+      ["branches", "--repo", repo, "--dispositions", dispositions, "--with-worktrees", "--apply"],
+    ]) {
+      const apply = run(argv);
+      expect(apply.status).toBe(0);
+      // The refusal must be UNKNOWN, not a confident association: nothing on
+      // disk names the lane's branch, and `-` is the answer that killed it.
+      expect(apply.stdout).toContain("a worktree's branch could not be determined, refusing: ag-lane");
+      expect(sh("git show-ref --verify --quiet refs/heads/ag-lane && echo present", repo).trim()).toBe("present");
+    }
+  }
+});
+
+test("PROPERTY: a worktree the resolver cannot associate refuses every remote deletion too", () => {
+  for (const op of unnameableOps) {
+    const { repo, lane, dispositions } = buildUnnameableOperationFixture(op);
+    const apply = run(["remote-branches", "--repo", repo, "--dispositions", dispositions, "--apply"]);
+    expect(apply.status).toBe(0);
+    expect(apply.stdout).toContain("remote branch held by a worktree this tool cannot resolve, refusing: origin/ag-lane");
+    expect(apply.stdout).toContain(lane);
+    expect(sh("git ls-remote --heads origin", repo)).toContain("refs/heads/ag-lane");
+  }
+});
+
+test("worktrees: a clean worktree holding only a stopped sequencer is refused, not removed", () => {
+  // Pre-fix this worktree was REMOVED: the tree is clean, the conflicted pick
+  // was concluded by hand (`git commit`, no `--continue`), so the only thing
+  // recording the pending pick is the `sequencer` directory -- which neither
+  // the resolver nor worktree_is_terminal's marker list knew.
+  const { repo, lane } = buildUnnameableOperationFixture("sequencer");
+  const out = run(["worktrees", "--repo", repo, "--apply", "--terminal"]);
+  expect(out.status).toBe(0);
+  expect(out.stdout).toContain(`live worktree, refusing: ${lane} (branch: detached, operation-in-progress=sequencer)`);
+  expect(existsSync(lane)).toBe(true);
+});
+
+// A copy of the script with the round-4 refusal REMOVED -- the marker loop
+// replaced by a no-op, restoring round 3's `-` fallback exactly. This is the
+// enumeration's regression proof: if the refusal stops being load-bearing,
+// this test stops failing the weakened script and starts failing the suite.
+const unnameableRefusalBlock = `    for name in rebase-merge rebase-apply MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD BISECT_LOG BISECT_START sequencer AUTO_MERGE; do
+      if [[ -e "$admin/$name" ]]; then
+        printf '%s\\t?\\n' "$path"
+        continue 2
+      fi
+    done`;
+
+function reapWithReplacement(anchor: string, replacement: string): string {
+  const root = fixtureDir();
+  mkdirSync(join(root, "hygiene"));
+  for (const dir of ["gate", "instance"]) {
+    sh(`cp -a ${JSON.stringify(join(repoRoot, dir))} ${JSON.stringify(join(root, dir))}`, root);
+  }
+  sh(`cp -a ${JSON.stringify(reap)} ${JSON.stringify(join(root, "hygiene", "reap.sh"))}`, root);
+  const target = join(root, "hygiene", "reap.sh");
+  const source = readFileSync(target, "utf8");
+  const occurrences = source.split(anchor).length - 1;
+  if (occurrences !== 1) {
+    throw new Error(`replacement anchor is not unique (${occurrences} matches): ${anchor}`);
+  }
+  writeFileSync(target, source.replace(anchor, replacement));
+  return target;
+}
+
+test("the refusal has teeth: restoring round-3's `-` fallback destroys the mid-merge lane's branch on both sides", () => {
+  const weakened = reapWithReplacement(unnameableRefusalBlock, "    :");
+  const { repo, dispositions } = buildUnnameableOperationFixture("merge");
+  const local = spawnSync("bash", [weakened, "branches", "--repo", repo, "--dispositions", dispositions, "--apply"], {
+    encoding: "utf8",
+  });
+  expect(local.status).toBe(0);
+  if (sh("git show-ref refs/heads/ag-lane || true", repo).trim() !== "") {
+    throw new Error("the weakened script did NOT destroy the branch -- the `?` fallback is not what protects this state");
+  }
+  const remoteRun = spawnSync(
+    "bash",
+    [weakened, "remote-branches", "--repo", repo, "--dispositions", dispositions, "--apply"],
+    { encoding: "utf8" },
+  );
+  expect(remoteRun.status).toBe(0);
+  if (sh("git ls-remote --heads origin", repo).includes("refs/heads/ag-lane")) {
+    throw new Error("the weakened script did NOT destroy the remote branch -- the `?` fallback is not what protects it");
+  }
+});
+
 test("a worktree whose porcelain record does not parse is UNKNOWN, and UNKNOWN refuses every branch", () => {
   const dir = fixtureDir();
   const repo = join(dir, "repo");

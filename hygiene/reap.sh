@@ -444,7 +444,29 @@ worktree_associations() {
         fi
       done < <(git -C "$repo" for-each-ref --format='%(objectname) %(refname:short)' refs/heads 2>/dev/null)
     fi
-    if [[ -z "$emitted" ]]; then printf '%s\t-\n' "$path"; fi
+    if [[ -n "$emitted" ]]; then continue; fi
+    # `-` is a CLAIM -- "this worktree provably holds nothing" -- and a
+    # conflicted merge, revert, cherry-pick, am, or a stopped sequencer run is
+    # a worktree that holds SOMETHING git just cannot name: MERGE_HEAD names
+    # the OTHER side, ORIG_HEAD is the detached pre-operation HEAD, and no
+    # head-name file exists. Round 3 resolved exactly this shape to `-`, so
+    # branch_holder said "held by nothing", worktree_is_terminal was never
+    # consulted, and the sweep deleted a mid-merge lane's branch. Measured on
+    # git 2.43.0: a detached conflicted merge leaves only MERGE_HEAD +
+    # ORIG_HEAD(=detached sha); `git am` leaves rebase-apply with no
+    # head-name; revert/cherry-pick leave REVERT_HEAD/CHERRY_PICK_HEAD (the
+    # commit being undone/replayed, not a branch); a sequence stopped by hand
+    # can leave only `sequencer`. None of those name a branch, all of them
+    # mean the worktree is mid-operation. An in-progress operation without a
+    # nameable branch is absence of KNOWLEDGE, not absence of a holder: emit
+    # `?`, which every caller refuses, never `-`.
+    for name in rebase-merge rebase-apply MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD BISECT_LOG BISECT_START sequencer AUTO_MERGE; do
+      if [[ -e "$admin/$name" ]]; then
+        printf '%s\t?\n' "$path"
+        continue 2
+      fi
+    done
+    printf '%s\t-\n' "$path"
   done
 }
 
@@ -572,7 +594,12 @@ worktree_is_terminal() {
   if ! git_dir="$(git -C "$path" rev-parse --absolute-git-dir 2>/dev/null)"; then
     printf 'git-dir-unreadable\n'; return 1
   fi
-  for marker in rebase-merge rebase-apply MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD BISECT_LOG; do
+  # BISECT_START, sequencer and AUTO_MERGE joined this list with the round-4
+  # enumeration: a multi-commit cherry-pick/revert whose conflicted step was
+  # resolved and committed BY HAND (no `--continue`) leaves a clean tree with
+  # only `sequencer` on disk, and removing that worktree kills the rest of the
+  # sequence. Produced by execution, not hypothesized -- see reap.test.ts.
+  for marker in rebase-merge rebase-apply MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD BISECT_LOG BISECT_START sequencer AUTO_MERGE; do
     if [[ -e "$git_dir/$marker" ]]; then printf 'operation-in-progress=%s\n' "$marker"; return 1; fi
   done
   probe="$(processes_inside "$path")" || rc=$?

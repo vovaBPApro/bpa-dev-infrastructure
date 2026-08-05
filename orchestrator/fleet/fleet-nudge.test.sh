@@ -424,8 +424,8 @@ fi
 
 # The wake-up quotes the cap AS a cap, and follows the knob rather than a second
 # literal that can drift away from it.
-grep -Fq 'caps parallel lanes at 5 — a ceiling, not a target' "$TMP/tmux.log" ||
-  fail "the orchestrator wake-up does not quote HR-2456's cap as a ceiling"
+grep -Fq 'caps parallel lanes at 3 — a ceiling, not a target' "$TMP/tmux.log" ||
+  fail "the orchestrator wake-up does not quote HR-2538's cap as a ceiling"
 # The probe value is deliberately NOT the default: a knob that is followed and a
 # knob that is ignored produce the same log line when the two numbers agree.
 reset_state

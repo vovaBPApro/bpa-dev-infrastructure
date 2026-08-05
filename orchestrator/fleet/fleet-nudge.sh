@@ -21,7 +21,7 @@ set -uo pipefail
 SESSION=${FLEET_NUDGE_SESSION:-bpa-orchestrator}
 
 # ── What counts as a fault ──────────────────────────────────────────────────
-# This watchdog measures IDLENESS, not shortfall. HR-2456 caps parallel lanes at
+# This watchdog measures IDLENESS, not shortfall. HR-2538 caps parallel lanes at
 # five (raising HR-2342's three, whose framing it leaves standing): "a ceiling,
 # not a target: fewer is allowed whenever the work does not need them." A
 # watchdog that installs that ceiling as a floor turns every lane count the
@@ -58,7 +58,7 @@ TARGET=$(int_or "${FLEET_NUDGE_TARGET:-0}" 0)
 # orchestrator so it knows how wide it may go. It is not a trigger: nothing in
 # this script compares the lane count against it, and CRITICAL above stays at 1
 # regardless of what this becomes.
-CAP=$(int_or "${FLEET_NUDGE_CAP:-5}" 5)
+CAP=$(int_or "${FLEET_NUDGE_CAP:-3}" 3)
 
 BOARD=${FLEET_NUDGE_BOARD:-/root/bpa-dev-infrastructure/instance/workboard.md}
 DAEMON=${FLEET_NUDGE_DAEMON:-http://127.0.0.1:4822}
@@ -333,7 +333,7 @@ if [ "$running" -lt "$CRITICAL" ]; then
   raise idle "⚠️ Флот простоює: активних лейнів $running, на дошці $open відкритих рядків. Піднімаю оркестратор." || exit 3
 fi
 
-msg="[fleet-nudge] running lanes=$running, workboard open rows=$open. HR-2456 caps parallel lanes at $CAP — a ceiling, not a target. Collect finished lane reports, land what is ACCEPTed, dispatch the next wave. Per HR-281 report the lane count to Vova unprompted."
+msg="[fleet-nudge] running lanes=$running, workboard open rows=$open. HR-2538 caps parallel lanes at $CAP — a ceiling, not a target. Collect finished lane reports, land what is ACCEPTed, dispatch the next wave. Per HR-281 report the lane count to Vova unprompted."
 buf="nudge$$"
 tmux set-buffer -b "$buf" -- "$msg" 2>/dev/null || exit 0
 tmux paste-buffer -t "$SESSION" -b "$buf" -d 2>/dev/null || exit 0

@@ -52,9 +52,10 @@ test("the repository's own fleet block agrees with the ruling it cites", () => {
   expect(checkFleetCap(repo)).toEqual([]);
   const executed = Bun.spawnSync([process.execPath, "tools/check-fleet-cap.ts", "--repo", repo], { cwd: repo });
   expect(executed.exitCode, executed.stderr.toString()).toBe(0);
-  expect(executed.stdout.toString()).toContain("FLEET-CAP clean cap=5");
-  // The live ruling, not a superseded one — HR-2342/HR-2398 still declare three.
-  expect(executed.stdout.toString()).toContain("declared_by=HR-2456");
+  expect(executed.stdout.toString()).toContain("FLEET-CAP clean cap=3");
+  // The live ruling, not a superseded one — HR-2342/HR-2398 declare three and
+  // HR-2456 declares five, both now forwarded to HR-2538 (three, five by exception).
+  expect(executed.stdout.toString()).toContain("declared_by=HR-2538");
 });
 
 // The regression lock for workboard V3-2.15 / audit F1. This is the exact block

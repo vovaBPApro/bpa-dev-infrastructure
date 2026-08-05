@@ -81,7 +81,20 @@ fleet:
   # into the orchestrator's standing context at every session start, so each new
   # session was told to hold ten lanes (audit finding F1,
   # instance/audits/false-facts-2026-08-04.md).
-  cap: 5                           # instance/decisions/HR-2456.md (amending HR-2342.md + HR-2398.md): max parallel lanes, PER REPOSITORY.
+  cap: 3                           # instance/decisions/HR-2538.md (amending HR-2456.md, which amended HR-2342.md + HR-2398.md): max parallel lanes, PER REPOSITORY.
+  # THREE, with five as an EXCEPTION rather than the default — HR-2538 lowered it
+  # the same day HR-2456 raised it, and the reason is contention on one
+  # integration branch, not machine capacity: "якщо в мене два-три репозиторії,
+  # тоді можна 10-15 розганяти, бо вони принаймні в рамках одного репозиторія в
+  # main конфліктувати одне з одним не будуть." So parallelism scales by
+  # REPOSITORY COUNT, never by raising this number.
+  #
+  # The evidence that lowered it is rework, not failure: V3-5.1 — the most
+  # important row on the board — needed three rebases and three review passes,
+  # none caused by a defect in the change. Its second re-attestation called that
+  # "a serialization failure in dispatch". A branch that already held an ACCEPT
+  # was displaced by a landing begun after it.
+  #
   # A CEILING, not a target. HR-2342: "fewer is allowed whenever the work does
   # not need them." — untouched by the raise to five. There is deliberately no
   # floor/target key: every count from 1 to the cap is permitted, so the only

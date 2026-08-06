@@ -1,5 +1,7 @@
 # test-file	case	capability
 orchestrator/singleton-failclosed.test.sh	stale-ofd-recovery	proc-lock-observability
+orchestrator/singleton-namespace-boundary.test.sh	attributing-host	proc-lock-observability
+orchestrator/singleton-namespace-boundary.test.sh	blind-namespace	pid-mount-namespace
 gate/land-rollback.test.sh	unrecoverable-lock	immutable-file
 gate/land-rollback.test.sh	live-lock	proc-lock-observability
 gate/land-rollback.test.sh	uid-fd-visibility	proc-lock-observability

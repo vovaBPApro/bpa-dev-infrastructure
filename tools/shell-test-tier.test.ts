@@ -74,6 +74,12 @@ const runnableShellTests = [
   // preflight, with no runtime.env and no break-glass. Its full-start case is
   // capability-gated on /proc/locks visibility and announces its own exclusion.
   "orchestrator/launcher-startable-from-git.test.sh",
+  // V3-5.38. The singleton guard's observation boundary: /proc/locks attributes
+  // an exited lock-setter only in the initial pid namespace, so the launcher is
+  // blind to its own subject inside any container. Runs the same scenario in
+  // both worlds; each half reports a named EXCLUDED line where its kernel
+  // capability is absent, so it stays runnable in the container too.
+  "orchestrator/singleton-namespace-boundary.test.sh",
 ] as const;
 
 const excludedShellTests = {} as const;

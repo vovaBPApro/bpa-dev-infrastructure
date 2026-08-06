@@ -29,6 +29,12 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 SINGLETON_LOCK_FILE="${ORCH_SINGLETON_LOCK_FILE:-$REPO_DIR/runtime/orchestrator.singleton.lock}"
 SINGLETON_RECOVERY_LOCK_FILE="${ORCH_SINGLETON_RECOVERY_LOCK_FILE:-$SINGLETON_LOCK_FILE.recovery}"
 SINGLETON_OWNER_FILE="${ORCH_SINGLETON_OWNER_FILE:-$SINGLETON_LOCK_FILE.owner}"
+# Recorded in the owner file in place of a PID where the kernel will not
+# attribute this lock to the process that took it. A plain assignment, not a
+# `${VAR:-}` read: this is the guard's own vocabulary and nothing in the
+# environment or in runtime.env may set it. See
+# singleton_owner_attribution_state() for the boundary it marks.
+SINGLETON_OWNER_UNATTRIBUTABLE=unattributable
 MISSION_CLI="${ORCH_MISSION_CLI:-$REPO_DIR/core/mission-cli.ts}"
 STATE_DB="${ORCH_STATE_DB:-$REPO_DIR/runtime/state.db}"
 TERMINAL_ALERT="${ORCH_TERMINAL_ALERT:-$REPO_DIR/daemon/terminal-alert.ts}"
@@ -114,7 +120,7 @@ BOUND_CHAT_ID="${TELEGRAM_BOUND_CHAT_ID:-${TELEGRAM_CHAT_ID:-}}"
 INSTANCE_LOCK_FILE="${ORCH_INSTANCE_LOCK_FILE:-${BOUND_CHAT_ID:+$HOME/.claude/orchestrator-chat-$BOUND_CHAT_ID.lock}}"
 
 usage() {
-  printf '%s\n' 'Usage: launch.sh [start|stop|status|model|identity|render-command|--help]'
+  printf '%s\n' 'Usage: launch.sh [start|stop|status|model|identity|render-command|singleton-attribution|--help]'
 }
 
 # Machine-readable resolved model state, for the Telegram /model command.
@@ -512,6 +518,216 @@ singleton_kernel_owner_pid() {
     printf '%s\n' "${owners[0]}"
 }
 
+# ── Where this guard can see, and where it cannot ───────────────────────────
+# The singleton's exclusion is enforced by flock(2) and by nothing else. Two
+# launchers cannot both hold one lock file, in any namespace, on any host, and
+# that property needs no /proc at all.
+#
+# /proc/locks is read for ONE further purpose: recording WHICH pid took the
+# lock, so that a lock later found held can be proven leaked by a process that
+# is gone rather than guessed at. That read has an exact boundary, and it is
+# structural rather than incidental. fs/locks.c translates a lock's owner pid
+# into the pid namespace of the procfs being read and DROPS the row when the
+# translation fails; the initial pid namespace deliberately keeps reporting an
+# owner whose process has exited, and no other namespace can, because the pid
+# is freed with the process. The launcher's own lock is taken by a `flock -n`
+# that exits immediately (see singleton_command below), so the row this guard
+# needs is precisely the one that only the initial pid namespace keeps.
+#
+# Measured on 6.8.0, one lock, three worlds:
+#
+#   host                     -> our lock reported, attributed to the exited setter
+#   pid ns + its own /proc   -> no row at all, ours included
+#   pid ns + the host /proc  -> rows present, attributed to pids of a namespace
+#                               this process cannot resolve
+#
+# The third world is why "is /proc/locks non-empty" is the wrong question: it
+# answers yes and hands back a pid that means nothing here. So this probe asks
+# the only question that decides anything — take a lock through a child that
+# exits, then require /proc/locks to name that child. Silence means this
+# environment cannot supply the evidence.
+#
+# ── Why the probe reimplements the read instead of reusing the launcher's ────
+# It must not share a failure mode with the condition it adjudicates. Round 1
+# of V3-5.38 resolved the probe file through singleton_lock_key(), the same
+# helper that produces the launcher's own lock identity — so a globally broken
+# findmnt made the degradation trigger fire AND guaranteed the adjudicator
+# would answer "unavailable". One broken helper answered both the question and
+# the appeal, and a fully attributing host silently degraded where it used to
+# refuse. So this function deliberately depends on NEITHER
+# singleton_lock_key() nor singleton_kernel_owner_pid(): it owns its file
+# (mktemp), owns its lock, and reads /proc/locks itself, matching only on the
+# pid of the child it just reaped.
+#
+# The read is self-validating, which is what makes pid-only matching safe. A
+# row naming our setter pid must appear while we hold the lock AND must be gone
+# once we release it. That second half rules out the "pid ns reading the host
+# /proc" world, where an unrelated host process may happen to hold a flock
+# under the same number: such a row survives our release, so the probe answers
+# `undetermined` — a refusal — instead of mistaking a stranger's lock for ours.
+#
+# ── ...and why a missing row is not, by itself, a kernel verdict ─────────────
+# Round 2 died one dependency further down. Removing singleton_lock_key() left
+# `flock` shared between the trigger and the adjudicator, and `flock` has a
+# failure mode that looks like success: a shim that exits 0 without locking, a
+# build whose lock does not survive the setter's exit, any present-but-not-
+# native emulation. In that world NO lock exists, so no row exists, so the probe
+# answered `unavailable` — a kernel verdict — while the same broken flock
+# removed the launcher's own row and fired the trigger. The degraded branch then
+# started a second orchestrator on the strength of its stated premise, "flock is
+# already holding the singleton", which was false in precisely that world.
+#
+# So `unavailable` now requires POSITIVE proof that a real lock was held while
+# the kernel showed no attributable row. The probe proves it through a channel
+# that does not trust the locker's exit status — an independent contender that
+# must be DENIED while the lock is held (2 below) and must SUCCEED once it is
+# released (4 below). Both halves are needed: without the first, "no lock" reads
+# as "no attribution"; without the second, a contender that can only ever fail
+# would certify exclusion by being incapable of anything else.
+#
+# What remains outside this boundary, stated rather than implied: a `flock`
+# crafted to answer this exact call sequence 0, then 1, then 0. That is not a
+# component failing, it is an adversary with write access to PATH, and
+# `review-policy` places that attacker outside the trust boundary already.
+
+# True when /proc/locks currently carries a FLOCK row attributed to $1.
+singleton_flock_row_attributed_to() {
+  local wanted_pid="$1"
+  local -a fields=()
+  while read -ra fields; do
+    [[ "${fields[1]:-}" == FLOCK ]] || continue
+    [[ "${fields[4]:-}" == "$wanted_pid" ]] || continue
+    return 0
+  done < /proc/locks
+  return 1
+}
+
+# Attempt a non-blocking lock on $1 from an INDEPENDENT process — one that opens
+# the file itself, so it holds its own open file description and genuinely
+# contends with a lock held by this process. flock(2) is explicit that
+# descriptors obtained from separate open() calls contend even within a single
+# process, so this measures the LOCK and not the process tree.
+#
+# Prints exactly one of:
+#   refused  — the attempt was denied: something really holds this lock
+#   acquired — the attempt succeeded: nothing holds it
+#   broken   — no attempt could be made, so nothing was measured
+#
+# Only `flock -n` exit 1 — its documented "could not acquire" — is a denial.
+# Every other non-zero status is `broken`, and that distinction is the whole
+# mechanism rather than defensive noise: measured on this host, a missing flock
+# exits 127 and a bad descriptor exits 65, and both are indistinguishable from a
+# denial if the status alone decides.
+singleton_lock_contention() {
+  local target="$1" status=0
+  # `>>`, not `>`: a contender must never truncate the file it is asking about.
+  "${BASH:-bash}" -c '
+    exec {contender_fd}>>"$1" 2>/dev/null || exit 90
+    flock -n "$contender_fd" 2>/dev/null
+    case $? in
+      0) exit 92 ;;
+      1) exit 91 ;;
+      *) exit 90 ;;
+    esac
+  ' singleton-lock-contender "$target" </dev/null >/dev/null 2>&1 || status=$?
+  case "$status" in
+    91) printf 'refused\n' ;;
+    92) printf 'acquired\n' ;;
+    # Includes status 0, which this script never produces: if the contender
+    # exits clean it is not the contender.
+    *) printf 'broken\n' ;;
+  esac
+}
+
+# Prints exactly one of: available | unavailable | undetermined.
+# `unavailable` is the ONLY answer that may unlock the degraded start path, and
+# it now asserts two things at once: a real lock was held, and the kernel would
+# not name its owner. `undetermined` means the probe could not measure, which is
+# not evidence about the kernel and must never be read as one.
+singleton_owner_attribution_state() {
+  local probe_fd="" probe_file="" probe_dir setter_pid held=1 released=1
+  local contention verdict
+  [[ -r /proc/locks ]] || { printf 'undetermined\n'; return 0; }
+  # The fixture lives beside the real singleton lock, so the exclusion proved
+  # below is proved on the filesystem whose locking semantics the guard is about
+  # to trust. A probe on some other mount can prove the wrong kernel. Resolved by
+  # parameter expansion rather than `dirname`, so the declared input list above —
+  # bash, flock, mktemp, /proc/locks — stays true instead of quietly growing a
+  # coreutils binary with failure behaviour of its own.
+  probe_dir="${SINGLETON_LOCK_FILE%/*}"
+  [[ "$probe_dir" != "$SINGLETON_LOCK_FILE" ]] || probe_dir=.
+  mkdir -p "$probe_dir" 2>/dev/null || { printf 'undetermined\n'; return 0; }
+  probe_file="$(mktemp "$probe_dir/.singleton-attribution-probe.XXXXXX" 2>/dev/null || true)"
+  [[ -n "$probe_file" ]] || { printf 'undetermined\n'; return 0; }
+  if ! exec {probe_fd}>"$probe_file" 2>/dev/null; then
+    rm -f "$probe_file" 2>/dev/null || true
+    printf 'undetermined\n'
+    return 0
+  fi
+  # (1) Take the lock in the launcher's own shape: the setter is a child that
+  # exits immediately, so the row under test is the one only the initial pid
+  # namespace keeps. This descriptor stays open, so the lock outlives the setter.
+  flock -n "$probe_fd" &
+  setter_pid=$!
+  if ! wait "$setter_pid"; then
+    exec {probe_fd}>&-
+    rm -f "$probe_file" 2>/dev/null || true
+    printf 'undetermined\n'
+    return 0
+  fi
+  # (2) Prove the lock is REAL before reading anything into its absence from
+  # /proc/locks. An independent contender must be denied. If it is not, no lock
+  # was taken — the exit status of (1) was a lie — and the honest answer is that
+  # nothing was measured.
+  contention="$(singleton_lock_contention "$probe_file")"
+  if [[ "$contention" != refused ]]; then
+    exec {probe_fd}>&-
+    rm -f "$probe_file" 2>/dev/null || true
+    printf 'undetermined\n'
+    return 0
+  fi
+  # (3) Only now does the row check carry meaning: a real lock is held, so a
+  # missing row is the kernel declining to attribute it and nothing else.
+  singleton_flock_row_attributed_to "$setter_pid" && held=0
+  exec {probe_fd}>&-
+  singleton_flock_row_attributed_to "$setter_pid" && released=0
+  if ((held == 0)) && ((released != 0)); then
+    verdict=available
+  elif ((held != 0)) && ((released != 0)); then
+    verdict=unavailable
+  else
+    # The row outlived the lock, so it was never ours to read.
+    verdict=undetermined
+  fi
+  # (4) Negative control, on the same file through the same channel: with the
+  # lock released the contender must now SUCCEED. A contender that fails here
+  # was never measuring exclusion in (2), it was just failing.
+  contention="$(singleton_lock_contention "$probe_file")"
+  rm -f "$probe_file" 2>/dev/null || true
+  [[ "$contention" == acquired ]] || verdict=undetermined
+  printf '%s\n' "$verdict"
+}
+
+# Read-only diagnostic: answer, for THIS environment, whether the singleton
+# guard can observe lock ownership. It starts nothing and takes no launch lock;
+# it writes and removes one mktemp'd probe file beside the singleton lock. This
+# is the question behind both `orchestrator-singleton-owner-unattributable` at
+# start and `owner-attribution=unavailable` on a refused recovery, so an
+# operator can ask it directly instead of inferring it from a refusal.
+singleton_attribution_report() {
+  printf 'singleton-owner-attribution: %s\n' "$(singleton_owner_attribution_state)"
+}
+
+singleton_recovery_boundary_note() {
+  # An operator reading a bare "recovery=unproven" inside a container has no
+  # way to tell a leaked lock from a live orchestrator. Where the missing
+  # evidence is the environment rather than the state, say so, so the manual
+  # step that follows is an informed one.
+  grep -qx "lock_owner_pid=$SINGLETON_OWNER_UNATTRIBUTABLE" \
+    "$SINGLETON_OWNER_FILE" 2>/dev/null &&
+    printf ' owner-attribution=unavailable' || true
+}
+
 stale_singleton_recovery_proven() {
   local current_key="$1"
   local recorded_pid="" recorded_starttime="" recorded_key="" recorded_lock_owner=""
@@ -533,10 +749,14 @@ stale_singleton_recovery_proven() {
     recorded_starttime="$(sed -n 's/^starttime=//p' "$LIVENESS_FILE.identity")"
     recorded_lock_owner="$recorded_pid"
   fi
+  # This is also where the unattributable sentinel is refused. A record written
+  # where the kernel names no owner carries the word, not a number, so it can
+  # never match the numeric form a recovery proof requires — a launcher that
+  # could not observe ownership at start cannot reclaim on that basis later.
   [[ "$recorded_lock_owner" =~ ^[1-9][0-9]*$ ]] || return 1
   state="$(process_identity_state "$recorded_pid" "$recorded_starttime")"
   [[ "$state" == gone ]] || return 1
-  kernel_owner="$(singleton_kernel_owner_pid "$current_key")"
+  kernel_owner="$(singleton_kernel_owner_pid "$current_key" || true)"
   [[ -n "$kernel_owner" && "$kernel_owner" == "$recorded_lock_owner" ]] || return 1
   printf '%s\n' "$source"
 }
@@ -583,8 +803,8 @@ start() {
       recovery_source="$(stale_singleton_recovery_proven "$stale_lock_key" || true)"
     fi
     if [[ -z "$recovery_source" ]]; then
-      printf 'ERROR orchestrator-singleton-held lock=%s recovery=unproven\n' \
-        "$SINGLETON_LOCK_FILE" >&2
+      printf 'ERROR orchestrator-singleton-held lock=%s recovery=unproven%s\n' \
+        "$SINGLETON_LOCK_FILE" "$(singleton_recovery_boundary_note)" >&2
       return 1
     fi
     rm -f "$SINGLETON_LOCK_FILE"
@@ -747,12 +967,78 @@ start() {
   fi
   local singleton_lock_identity singleton_kernel_owner singleton_owner_tmp
   singleton_lock_identity="$(singleton_lock_key "$SINGLETON_LOCK_FILE" || true)"
-  singleton_kernel_owner="$(singleton_kernel_owner_pid "$singleton_lock_identity")"
+  singleton_kernel_owner=""
+  if [[ -n "$singleton_lock_identity" ]]; then
+    # `|| true` is load-bearing: singleton_kernel_owner_pid reports "no single
+    # owner found" as a non-zero status, and under `set -e` that status made the
+    # assignment itself fatal. The launcher then died right here, silently, with
+    # neither the refusal below nor any message at all -- which is what a blind
+    # environment actually produced before V3-5.38. A missing owner is a value
+    # to decide on, not an error to die of.
+    singleton_kernel_owner="$(singleton_kernel_owner_pid "$singleton_lock_identity" || true)"
+  fi
   if [[ -z "$singleton_lock_identity" || ! "$singleton_kernel_owner" =~ ^[1-9][0-9]*$ ]]; then
-    printf 'ERROR orchestrator-singleton-owner-unverified provider_pid=%s kernel_owner=%s\n' \
-      "$provider_pid" "${singleton_kernel_owner:-unknown}" >&2
-    tmux kill-session -t "$SESSION" 2>/dev/null || true
-    return 1
+    # Fail closed on ambiguity — not on the environment. Where this kernel DOES
+    # attribute locks to us, a lock of ours it will not name is a real anomaly,
+    # and it refuses here exactly as it always has. Where it attributes nothing,
+    # refusing protects nothing: flock is already holding the singleton and a
+    # second launcher is already being turned away by it. What refusing DOES do
+    # is make the orchestrator unstartable in every pid namespace — which is
+    # every container, which includes the rebuild the meteorite test performs.
+    #
+    # The cost of continuing is recorded rather than hidden. Stale-lock recovery
+    # needs this pid, so the sentinel written below can never satisfy
+    # stale_singleton_recovery_proven, and reclaiming a leaked lock in such an
+    # environment stays a deliberate operator act instead of an automatic one.
+    #
+    # Two conditions reach this branch and they are NOT the same failure, which
+    # is what round 1 got wrong. Only the second may degrade.
+    local singleton_attribution_state singleton_refusal_reason=""
+    if [[ -z "$singleton_lock_identity" ]]; then
+      # The lock file could not be identified AT ALL — findmnt or stat failed
+      # on an ordinary path. That is broken tooling on this host, not a
+      # namespace boundary: a blind pid namespace resolves the key perfectly
+      # well and goes blind only at the /proc/locks read. Nothing here is
+      # evidence about the kernel, so this keeps the pre-V3-5.38 hard refusal.
+      singleton_refusal_reason='lock-key-unresolved'
+    else
+      singleton_attribution_state="$(singleton_owner_attribution_state)"
+      case "$singleton_attribution_state" in
+        # The kernel does attribute locks and still will not name this one:
+        # a real ownership anomaly, and it refuses exactly as it always has.
+        available) singleton_refusal_reason='owner-unnameable' ;;
+        # The kernel attributes nothing here. Refusing protects nothing —
+        # flock already holds the singleton — so record the boundary and start.
+        #
+        # But that sentence is a claim about THIS lock file at THIS moment, and
+        # it is the only thing standing between the degraded start and two live
+        # orchestrators, so it is checked rather than assumed. The pane wrote
+        # its acquired-marker only after its own `flock -n` returned 0, and it
+        # was confirmed alive above, so an independent contender must be denied
+        # right now. The fixture probe has already shown, moments ago and on
+        # this same filesystem, that a contender CAN succeed when nothing holds
+        # the lock — so a denial here is evidence and not a broken contender.
+        unavailable)
+          if [[ "$(singleton_lock_contention "$SINGLETON_LOCK_FILE")" == refused ]]; then
+            singleton_refusal_reason=""
+          else
+            singleton_refusal_reason='exclusion-unproven'
+          fi
+          ;;
+        # The probe could not measure. Absence of a measurement is not a
+        # measurement of absence.
+        *) singleton_refusal_reason='attribution-undetermined' ;;
+      esac
+    fi
+    if [[ -n "$singleton_refusal_reason" ]]; then
+      printf 'ERROR orchestrator-singleton-owner-unverified provider_pid=%s kernel_owner=%s reason=%s\n' \
+        "$provider_pid" "${singleton_kernel_owner:-unknown}" "$singleton_refusal_reason" >&2
+      tmux kill-session -t "$SESSION" 2>/dev/null || true
+      return 1
+    fi
+    printf 'WARN orchestrator-singleton-owner-unattributable provider_pid=%s lock=%s; exclusion holds, automatic stale-lock recovery does not\n' \
+      "$provider_pid" "$SINGLETON_LOCK_FILE" >&2
+    singleton_kernel_owner="$SINGLETON_OWNER_UNATTRIBUTABLE"
   fi
   singleton_owner_tmp="$(mktemp "$(dirname "$SINGLETON_OWNER_FILE")/.orchestrator-singleton-owner.XXXXXX")"
   printf 'provider_pid=%s\nprovider_starttime=%s\nlock_owner_pid=%s\nlock_key=%s\n' \
@@ -862,6 +1148,7 @@ case "${1:-start}" in
   model) model_report ;;
   identity) identity_report ;;
   render-command) command_report ;;
+  singleton-attribution) singleton_attribution_report ;;
   -h|--help|help) usage ;;
   *) usage >&2; exit 2 ;;
 esac

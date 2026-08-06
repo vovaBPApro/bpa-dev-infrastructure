@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   GATES,
+  anchorReadEnv,
   checkReadiness,
   definitionDrift,
   executableShellLines,
@@ -212,6 +213,17 @@ function originFor(repo: string): string {
   return `${repo}-origin.git`;
 }
 
+// A second bare repository a lane could create anywhere, standing in for the
+// one every round-6 forgery redirects the anchor read at. It is never origin.
+function forgedOriginFor(repo: string): string {
+  return `${repo}-forged.git`;
+}
+
+function bareRepo(path: string): string {
+  Bun.spawnSync(["git", "init", "--bare", "-q", path]);
+  return path;
+}
+
 function sha256Of(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
@@ -222,7 +234,9 @@ function sha256Of(path: string): string {
 // it. `options` exists so a test can publish a DEFECTIVE anchor -- one side
 // only, a digest for different bytes, a ref pointing elsewhere -- because each
 // of those is a way a forged artifact could try to look anchored.
-type AnchorOptions = { digest?: string; target?: string; mirror?: boolean; namespaceOnly?: boolean };
+// `remote` publishes a perfectly well-formed anchor somewhere that is NOT
+// origin, which is what every config rewrite tries to make the reader read.
+type AnchorOptions = { digest?: string; target?: string; mirror?: boolean; namespaceOnly?: boolean; remote?: string };
 
 function publishAnchor(repo: string, options: AnchorOptions = {}): void {
   const sha = headSha(repo);
@@ -231,7 +245,7 @@ function publishAnchor(repo: string, options: AnchorOptions = {}): void {
   const target = options.target ?? sha;
   const refs = [`${target}:refs/bpa-meteorite-proofs/${leaf}`];
   if (options.mirror !== false) refs.push(`${target}:refs/bpa-meteorite-proof-mirrors/${leaf}`);
-  const pushed = git(repo, "push", "-q", "--force", originFor(repo), ...refs);
+  const pushed = git(repo, "push", "-q", "--force", options.remote ?? originFor(repo), ...refs);
   if (pushed.exitCode !== 0) throw new Error(`fixture anchor push failed: ${pushed.stderr.toString()}`);
 }
 
@@ -303,8 +317,9 @@ function commitAndReanchor(repo: string): void {
 
 function discard(repo: string): void {
   rmSync(repo, { recursive: true, force: true });
-  rmSync(stateHomeFor(repo), { recursive: true, force: true });
-  rmSync(originFor(repo), { recursive: true, force: true });
+  for (const suffix of ["-state", "-origin.git", "-forged.git", "-lane", "-ssh", "-gitconfig", "-tmproot"]) {
+    rmSync(`${repo}${suffix}`, { recursive: true, force: true });
+  }
 }
 
 // One measurement per call: the executed probes make a measurement cost real
@@ -1097,6 +1112,165 @@ test("a pushurl splits publish from read, so it is refused", () => {
     const measured = measure(repo);
     expect(measured.verdicts.D).toBe("UNKNOWN");
     expect(measured.evidence("D")).toContain("pushurl");
+  });
+});
+
+// --- round 6's finding: the config underneath the read ----------------------
+//
+// The sixth review greened D and A on a correctly pinned checkout with ONE
+// `git config` write and no credential. The URL string survived all four of
+// this reader's checks; what the URL MEANT was rewritten in the shared
+// common-dir config, which any lane worktree can write. Both of the reviewer's
+// routes are locked here, in the reviewer's own shape, plus the environment
+// half of the same surface.
+
+// Route 1: `url.<local path>.insteadOf <origin>` rewrites every URL git
+// contacts while `remote.origin.url` still answers the pinned string.
+test("round 6's forgery, route 1: url.insteadOf redirects nothing, because the read leaves the repository", () => {
+  withFixture({ anchor: null }, (repo) => {
+    // The reviewer's exact configuration, not a weaker one: the tree tracks a
+    // pin, the pin MATCHES the configured URL, there is one URL and no pushurl.
+    // All four of this reader's URL checks pass; only the meaning of the URL is
+    // rewritten, and only in the shared config.
+    write(repo, "instance/params.yaml", `repos:\n  git_remote: ${originFor(repo)}\n`);
+    git(repo, "add", "-A");
+    git(repo, "commit", "-qm", "pin");
+    writeArtifact(repo);
+    publishAnchor(repo, { remote: bareRepo(forgedOriginFor(repo)) });
+    git(repo, "config", `url.${forgedOriginFor(repo)}.insteadOf`, originFor(repo));
+    // The rewrite is real, and invisible where this reader used to look: git
+    // run INSIDE this repository is answered by the forged repository.
+    expect(git(repo, "config", "--get", "remote.origin.url").stdout.toString().trim()).toBe(originFor(repo));
+    expect(git(repo, "ls-remote", "--get-url", "origin").stdout.toString().trim()).toBe(forgedOriginFor(repo));
+    expect(git(repo, "ls-remote", "--refs", originFor(repo)).stdout.toString()).toContain("refs/bpa-meteorite-proofs/");
+    const measured = measure(repo);
+    expect(measured.verdicts.D).toBe("UNKNOWN");
+    expect(measured.verdicts.A).toBe("UNKNOWN");
+    expect(measured.evidence("D")).toContain("0 of the 2 anchor refs");
+    expect(measured.exitCode).toBe(1);
+    expect(measured.lines.at(-1)).toContain("cutover-ready=no");
+  });
+});
+
+// The reviewer's exact construction: the key is written by a LANE, from its own
+// linked worktree, and lands in the common-dir config the canonical checkout
+// reads. Nothing tracked changes and no commit is made.
+test("round 6's forgery, route 1 as a lane performs it: written from a linked worktree into the shared config", () => {
+  withFixture({ anchor: null }, (repo) => {
+    publishAnchor(repo, { remote: bareRepo(forgedOriginFor(repo)) });
+    const lane = `${repo}-lane`;
+    expect(git(repo, "worktree", "add", "-q", "-b", "lane", lane).exitCode).toBe(0);
+    expect(git(lane, "config", `url.${forgedOriginFor(repo)}.insteadOf`, originFor(repo)).exitCode).toBe(0);
+    // It really is the shared config the canonical checkout reads.
+    expect(readFileSync(join(repo, ".git/config"), "utf8")).toContain("insteadOf");
+    expect(git(repo, "ls-remote", "--get-url", "origin").stdout.toString().trim()).toBe(forgedOriginFor(repo));
+    const measured = measure(repo);
+    expect(measured.verdicts.D).toBe("UNKNOWN");
+    expect(measured.evidence("D")).toContain("0 of the 2 anchor refs");
+    expect(porcelain(repo)).toBe("");
+  });
+});
+
+// Route 2: `core.sshCommand`, which `ls-remote --get-url` cannot see at all,
+// and which this installation already sets. The origin URL here is one only
+// ssh can reach, so with the config neutralized the read fails instead of being
+// answered by the local forgery -- fail-closed, and hermetic: the hostname is
+// in the .invalid TLD, so nothing is contacted.
+test("round 6's forgery, route 2: core.sshCommand redirects nothing either", () => {
+  withFixture({ anchor: null }, (repo) => {
+    withEnv({ GIT_SSH_COMMAND: undefined, GIT_SSH: undefined }, () => {
+      publishAnchor(repo, { remote: bareRepo(forgedOriginFor(repo)) });
+      const fakeSsh = `${repo}-ssh`;
+      writeFileSync(fakeSsh, `#!/usr/bin/env bash\nexec git upload-pack '${forgedOriginFor(repo)}'\n`);
+      chmodSync(fakeSsh, 0o755);
+      git(repo, "config", "remote.origin.url", "ssh://git@no-such-host.invalid/repo.git");
+      git(repo, "config", "core.sshCommand", fakeSsh);
+      // The redirect is invisible in the URL and real in the transport.
+      expect(git(repo, "ls-remote", "--get-url", "origin").stdout.toString().trim()).toBe("ssh://git@no-such-host.invalid/repo.git");
+      expect(git(repo, "ls-remote", "--refs", "origin").stdout.toString()).toContain("refs/bpa-meteorite-proofs/");
+      const measured = measure(repo);
+      expect(measured.verdicts.D).toBe("UNKNOWN");
+      expect(measured.verdicts.A).toBe("UNKNOWN");
+      expect(measured.evidence("D")).toContain("could not be asked");
+      expect(measured.exitCode).toBe(1);
+    });
+  });
+});
+
+// The same rewrite, arriving from the environment instead of from a file. This
+// one runs the COMMAND as a subprocess with the hostile environment, because an
+// environment is inherited at process start: mutating process.env in this
+// process does not reach a child that inherits the original environ, so an
+// in-process construction would pass for the wrong reason. The artifact here is
+// genuinely anchored at origin, so a rewrite that reached the read would move D
+// off PASS -- staying PASS is the property.
+test("a hostile inherited environment does not reach the anchor read", () => {
+  withFixture({}, (repo) => {
+    const hostile = `${repo}-gitconfig`;
+    writeFileSync(hostile, `[url "${bareRepo(forgedOriginFor(repo))}"]\n\tinsteadOf = ${originFor(repo)}\n`);
+    const run = Bun.spawnSync([process.execPath, join(REAL_REPO, "tools/check-cutover-readiness.ts"), "--repo", repo], {
+      env: {
+        ...process.env,
+        XDG_STATE_HOME: stateHomeFor(repo),
+        GIT_CONFIG_GLOBAL: hostile,
+        GIT_CONFIG_SYSTEM: hostile,
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: `url.${forgedOriginFor(repo)}.insteadOf`,
+        GIT_CONFIG_VALUE_0: originFor(repo),
+      },
+    });
+    expect(run.stdout.toString()).toContain("CUTOVER-READINESS D PASS");
+    expect(run.stdout.toString()).toContain("CUTOVER-READINESS A PASS");
+    expect(run.exitCode).toBe(0);
+  });
+});
+
+test("the anchor read's environment carries no repository or configuration override", () => {
+  const env = withEnv(
+    {
+      GIT_DIR: "/tmp/elsewhere.git",
+      GIT_WORK_TREE: "/tmp/elsewhere",
+      GIT_CONFIG: "/tmp/rewrite",
+      GIT_CONFIG_GLOBAL: "/tmp/rewrite",
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "url./tmp/forged.git.insteadOf",
+      GIT_CONFIG_VALUE_0: "git@github.com:vovaBPApro/bpa-dev-infrastructure.git",
+    },
+    () => anchorReadEnv(),
+  );
+  for (const name of ["GIT_DIR", "GIT_WORK_TREE", "GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"]) {
+    expect(env[name]).toBeUndefined();
+  }
+  expect(env.GIT_CONFIG_GLOBAL).toBe("/dev/null");
+  expect(env.GIT_CONFIG_SYSTEM).toBe("/dev/null");
+  expect(env.GIT_TERMINAL_PROMPT).toBe("0");
+  // PATH and the ssh transport are deliberately the caller's: whoever sets them
+  // already chooses which `git` runs, and a working GIT_SSH_COMMAND is how a
+  // suite proves this file touches no network.
+  expect(env.PATH).toBe(process.env.PATH);
+});
+
+// "Outside the repository" is a claim about the whole ancestor chain, because
+// git walks UP from its cwd. It is asserted, and a failed assertion refuses.
+test("a scratch directory inside a git worktree is refused rather than read from", () => {
+  withFixture({}, (repo) => {
+    const enclosing = `${repo}-tmproot`;
+    mkdirSync(join(enclosing, "tmp"), { recursive: true });
+    git(enclosing, "init", "-q");
+    const measured = withEnv({ TMPDIR: join(enclosing, "tmp") }, () => measure(repo));
+    expect(measured.verdicts.D).toBe("UNKNOWN");
+    expect(measured.evidence("D")).toContain("is inside the git worktree");
+  });
+});
+
+// A URL only the checkout could resolve names nothing where the question is
+// asked, so it is refused in its own words rather than as an unreadable remote.
+test("an origin relative to the checkout is refused, not asked from somewhere else", () => {
+  withFixture({}, (repo) => {
+    git(repo, "config", "remote.origin.url", "sibling-origin.git");
+    const measured = measure(repo);
+    expect(measured.verdicts.D).toBe("UNKNOWN");
+    expect(measured.evidence("D")).toContain("relative to the checkout");
   });
 });
 

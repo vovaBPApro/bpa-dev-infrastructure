@@ -183,11 +183,19 @@
 //      refs/bpa-meteorite-proof-mirrors/<tree_sha>/<sha256>, both pointing at
 //      the commit the run proved. This command recomputes the digest of the
 //      bytes it read, asks origin for both refs, and requires both to exist and
-//      to point at that same commit. Forging a green now costs push access to
-//      origin -- the landing gate's own boundary -- rather than one `printf`,
-//      and a reviewer can re-derive the whole claim with one command:
-//      `git ls-remote origin refs/bpa-meteorite-proofs/<sha>/<digest>`, which
-//      the evidence string prints.
+//      to point at that same commit. A reviewer can re-derive the whole claim
+//      with one command: `git ls-remote <the pinned URL>
+//      refs/bpa-meteorite-proofs/<sha>/<digest>`, which the evidence prints.
+//   3. Verifying a URL is not verifying what is contacted. The sixth review
+//      greened D and A on a correctly pinned checkout with one `git config`
+//      write -- `url.<local path>.insteadOf`, and `core.sshCommand` by a second
+//      route -- both in the SHARED config any lane worktree can write, neither
+//      visible in `remote.origin.url`. So the anchor read now leaves the
+//      repository entirely: no `-C`, a scratch cwd asserted to be inside no
+//      worktree, global/system config neutralized, and the inherited
+//      GIT_DIR/GIT_CONFIG* overrides deleted (anchorReadEnv, anchorReadCwd).
+//      Forging a green costs push access to origin -- the landing gate's own
+//      boundary -- rather than one `printf` or one config line.
 //
 // The writer half of rule 2 IS NOT LANDED. meteorite/run.sh writes no anchor
 // today (the artifact writer itself lives unlanded on ag-v3-5.36), so the
@@ -199,7 +207,11 @@
 //
 // What remains outside this boundary is stated plainly: whoever can push to
 // origin can anchor whatever they wrote, exactly as whoever can push to origin
-// can land a green checker. Gate G's bootstrap arm still greens on a journal and
+// can land a green checker. And whoever can rewrite this host's PATH, its `git`
+// binary or ssh's own configuration is inside the measurement rather than
+// redirecting it from the side -- that is the disclosed root-equivalence
+// ceiling, and it is a different act from the lane-writable repository config
+// rule 3 closes. Gate G's bootstrap arm still greens on a journal and
 // still carries the original ceiling, unchanged and unclosed: the cheap tell
 // named there ($0 must be the sentinel's own path) remains available and unused.
 //
@@ -862,10 +874,25 @@ function pinnedRemote(tree: Tree): string | null {
   return text.match(/^\s+git_remote:\s*(\S+)/m)?.[1] ?? null;
 }
 
+// A URL git would resolve against the repository's own directory. This command
+// asks its remote reads from outside every repository (see anchorReadCwd), so
+// such a URL has no meaning where the question is asked, and it is refused with
+// its own sentence rather than becoming a confusing "could not be asked".
+function isRepositoryRelative(url: string): boolean {
+  if (url.startsWith("/") || url.startsWith("~")) return false;
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(url)) return false; // scheme://host/path
+  if (/^[^/]+:/.test(url)) return false; // user@host:path
+  return true;
+}
+
 // The single URL the anchor may be asked of. Everything here is refused rather
 // than worked around, for gate/land.sh's reason: local refs -- including
 // refs/remotes/origin/* -- are writable by any lane sharing this Git directory,
 // so only the answer origin itself gives at one verified URL is evidence.
+//
+// Reading the URL from the repository's config is safe BECAUSE the tracked pin
+// must vouch for the string. What was never safe is letting that same config
+// decide what the string means -- see anchorReadEnv below.
 function anchorOrigin(tree: Tree): { url: string } | { reason: string } {
   const configured = Bun.spawnSync(["git", "-C", tree.repo, "config", "--get-all", "remote.origin.url"], { timeout: GIT_TIMEOUT_MS });
   const urls = configured.stdout.toString().split("\n").map((line) => line.trim()).filter(Boolean);
@@ -880,7 +907,103 @@ function anchorOrigin(tree: Tree): { url: string } | { reason: string } {
   if (pin !== null && pin !== urls[0]) {
     return { reason: `origin is configured as ${urls[0]} but the tracked pin (${PARAMS}: repos.git_remote) is ${pin}, so this checkout is pointed at a remote the repository does not vouch for` };
   }
+  if (isRepositoryRelative(urls[0]!)) {
+    return { reason: `origin is configured as ${urls[0]}, which is relative to the checkout, and an anchor is read from outside every repository — a relative address names nothing there` };
+  }
   return { url: urls[0]! };
+}
+
+// ---------------------------------------------------------------------------
+// Asking a remote WITHOUT the repository underneath the question
+//
+// The sixth review greened gates D and A on a correctly pinned canonical
+// checkout with ONE `git config` write and no credential. `url.<local
+// path>.insteadOf <the pinned URL>` leaves `git config --get remote.origin.url`
+// answering the pinned string, satisfies the single-URL, pushurl and tracked-pin
+// checks above, and rewrites what git actually CONTACTS to a bare repository the
+// lane created. `core.sshCommand` does the same by a second route that
+// `ls-remote --get-url` cannot even see -- and this installation already sets
+// that key. Both land in the SHARED common-dir config, which every linked lane
+// worktree can write and which review-policy names as lane-writable. So the
+// four checks above verified the URL string and nothing about the question.
+//
+// Enumerating the redirect knobs (url.*.insteadOf, url.*.pushInsteadOf,
+// core.sshCommand, proxies, protocol settings, and whatever the next git adds)
+// would be one release behind forever. This command therefore does not
+// enumerate them: it LEAVES THE CONTEXT THAT SUPPLIES THEM. Every remote read
+// runs
+//
+//   - with no `-C <repo>`, from a scratch directory ASSERTED to be inside no
+//     git worktree, so there is no local or common-dir config to consult;
+//   - with GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM at /dev/null (and
+//     GIT_CONFIG_NOSYSTEM set), so ~/.gitconfig and /etc/gitconfig supply
+//     nothing either;
+//   - with every inherited GIT_CONFIG*, GIT_DIR, GIT_WORK_TREE and sibling
+//     override deleted from the child environment, so a rewrite that can no
+//     longer arrive from a file cannot arrive from the environment instead.
+//
+// What is deliberately NOT scrubbed: PATH and the ssh transport variables
+// (GIT_SSH_COMMAND, GIT_SSH). Whoever sets this command's environment already
+// chooses which `git` binary runs, so scrubbing those buys nothing real, and a
+// working GIT_SSH_COMMAND is how a suite proves hermeticity by pointing it at
+// /bin/false. On this host the neutralized config costs nothing operationally:
+// the deploy key reaches origin through ~/.ssh/config (Host github.com,
+// IdentityFile /root/.ssh/id_github_vova), not through core.sshCommand. A host
+// where the ONLY route to origin is a git config value now fails to reach
+// origin, and the gate says UNKNOWN -- fail-closed, never a forged PASS.
+//
+// This is the file's ONLY remote read. The rehearsal world's git calls (init,
+// commit and a clone of a scratch tree this command created moments earlier)
+// contact no remote and vouch for nothing: their verdict comes from executing
+// the bootstrap afterwards, so redirecting them can only break a world, never
+// forge one. They are deliberately left as they are.
+const GIT_CONTEXT_ENV = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_COMMON_DIR",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_NAMESPACE",
+  "GIT_CEILING_DIRECTORIES",
+  "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+];
+
+export function anchorReadEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [name, value] of Object.entries(process.env)) {
+    if (value === undefined) continue;
+    if (GIT_CONTEXT_ENV.includes(name) || name.startsWith("GIT_CONFIG")) continue;
+    env[name] = value;
+  }
+  env.GIT_CONFIG_GLOBAL = "/dev/null";
+  env.GIT_CONFIG_SYSTEM = "/dev/null";
+  env.GIT_CONFIG_NOSYSTEM = "1";
+  // With no configuration there is no credential helper either; a prompt would
+  // hang until the timeout rather than answering the question.
+  env.GIT_TERMINAL_PROMPT = "0";
+  return env;
+}
+
+// The directory a remote read runs in. git discovers configuration by walking
+// UP from its cwd, so "outside every repository" is a claim about the whole
+// ancestor chain -- asserted here, never assumed, because a temp root that
+// happens to sit inside a checkout would restore exactly the surface this
+// function exists to leave. A failed assertion is a refusal, not a fallback.
+function anchorReadCwd(): { dir: string } | { reason: string } {
+  let dir: string;
+  try {
+    dir = mkdtempSync(join(tmpdir(), "cutover-anchor-read-"));
+  } catch {
+    return { reason: `there is no temporary directory to ask origin from, and this command does not ask from inside a repository` };
+  }
+  const discovered = Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], { cwd: dir, env: anchorReadEnv(), timeout: GIT_TIMEOUT_MS });
+  if (discovered.exitCode === 0) {
+    const top = discovered.stdout.toString().trim() || "an enclosing checkout";
+    rmSync(dir, { recursive: true, force: true });
+    return { reason: `the scratch directory a remote read would run from (${dir}) is inside the git worktree ${top}, whose configuration can rewrite the URL being asked, so the anchor was not asked for at all` };
+  }
+  return { dir };
 }
 
 // Does ORIGIN carry the anchor for exactly these bytes? Both namespaces must
@@ -894,7 +1017,21 @@ function proofAnchor(tree: Tree, artifact: RebuildArtifact): { ref: string } | {
   const leaf = `${artifact.treeSha}/${artifact.digest}`;
   const ref = `${PROOF_ANCHOR_NAMESPACE}/${leaf}`;
   const mirror = `${PROOF_ANCHOR_MIRROR_NAMESPACE}/${leaf}`;
-  const listed = Bun.spawnSync(["git", "-C", tree.repo, "ls-remote", "--refs", origin.url, ref, mirror], { timeout: GIT_TIMEOUT_MS });
+  // Asked from outside every repository, with ambient configuration
+  // neutralized: the URL was verified four ways above, and this is what stops
+  // the config under it from deciding where that URL leads.
+  const scratch = anchorReadCwd();
+  if ("reason" in scratch) return { reason: scratch.reason };
+  let listed: ReturnType<typeof Bun.spawnSync>;
+  try {
+    listed = Bun.spawnSync(["git", "ls-remote", "--refs", origin.url, ref, mirror], {
+      cwd: scratch.dir,
+      env: anchorReadEnv(),
+      timeout: GIT_TIMEOUT_MS,
+    });
+  } finally {
+    rmSync(scratch.dir, { recursive: true, force: true });
+  }
   if (listed.signalCode || listed.exitCode === null) {
     return { reason: `asking ${origin.url} for ${ref} was killed (${listed.signalCode ?? "no exit status"}), so whether origin vouches for this artifact is unmeasured` };
   }

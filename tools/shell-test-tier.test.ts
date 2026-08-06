@@ -64,6 +64,13 @@ const runnableShellTests = [
   // with V3-5.2 r2 and had never been registered, so nothing in the gate ran it.
   "orchestrator/heartbeat-writer.test.sh",
   "orchestrator/session-hook-wiring.test.sh",
+  // V3-5.27. The landing path's own reproducibility from a bare clone: the gate
+  // supplies its committer identity instead of inheriting the canonical
+  // checkout's, and every ref the rebuild proof dereferences is resolved or
+  // refused by name. Both gaps were measured landing from a fresh clone on
+  // 2026-08-06 and both were invisible to every existing lock, because every
+  // other gate fixture configures an identity before it runs the gate.
+  "gate/land-bare-clone.test.sh",
 ] as const;
 
 const excludedShellTests = {} as const;

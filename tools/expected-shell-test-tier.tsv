@@ -12,6 +12,7 @@
 # correct answer.
 bootstrap/bootstrap.test.sh
 bootstrap/provision-service-user.test.sh
+gate/land-bare-clone.test.sh
 gate/land-rollback.test.sh
 gate/land-target-branch.test.sh
 gate/land.test.sh

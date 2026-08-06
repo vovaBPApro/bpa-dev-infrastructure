@@ -789,7 +789,14 @@ printf 'commit: %s fixture\nverify: %s\nresult: clean\nsecret-scan: clean\nremai
   "$verify_env_sha" 'test -z "${BUN_BIN+set}" && test -z "${LAND_CHECK_PATH+set}"' \
   > "$fixture_root/verify-env-scrub-report.md"
 verify_env_output="$fixture_root/verify-env-scrub-output.txt"
-"$land" --branch ag-verify-env-scrub --item-id ag-verify-env-scrub --report "$fixture_root/verify-env-scrub-report.md" --repo "$fixture_root/verify-env-scrub-repo" --run-verify >"$verify_env_output" 2>&1
+# Named, not bare. Under `set -e` a failing landing would abort this file with no
+# message at all, and the reader would be left holding the same missing-output
+# line that made this defect class unreadable the first time.
+if ! "$land" --branch ag-verify-env-scrub --item-id ag-verify-env-scrub --report "$fixture_root/verify-env-scrub-report.md" --repo "$fixture_root/verify-env-scrub-repo" --run-verify >"$verify_env_output" 2>&1; then
+  echo "verify-env-scrub: the post-merge verify child saw the gate's own land_resolve_bun exports" >&2
+  cat "$verify_env_output" >&2
+  exit 1
+fi
 assert_output_has "$verify_env_output" 'LAND step=post-merge-verify status=pass'
 assert_output_lacks "$verify_env_output" 'caller-bun-override-refused'
 assert git -C "$fixture_root/verify-env-scrub-repo" merge-base --is-ancestor "$verify_env_sha" HEAD

@@ -1,0 +1,54 @@
+# The non-git host state of THIS installation: everything a rebuilt server needs
+# that the repository alone cannot supply.
+#
+# `instructions/reproducible-from-git.md` requires exactly this file by its own
+# words -- "Host state that must NOT be in git is enumerated instead ... what it
+# is, where it goes, what permissions it needs, and the command that verifies
+# it" -- and until now no such enumeration existed. The meteorite test proves the
+# REPOSITORY rebuilds a host; it says nothing about the credentials, the state
+# database, or the mission history, and a correct rebuild that loses those is
+# still a loss. Operator order, Telegram 2734: back the set up to his Drive
+# «щоб я потім хоч десяток серверів міг підняти».
+#
+# Format: path<TAB>kind<TAB>what<TAB>mode<TAB>verify-command<TAB>in-backup
+#
+#   path            absolute path on this host. Never a value, only a location:
+#                   this file is tracked, so a secret's CONTENT must never reach
+#                   it (Hard Floor 4).
+#   kind            classification token, no whitespace.
+#   what            one line on why a new server needs it.
+#   mode            the octal permission the path must carry.
+#   verify-command  a single shell line, exit 0 iff the row holds. It checks the
+#                   permission too, because a key restored world-readable is a
+#                   different defect from a key not restored at all. Run every
+#                   row with `bun tools/backup-host-state.ts --check`; that is
+#                   also the executable half of cutover gate F, whose current
+#                   reading of this file checks only its shape.
+#   in-backup       yes | no. `no` means the repository already reproduces it,
+#                   so copying it off-host would only create a second thing to
+#                   keep in sync -- see the two rendered rows at the bottom.
+#
+# Every cell must be non-empty; an unknown value is a FAIL, never a blank.
+#
+# One property of row 3 is deliberate and worth naming once: the service-account
+# key is the credential the backup tool authenticates to Drive with, and it is
+# also inside the archive. Recovering it from the archive therefore needs the
+# operator's own browser session on the Drive, not the key. He ordered that
+# explicitly ("той самий ключ, який ти використовуєш для доступу до цього Google
+# Диска"), and it is sound -- he is the second factor.
+/root/.ssh/id_github_vova	ssh-key	GitHub deploy key; without it a rebuilt host cannot clone this repository at all, so it is the first thing the meteorite path needs	600	test -s /root/.ssh/id_github_vova && test "$(stat -c %a /root/.ssh/id_github_vova)" = 600	yes
+/root/.config/bpa/orchestrator.env	secret-env	Orchestrator and Telegram-daemon environment: bot token, chat binding, lease and watchdog values	600	test -s /root/.config/bpa/orchestrator.env && test "$(stat -c %a /root/.config/bpa/orchestrator.env)" = 600	yes
+/root/.config/bpa/oauth/gcp-sa-bpapro-agents.json	service-key	GCP service-account key; the agent's Google Drive credential, and the one this backup tool itself authenticates with	600	test -s /root/.config/bpa/oauth/gcp-sa-bpapro-agents.json && test "$(stat -c %a /root/.config/bpa/oauth/gcp-sa-bpapro-agents.json)" = 600	yes
+/root/.config/bpa/oauth/google.env	secret-env	Google API client configuration for the agent's Drive and Sheets access	600	test -s /root/.config/bpa/oauth/google.env && test "$(stat -c %a /root/.config/bpa/oauth/google.env)" = 600	yes
+/root/.config/bpa/oauth/qbo.env	secret-env	QuickBooks API credentials used by the product-side integration work	600	test -s /root/.config/bpa/oauth/qbo.env && test "$(stat -c %a /root/.config/bpa/oauth/qbo.env)" = 600	yes
+/root/.claude/.credentials.json	provider-auth	Claude CLI credential; minted by an interactive login that is operator-only, so a lost copy costs an operator session	600	test -s /root/.claude/.credentials.json && test "$(stat -c %a /root/.claude/.credentials.json)" = 600	yes
+/root/.codex/auth.json	provider-auth	Codex CLI credential; same operator-only interactive login, and today the fleet's working provider	600	test -s /root/.codex/auth.json && test "$(stat -c %a /root/.codex/auth.json)" = 600	yes
+/root/.codex/config.toml	provider-config	Codex CLI configuration as tuned on this host	600	test -s /root/.codex/config.toml && test "$(stat -c %a /root/.codex/config.toml)" = 600	yes
+/root/bpa-dev-infrastructure/orchestrator/runtime.env	host-config	Per-host launcher configuration (ports, chat binding, provider and model choice); gitignored by design, its tracked contract is runtime.env.example	600	test -s /root/bpa-dev-infrastructure/orchestrator/runtime.env && test "$(stat -c %a /root/bpa-dev-infrastructure/orchestrator/runtime.env)" = 600	yes
+/root/bpa-dev-infrastructure/runtime/state.db	state-db	The v3 durable core state database: missions, lanes, leases. This is the system's memory of what it was doing	644	test -s /root/bpa-dev-infrastructure/runtime/state.db && test "$(stat -c %a /root/bpa-dev-infrastructure/runtime/state.db)" = 644	yes
+/root/.config/bpa/orchestrator-state.sqlite	state-db	The v1 orchestrator state database, retained: the pre-cutover history nothing else holds	644	test -s /root/.config/bpa/orchestrator-state.sqlite && test "$(stat -c %a /root/.config/bpa/orchestrator-state.sqlite)" = 644	yes
+/root/bpa-dev-infrastructure/orchestrator/runtime	evidence-dir	Ops journal plus every lane task and terminal report; the record of what the fleet did and why	700	test -d /root/bpa-dev-infrastructure/orchestrator/runtime && test "$(stat -c %a /root/bpa-dev-infrastructure/orchestrator/runtime)" = 700 && test -n "$(ls -A /root/bpa-dev-infrastructure/orchestrator/runtime)"	yes
+/root/.local/state/bpa-dev-infrastructure/evidence	evidence-dir	Durable evidence under XDG_STATE_HOME, including the latest meteorite result	755	test -d /root/.local/state/bpa-dev-infrastructure/evidence && test "$(stat -c %a /root/.local/state/bpa-dev-infrastructure/evidence)" = 755 && test -n "$(ls -A /root/.local/state/bpa-dev-infrastructure/evidence)"	yes
+/root/bpa-dev-infrastructure/instance/decisions/inbox.jsonl	capture	Raw inbound operator messages. Deliberately never committed (it may carry credentials), and the only complete copy of his verbatim words before triage	644	test -s /root/bpa-dev-infrastructure/instance/decisions/inbox.jsonl && test "$(stat -c %a /root/bpa-dev-infrastructure/instance/decisions/inbox.jsonl)" = 644	yes
+/root/.local/bin/orch-fleet-nudge.sh	rendered-script	Installed by bootstrap from the tracked source; reproduced by re-running the installer, so it is enumerated but not archived	755	test -s /root/.local/bin/orch-fleet-nudge.sh && test "$(stat -c %a /root/.local/bin/orch-fleet-nudge.sh)" = 755	no
+/etc/systemd/system/bpa-orchestrator.service	rendered-unit	Representative of the rendered unit set; bootstrap/install.sh regenerates every unit from bootstrap/units/*.in, so archiving them would only create drift	644	test -s /etc/systemd/system/bpa-orchestrator.service && test "$(stat -c %a /etc/systemd/system/bpa-orchestrator.service)" = 644	no

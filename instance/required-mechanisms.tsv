@@ -37,3 +37,4 @@ checker:model-pin	checker	tools/check-model-pin.ts
 guard:pre-push	guard	gate/push-guard.sh
 backup:host-state	tool	tools/backup-host-state.ts
 installer:whisper	installer	tools/whisper/install.sh
+checker:cutover-readiness	checker	tools/check-cutover-readiness.ts

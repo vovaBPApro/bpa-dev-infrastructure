@@ -10,7 +10,17 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-async function fixture(failStage = "", checkedOutSha = "") {
+// The evidence line meteorite/live-orchestrator-stage.sh emits from inside the
+// container. The runner judges the orchestrator-live stage on THIS, never on the
+// stage's exit status, so the fixture must be able to vary it independently of
+// success — which is exactly what the red cases below do.
+const LIVENESS_LINE =
+  "METEORITE-LIVENESS proven=yes session=meteorite-orchestrator provider=claude" +
+  " provider_pid=4242 pulse_interval=5 pulse_first=1786000000 pulse_last=1786000005" +
+  " startup_handshake=yes torn_down=yes substitutions=provider" +
+  " unproven=cgroup-isolation,provider-session,telegram-transport,watchdog-supervision\n";
+
+async function fixture(failStage = "", checkedOutSha = "", livenessOutput = LIVENESS_LINE) {
   const root = await mkdtemp(join(tmpdir(), "meteorite-test-"));
   roots.push(root);
   const bin = join(root, "bin");
@@ -25,6 +35,7 @@ case "$1" in
     command="\${*:3}"
     if [[ "$command" == *"$FAIL_STAGE"* && -n "$FAIL_STAGE" ]]; then exit 19; fi
     if [[ "$command" == *"git -C /work/"*" rev-parse HEAD"* ]]; then printf '%s\\n' "$EXPECTED_SHA"; fi
+    if [[ "$command" == *"live-orchestrator-stage.sh"* ]]; then printf '%s' "$LIVENESS_OUTPUT"; fi
     ;;
   stop|rm) ;;
   *) exit 91 ;;
@@ -32,19 +43,30 @@ esac
 `);
   await chmod(docker, 0o755);
   const report = join(root, "report.md");
+  const artifact = join(root, "result.json");
   const trace = join(root, "docker.trace");
   const sha = "0123456789abcdef0123456789abcdef01234567";
   const env = {
     ...process.env,
     PATH: `${bin}:${process.env.PATH}`,
     METEORITE_REPORT: report,
+    METEORITE_ARTIFACT: artifact,
     DOCKER_TRACE: trace,
     FAIL_STAGE: failStage,
     EXPECTED_SHA: checkedOutSha || sha,
+    LIVENESS_OUTPUT: livenessOutput,
     METEORITE_DONOR_SHA: sha,
     METEORITE_DONOR_REF: `refs/meteorite-candidates/1700000000-123-${sha}/v2-deprecated`,
   };
-  return { env, report, trace, sha };
+  return { env, report, artifact, trace, sha };
+}
+
+async function readArtifact(path: string) {
+  return JSON.parse(await readFile(path, "utf8"));
+}
+
+function verdictOf(result: { stages: { name: string; verdict: string }[] }, stage: string) {
+  return result.stages.find((entry) => entry.name === stage)?.verdict;
 }
 
 describe("meteorite runner", () => {
@@ -196,5 +218,171 @@ describe("meteorite runner", () => {
     expect(report).toContain("blocker: full-test-suite command failed");
     expect(report).toContain("Telegram transport —");
     expect(await readFile(f.trace, "utf8")).toContain("rm -f container-id");
+  });
+});
+
+// ── The orchestrator-live stage and the result artifact (V3-5.36) ──────────
+//
+// Cutover gate D: the meteorite must START the orchestrator and assert it
+// reaches a live state, rather than assert that files copied. The stage's
+// verdict is carried by the evidence line the container emits, so every case
+// here varies that line rather than the stage's exit status — a stage that
+// exits 0 having proven nothing is the precise failure being locked out.
+describe("meteorite orchestrator-live stage", () => {
+  test("the run starts the orchestrator and records its liveness evidence", async () => {
+    const f = await fixture();
+    const run = Bun.spawnSync(["bash", runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    expect(run.exitCode).toBe(0);
+    const trace = await readFile(f.trace, "utf8");
+    expect(trace).toContain("meteorite/live-orchestrator-stage.sh");
+    // The stage runs against the installed tree and the state database bootstrap
+    // created: the launcher's lease/reap branch is guarded by that file existing,
+    // and skipping it would prove the one configuration a real host never runs in.
+    expect(trace).toContain("METEORITE_LIVE_INSTALL_ROOT=/work/install");
+    expect(trace).toContain("METEORITE_LIVE_STATE_DB=/work/runtime/state.db");
+    const report = await readFile(f.report, "utf8");
+    expect(report).toContain("orchestrator-live: PASS");
+    expect(report).toContain("orchestrator liveness boundary —");
+  });
+
+  test("a stage list without the start stage fails closed instead of reporting clean", async () => {
+    const root = await mkdtemp(join(tmpdir(), "meteorite-no-live-stage-"));
+    roots.push(root);
+    const stripped = join(root, "run.sh");
+    const source = await readFile(runner, "utf8");
+    const withoutStage = source
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith('"orchestrator-live|'))
+      .join("\n");
+    expect(withoutStage).not.toBe(source);
+    await writeFile(stripped, withoutStage);
+
+    const f = await fixture();
+    const run = Bun.spawnSync(["bash", stripped, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    expect(run.exitCode).not.toBe(0);
+    const report = await readFile(f.report, "utf8");
+    expect(report).toContain("result: NO-GO");
+    expect(report).toContain("stage-contract: NO-GO");
+    expect(report).toContain("blocker: required stage(s) not executed: orchestrator-live");
+    expect(report).not.toContain("result: clean");
+    const result = await readArtifact(f.artifact);
+    expect(result.finished).toBe(false);
+    expect(result.liveness.proven).toBe(false);
+  });
+
+  test("a liveness assertion that produces no evidence fails the stage", async () => {
+    const f = await fixture("", "", "");
+    const run = Bun.spawnSync(["bash", runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    expect(run.exitCode).not.toBe(0);
+    const report = await readFile(f.report, "utf8");
+    expect(report).toContain("result: NO-GO");
+    expect(report).toContain("orchestrator-live: NO-GO");
+    expect(report).toContain("exactly one is required");
+    const result = await readArtifact(f.artifact);
+    expect(result.liveness).toEqual({ proven: false, reason: "evidence-line-count-0" });
+    expect(verdictOf(result, "orchestrator-live")).toBe("NO-GO");
+  });
+
+  test("an unproven liveness verdict is refused and carries its reason", async () => {
+    const f = await fixture("", "", "METEORITE-LIVENESS proven=no reason=liveness-stamp-not-advancing\n");
+    const run = Bun.spawnSync(["bash", runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    expect(run.exitCode).not.toBe(0);
+    const report = await readFile(f.report, "utf8");
+    expect(report).toContain("blocker: the orchestrator did not reach a live state: liveness-stamp-not-advancing");
+    const result = await readArtifact(f.artifact);
+    expect(result.liveness).toEqual({ proven: false, reason: "liveness-stamp-not-advancing" });
+  });
+
+  test("a launcher mechanism replaced by a stand-in cannot produce a clean rebuild", async () => {
+    // The provider binary is the one substitution a credential-free container
+    // forces. Anything beyond it means the launcher's own fail-closed wiring was
+    // stubbed, and a rebuild proof that accepted that would be proving the
+    // fixture rather than the repository.
+    const f = await fixture("", "", LIVENESS_LINE.replace("substitutions=provider", "substitutions=provider,auth-preflight,mission-cli"));
+    const run = Bun.spawnSync(["bash", runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    expect(run.exitCode).not.toBe(0);
+    const report = await readFile(f.report, "utf8");
+    expect(report).toContain("result: NO-GO");
+    expect(report).toContain("substituted launcher mechanisms: substitutions=provider,auth-preflight,mission-cli");
+    const result = await readArtifact(f.artifact);
+    expect(result.liveness).toEqual({ proven: false, reason: "unexpected-substitutions" });
+  });
+});
+
+describe("meteorite result artifact", () => {
+  test("a green run writes a finished artifact with every stage verdict and the liveness summary", async () => {
+    const f = await fixture();
+    const run = Bun.spawnSync(["bash", runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    expect(run.exitCode).toBe(0);
+    expect(run.stdout.toString()).toContain(`[meteorite] artifact: ${f.artifact}`);
+    const result = await readArtifact(f.artifact);
+    expect(result.schema).toBe("meteorite-result/v1");
+    expect(result.finished).toBe(true);
+    expect(result.result).toBe("clean");
+    expect(result.blocker).toBe("none");
+    expect(result.tree_sha).toBe(f.sha);
+    expect(result.requested_sha).toBe(f.sha);
+    expect(result.finished_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+    for (const stage of [
+      "container-start", "prerequisites", "clone", "sha-verification",
+      "bootstrap-test-prerequisites", "bootstrap-dry-run", "bootstrap-install",
+      "bootstrap-verify-source", "test-prerequisites", "full-test-suite",
+      "unit-drift", "orchestrator-live",
+    ]) {
+      expect(verdictOf(result, stage), `${stage} verdict`).toBe("PASS");
+    }
+    expect(result.liveness.proven).toBe(true);
+    expect(result.liveness.session).toBe("meteorite-orchestrator");
+    expect(result.liveness.provider).toBe("claude");
+    expect(result.liveness.substitutions).toBe("provider");
+    expect(result.liveness.pulse_first).toBe("1786000000");
+    expect(result.liveness.pulse_last).toBe("1786000005");
+    expect(result.liveness.torn_down).toBe("yes");
+    // The boundaries the container cannot cross travel WITH the proof. A reader
+    // that only sees `proven: true` would otherwise read a stand-in provider as
+    // a live orchestrator session.
+    expect(result.liveness.unproven).toContain("provider-session");
+    expect(result.liveness.unproven).toContain("cgroup-isolation");
+  });
+
+  test("a killed run writes finished:false, the failing stage, and no later stages", async () => {
+    const f = await fixture("bun test");
+    const run = Bun.spawnSync(["bash", runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    expect(run.exitCode).not.toBe(0);
+    const result = await readArtifact(f.artifact);
+    expect(result.finished).toBe(false);
+    expect(result.result).toBe("NO-GO");
+    expect(result.blocker).toBe("full-test-suite command failed");
+    expect(verdictOf(result, "full-test-suite")).toBe("NO-GO");
+    expect(verdictOf(result, "bootstrap-install")).toBe("PASS");
+    expect(verdictOf(result, "unit-drift")).toBeUndefined();
+    expect(verdictOf(result, "orchestrator-live")).toBeUndefined();
+    expect(result.liveness).toEqual({ proven: false, reason: "stage-not-reached" });
+  });
+
+  test("a refusal before Docker still writes a parseable artifact", async () => {
+    const f = await fixture();
+    const run = Bun.spawnSync(["bash", runner], { env: f.env });
+    expect(run.exitCode).not.toBe(0);
+    const result = await readArtifact(f.artifact);
+    expect(result.finished).toBe(false);
+    expect(result.result).toBe("NO-GO");
+    expect(result.tree_sha).toBe("UNMEASURED");
+    expect(result.requested_sha).toBe("UNMEASURED");
+    expect(verdictOf(result, "ref-validation")).toBe("NO-GO");
+  });
+
+  test("the default artifact path is the evidence area beside the report, outside any checkout", async () => {
+    const source = await readFile(runner, "utf8");
+    expect(source).toContain("bpa-dev-infrastructure/evidence/meteorite-latest.json");
+    const root = await mkdtemp(join(tmpdir(), "meteorite-artifact-home-"));
+    roots.push(root);
+    const f = await fixture();
+    const env = { ...f.env, XDG_STATE_HOME: root };
+    delete env.METEORITE_ARTIFACT;
+    const run = Bun.spawnSync(["bash", runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env });
+    expect(run.exitCode).toBe(0);
+    const artifact = join(root, "bpa-dev-infrastructure", "evidence", "meteorite-latest.json");
+    expect((await readArtifact(artifact)).result).toBe("clean");
   });
 });

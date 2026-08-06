@@ -107,6 +107,11 @@ export ORCH_SINGLETON_LOCK_FILE="$SINGLETON_LOCK"
 export ORCH_LIVENESS_FILE="$SCRATCH/orchestrator.liveness"
 export ORCH_TEST_PROVIDER_PIDS="$SCRATCH/provider-pids"
 export ORCH_PROVIDER=codex
+# Same reasoning as orchestrator/launch-handshake-bounded.test.sh: this suite's
+# subject is the fail-closed singleton, its tmux is a PATH shim onto a private
+# socket, and it must stay runnable where systemd is absent. Cgroup placement is
+# rehearsed against real units in orchestrator/tmux-isolation.test.sh.
+export ORCH_TMUX_ISOLATION=none
 export ORCH_AUTH_PREFLIGHT="$SCRATCH/preflight.sh"
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }

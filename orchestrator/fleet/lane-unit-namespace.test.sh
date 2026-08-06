@@ -271,6 +271,22 @@ printf '%s\n' 'lane-unit-namespace: RAN case=scanner-sees-continued-invocations'
 # ---------------------------------------------------------------------------
 LAUNCHER='orchestrator/fleet/launch-lane.sh'
 
+# The second production unit creator (V3-5.29). orchestrator/tmux-isolation.sh
+# spawns the orchestrator's tmux server into its own transient scope, because a
+# tmux server inherits the cgroup of whoever creates it and systemd stops a unit
+# by killing that cgroup -- which is how a telegram-daemon restart took the
+# orchestrator down with it for 71 minutes on 2026-08-06.
+#
+# It is production code, not a fixture, so probe_unit_name does not apply to it:
+# that guard exists to keep FIXTURES out of the live census, and a real
+# mechanism's real unit is exactly what the census is for. It is listed here
+# rather than exempted, and pinned two ways below -- the token it passes, and the
+# fact that its default name is outside `lane-*` -- so a change to either is
+# re-derived by hand instead of riding in on this entry.
+ISOLATION='orchestrator/tmux-isolation.sh'
+[[ -f "$REPO/$ISOLATION" ]] ||
+  fail "$ISOLATION no longer exists; the orchestrator has lost its cgroup isolation (workboard V3-5.29)"
+
 # Retained evidence rather than a fixture this repository runs. Enumerated one
 # path at a time on purpose: an exemption expressed as a pattern is the same hole
 # as a scan that cannot see. Each entry is re-proven below -- it must still
@@ -309,9 +325,19 @@ mapfile -t unit_creators < <(
   fail 'no file in the tracked tree invokes systemd-run -- the scanner is broken, not the tree clean'
 
 launcher_units=0
+isolation_units=0
 fixture_units=0
 for path in "${unit_creators[@]}"; do
   label="${path#"$REPO/"}"
+
+  if [[ "$label" == "$ISOLATION" ]]; then
+    while IFS= read -r token; do
+      isolation_units=$((isolation_units + 1))
+      [[ "$token" == '$ORCH_TMUX_SCOPE' ]] ||
+        fail "$ISOLATION now passes --unit $token; re-derive this entry against the new unit name"
+    done < <(unit_tokens "$path")
+    continue
+  fi
 
   if [[ "$label" == "$LAUNCHER" ]]; then
     # POSITIVE CONTROL for the scanner itself. This invocation spans seven
@@ -341,6 +367,20 @@ done
   "the scan found no --unit in $LAUNCHER, which certainly has one -- a continued invocation is invisible to the scanner and every verdict above is worthless"
 grep -q 'unit="lane-\$name"' "$REPO/$LAUNCHER" ||
   fail "$LAUNCHER no longer names real lanes lane-<name>; the whole rule above rests on that"
+[[ "$isolation_units" -ge 1 ]] || fail \
+  "the scan found no --unit in $ISOLATION, which has one; the scanner is broken, not that file clean"
+# The orchestrator's own scope must stay OUT of the lane namespace. It is a real
+# unit, so nothing stops it being named `lane-...` by a future edit -- and it
+# would then be counted as a running lane by the fleet census and reported as a
+# lane finishing by the daemon, which is V3-5.19 with a permanent unit.
+# Read the real default out of the file rather than pattern-matching its text: a
+# grep would pass on a line that no longer decides the value.
+isolation_scope="$(env -u ORCH_TMUX_SCOPE bash -c \
+  '. "$1" >/dev/null 2>&1; printf "%s" "${ORCH_TMUX_SCOPE:-}"' _ "$REPO/$ISOLATION")"
+[[ -n "$isolation_scope" ]] ||
+  fail "$ISOLATION no longer defines a default scope name; the unit it creates is unnamed"
+[[ "$isolation_scope" != lane-* ]] ||
+  fail "$ISOLATION defaults its scope to $isolation_scope, inside the live lane namespace (workboard V3-5.19)"
 [[ "$fixture_units" -ge 1 ]] || fail \
   'the scan found no fixture unit name at all; it proves nothing'
 printf '%s\n' 'lane-unit-namespace: RAN case=fixtures-outside-lane-namespace'

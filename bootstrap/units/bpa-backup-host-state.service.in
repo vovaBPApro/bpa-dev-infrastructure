@@ -1,0 +1,16 @@
+[Unit]
+Description=Back up this installation's host state off-host
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=${INSTALL_ROOT}
+EnvironmentFile=-${ENV_FILE}
+Environment=BACKUP_BUN_BIN=${BUN_BIN}
+ExecStart=${BASH_BIN} ${INSTALL_ROOT}/tools/backup-host-state-run.sh
+TimeoutStartSec=1800
+NoNewPrivileges=true
+PrivateTmp=true

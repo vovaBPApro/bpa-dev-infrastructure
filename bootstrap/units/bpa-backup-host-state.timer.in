@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly off-host backup of this installation's host state
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=5m
+Persistent=true
+Unit=bpa-backup-host-state.service
+
+[Install]
+WantedBy=timers.target

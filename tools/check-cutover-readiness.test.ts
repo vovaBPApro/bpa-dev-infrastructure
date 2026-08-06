@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -1339,8 +1339,13 @@ test("an enclosing repository does not stop the genuine anchor from being read",
 
 // `git init` copies a template directory into the new repository BEFORE writing
 // core.*, and a template `config` file survives that copy -- so a template is a
-// config injection route into the very context this command creates. The
-// explicit `--template` at an empty owned directory overrides GIT_TEMPLATE_DIR.
+// config injection route into the very context this command creates. TWO guards
+// close it and EITHER ALONE SUFFICES, which this end-to-end case cannot tell
+// apart: GIT_TEMPLATE_DIR is deleted from the child environment (locked
+// separately by the environment case below) and `--template` names an empty
+// owned directory, overriding it. The structural half of the second guard --
+// that the owned context really is built from that empty template and not from
+// this host's compiled-in default -- is locked in the context case below.
 test("a hostile git template cannot plant configuration in the owned git context", () => {
   withFixture({ anchor: null }, (repo) => {
     publishAnchor(repo, { remote: bareRepo(forgedOriginFor(repo)) });
@@ -1357,17 +1362,28 @@ test("a hostile git template cannot plant configuration in the owned git context
   });
 });
 
-// The context itself: created rather than adopted, empty of everything that
-// could rewrite a URL, and named explicitly so no discovery runs.
-test("the anchor read's git context is created by this command, bare, and free of rewrites", () => {
+// The context itself: built inside its own fresh directory, from an empty
+// template, free of everything that could rewrite a URL, and named explicitly
+// so no discovery runs.
+//
+// What this does NOT claim to lock, stated rather than implied: the exclusive
+// `mkdirSync` (no `recursive`) in anchorReadContext. mkdtemp(2) already
+// guarantees the parent directory is new, so no reachable input makes that path
+// pre-exist and no test here can force it. It is defense in depth behind
+// mkdtemp's own guarantee, not an independently verified property.
+test("the anchor read's git context is created by this command, bare, template-free, and free of rewrites", () => {
   const built = anchorReadContext();
   expect("gitDir" in built).toBe(true);
   const context = built as { dir: string; gitDir: string };
   try {
     expect(context.gitDir.startsWith(context.dir)).toBe(true);
-    // Exclusive creation: the path is this process's own, so creating it again
-    // is an error rather than an adoption of what is already there.
-    expect(() => mkdirSync(context.gitDir)).toThrow();
+    // Built from the empty template this command created, not from whatever
+    // template dir this host compiled in: git copies a template BEFORE writing
+    // core.*, so a template `config` would be config in the owned context. The
+    // tell is structural rather than a scan for known keys -- the default
+    // template populates hooks/, and an empty one leaves no hooks/ at all.
+    expect(existsSync(join(context.gitDir, "hooks"))).toBe(false);
+    expect(new Set(readdirSync(context.gitDir))).toEqual(new Set(["config", "HEAD", "objects", "refs"]));
     const listed = Bun.spawnSync(["git", "--git-dir", context.gitDir, "config", "--local", "--list"]).stdout.toString();
     expect(listed).toContain("core.bare=true");
     expect(listed).not.toContain("insteadof");

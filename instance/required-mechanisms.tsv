@@ -9,6 +9,8 @@ unit:bpa-meteorite.service	systemd	bootstrap/units/bpa-meteorite.service.in
 unit:bpa-meteorite.timer	systemd	bootstrap/units/bpa-meteorite.timer.in
 unit:bpa-deploy-drift-guard.service	systemd	bootstrap/units/bpa-deploy-drift-guard.service.in
 unit:bpa-deploy-drift-guard.timer	systemd	bootstrap/units/bpa-deploy-drift-guard.timer.in
+unit:bpa-backup-host-state.service	systemd	bootstrap/units/bpa-backup-host-state.service.in
+unit:bpa-backup-host-state.timer	systemd	bootstrap/units/bpa-backup-host-state.timer.in
 unit:orch-morning-report.service	systemd	bootstrap/units/orch-morning-report.service.in
 unit:orch-morning-report.timer	systemd	bootstrap/units/orch-morning-report.timer.in
 unit:orch-fleet-nudge.service	systemd	bootstrap/units/orch-fleet-nudge.service.in

@@ -21,6 +21,8 @@ bpa-meteorite.service	generic
 bpa-meteorite.timer	generic
 bpa-deploy-drift-guard.service	generic
 bpa-deploy-drift-guard.timer	generic
+bpa-backup-host-state.service	generic
+bpa-backup-host-state.timer	generic
 orch-morning-report.service	generic
 orch-morning-report.timer	generic
 orch-fleet-nudge.service	generic

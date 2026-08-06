@@ -677,3 +677,57 @@ test("the generic template directory carries no product-hardcoded unit (HR-309)"
   const instanceEntries = readdirSync(instanceTemplateDir);
   expect(instanceEntries.filter((e) => e.startsWith("agentic-bpa-")).length).toBe(5);
 });
+
+// ── V3-5.39: the backup rhythm is a rendered, drift-checked unit pair ───────
+//
+// HR-2171 asked for a rhythm, and until this row the backup mechanism had
+// none: it existed, it worked, and it ran only when a human typed the command.
+// A timer that lives only on the host is exactly what Hard Floor 5 forbids, so
+// the pair goes through the same tracked template path as every other unit and
+// is proven here rather than on the host.
+//
+// Deployed-unit MATCH is asserted by name and not left to the aggregate exit
+// code above: an aggregate says the fleet is consistent, which stays true if
+// this pair silently stops being part of the fleet.
+test("V3-5.39: the hourly backup pair is manifested, renders, and matches a correct deployment", () => {
+  const manifest = readFileSync(join(repoRoot, "instance", "expected-units.tsv"), "utf8");
+  const manifestUnits = new Set(
+    manifest.split("\n").filter((line) => line && !line.startsWith("#")).map((line) => line.split("\t", 1)[0]),
+  );
+  for (const unit of ["bpa-backup-host-state.service", "bpa-backup-host-state.timer"]) {
+    expect(manifestUnits.has(unit), `${unit} must be in expected-units.tsv`).toBe(true);
+    expect(existsSync(join(genericTemplateDir, `${unit}.in`)), `${unit}.in must exist`).toBe(true);
+  }
+
+  const deployedDir = mkdtempSync(join(tmpdir(), "bpa-unit-drift-backup-"));
+  try {
+    renderAllTemplates(deployedDir);
+    const result = runCheck({ SYSTEMD_SYSTEM_DIR: deployedDir, ...RENDER_ENV });
+    expect(result.stdout).toContain("MATCH bpa-backup-host-state.service");
+    expect(result.stdout).toContain("MATCH bpa-backup-host-state.timer");
+    expect(`${result.stdout}${result.stderr}`).not.toContain("PATH-MISSING bpa-backup-host-state");
+    expect(result.status).toBe(0);
+
+    // The rhythm itself, read off the RENDERED unit rather than the template:
+    // the whole of V3-2.12 was a schedule that survived review and did not
+    // survive rendering.
+    const timer = readFileSync(join(deployedDir, "bpa-backup-host-state.timer"), "utf8");
+    expect(timer).toContain("OnCalendar=hourly");
+    expect(timer).toContain("Unit=bpa-backup-host-state.service");
+    // A missed hour must still produce an archive once the host is back.
+    expect(timer).toContain("Persistent=true");
+    expect(timer).not.toMatch(/OnCalendar=\s*$/m);
+
+    // The service must run the wrapper, because the wrapper is what turns a
+    // failed run into a message. Calling the tool directly here would be a
+    // silent backup failure wearing a green unit.
+    const service = readFileSync(join(deployedDir, "bpa-backup-host-state.service"), "utf8");
+    expect(service).toContain("/tools/backup-host-state-run.sh");
+    // The passphrase is never an argument: the tool resolves the path from
+    // params, so a unit file can never become a place a passphrase leaks from.
+    expect(service).not.toContain("--passphrase-file");
+    expect(service).not.toContain("passphrase");
+  } finally {
+    rmSync(deployedDir, { recursive: true, force: true });
+  }
+});

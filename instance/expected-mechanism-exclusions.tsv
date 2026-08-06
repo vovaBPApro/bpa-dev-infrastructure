@@ -9,6 +9,8 @@ unit:bpa-meteorite.service	only reachable through an unarmed timer
 unit:bpa-meteorite.timer	activation is parked pending accepted bootstrap stage
 unit:bpa-deploy-drift-guard.service	only reachable through an unarmed timer
 unit:bpa-deploy-drift-guard.timer	V3-2.3 is parked without an independent armed witness
+unit:bpa-backup-host-state.service	only reachable through the timer below
+unit:bpa-backup-host-state.timer	V3-5.39 renders and drift-checks the pair; arming is the deploy step, as it is for every other timer here
 unit:orch-morning-report.service	only reachable through an unarmed timer
 unit:orch-morning-report.timer	activation is parked pending accepted bootstrap stage
 unit:orch-fleet-nudge.service	only reachable through an unarmed timer

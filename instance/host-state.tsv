@@ -24,9 +24,12 @@
 #                   row with `bun tools/backup-host-state.ts --check`; that is
 #                   also the executable half of cutover gate F, whose current
 #                   reading of this file checks only its shape.
-#   in-backup       yes | no. `no` means the repository already reproduces it,
-#                   so copying it off-host would only create a second thing to
-#                   keep in sync -- see the two rendered rows at the bottom.
+#   in-backup       yes | no. `no` has two distinct reasons, and both are
+#                   deliberate: either the repository already reproduces the
+#                   path, so copying it off-host would only create a second
+#                   thing to keep in sync (the two rendered rows at the bottom),
+#                   or copying it would be a defect in itself -- the backup
+#                   passphrase must never travel inside the archive it opens.
 #
 # Every cell must be non-empty; an unknown value is a FAIL, never a blank.
 #
@@ -43,14 +46,20 @@
 #      leading slash, `manifest.tsv` records the bytes and file count each was
 #      archived with, and the `mode` column below is the permission each must be
 #      restored with. `--check` then re-runs every verify-command.
-#   4. The backup passphrase is host state that is deliberately NOT on this host
-#      and NOT in this file: `backup.encryption: operator-passphrase` means the
-#      operator holds it in his own store and passes it at run time with
-#      --passphrase-file. It is therefore enumerated here as a fact rather than a
-#      path -- what it is, who holds it, and that no copy exists in the
-#      repository, in params, inside the archive or on the Drive. Losing it loses
-#      every encrypted archive, which is why the alternative mode (`none`) exists
-#      and announces itself on every run.
+#   4. The backup passphrase. `backup.encryption: operator-passphrase` means the
+#      OPERATOR holds the authoritative copy in his own store, and that copy is
+#      what opens the archives after a meteorite. Its VALUE is nowhere in the
+#      repository, in params, inside the archive or on the Drive, and losing his
+#      copy loses every encrypted archive -- which is why the alternative mode
+#      (`none`) exists and announces itself on every run.
+#
+#      A second, WORKING copy does sit on this host, because the hourly timer
+#      runs unattended and cannot be handed a passphrase interactively. It is
+#      enumerated below like any other host state -- its path, its 0600 mode and
+#      its verify-command -- and it is the one row that must NEVER be restored
+#      from the archive, because it is `in-backup: no` precisely so the archive
+#      does not carry its own key. After a rebuild, the operator writes it back
+#      from his copy; nothing else can.
 #
 # One property of row 3 is deliberate and worth naming once: the service-account
 # key is the credential the backup tool authenticates to Drive with, and it is
@@ -74,3 +83,4 @@
 /root/bpa-dev-infrastructure/instance/decisions/inbox.jsonl	capture	Raw inbound operator messages. Deliberately never committed (it may carry credentials), and the only complete copy of his verbatim words before triage	644	test -s /root/bpa-dev-infrastructure/instance/decisions/inbox.jsonl && test "$(stat -c %a /root/bpa-dev-infrastructure/instance/decisions/inbox.jsonl)" = 644	yes
 /root/.local/bin/orch-fleet-nudge.sh	rendered-script	Installed by bootstrap from the tracked source; reproduced by re-running the installer, so it is enumerated but not archived	755	test -s /root/.local/bin/orch-fleet-nudge.sh && test "$(stat -c %a /root/.local/bin/orch-fleet-nudge.sh)" = 755	no
 /etc/systemd/system/bpa-orchestrator.service	rendered-unit	Representative of the rendered unit set; bootstrap/install.sh regenerates every unit from bootstrap/units/*.in, so archiving them would only create drift	644	test -s /etc/systemd/system/bpa-orchestrator.service && test "$(stat -c %a /etc/systemd/system/bpa-orchestrator.service)" = 644	no
+/root/.config/bpa/backup-passphrase	backup-passphrase	Working copy of the GPG passphrase the hourly backup encrypts with; the operator holds the authoritative copy, so this one is never restored from the archive -- and never rides inside it, or the archive would carry its own key	600	test -s /root/.config/bpa/backup-passphrase && test "$(stat -c %a /root/.config/bpa/backup-passphrase)" = 600	no

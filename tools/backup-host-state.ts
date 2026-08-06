@@ -46,12 +46,19 @@
 // `instance/params.yaml: backup.encryption` selects the mode and this tool
 // refuses to choose for the operator:
 //
-//   operator-passphrase  GPG symmetric AES256. The passphrase arrives ONLY via
-//                        --passphrase-file at run time. It is held by the
-//                        operator, off this host; it is never in the repository,
-//                        params, the inventory, the archive or the Drive -- the
-//                        file is refused outright if it lives inside the repo.
-//                        Encrypted mode with no passphrase file fails closed.
+//   operator-passphrase  GPG symmetric AES256. The passphrase arrives ONLY as a
+//                        FILE PATH -- `--passphrase-file`, or its default
+//                        `backup.passphrase_file` in params. The VALUE is never
+//                        in the repository, params, the inventory, the archive
+//                        or the Drive, and a file resolving inside the repo is
+//                        refused outright. Encrypted mode with no passphrase
+//                        file fails closed.
+//                        The path is configuration because the hourly timer
+//                        (bpa-backup-host-state.timer) runs unattended and
+//                        cannot be handed a passphrase interactively; the host
+//                        copy is enumerated `in-backup: no`, so it never rides
+//                        inside the archive it opens. The operator's own copy
+//                        remains the authoritative one.
 //   none                 cleartext at rest, announced loudly on every run.
 //
 // An unset or unrecognised value is a named failure, never a silent default:
@@ -671,6 +678,7 @@ export type BackupParams = {
   serviceAccountKey?: string;
   keep?: number;
   encryption?: string;
+  passphraseFile?: string;
 };
 
 // A deliberately small reader over the `backup:` block of instance/params.yaml,
@@ -693,6 +701,7 @@ export function readBackupParams(repo: string): BackupParams {
     if (key === "service_account_key") params.serviceAccountKey = value;
     if (key === "keep") params.keep = Number(value);
     if (key === "encryption") params.encryption = value;
+    if (key === "passphrase_file") params.passphraseFile = value;
   }
   return params;
 }
@@ -704,6 +713,26 @@ export function resolveInventoryPath(repo: string, params: BackupParams, overrid
   const chosen = override ?? params.inventory;
   if (!chosen) return undefined;
   return isAbsolute(chosen) ? chosen : join(repo, chosen);
+}
+
+// The passphrase PATH, never its content. An unattended hourly run cannot be
+// handed a passphrase interactively, so the path has to be configuration --
+// and a declared key that nothing reads is the F4 defect (a file with two
+// meanings, one of them false), so this is the reader that gives it one.
+// `--passphrase-file` still wins, for a manual run against another archive.
+//
+// Deliberately NOT resolved against the repository root the way `inventory` is:
+// a relative value here would name a path inside the repository, which is the
+// one place assertPassphraseOffRepo exists to refuse. A non-absolute value is
+// therefore an error at the point of reading rather than a confusing refusal
+// two steps later.
+export function resolvePassphraseFile(params: BackupParams, override?: string): string | undefined {
+  const chosen = override ?? params.passphraseFile;
+  if (!chosen) return undefined;
+  if (!isAbsolute(chosen)) {
+    throw new Error(`backup.passphrase_file must be an absolute path, found ${chosen}; the passphrase lives off the repository`);
+  }
+  return chosen;
 }
 
 export function makeTransport(spec: string, params: BackupParams): Transport {
@@ -784,7 +813,8 @@ const USAGE = `usage: bun tools/backup-host-state.ts [options]
   --keep <n>               archives to retain (default: ${DEFAULT_KEEP})
   --encryption ${ENCRYPTION_MODES.join("|")}   override backup.encryption
   --passphrase-file <path> operator-held passphrase, required by and only valid
-                           for the operator-passphrase mode
+                           for the operator-passphrase mode (default: params.yaml
+                           backup.passphrase_file; the path only, never the value)
   --dry-run                build and report, upload nothing, delete nothing`;
 
 function flag(argv: string[], name: string): string | undefined {
@@ -820,7 +850,7 @@ export async function main(argv: string[]): Promise<number> {
   }
 
   const keep = Number(flag(argv, "--keep") ?? params.keep ?? DEFAULT_KEEP);
-  const passphraseFile = flag(argv, "--passphrase-file");
+  const passphraseFile = resolvePassphraseFile(params, flag(argv, "--passphrase-file"));
   const destSpec = flag(argv, "--dest")
     ?? (params.driveFolderId ? `drive:${params.driveFolderId}` : undefined);
   if (!destSpec) throw new Error(`no --dest and no backup.drive_folder_id in ${PARAMS}`);

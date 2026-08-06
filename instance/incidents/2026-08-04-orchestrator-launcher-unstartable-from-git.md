@@ -157,3 +157,57 @@ is still absent from `HEAD`, `mission-cli.ts` still implements neither `reap` no
 and the orchestrator still runs only because of two lines in the gitignored
 `orchestrator/runtime.env`. The watchdog being alive does not make the host rebuildable —
 it only means the machine can now tell someone when it stops.
+
+## Closed, 2026-08-06 — blockers 1 and 2, at `21edc86` (lane `ag-v3-5.37`)
+
+Both of this record's own lane-work items are closed. Item 3 (make the meteorite
+proof start the orchestrator) was closed earlier by V3-5.36, and it is what measured
+these two: its container stage refused with `launch-refused:error-unknown-action`,
+which is blocker 1 seen from the outside.
+
+**Blocker 1 — the unimplemented actions.** `core/mission-cli.ts` now implements
+`reap` and `lease acquire|renew|release` against a durable named-lease table in
+`core/schema.ts`, in the argument order and the exact output shape the launcher has
+always parsed. The lease is fenced by owner and fencing token; the reaper releases
+only holders that are provably dead on this host, and treats a live, foreign-host or
+malformed owner as unverifiable rather than dead.
+
+**Blocker 2 — the missing auth gate.** `orchestrator/preflight-cli-auth.sh` is a
+tracked file again, restored from `75411d9` (the last commit it was alive in) and
+committed `100755`, so a clean clone can execute it. It was run against this host's
+real credentials for both providers before landing: removing the break-glass cannot
+strand the live orchestrator.
+
+### What would now catch each one at land time
+
+This record asked for a test that locks *the caller and the callee agreeing*,
+because neither side alone looked wrong. That test exists:
+
+- `core/mission-cli-actions.test.ts` scans the tracked runtime shell for every
+  mission-cli verb it calls and fails when the CLI does not implement it. Against the
+  pre-fix vocabulary it names all eight divergent call sites with `file:line`. Note
+  why the pre-existing `tools/check-documented-mission-cli.ts` could not have caught
+  this: it scans *documentation*, and `launch.sh` calls through a `mission_cli()`
+  shell function that no scan for the documented `bun .../mission-cli.ts` form would
+  ever have seen.
+- `orchestrator/launcher-startable-from-git.test.sh` runs the real launcher with no
+  `runtime.env` and no `ORCH_AUTH_PREFLIGHT`/`ORCH_MISSION_CLI` override, against a
+  state DB created exactly as `bootstrap/install.sh` creates one. Against the pre-fix
+  tree it fails nine checks, reproducing both blockers verbatim —
+  `ERROR unknown action: reap` and the absent preflight.
+
+### What this does NOT close
+
+- **The break-glass is still in place and still load-bearing on this host.**
+  `orchestrator/runtime.env` remains gitignored and still sets `ORCH_STATE_DB` to an
+  absent path and `ORCH_AUTH_PREFLIGHT` to `/root/oldorch-breakglass/`. Nothing in
+  this lane removed those two lines — removing them is a live-host change, and it is
+  the orchestrator's call, after this branch lands. Until then the repository can
+  start an orchestrator that the running host still starts the old way, which is the
+  same divergence class this record is about, merely much smaller.
+- **Blocker 3 from the V3-5.36 finding is untouched:** `launch.sh` verifies its
+  singleton owner through `/proc/locks`, which is namespace-filtered, so no
+  orchestrator can start inside a container even now. That is filed separately as a
+  Tier-A question (workboard V3-5.38) and deliberately not softened here; the
+  full-start rehearsal above is capability-gated on exactly that probe and reports
+  `EXCLUDED case=full-start capability=proc-locks-visibility` where it is unavailable.

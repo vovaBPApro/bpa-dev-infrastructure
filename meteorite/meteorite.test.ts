@@ -1,10 +1,42 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmod, cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 const runner = process.env.METEORITE_TEST_RUNNER ?? resolve(import.meta.dir, "run.sh");
 const roots: string[] = [];
+
+async function git(...args: string[]) {
+  const run = Bun.spawnSync(["git", ...args], {
+    env: { ...process.env, GIT_AUTHOR_NAME: "test", GIT_AUTHOR_EMAIL: "test@example.invalid", GIT_COMMITTER_NAME: "test", GIT_COMMITTER_EMAIL: "test@example.invalid" },
+  });
+  if (run.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${run.stderr.toString()}`);
+  return run.stdout.toString().trim();
+}
+
+// Every ref the given origin carries, as a ref -> target map. The runner's proof
+// anchor is asked of the remote exactly the way a reader asks for it.
+async function remoteRefs(origin: string) {
+  const out = await git("ls-remote", "--refs", origin);
+  const refs = new Map<string, string>();
+  for (const line of out.split("\n").filter(Boolean)) {
+    const [sha, ref] = line.split("\t");
+    refs.set(ref, sha);
+  }
+  return refs;
+}
+
+async function digestOf(path: string) {
+  return createHash("sha256").update(await readFile(path)).digest("hex");
+}
+
+function anchorNames(treeSha: string, digest: string) {
+  return {
+    proof: `refs/bpa-meteorite-proofs/${treeSha}/${digest}`,
+    mirror: `refs/bpa-meteorite-proof-mirrors/${treeSha}/${digest}`,
+  };
+}
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -20,11 +52,30 @@ const LIVENESS_LINE =
   " startup_handshake=yes torn_down=yes substitutions=provider" +
   " unproven=cgroup-isolation,provider-session,telegram-transport,watchdog-supervision\n";
 
-async function fixture(failStage = "", checkedOutSha = "", livenessOutput = LIVENESS_LINE) {
+// The fixture is a REAL repository with a REAL (local, bare) origin, because a
+// run now ends by publishing its proof anchor there. A fixture without one would
+// either reach the network or exercise a path no real run takes; a local bare
+// remote is how gate/land.test.sh proves the same class of ref publication.
+// `params` is the tracked instance/params.yaml body, so a test can vary the one
+// home the publish destination is read from.
+async function fixture(failStage = "", checkedOutSha = "", livenessOutput = LIVENESS_LINE, params?: (origin: string) => string) {
   const root = await mkdtemp(join(tmpdir(), "meteorite-test-"));
   roots.push(root);
   const bin = join(root, "bin");
   await Bun.$`mkdir -p ${bin}`;
+  const origin = join(root, "origin.git");
+  await git("init", "-q", "--bare", origin);
+  const checkout = join(root, "checkout");
+  await Bun.$`mkdir -p ${join(checkout, "meteorite")} ${join(checkout, "instance")}`;
+  await cp(runner, join(checkout, "meteorite", "run.sh"));
+  await writeFile(
+    join(checkout, "instance", "params.yaml"),
+    params ? params(origin) : `repos:\n  git_remote: ${origin}   # pinned origin\n`,
+  );
+  await git("-C", checkout, "init", "-q");
+  await git("-C", checkout, "add", "-A");
+  await git("-C", checkout, "commit", "-qm", "baseline");
+  const localRunner = join(checkout, "meteorite", "run.sh");
   const docker = join(bin, "docker");
   await writeFile(docker, `#!/usr/bin/env bash
 set -u
@@ -45,7 +96,7 @@ esac
   const report = join(root, "report.md");
   const artifact = join(root, "result.json");
   const trace = join(root, "docker.trace");
-  const sha = "0123456789abcdef0123456789abcdef01234567";
+  const sha = await git("-C", checkout, "rev-parse", "HEAD");
   const env = {
     ...process.env,
     PATH: `${bin}:${process.env.PATH}`,
@@ -58,7 +109,7 @@ esac
     METEORITE_DONOR_SHA: sha,
     METEORITE_DONOR_REF: `refs/meteorite-candidates/1700000000-123-${sha}/v2-deprecated`,
   };
-  return { env, report, artifact, trace, sha };
+  return { env, report, artifact, trace, sha, origin, checkout, runner: localRunner };
 }
 
 async function readArtifact(path: string) {
@@ -73,24 +124,20 @@ describe("meteorite runner", () => {
   test("the default report stays outside the checkout and the run names its path", async () => {
     const root = await mkdtemp(join(tmpdir(), "meteorite-clean-tree-test-"));
     roots.push(root);
-    const checkout = join(root, "checkout");
     const stateHome = join(root, "state");
-    await Bun.$`mkdir -p ${join(checkout, "meteorite")}`;
-    await cp(runner, join(checkout, "meteorite", "run.sh"));
-    await Bun.$`git -C ${checkout} init -q`;
-    await Bun.$`git -C ${checkout} add meteorite/run.sh`;
-    await Bun.$`git -C ${checkout} -c user.name=test -c user.email=test@example.invalid commit -qm baseline`;
 
     const f = await fixture();
     const env = { ...f.env, XDG_STATE_HOME: stateHome };
     delete env.METEORITE_REPORT;
-    const localRunner = join(checkout, "meteorite", "run.sh");
-    const run = Bun.spawnSync(["bash", localRunner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env });
+    const run = Bun.spawnSync(["bash", f.runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env });
     expect(run.exitCode).toBe(0);
     const report = join(stateHome, "bpa-dev-infrastructure", "evidence", "meteorite-latest.md");
     expect(await Bun.file(report).exists()).toBe(true);
     expect(run.stdout.toString()).toContain(`[meteorite] report: ${report}`);
-    expect(Bun.spawnSync(["git", "-C", checkout, "status", "--porcelain"]).stdout.toString()).toBe("");
+    // Neither the report nor the proof anchor may leave anything behind in the
+    // checkout: an artifact in the tree makes the next landing refuse a dirty
+    // worktree, and publishing a ref must not be an exception to that.
+    expect(Bun.spawnSync(["git", "-C", f.checkout, "status", "--porcelain"]).stdout.toString()).toBe("");
   });
 
   test("every publisher-supplied test prerequisite is validated by environment name before Docker starts", async () => {
@@ -108,7 +155,7 @@ describe("meteorite runner", () => {
       const f = await fixture();
       const env = { ...f.env };
       delete env[input];
-      const run = Bun.spawnSync(["bash", runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env });
+      const run = Bun.spawnSync(["bash", f.runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env });
       expect(run.exitCode).toBe(2);
       const report = await readFile(f.report, "utf8");
       expect(report).toContain(`blocker: required input ${input} is unset or empty; use meteorite/prove-candidate.sh --ref <40-character-commit-sha>`);
@@ -120,7 +167,7 @@ describe("meteorite runner", () => {
   test("a malformed donor ref names the input and supported entry point before Docker starts", async () => {
     const f = await fixture();
     const env = { ...f.env, METEORITE_DONOR_REF: "refs/meteorite-candidates/bad/v2-deprecated" };
-    const run = Bun.spawnSync(["bash", runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env });
+    const run = Bun.spawnSync(["bash", f.runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env });
     expect(run.exitCode).toBe(2);
     const report = await readFile(f.report, "utf8");
     expect(report).toContain("blocker: METEORITE_DONOR_REF has an unsupported shape; use meteorite/prove-candidate.sh --ref <40-character-commit-sha>");
@@ -129,7 +176,7 @@ describe("meteorite runner", () => {
 
   test("a bare run fails closed instead of selecting origin/main", async () => {
     const f = await fixture();
-    const run = Bun.spawnSync(["bash", runner], { env: f.env });
+    const run = Bun.spawnSync(["bash", f.runner], { env: f.env });
     expect(run.exitCode).not.toBe(0);
     const report = await readFile(f.report, "utf8");
     expect(report).toContain("result: NO-GO");
@@ -141,7 +188,7 @@ describe("meteorite runner", () => {
 
   test("rejects an option with a missing value before starting Docker", async () => {
     const f = await fixture();
-    const run = Bun.spawnSync(["bash", runner, "--ref"], { env: f.env });
+    const run = Bun.spawnSync(["bash", f.runner, "--ref"], { env: f.env });
     expect(run.exitCode).toBe(2);
     expect(run.stderr.toString()).toContain("--ref requires a value");
     expect(await Bun.file(f.trace).exists()).toBe(false);
@@ -149,7 +196,7 @@ describe("meteorite runner", () => {
 
   test("records the selected ref, report shape, stages, and named unproven boundaries", async () => {
     const f = await fixture();
-    const run = Bun.spawnSync(["bash", runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    const run = Bun.spawnSync(["bash", f.runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
     expect(run.exitCode).toBe(0);
     const report = await readFile(f.report, "utf8");
     expect(report).toContain(`tested SHA: \`${f.sha}\``);
@@ -186,7 +233,7 @@ describe("meteorite runner", () => {
 
   test("a local source cannot yield a clean report", async () => {
     const f = await fixture();
-    const run = Bun.spawnSync(["bash", runner, "--ref", f.sha, "--repo-url", "/tmp/local-candidate"], { env: f.env });
+    const run = Bun.spawnSync(["bash", f.runner, "--ref", f.sha, "--repo-url", "/tmp/local-candidate"], { env: f.env });
     expect(run.exitCode).not.toBe(0);
     const report = await readFile(f.report, "utf8");
     expect(report).toContain("result: NO-GO");
@@ -199,7 +246,7 @@ describe("meteorite runner", () => {
   test("a checkout at a different SHA is NO-GO and names both SHAs", async () => {
     const otherSha = "fedcba9876543210fedcba9876543210fedcba98";
     const f = await fixture("", otherSha);
-    const run = Bun.spawnSync(["bash", runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    const run = Bun.spawnSync(["bash", f.runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
     expect(run.exitCode).not.toBe(0);
     const report = await readFile(f.report, "utf8");
     expect(report).toContain("result: NO-GO");
@@ -210,7 +257,7 @@ describe("meteorite runner", () => {
 
   test("a failed stage exits non-zero, reports NO-GO and names its blocker", async () => {
     const f = await fixture("bun test");
-    const run = Bun.spawnSync(["bash", runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    const run = Bun.spawnSync(["bash", f.runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
     expect(run.exitCode).not.toBe(0);
     const report = await readFile(f.report, "utf8");
     expect(report).toContain("result: NO-GO");
@@ -231,7 +278,7 @@ describe("meteorite runner", () => {
 describe("meteorite orchestrator-live stage", () => {
   test("the run starts the orchestrator and records its liveness evidence", async () => {
     const f = await fixture();
-    const run = Bun.spawnSync(["bash", runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    const run = Bun.spawnSync(["bash", f.runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
     expect(run.exitCode).toBe(0);
     const trace = await readFile(f.trace, "utf8");
     expect(trace).toContain("meteorite/live-orchestrator-stage.sh");
@@ -246,9 +293,11 @@ describe("meteorite orchestrator-live stage", () => {
   });
 
   test("a stage list without the start stage fails closed instead of reporting clean", async () => {
-    const root = await mkdtemp(join(tmpdir(), "meteorite-no-live-stage-"));
-    roots.push(root);
-    const stripped = join(root, "run.sh");
+    const f = await fixture();
+    // Written INSIDE the fixture checkout so the mutant resolves the same
+    // repository root, and therefore the same tracked origin pin, as the runner
+    // it is a mutation of.
+    const stripped = join(f.checkout, "meteorite", "run-without-live-stage.sh");
     const source = await readFile(runner, "utf8");
     const withoutStage = source
       .split("\n")
@@ -257,7 +306,6 @@ describe("meteorite orchestrator-live stage", () => {
     expect(withoutStage).not.toBe(source);
     await writeFile(stripped, withoutStage);
 
-    const f = await fixture();
     const run = Bun.spawnSync(["bash", stripped, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
     expect(run.exitCode).not.toBe(0);
     const report = await readFile(f.report, "utf8");
@@ -272,7 +320,7 @@ describe("meteorite orchestrator-live stage", () => {
 
   test("a liveness assertion that produces no evidence fails the stage", async () => {
     const f = await fixture("", "", "");
-    const run = Bun.spawnSync(["bash", runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    const run = Bun.spawnSync(["bash", f.runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
     expect(run.exitCode).not.toBe(0);
     const report = await readFile(f.report, "utf8");
     expect(report).toContain("result: NO-GO");
@@ -285,7 +333,7 @@ describe("meteorite orchestrator-live stage", () => {
 
   test("an unproven liveness verdict is refused and carries its reason", async () => {
     const f = await fixture("", "", "METEORITE-LIVENESS proven=no reason=liveness-stamp-not-advancing\n");
-    const run = Bun.spawnSync(["bash", runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    const run = Bun.spawnSync(["bash", f.runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
     expect(run.exitCode).not.toBe(0);
     const report = await readFile(f.report, "utf8");
     expect(report).toContain("blocker: the orchestrator did not reach a live state: liveness-stamp-not-advancing");
@@ -299,7 +347,7 @@ describe("meteorite orchestrator-live stage", () => {
     // stubbed, and a rebuild proof that accepted that would be proving the
     // fixture rather than the repository.
     const f = await fixture("", "", LIVENESS_LINE.replace("substitutions=provider", "substitutions=provider,auth-preflight,mission-cli"));
-    const run = Bun.spawnSync(["bash", runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    const run = Bun.spawnSync(["bash", f.runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
     expect(run.exitCode).not.toBe(0);
     const report = await readFile(f.report, "utf8");
     expect(report).toContain("result: NO-GO");
@@ -312,7 +360,7 @@ describe("meteorite orchestrator-live stage", () => {
 describe("meteorite result artifact", () => {
   test("a green run writes a finished artifact with every stage verdict and the liveness summary", async () => {
     const f = await fixture();
-    const run = Bun.spawnSync(["bash", runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    const run = Bun.spawnSync(["bash", f.runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
     expect(run.exitCode).toBe(0);
     expect(run.stdout.toString()).toContain(`[meteorite] artifact: ${f.artifact}`);
     const result = await readArtifact(f.artifact);
@@ -347,7 +395,7 @@ describe("meteorite result artifact", () => {
 
   test("a killed run writes finished:false, the failing stage, and no later stages", async () => {
     const f = await fixture("bun test");
-    const run = Bun.spawnSync(["bash", runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    const run = Bun.spawnSync(["bash", f.runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
     expect(run.exitCode).not.toBe(0);
     const result = await readArtifact(f.artifact);
     expect(result.finished).toBe(false);
@@ -362,7 +410,7 @@ describe("meteorite result artifact", () => {
 
   test("a refusal before Docker still writes a parseable artifact", async () => {
     const f = await fixture();
-    const run = Bun.spawnSync(["bash", runner], { env: f.env });
+    const run = Bun.spawnSync(["bash", f.runner], { env: f.env });
     expect(run.exitCode).not.toBe(0);
     const result = await readArtifact(f.artifact);
     expect(result.finished).toBe(false);
@@ -380,9 +428,136 @@ describe("meteorite result artifact", () => {
     const f = await fixture();
     const env = { ...f.env, XDG_STATE_HOME: root };
     delete env.METEORITE_ARTIFACT;
-    const run = Bun.spawnSync(["bash", runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env });
+    const run = Bun.spawnSync(["bash", f.runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env });
     expect(run.exitCode).toBe(0);
     const artifact = join(root, "bpa-dev-infrastructure", "evidence", "meteorite-latest.json");
     expect((await readArtifact(artifact)).result).toBe("clean");
+  });
+});
+
+// ── The proof anchor (V3-5.36) ─────────────────────────────────────────────
+//
+// The artifact is a file on a host, and anyone who can write that path can write
+// a green verdict into it — which is exactly the forge the readiness command's
+// review round produced with one `printf`. The anchor is what makes the artifact
+// evidence: a digest published to the tracked origin, under a ref NAME that is
+// the digest and a ref TARGET that is the proven commit. These locks are all
+// fixture-level: a local bare repository stands in for origin, the way
+// gate/land.test.sh proves its own attempt refs, so nothing here reaches a
+// network.
+describe("meteorite proof anchor", () => {
+  test("a run publishes both anchor refs, named by the artifact digest and targeting the proven tree", async () => {
+    const f = await fixture();
+    const run = Bun.spawnSync(["bash", f.runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    expect(run.exitCode).toBe(0);
+
+    const anchors = anchorNames(f.sha, await digestOf(f.artifact));
+    const refs = await remoteRefs(f.origin);
+    // Both namespaces, so a record forged or suppressed on one side is visible.
+    expect(refs.get(anchors.proof)).toBe(f.sha);
+    expect(refs.get(anchors.mirror)).toBe(f.sha);
+    // The run names the anchor it published, so the next reader re-derives the
+    // verdict with `git ls-remote` instead of trusting this host.
+    expect(run.stdout.toString()).toContain(`[meteorite] proof anchor: ${anchors.proof} -> ${f.sha}`);
+    expect(run.stdout.toString()).toContain(`[meteorite] proof mirror: ${anchors.mirror}`);
+  });
+
+  test("the anchor names the artifact's exact bytes: a mutated artifact matches nothing on origin", async () => {
+    const f = await fixture();
+    const run = Bun.spawnSync(["bash", f.runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    expect(run.exitCode).toBe(0);
+    const published = anchorNames(f.sha, await digestOf(f.artifact));
+
+    // The forge: rewrite the verdict in place on this host, exactly as anyone
+    // with write access to the evidence directory can.
+    const forged = (await readFile(f.artifact, "utf8")).replace('"blocker": "none"', '"blocker": "none "');
+    await writeFile(f.artifact, forged);
+    const mutated = anchorNames(f.sha, await digestOf(f.artifact));
+    expect(mutated.proof).not.toBe(published.proof);
+
+    const refs = await remoteRefs(f.origin);
+    expect(refs.has(mutated.proof)).toBe(false);
+    expect(refs.has(mutated.mirror)).toBe(false);
+    // And the anchor that does exist still names the bytes it was published for,
+    // so it cannot be read as vouching for the mutated file.
+    expect(refs.get(published.proof)).toBe(f.sha);
+  });
+
+  test("the anchor targets the commit the run measured, not the checkout's current HEAD", async () => {
+    const f = await fixture();
+    // The host moves on while the proof is in flight — a lane commits, a rebase
+    // lands. The anchor must still name the tree the container actually proved,
+    // or it vouches for code that was never rebuilt.
+    await writeFile(join(f.checkout, "unrelated.txt"), "work that happened afterwards\n");
+    await git("-C", f.checkout, "add", "-A");
+    await git("-C", f.checkout, "commit", "-qm", "later work");
+    const head = await git("-C", f.checkout, "rev-parse", "HEAD");
+    expect(head).not.toBe(f.sha);
+
+    const run = Bun.spawnSync(["bash", f.runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    expect(run.exitCode).toBe(0);
+    const anchors = anchorNames(f.sha, await digestOf(f.artifact));
+    const refs = await remoteRefs(f.origin);
+    expect(refs.get(anchors.proof)).toBe(f.sha);
+    expect(refs.get(anchors.mirror)).toBe(f.sha);
+    expect([...refs.values()]).not.toContain(head);
+  });
+
+  test("a failed run anchors its artifact too, because a failed rebuild is evidence", async () => {
+    const f = await fixture("bun test");
+    const run = Bun.spawnSync(["bash", f.runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    expect(run.exitCode).not.toBe(0);
+    const result = await readArtifact(f.artifact);
+    expect(result.result).toBe("NO-GO");
+
+    const anchors = anchorNames(f.sha, await digestOf(f.artifact));
+    const refs = await remoteRefs(f.origin);
+    expect(refs.get(anchors.proof)).toBe(f.sha);
+    expect(refs.get(anchors.mirror)).toBe(f.sha);
+  });
+
+  test("a run whose anchor cannot be published exits non-zero even though every stage passed", async () => {
+    const f = await fixture();
+    // Origin is gone at publication time. Every stage still passes and the
+    // artifact still says `clean` — the ONLY thing wrong is that the proof was
+    // never published, and that alone must decide the exit status.
+    await rm(f.origin, { recursive: true, force: true });
+    const run = Bun.spawnSync(["bash", f.runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    expect(run.exitCode).not.toBe(0);
+    expect((await readArtifact(f.artifact)).result).toBe("clean");
+    expect(run.stderr.toString()).toContain("proof anchor NOT published");
+    expect(run.stderr.toString()).toContain("is unanchored and is not evidence");
+  });
+
+  test("the anchor goes to the tracked pin, not to whatever remote this host configured", async () => {
+    const f = await fixture();
+    const decoy = join(f.checkout, "..", "decoy.git");
+    await git("init", "-q", "--bare", decoy);
+    await git("-C", f.checkout, "remote", "add", "origin", decoy);
+    const run = Bun.spawnSync(["bash", f.runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    expect(run.exitCode).toBe(0);
+
+    const anchors = anchorNames(f.sha, await digestOf(f.artifact));
+    expect((await remoteRefs(f.origin)).get(anchors.proof)).toBe(f.sha);
+    // A host-local config edit cannot redirect the proof: the destination is
+    // read from tracked content in the tree the run measured.
+    expect((await remoteRefs(decoy)).size).toBe(0);
+  });
+
+  test("a proven tree that tracks no origin pin cannot anchor, and the run says so", async () => {
+    const f = await fixture("", "", LIVENESS_LINE, () => "repos:\n  # no git_remote pin\n");
+    const run = Bun.spawnSync(["bash", f.runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    expect(run.exitCode).not.toBe(0);
+    expect(run.stderr.toString()).toContain("tracks no repos.git_remote pin");
+    expect((await remoteRefs(f.origin)).size).toBe(0);
+  });
+
+  test("a run that measured no tree publishes nothing and refuses to call the artifact evidence", async () => {
+    const f = await fixture();
+    const run = Bun.spawnSync(["bash", f.runner], { env: f.env });
+    expect(run.exitCode).not.toBe(0);
+    expect((await readArtifact(f.artifact)).tree_sha).toBe("UNMEASURED");
+    expect(run.stderr.toString()).toContain("no measured tree (tree_sha=UNMEASURED)");
+    expect((await remoteRefs(f.origin)).size).toBe(0);
   });
 });

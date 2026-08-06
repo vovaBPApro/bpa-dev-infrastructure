@@ -70,6 +70,31 @@ test("deleting a checker and its scan row still fails against the independent re
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+// The state gate G found Whisper in: a tracked, correct installer that
+// nothing on the clean-server path ever ran. The generic name scan cannot see
+// that -- "install.sh" appears in most of this tree -- so `installer` rows are
+// judged on bootstrap defining AND calling their step. Both halves are proven
+// here, because a rule that only checks the definition would have called the
+// pre-V3-5.40 tree reachable.
+test("an installer mechanism bootstrap never calls is unreachable", () => {
+  const dir = fixture();
+  try {
+    const bootstrap = join(dir, "bootstrap/install.sh");
+    const original = readFileSync(bootstrap, "utf8");
+    expect(check(dir)).not.toContain("unreachable mechanism: installer:whisper");
+
+    // Defined, never called: the pre-V3-5.40 shape.
+    writeFileSync(bootstrap, original.split("\n").filter((line) => line.trim() !== "install_whisper").join("\n"));
+    Bun.spawnSync(["git", "-C", dir, "add", "-A"]);
+    expect(check(dir)).toContain("unreachable mechanism: installer:whisper");
+
+    // Called, never defined: a dangling step is not a mechanism either.
+    writeFileSync(bootstrap, original.split("\n").filter((line) => line.trim() !== "install_whisper() {").join("\n"));
+    Bun.spawnSync(["git", "-C", dir, "add", "-A"]);
+    expect(check(dir)).toContain("unreachable mechanism: installer:whisper");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("an empty manifest fails closed", () => {
   const dir = fixture();
   try {

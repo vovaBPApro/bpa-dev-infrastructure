@@ -18,7 +18,14 @@
 # Modes: --dry-run (print the stage-2 plan and exit) and --verify-source
 # (check only boundaries a source/container test can prove, no live host
 # required). There is no --verify yet -- the donor's --verify checks systemd
-# unit state and Docker/codex/claude/whisper tooling this row does not touch.
+# unit state and Docker/codex/claude tooling this stage does not touch.
+#
+# The Whisper speech-to-text stack IS installed here (V3-5.40): it is on the
+# operator's daily path, so a rebuilt host without it is a broken rebuild.
+# --verify-source proves only what a source tree can prove -- that the tracked
+# installer is present in INSTALL_ROOT. That the resulting HOST binary and
+# model exist and that the daemon's own resolver finds them is live evidence,
+# and it is the meteorite's `whisper` stage that produces it.
 #
 # Secrets are never accepted on the command line; edit ENV_FILE locally.
 set -euo pipefail
@@ -41,14 +48,21 @@ RUNTIME_DIR="${RUNTIME_DIR:-$INSTALL_ROOT/runtime}"
 STATE_DB="${INFRA_STATE_DB:-$RUNTIME_DIR/state.db}"
 CRONTAB_CMD="${CRONTAB_CMD:-crontab}"
 EXPECTED_UNITS_FILE="${EXPECTED_UNITS_FILE:-$INSTALL_ROOT/instance/expected-units.tsv}"
+# One home for the tracked Whisper installer's path inside the installed
+# checkout. install_whisper runs this file and --verify-source asserts it
+# arrived; a second literal would let those two name different files, and
+# "two lists that drift apart" is V3-2.12. Deliberately NOT env-overridable:
+# which file bootstrap trusts to install host speech-to-text is not a knob.
+WHISPER_INSTALLER="$INSTALL_ROOT/tools/whisper/install.sh"
 
 usage() {
   cat <<'EOF'
 Usage: bootstrap/install.sh [--dry-run | --verify-source]
 
-Stage 2: prerequisites, Bun, repository sync, environment, state database,
-hygiene cron, repository test gate, and systemd unit rendering. This stage
-does not enable, start, restart, or reload units.
+Stage 2: prerequisites, Bun, repository sync, the Whisper speech-to-text
+stack, environment, state database, hygiene cron, repository test gate, and
+systemd unit rendering. This stage does not enable, start, restart, or reload
+units.
 
 Environment overrides: INSTALL_ROOT, REPO_URL, REPO_BRANCH (default: main),
 BUN_VERSION, ENV_FILE, BUN_BIN, BASH_BIN, RUNTIME_DIR, INFRA_STATE_DB,
@@ -60,6 +74,10 @@ systemd's parser during unit rendering, so an invalid value fails the install
 rather than deploying a disarmed timer. Every render variable's default lives
 in bootstrap/unit-render-lib.sh; `bootstrap/unit-render-lib.sh --print-env`
 prints the set this installer will use.
+The Whisper step's own overrides (WHISPER_PREFIX, WHISPER_VERSION,
+WHISPER_COMMIT, ...) are read from the ambient environment by
+tools/whisper/install.sh, which is the single home for their names, defaults
+and pinned checksums. This installer neither restates nor strips them.
 --verify-source checks only the boundaries a source/container test can prove
 and reports explicit SKIPs where a live host would be required; there is no
 --verify mode in this row.
@@ -89,6 +107,11 @@ print_plan() {
   plan "apt" "check git, curl, tmux, flock, findmnt, and unzip; install any missing packages"
   plan "bun" "install Bun ${BUN_VERSION} if $BUN_BIN is absent"
   plan "repository" "clone \$INSTALL_ROOT from REPO_URL on REPO_BRANCH, or fast-forward it -- refusing if it is checked out on any other branch"
+  # Deliberately describes the installer instead of spelling its path: the
+  # first executable line naming that path should be the line that RUNS it,
+  # so a reader (and gate G's evidence string) is pointed at the invocation
+  # rather than at a sentence about the invocation.
+  plan "whisper" "install or re-verify the local speech-to-text stack by running the tracked Whisper installer"
   plan "environment" "create $ENV_FILE from bootstrap/env.template if absent, reject symlinks, and enforce mode 0600"
   plan "state-db" "initialize $STATE_DB with core/mission-cli.ts status"
   plan "hygiene" "install the tracked hygiene cron using $CRONTAB_CMD"
@@ -152,6 +175,13 @@ verify() {
   check "environment file" test -f "$ENV_FILE"
   check "environment permissions" test "$(stat -c '%a' "$ENV_FILE" 2>/dev/null || true)" = 600
   check "state-db" state_db_status
+  # Source-provable only: the tracked installer reached INSTALL_ROOT. Whether
+  # the HOST binary and model it produces exist, and whether the daemon's own
+  # resolver finds them, is live evidence -- meteorite/run.sh's `whisper`
+  # stage. Asserting the binary here would make --verify-source fail on every
+  # tree that has not yet been installed onto a host, which is exactly the
+  # class of check that gets deleted rather than fixed.
+  check "whisper installer" test -f "$WHISPER_INSTALLER"
   check "hygiene-cron" hygiene_cron_status
   check "rendered units" rendered_units_status
   return "$result"
@@ -249,6 +279,41 @@ sync_repository() {
     exit 1
   else
     git clone --branch "$expected_branch" "$repo_url" "$INSTALL_ROOT"
+  fi
+}
+
+# Local speech-to-text, installed from the repository onto the host.
+#
+# Why it is a first-class bootstrap step (V3-5.40): the operator's voice
+# messages are transcribed locally by whisper.cpp every day, so «сервак буде
+# чистий і пустий. мені треба, щоб все працювало як слід» (Telegram 1760) is
+# not satisfied by a rebuilt host that comes up mute. It is placed here, right
+# after the repository sync, for the same reason install_bun is placed early:
+# it installs host tooling, and it can only run once the tree that carries the
+# installer exists.
+#
+# The tracked installer is the ONLY mechanism, and nothing here duplicates its
+# checks. It is idempotent and self-verifying by construction -- pinned source
+# commit, pinned model sha256, a `--version` probe on the installed binary,
+# and an end-to-end smoke transcription before it reports OK -- so calling it
+# unconditionally IS both "install it" and "verify the existing installation",
+# and a second copy of the model checksum here would be the V3-2.12 disease
+# (two lists that drift) wearing a new hat.
+#
+# Fail-closed with a NAMED error, and the two failures stay distinguishable:
+# an installer that never arrived is a different blocker from an installation
+# that was attempted and failed. Neither is a warning -- the installer's own
+# named failure (unfetchable or checksum-mismatched model, moved release tag,
+# broken binary, silent smoke transcription) reaches the operator on its
+# stderr and this function refuses to continue over it.
+install_whisper() {
+  if [[ ! -f "$WHISPER_INSTALLER" || ! -r "$WHISPER_INSTALLER" ]]; then
+    echo "ERROR: whisper installer is missing or unreadable: $WHISPER_INSTALLER; a rebuilt host cannot transcribe voice messages" >&2
+    return 1
+  fi
+  if ! bash "$WHISPER_INSTALLER"; then
+    echo "ERROR: whisper installation failed: $WHISPER_INSTALLER; refusing to continue with a host that cannot transcribe voice messages" >&2
+    return 1
   fi
 }
 
@@ -501,11 +566,12 @@ if [[ "${BOOTSTRAP_LIB_ONLY:-false}" != true ]]; then
   ensure_prerequisites
   install_bun
   sync_repository
+  install_whisper
   render_environment
   initialize_state_db
   install_hygiene_cron
   run_install_test_gate
   render_units
-  echo "Bootstrap stage 2 completed: prerequisites, Bun, repository, environment, state database, hygiene cron, test gate, and unit rendering."
+  echo "Bootstrap stage 2 completed: prerequisites, Bun, repository, Whisper, environment, state database, hygiene cron, test gate, and unit rendering."
   echo "Remaining before a full install: unit activation and the watchdog arm/disarm pair (later rows)."
 fi

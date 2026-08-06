@@ -69,6 +69,17 @@ export function check(repo: string): string[] {
     if (row.kind === "gate") return read(join(repo, "tools/shell-test-tier.test.ts")).includes("gate/land.test.sh");
     if (row.kind === "shell-tier") return read(join(repo, "gate/land-lib.sh")).includes("*.test.ts");
     if (row.kind === "cron") return read(join(repo, "bootstrap/install.sh")).includes("install_hygiene_cron") && read(join(repo, "bootstrap/install.sh")).includes("install_hygiene_cron\n");
+    // A host-tooling installer is reachable only when bootstrap both DEFINES
+    // its step and CALLS it. The generic text scan at the end of this function
+    // would be satisfied by any file containing the basename "install.sh",
+    // which is most of this tree -- so a mechanism no clean server ever runs
+    // would read as reachable, which is precisely the state gate G found
+    // Whisper in (tracked installer, nothing invoking it).
+    if (row.kind === "installer") {
+      const step = `install_${row.id.slice("installer:".length).replaceAll("-", "_")}`;
+      const lines = read(join(repo, "bootstrap/install.sh")).split("\n").map((line) => line.trim());
+      return lines.includes(`${step}() {`) && lines.includes(step);
+    }
     const needle = row.target.split("/").at(-1)!;
     return [...allText].some(([file, text]) => file !== row.target && !parked.has(file) && text.includes(needle));
   }

@@ -212,6 +212,21 @@ commands=(
   "bootstrap-dry-run|cd /work/source && bash bootstrap/install.sh --dry-run"
   "bootstrap-install|cd /work/source && INSTALL_ROOT=/work/install REPO_URL=/work/source REPO_BRANCH=meteorite-target TEST_GATE_ORIGIN_URL='$repo_url' ENV_FILE=/work/config/orchestrator.env BUN_BIN=/root/.bun/bin/bun RUNTIME_DIR=/work/runtime INFRA_STATE_DB=/work/runtime/state.db FULL_SUITE_ON_CALENDAR='*-*-* 03:30:00' ORCH_WATCHDOG_INTERVAL=60 bash bootstrap/install.sh"
   "bootstrap-verify-source|cd /work/source && INSTALL_ROOT=/work/install ENV_FILE=/work/config/orchestrator.env BUN_BIN=/root/.bun/bin/bun RUNTIME_DIR=/work/runtime INFRA_STATE_DB=/work/runtime/state.db bash bootstrap/install.sh --verify-source"
+  # Voice/speech-to-text on a rebuilt host (V3-5.40, cutover gate G). bootstrap
+  # runs tools/whisper/install.sh; this stage measures the RESULT, and it asks
+  # the daemon's own resolver rather than restating the layout: the paths under
+  # test are whatever daemon/transcribe.ts resolves with an empty environment,
+  # so moving the installer's destination or the daemon's default apart from
+  # each other fails here on the rebuilt host, not silently on the first voice
+  # message. The binary is then executed, because a file that exists is not a
+  # binary that runs.
+  #
+  # Deliberately no pipeline: a bare pipeline reports only its LAST command's
+  # status, so a failed resolver feeding a successful filter would report
+  # success (`instructions/verification-and-locks.md`, "a kill is not a pass").
+  # The resolver's status is taken by the assignment, and the binary it named
+  # is then executed as its own command.
+  "whisper|test -f /work/install/tools/whisper/install.sh && cd /work/install && whisper_bin=\"\$(/root/.bun/bin/bun -e 'import { resolveWhisperConfig, whisperAvailable } from \"./daemon/transcribe.ts\"; const cfg = resolveWhisperConfig({}); if (!whisperAvailable(cfg)) { console.error(\"METEORITE-WHISPER unresolved bin=\" + cfg.bin + \" model=\" + cfg.model); process.exit(1); } console.error(\"METEORITE-WHISPER resolved bin=\" + cfg.bin + \" model=\" + cfg.model); console.log(cfg.bin);')\" && test -n \"\$whisper_bin\" && \"\$whisper_bin\" --version >/dev/null"
   "test-prerequisites|test -n '$donor_sha' && test -n '$donor_ref' && test -x /usr/local/bin/bun && test \"\$(git -C /work/install rev-parse refs/remotes/origin/v2-deprecated)\" = '$donor_sha'"
   "full-test-suite|cd /work/install && PATH=/root/.bun/bin:\$PATH /root/.bun/bin/bun test"
   "unit-drift|install -d /work/rendered-units && for template in /work/install/bootstrap/units/*.in /work/install/instance/units/*.in; do test -f \"\$template\" || continue; INSTALL_ROOT=/root/bpa-dev-infrastructure ENV_FILE=/root/.config/bpa/orchestrator.env BUN_BIN=/usr/local/bin/bun BASH_BIN=/usr/bin/bash FULL_SUITE_ON_CALENDAR='*-*-* 03:30:00' ORCH_WATCHDOG_INTERVAL=60 envsubst < \"\$template\" > \"/work/rendered-units/\$(basename \"\${template%.in}\")\"; done && cd /work/install && SYSTEMD_SYSTEM_DIR=/work/rendered-units bash bootstrap/check-unit-drift.sh"

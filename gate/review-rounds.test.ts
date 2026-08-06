@@ -11,8 +11,14 @@ function fixture(cap = 3, limit = 3) {
   expect(Bun.spawnSync([process.execPath, cli, "init", "--state", state, "--cap", `${cap}`, "--no-progress-limit", `${limit}`]).exitCode).toBe(0);
   return state;
 }
+// Every round test in this file describes a reviewer who read the change and
+// rejected it, which under HR-2285 is exactly what a round IS -- so `attempt`
+// defaults to `--charge reject` HERE, in the harness. The CLI itself has no
+// default and refuses a missing `--charge`; the "charge is never implied" lock
+// below is what proves that, and the uncharged path is exercised explicitly.
 function run(state: string, command: string, item = "V3-3.4", extra: string[] = []) {
-  return Bun.spawnSync([process.execPath, cli, command, "--state", state, "--item-id", item, ...extra], { stdout: "pipe", stderr: "pipe" });
+  const charge = command === "attempt" && !extra.includes("--charge") ? ["--charge", "reject"] : [];
+  return Bun.spawnSync([process.execPath, cli, command, "--state", state, "--item-id", item, ...charge, ...extra], { stdout: "pipe", stderr: "pipe" });
 }
 function text(result: ReturnType<typeof Bun.spawnSync>) { return result.stdout.toString() + result.stderr.toString(); }
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -559,5 +565,103 @@ describe("durable review round enforcement", () => {
     expect(run(state, "attempt").exitCode).toBe(0);
     expect(text(run(state, "attempt"))).toContain("parked=cap");
     expect(text(run(state, "operator-unpark", "V3-3.4", ["--decision-id", "x", "--authorized-by", "operator", "--authorized-at", "2026-08-04T12:00:00Z", "--authorization", state, "--signature", state, "--allowed-signers", state]))).toContain("not-no-progress-park");
+  });
+
+  // HR-2285. The charge is never implied: this command cannot see WHY a landing
+  // is arriving, so it refuses to guess. A default in either direction is the
+  // defect -- default-charge is the old counter, default-free is a counter an
+  // out-of-date caller silently disables.
+  test("HR-2285: a charge is never implied and never inferred", () => {
+    const state = fixture(3, 3);
+    const missing = Bun.spawnSync([process.execPath, cli, "attempt", "--state", state, "--item-id", "V3-3.4"], { stdout: "pipe", stderr: "pipe" });
+    expect(missing.exitCode).toBe(2);
+    expect(text(missing)).toContain("missing-charge");
+    const bogus = run(state, "attempt", "V3-3.4", ["--charge", "maybe"]);
+    expect(bogus.exitCode).toBe(2);
+    expect(text(bogus)).toContain("invalid-charge");
+    // Neither refusal moved anything.
+    expect(JSON.parse(readFileSync(state, "utf8")).items["V3-3.4"]).toBeUndefined();
+  });
+
+  // The ruling's own qualification: none of this relaxes the gate. Paperwork is
+  // still refused and still costs the lane a full re-run -- it just stops moving
+  // the row toward a park. Ten uncharged attempts, no park, no round.
+  test("HR-2285: paperwork attempts are recorded, never charged, and never park", () => {
+    const state = fixture(3, 3);
+    for (let index = 0; index < 10; index++) {
+      const attempt = run(state, "attempt", "V3-3.4", ["--charge", "none"]);
+      expect(attempt.exitCode).toBe(0);
+      expect(text(attempt)).toContain(`attempt=${index + 1} round=0`);
+    }
+    expect(JSON.parse(readFileSync(state, "utf8")).items["V3-3.4"]).toMatchObject({ attempts: 10, rounds: 0, noProgress: 0, park: null });
+    const check = run(state, "check");
+    expect(check.exitCode).toBe(0);
+    expect(text(check)).toContain("status=admissible item=V3-3.4 round=0 attempts=10");
+    // And a real rejection lands on top of them, counted as the first round.
+    expect(text(run(state, "attempt"))).toContain("attempt=11 round=1");
+  });
+
+  // Landing is not a round either. Under HR-2285 the ONLY charging event is a
+  // reviewer's rejection, so a change that walks the gate once and lands is
+  // recorded as an attempt and costs nothing -- which is also why `landed` has
+  // to be guarded on attempts rather than on rounds.
+  test("HR-2285: a clean landing charges nothing", () => {
+    const state = fixture(3, 3);
+    expect(run(state, "attempt", "V3-3.4", ["--charge", "none"]).exitCode).toBe(0);
+    expect(run(state, "landed", "V3-3.4", ["--sha", "a".repeat(40)]).exitCode).toBe(0);
+    expect(JSON.parse(readFileSync(state, "utf8")).items["V3-3.4"]).toMatchObject({ attempts: 1, rounds: 0, landedSha: "a".repeat(40) });
+    const bare = fixture(3, 3);
+    expect(text(run(bare, "landed", "V3-3.4", ["--sha", "a".repeat(40)]))).toContain("landed-without-attempt");
+  });
+
+  // The migration IS the unpark, and it is a rule rather than a list of items.
+  // A version-1 `rounds` counted arrivals at the gate, charged before any
+  // verdict was read; gate/land.sh refused a REJECT and exited above the charge,
+  // so a version-1 state cannot contain a single rejection. Every number in it
+  // is an attempt, and any park built from those numbers was bookkeeping.
+  test("HR-2285: a version-1 state migrates to attempts, zero rounds, and no park", () => {
+    const state = fixture(3, 3);
+    writeFileSync(state, `${JSON.stringify({
+      version: 1,
+      cap: 3,
+      noProgressLimit: 3,
+      items: {
+        "V3-0.40": { rounds: 3, noProgress: 3, landedSha: null, park: "no-progress" },
+        "V3-0.55": { rounds: 3, noProgress: 3, landedSha: null, park: "cap" },
+        "V3-0.16": { rounds: 1, noProgress: 0, landedSha: "b".repeat(40), park: null },
+      },
+    }, null, 2)}\n`);
+    const check = run(state, "check", "V3-0.40");
+    expect(check.exitCode).toBe(0);
+    expect(text(check)).toContain("status=admissible item=V3-0.40 round=0 attempts=3");
+    expect(run(state, "check", "V3-0.55").exitCode).toBe(0);
+    // `check` is a read-only query and leaves the file alone; the upgrade is
+    // written by the first command that writes anything.
+    expect(JSON.parse(readFileSync(state, "utf8")).version).toBe(1);
+    expect(run(state, "attempt", "V3-0.40", ["--charge", "none"]).exitCode).toBe(0);
+    const migrated = JSON.parse(readFileSync(state, "utf8"));
+    expect(migrated.version).toBe(2);
+    expect(migrated.items["V3-0.40"]).toMatchObject({ attempts: 4, rounds: 0, noProgress: 0, park: null });
+    expect(migrated.items["V3-0.55"]).toMatchObject({ attempts: 3, rounds: 0, noProgress: 0, park: null });
+    // What was recorded survives; only what it COUNTS changed.
+    expect(migrated.items["V3-0.16"]).toMatchObject({ attempts: 1, rounds: 0, landedSha: "b".repeat(40) });
+  });
+
+  // The migration must not become a laundry. Once a rejection is charged under
+  // version 2 it stays charged, and a version-2 state is never re-zeroed.
+  test("HR-2285: migration runs once and does not launder real rounds", () => {
+    const state = fixture(3, 3);
+    parkNoProgress(state);
+    const parked = run(state, "check");
+    expect(parked.exitCode).toBe(2);
+    expect(text(parked)).toContain("parked=no-progress");
+    // Reloading the same file cannot clear it: it is already version 2.
+    expect(run(state, "check").exitCode).toBe(2);
+    expect(JSON.parse(readFileSync(state, "utf8")).items["V3-3.4"]).toMatchObject({ rounds: 3, park: "no-progress" });
+    // And a state claiming version 2 while omitting the ordinal is malformed,
+    // not silently migrated -- the ordinal is what the durable refs sequence
+    // against, so a state that lost it must fail closed.
+    writeFileSync(state, `${JSON.stringify({ version: 2, cap: 3, noProgressLimit: 3, items: { "V3-3.4": { rounds: 3, noProgress: 3, landedSha: null, park: "no-progress" } } }, null, 2)}\n`);
+    expect(text(run(state, "check"))).toContain("state-malformed");
   });
 });

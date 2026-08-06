@@ -406,31 +406,69 @@ if [ "$review_history_present" = false ] && [ -n "$attempt_refs" ]; then
     land_fail review-rounds 2
   fi
 fi
-rounds=$("$BUN_BIN" "$script_dir/review-rounds.ts" round --state "$review_round_state" --item-id "$item_id") || land_fail review-rounds 2
-while IFS=$'\t' read -r attempt_sha attempt_ref; do
+attempts=$("$BUN_BIN" "$script_dir/review-rounds.ts" attempts --state "$review_round_state" --item-id "$item_id") || land_fail review-rounds 2
+# Three leaf grammars, because this record predates HR-2285 and must not be
+# rewritten to agree with it:
+#
+#   <n>-reject-<sha>  a reviewer examined the change and rejected it. A round.
+#   <n>-abort-<sha>   refused before anyone judged the work. Not a round.
+#   <n>-<sha>         pre-HR-2285, and replayed as an abort. That is not a
+#                     charitable reading of an ambiguous record, it is the only
+#                     reading available: the gate refused a REJECT at its review
+#                     step and exited BEFORE the charge, so no rejection ever
+#                     reached this namespace and every legacy ref is an arrival
+#                     at the gate. Reclassifying them is what makes the items
+#                     parked on paperwork admissible again, by rule.
+#
+# Normalize first, then walk. The validation runs in a command substitution so a
+# refusal is a status the main shell can act on -- `land_fail` inside a loop that
+# is itself a subshell would exit the subshell and let the landing continue.
+attempt_plan=$(
+  while IFS=$'\t' read -r attempt_sha attempt_ref; do
+    [ -n "$attempt_ref" ] || continue
+    attempt_leaf=${attempt_ref#"$attempt_prefix/"}
+    if [[ "$attempt_leaf" =~ ^([1-9][0-9]*)-(reject|abort)-([0-9a-f]{40})$ ]]; then
+      attempt_charge=none
+      [ "${BASH_REMATCH[2]}" = reject ] && attempt_charge=reject
+      attempt_object=${BASH_REMATCH[3]}
+    elif [[ "$attempt_leaf" =~ ^([1-9][0-9]*)-([0-9a-f]{40})$ ]]; then
+      attempt_charge=none
+      attempt_object=${BASH_REMATCH[2]}
+    else
+      echo "LAND review-rounds malformed-attempt-ref ref=$attempt_ref" >&2
+      exit 3
+    fi
+    if [ "$attempt_sha" != "$attempt_object" ]; then
+      echo "LAND review-rounds malformed-attempt-ref ref=$attempt_ref" >&2
+      exit 3
+    fi
+    printf '%s\t%s\t%s\n' "${BASH_REMATCH[1]}" "$attempt_charge" "$attempt_ref"
+  done <<< "$attempt_refs"
+) || land_fail review-rounds 2
+# Sorted numerically on the ordinal, never by refname. ls-remote answers in
+# lexicographic order, where `10-` precedes `2-`. That was survivable only while
+# a park bounded an item to three refs; uncharged attempts do not park, so an
+# item can now accumulate ten, and a lexicographic walk would call the tenth
+# nonsequential and brick the item permanently.
+attempt_plan=$(printf '%s\n' "$attempt_plan" | sort -n -k1,1) || land_fail review-rounds 2
+while IFS=$'\t' read -r attempt_ordinal attempt_charge attempt_ref; do
   [ -n "$attempt_ref" ] || continue
-  attempt_leaf=${attempt_ref#"$attempt_prefix/"}
-  if [[ ! "$attempt_leaf" =~ ^([1-9][0-9]*)-([0-9a-f]{40})$ ]] || [ "$attempt_sha" != "${BASH_REMATCH[2]}" ]; then
-    echo "LAND review-rounds malformed-attempt-ref ref=$attempt_ref" >&2
+  if [ "$attempt_ordinal" -le "$attempts" ]; then continue; fi
+  if [ "$attempt_ordinal" -ne $((attempts + 1)) ]; then
+    echo "LAND review-rounds nonsequential-attempt-ref expected=$((attempts + 1)) found=$attempt_ordinal" >&2
     land_fail review-rounds 2
   fi
-  attempt_round=${BASH_REMATCH[1]}
-  if [ "$attempt_round" -le "$rounds" ]; then continue; fi
-  if [ "$attempt_round" -ne $((rounds + 1)) ]; then
-    echo "LAND review-rounds nonsequential-attempt-ref expected=$((rounds + 1)) found=$attempt_round" >&2
+  # --replay: this ref proves the attempt happened, so reconstruct it instead of
+  # re-admitting it, and reconstruct it with the charge the ref itself records.
+  # A parked reconstructed state is not a refusal here -- the operator
+  # authorities below have not run yet, and dying at this point is what made one
+  # aborted landing strand a one-time decision forever. The park is carried
+  # forward untouched; if nothing releases it, the check below still refuses.
+  if ! "$BUN_BIN" "$script_dir/review-rounds.ts" attempt --replay --charge "$attempt_charge" --defer-park-exit --state "$review_round_state" --item-id "$item_id" >/dev/null; then
     land_fail review-rounds 2
   fi
-  # --replay: this ref proves the round happened, so reconstruct it instead of
-  # re-admitting it. A parked reconstructed state is not a refusal here -- the
-  # operator authorities below have not run yet, and dying at this point is what
-  # made one aborted landing strand a one-time decision forever. The park is
-  # carried forward untouched; if nothing releases it, the attempt and check
-  # steps further down still refuse the landing.
-  if ! "$BUN_BIN" "$script_dir/review-rounds.ts" attempt --replay --defer-park-exit --state "$review_round_state" --item-id "$item_id" >/dev/null; then
-    land_fail review-rounds 2
-  fi
-  rounds=$attempt_round
-done <<< "$attempt_refs"
+  attempts=$attempt_ordinal
+done <<< "$attempt_plan"
 
 unpark_prefix="$review_unpark_namespace/$item_key"
 unpark_mirror_prefix="$review_unpark_mirror_namespace/$item_key"
@@ -479,6 +517,57 @@ if ! "$BUN_BIN" "$script_dir/review-rounds.ts" operator-unpark-decision \
   land_fail review-rounds 2
 fi
 
+# Admissibility, asked once the durable record is fully reconstructed and both
+# operator authorities have had their say. It moved here from after the attempt
+# below because the attempt no longer decides it: an uncharged attempt cannot
+# park anything, so a park that exists at this point is one the record already
+# held, and there is no reason to spend the rest of the gate discovering it.
+if ! "$BUN_BIN" "$script_dir/review-rounds.ts" check --state "$review_round_state" --item-id "$item_id" >/dev/null; then
+  land_fail review-rounds 2
+fi
+
+# Record one landing attempt in the durable, mirrored attempt namespace, taking
+# the next ordinal and stating in the ref NAME whether it charged a round. The
+# verdict has to be in the durable record, not only in the tracked JSON: the JSON
+# is written to the target branch only by a SUCCESSFUL merge, so a landing that
+# is refused leaves the ref and nothing else. That asymmetry is exactly how three
+# paperwork aborts came to park V3-0.40 while the tracked counter had never heard
+# of the item.
+#
+# $1 is the charge: `reject` when a reviewer judged the work and rejected it,
+# `none` for every refusal that happened before anyone judged it (HR-2285).
+land_record_attempt() {
+  local charge="$1" leaf sha ref mirror persisted persisted_mirror remote_target
+  case "$charge" in
+    reject) leaf=reject ;;
+    none) leaf=abort ;;
+    *) echo "LAND review-rounds invalid-charge charge=$charge" >&2; land_fail review-rounds 2 ;;
+  esac
+  # The item identity is supplied by durable mission/acceptance identity, never
+  # inferred from the disposable branch name. The repository-wide landing lock
+  # also serializes this read-modify-write with every other landing attempt.
+  if ! "$BUN_BIN" "$script_dir/review-rounds.ts" attempt --charge "$charge" --defer-park-exit \
+      --state "$review_round_state" --item-id "$item_id"; then
+    land_fail review-rounds 2
+  fi
+  attempts=$((attempts + 1))
+  sha=$(git -C "$repo" rev-parse --verify "${branch}^{commit}") || land_fail branch-tip 2
+  ref="$attempt_prefix/$attempts-$leaf-$sha"
+  mirror="$attempt_mirror_prefix/$attempts-$leaf-$sha"
+  if ! git -C "$repo" push --atomic "$origin_url" "$sha:$ref" "$sha:$mirror" >/dev/null; then
+    echo "LAND review-rounds attempt-persist-failed ref=$ref" >&2
+    land_fail review-rounds 2
+  fi
+  persisted=$(git -C "$repo" ls-remote --refs "$origin_url" "$ref" 2>/dev/null | awk 'NR == 1 { print $1 }')
+  persisted_mirror=$(git -C "$repo" ls-remote --refs "$origin_url" "$mirror" 2>/dev/null | awk 'NR == 1 { print $1 }')
+  remote_target=$(git -C "$repo" ls-remote --refs "$origin_url" "refs/heads/$default_branch" 2>/dev/null | awk 'NR == 1 { print $1 }')
+  if [ "$persisted" != "$sha" ] || [ "$persisted_mirror" != "$sha" ] || [ "$remote_target" != "$pre_merge_sha" ]; then
+    echo "LAND review-rounds attempt-persist-mismatch ref=$ref found=${persisted:-missing} target=${remote_target:-missing} expected-target=$pre_merge_sha" >&2
+    land_fail review-rounds 2
+  fi
+  branch_sha="$sha"
+}
+
 export LAND_DEFAULT_BRANCH="$default_branch"
 guard_args=("$script_dir/completion-guard.ts" --report "$report" --repo "$repo" --branch "$branch")
 if [ "$run_verify" = true ]; then guard_args+=(--defer-verify); fi
@@ -487,41 +576,40 @@ if ! "$BUN_BIN" "${guard_args[@]}"; then
 fi
 land_pass completion-guard
 
+# Never publish a candidate object into the durable attempt namespace before the
+# canonical signature scan has accepted it. The scan sits ahead of the review
+# step, not behind it, because a REJECT now publishes one too: the first
+# publication point moved earlier, so the fence moved with it. A rejected
+# candidate carrying a secret therefore fails here and is never pushed and never
+# charged -- Hard Floor 4 outranks the bookkeeping.
+if ! land_secret_scan "$repo" "$branch"; then land_fail secret-scan 2; fi
+land_pass secret-scan
+
 policy_file="$script_dir/review-policy.conf"
-if ! land_review_check "$repo" "$branch" "$report" "$policy_file" "$skip_review"; then land_fail review 2; fi
+if ! land_review_check "$repo" "$branch" "$report" "$policy_file" "$skip_review"; then
+  # THE round, and the only one. A reviewer read this change and rejected it,
+  # which is the single event HR-2285 says costs the item a round -- and the
+  # single event the counter could never see, because this step exits before the
+  # charge and always did. Every other way land_review_check fails is paperwork:
+  # a missing artifact, a malformed field, a review naming a superseded SHA after
+  # a rebase. Those are still refused, exactly as before; they just stop moving
+  # the row toward a park.
+  # Defaulted: land_review_check also fails for reasons that never reach the
+  # artifact contract (an unreadable policy file, an unreadable diff), and those
+  # leave the code unset. Unset is not `rejected`, so it charges nothing.
+  if [ "${LAND_REVIEW_CONTRACT_CODE:-}" = rejected ]; then land_record_attempt reject; fi
+  land_fail review 2
+fi
 review_verdict="$LAND_REVIEW_VERDICT"
 land_pass review
 if [ "$skip_review" = true ]; then echo "LAND review=SKIPPED reason=$skip_review_reason"; fi
 
-# Never publish a candidate object into the durable attempt namespace before
-# the canonical signature scan has accepted it.
-if ! land_secret_scan "$repo" "$branch"; then land_fail secret-scan 2; fi
-land_pass secret-scan
-
-# The item identity is supplied by durable mission/acceptance identity, never
-# inferred from the disposable branch name. The repository-wide landing lock
-# also serializes this read-modify-write with every other landing attempt.
-if ! "$BUN_BIN" "$script_dir/review-rounds.ts" attempt --defer-park-exit --state "$review_round_state" --item-id "$item_id"; then
-  land_fail review-rounds 2
-fi
-rounds=$((rounds + 1))
-branch_sha=$(git -C "$repo" rev-parse --verify "${branch}^{commit}") || land_fail branch-tip 2
-attempt_ref="$attempt_prefix/$rounds-$branch_sha"
-attempt_mirror_ref="$attempt_mirror_prefix/$rounds-$branch_sha"
-if ! git -C "$repo" push --atomic "$origin_url" "$branch_sha:$attempt_ref" "$branch_sha:$attempt_mirror_ref" >/dev/null; then
-  echo "LAND review-rounds attempt-persist-failed ref=$attempt_ref" >&2
-  land_fail review-rounds 2
-fi
-persisted_attempt_sha=$(git -C "$repo" ls-remote --refs "$origin_url" "$attempt_ref" 2>/dev/null | awk 'NR == 1 { print $1 }')
-persisted_attempt_mirror_sha=$(git -C "$repo" ls-remote --refs "$origin_url" "$attempt_mirror_ref" 2>/dev/null | awk 'NR == 1 { print $1 }')
-remote_target_sha=$(git -C "$repo" ls-remote --refs "$origin_url" "refs/heads/$default_branch" 2>/dev/null | awk 'NR == 1 { print $1 }')
-if [ "$persisted_attempt_sha" != "$branch_sha" ] || [ "$persisted_attempt_mirror_sha" != "$branch_sha" ] || [ "$remote_target_sha" != "$pre_merge_sha" ]; then
-  echo "LAND review-rounds attempt-persist-mismatch ref=$attempt_ref found=${persisted_attempt_sha:-missing} target=${remote_target_sha:-missing} expected-target=$pre_merge_sha" >&2
-  land_fail review-rounds 2
-fi
-if ! "$BUN_BIN" "$script_dir/review-rounds.ts" check --state "$review_round_state" --item-id "$item_id" >/dev/null; then
-  land_fail review-rounds 2
-fi
+# No reviewer rejected this candidate, so this attempt charges nothing. It is
+# still recorded, and still takes the next ordinal: "walked the gate five times,
+# was rejected once" has to be reconstructable from origin alone, and an
+# unrecorded attempt would leave a hole in the sequence that the tamper check
+# reads as a deleted ref.
+land_record_attempt none
 land_pass review-rounds
 
 report_sha=$(sed -n 's/^commit:[[:space:]]*\([0-9a-fA-F]\{40\}\).*/\1/p' "$report" | head -n 1)

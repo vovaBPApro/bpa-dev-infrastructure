@@ -33,7 +33,7 @@ SINGLETON_OWNER_FILE="${ORCH_SINGLETON_OWNER_FILE:-$SINGLETON_LOCK_FILE.owner}"
 # attribute this lock to the process that took it. A plain assignment, not a
 # `${VAR:-}` read: this is the guard's own vocabulary and nothing in the
 # environment or in runtime.env may set it. See
-# singleton_owner_attribution_available() for the boundary it marks.
+# singleton_owner_attribution_state() for the boundary it marks.
 SINGLETON_OWNER_UNATTRIBUTABLE=unattributable
 MISSION_CLI="${ORCH_MISSION_CLI:-$REPO_DIR/core/mission-cli.ts}"
 STATE_DB="${ORCH_STATE_DB:-$REPO_DIR/runtime/state.db}"
@@ -543,47 +543,92 @@ singleton_kernel_owner_pid() {
 #
 # The third world is why "is /proc/locks non-empty" is the wrong question: it
 # answers yes and hands back a pid that means nothing here. So this probe asks
-# the only question that decides anything, by doing exactly what the launcher
-# does and reading it back through exactly the functions the launcher uses —
-# take a lock through a child that exits, then require /proc/locks to name that
-# child. Silence, or any other pid, means this environment cannot supply the
-# evidence.
-singleton_owner_attribution_available() {
-  local probe_fd probe_file setter_pid probe_key observed
-  probe_file="$RUNTIME_DIR/.singleton-attribution-probe.$$"
-  rm -f "$probe_file"
-  : > "$probe_file" 2>/dev/null || return 1
-  exec {probe_fd}>"$probe_file"
+# the only question that decides anything — take a lock through a child that
+# exits, then require /proc/locks to name that child. Silence means this
+# environment cannot supply the evidence.
+#
+# ── Why the probe reimplements the read instead of reusing the launcher's ────
+# It must not share a failure mode with the condition it adjudicates. Round 1
+# of V3-5.38 resolved the probe file through singleton_lock_key(), the same
+# helper that produces the launcher's own lock identity — so a globally broken
+# findmnt made the degradation trigger fire AND guaranteed the adjudicator
+# would answer "unavailable". One broken helper answered both the question and
+# the appeal, and a fully attributing host silently degraded where it used to
+# refuse. So this function deliberately depends on NEITHER
+# singleton_lock_key() nor singleton_kernel_owner_pid(): it owns its file
+# (mktemp), owns its lock, and reads /proc/locks itself, matching only on the
+# pid of the child it just reaped. Its inputs are bash, flock, mktemp and
+# /proc/locks, and the failure of any of those is reported as `undetermined`
+# rather than as a kernel verdict.
+#
+# The read is self-validating, which is what makes pid-only matching safe. A
+# row naming our setter pid must appear while we hold the lock AND must be gone
+# once we release it. That second half rules out the "pid ns reading the host
+# /proc" world, where an unrelated host process may happen to hold a flock
+# under the same number: such a row survives our release, so the probe answers
+# `undetermined` — a refusal — instead of mistaking a stranger's lock for ours.
+
+# True when /proc/locks currently carries a FLOCK row attributed to $1.
+singleton_flock_row_attributed_to() {
+  local wanted_pid="$1"
+  local -a fields=()
+  while read -ra fields; do
+    [[ "${fields[1]:-}" == FLOCK ]] || continue
+    [[ "${fields[4]:-}" == "$wanted_pid" ]] || continue
+    return 0
+  done < /proc/locks
+  return 1
+}
+
+# Prints exactly one of: available | unavailable | undetermined.
+# `unavailable` is the ONLY answer that may unlock the degraded start path;
+# `undetermined` means the probe could not measure, which is not evidence about
+# the kernel and must never be read as one.
+singleton_owner_attribution_state() {
+  local probe_fd="" probe_file="" setter_pid held=1 released=1
+  [[ -r /proc/locks ]] || { printf 'undetermined\n'; return 0; }
+  mkdir -p "$RUNTIME_DIR" 2>/dev/null || { printf 'undetermined\n'; return 0; }
+  probe_file="$(mktemp "$RUNTIME_DIR/.singleton-attribution-probe.XXXXXX" 2>/dev/null || true)"
+  [[ -n "$probe_file" ]] || { printf 'undetermined\n'; return 0; }
+  if ! exec {probe_fd}>"$probe_file" 2>/dev/null; then
+    rm -f "$probe_file"
+    printf 'undetermined\n'
+    return 0
+  fi
+  # Same shape as the launcher's own acquisition: the setter is a child that
+  # exits immediately, so the row under test is the one only the initial pid
+  # namespace keeps.
   flock -n "$probe_fd" &
   setter_pid=$!
   if ! wait "$setter_pid"; then
     exec {probe_fd}>&-
     rm -f "$probe_file"
-    return 1
+    printf 'undetermined\n'
+    return 0
   fi
-  probe_key="$(singleton_lock_key "$probe_file" || true)"
-  observed=""
-  if [[ -n "$probe_key" ]]; then
-    observed="$(singleton_kernel_owner_pid "$probe_key" || true)"
-  fi
+  singleton_flock_row_attributed_to "$setter_pid" && held=0
   exec {probe_fd}>&-
   rm -f "$probe_file"
-  [[ -n "$observed" && "$observed" == "$setter_pid" ]]
+  singleton_flock_row_attributed_to "$setter_pid" && released=0
+  if ((held == 0)) && ((released != 0)); then
+    printf 'available\n'
+  elif ((held != 0)) && ((released != 0)); then
+    printf 'unavailable\n'
+  else
+    # The row outlived the lock, so it was never ours to read.
+    printf 'undetermined\n'
+  fi
 }
 
 # Read-only diagnostic: answer, for THIS environment, whether the singleton
 # guard can observe lock ownership. It starts nothing and takes no launch lock;
-# it writes and removes one probe file under the runtime dir. This is the
-# question behind both `orchestrator-singleton-owner-unattributable` at start
-# and `owner-attribution=unavailable` on a refused recovery, so an operator can
-# ask it directly instead of inferring it from a refusal.
+# it writes and removes one mktemp'd probe file under the runtime dir. This is
+# the question behind both `orchestrator-singleton-owner-unattributable` at
+# start and `owner-attribution=unavailable` on a refused recovery, so an
+# operator can ask it directly instead of inferring it from a refusal.
 singleton_attribution_report() {
   mkdir -p "$RUNTIME_DIR"
-  if singleton_owner_attribution_available; then
-    printf 'singleton-owner-attribution: available\n'
-  else
-    printf 'singleton-owner-attribution: unavailable\n'
-  fi
+  printf 'singleton-owner-attribution: %s\n' "$(singleton_owner_attribution_state)"
 }
 
 singleton_recovery_boundary_note() {
@@ -858,17 +903,40 @@ start() {
     # needs this pid, so the sentinel written below can never satisfy
     # stale_singleton_recovery_proven, and reclaiming a leaked lock in such an
     # environment stays a deliberate operator act instead of an automatic one.
-    if singleton_owner_attribution_available; then
-      printf 'ERROR orchestrator-singleton-owner-unverified provider_pid=%s kernel_owner=%s\n' \
-        "$provider_pid" "${singleton_kernel_owner:-unknown}" >&2
+    #
+    # Two conditions reach this branch and they are NOT the same failure, which
+    # is what round 1 got wrong. Only the second may degrade.
+    local singleton_attribution_state singleton_refusal_reason=""
+    if [[ -z "$singleton_lock_identity" ]]; then
+      # The lock file could not be identified AT ALL — findmnt or stat failed
+      # on an ordinary path. That is broken tooling on this host, not a
+      # namespace boundary: a blind pid namespace resolves the key perfectly
+      # well and goes blind only at the /proc/locks read. Nothing here is
+      # evidence about the kernel, so this keeps the pre-V3-5.38 hard refusal.
+      singleton_refusal_reason='lock-key-unresolved'
+    else
+      singleton_attribution_state="$(singleton_owner_attribution_state)"
+      case "$singleton_attribution_state" in
+        # The kernel does attribute locks and still will not name this one:
+        # a real ownership anomaly, and it refuses exactly as it always has.
+        available) singleton_refusal_reason='owner-unnameable' ;;
+        # The kernel attributes nothing here. Refusing protects nothing —
+        # flock already holds the singleton — so record the boundary and start.
+        unavailable) singleton_refusal_reason="" ;;
+        # The probe could not measure. Absence of a measurement is not a
+        # measurement of absence.
+        *) singleton_refusal_reason='attribution-undetermined' ;;
+      esac
+    fi
+    if [[ -n "$singleton_refusal_reason" ]]; then
+      printf 'ERROR orchestrator-singleton-owner-unverified provider_pid=%s kernel_owner=%s reason=%s\n' \
+        "$provider_pid" "${singleton_kernel_owner:-unknown}" "$singleton_refusal_reason" >&2
       tmux kill-session -t "$SESSION" 2>/dev/null || true
       return 1
     fi
     printf 'WARN orchestrator-singleton-owner-unattributable provider_pid=%s lock=%s; exclusion holds, automatic stale-lock recovery does not\n' \
       "$provider_pid" "$SINGLETON_LOCK_FILE" >&2
     singleton_kernel_owner="$SINGLETON_OWNER_UNATTRIBUTABLE"
-    [[ -n "$singleton_lock_identity" ]] ||
-      singleton_lock_identity="$SINGLETON_OWNER_UNATTRIBUTABLE"
   fi
   singleton_owner_tmp="$(mktemp "$(dirname "$SINGLETON_OWNER_FILE")/.orchestrator-singleton-owner.XXXXXX")"
   printf 'provider_pid=%s\nprovider_starttime=%s\nlock_owner_pid=%s\nlock_key=%s\n' \

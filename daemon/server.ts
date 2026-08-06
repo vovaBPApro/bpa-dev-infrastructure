@@ -89,6 +89,7 @@ import {
 } from './model-registry';
 import {
   assertReactionEmojiAllowed,
+  mirrorFailureSendOptions,
   mirrorInbound,
   type MirrorReceipt,
 } from './inbox-mirror';
@@ -3778,8 +3779,13 @@ async function handleInbound(
   // or whitespace-only: it is still something he sent, and it still has an
   // inbox row's worth of identity (attachment_file_id, W-15, which is what
   // makes the attachment recoverable later). Gating the mirror on text alone
-  // would have left every caption-less photo permanently un-storable while
-  // still wearing 👀 — a receipt for a row that does not exist.
+  // would have left every caption-less photo permanently un-storable, and so
+  // permanently unable to earn a receipt, while the access.ackReaction site
+  // below — which has no text gate — could still ack it.
+  //
+  // The 👀 site itself is not reachable for a caption-less message at all: it
+  // sits inside `if (tmuxLive && text.trim())`. So what a whitespace-caption
+  // attachment earns here is the stored row and the receipt value, not the eyes.
   if (text.trim() || hasAttachment) {
     // Daemon-side auto-mirror (INSTRUCTIONS_CONSILIUM_FINAL.md §2.4): append the
     // raw inbound Human message to instance/decisions/inbox.jsonl so capture is
@@ -3822,15 +3828,14 @@ async function handleInbound(
         // message it was withheld from. Same ping route the daemon already
         // uses everywhere else (sendMessage with an explicit
         // disable_notification: false), replying to the offending message so
-        // it is unambiguous. Fire-and-forget: a failing notification must not
-        // delay the delivery that is still about to happen below.
+        // it is unambiguous. The payload is built by mirrorFailureSendOptions,
+        // next to the notice text, because the reply must be best-effort: a
+        // deleted reply target would otherwise make Telegram refuse the send
+        // and the notice would be lost with it. Fire-and-forget: a failing
+        // notification must not delay the delivery that is still about to
+        // happen below.
         void bot.api
-          .sendMessage(chat_id, notice, {
-            disable_notification: false,
-            ...(msgId != null
-              ? { reply_parameters: { message_id: msgId } }
-              : {}),
-          })
+          .sendMessage(chat_id, notice, mirrorFailureSendOptions(msgId))
           .catch((err) =>
             process.stderr.write(
               `${LOG_PREFIX} mirror-failure ping to ${chat_id} failed: ${err}\n`,

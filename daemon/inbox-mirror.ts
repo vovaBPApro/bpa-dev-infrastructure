@@ -179,6 +179,38 @@ export function mirrorFailureNotice(msgId: number | string): string {
   );
 }
 
+// How the notice above must be SENT, built here next to the notice itself so a
+// caller cannot hand-roll a payload that loses it.
+//
+// The notice replies to the offending message, which is what makes "this one"
+// unambiguous. But a reply is only best-effort context: Telegram rejects
+// sendMessage outright when the reply target is gone (deleted message, cleared
+// history), and the mirror-failure notice is the one message that must not be
+// lost that way — it is the ONLY thing telling him a requirement never reached
+// disk. `allow_sending_without_reply` makes Telegram send it unthreaded instead
+// of failing, so a deleted target costs the reply context and nothing more.
+export type MirrorFailureSendOptions = {
+  disable_notification: false;
+  reply_parameters?: { message_id: number; allow_sending_without_reply: true };
+};
+
+export function mirrorFailureSendOptions(
+  msgId: number | undefined,
+): MirrorFailureSendOptions {
+  return {
+    // Explicitly loud: this notice must ping, not sit silently in the list.
+    disable_notification: false,
+    ...(msgId != null
+      ? {
+          reply_parameters: {
+            message_id: msgId,
+            allow_sending_without_reply: true as const,
+          },
+        }
+      : {}),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // The receipt emoji is RESERVED to the daemon (HR-2486, workboard V3-5.8)
 // ---------------------------------------------------------------------------

@@ -43,6 +43,28 @@
 #                  container structurally cannot cross. {proven:false,
 #                  reason:"stage-not-reached"} when the run died earlier.
 #   finished_at    UTC ISO-8601 second precision.
+#
+# ── THE PROOF ANCHOR ───────────────────────────────────────────────────────
+# The JSON above is an ordinary file on a host, and anyone who can write that
+# path can write a green verdict into it. So every run that measured a tree
+# publishes the artifact's digest to the tracked origin, and the reader
+# (tools/check-cutover-readiness.ts) treats an artifact without that anchor as
+# no evidence at all:
+#
+#   refs/bpa-meteorite-proofs/<tree_sha>/<sha256>         -> <tree_sha>
+#   refs/bpa-meteorite-proof-mirrors/<tree_sha>/<sha256>  -> <tree_sha>
+#
+# The digest is the ref NAME, so an anchor cannot vouch for bytes it was not
+# published for; the ref TARGET is the proven commit, so it cannot be moved onto
+# a different tree; the mirror namespace makes a record forged or suppressed on
+# one side detectable; and `push --atomic` means a half-published anchor never
+# exists. The destination is the URL pinned by `repos.git_remote` in the
+# instance/params.yaml of the PROVEN tree -- the same one home gate/land.sh
+# reads, taken from tracked content rather than from this host's Git config.
+# Both a clean run and a NO-GO run publish: a failed rebuild's artifact is FAIL
+# evidence and has to be as readable as a passing one. A publication that does
+# not happen makes the run exit non-zero and says so on stderr, because an
+# unpublished proof must never be indistinguishable from a proven one.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -57,6 +79,9 @@ source_mechanism="${METEORITE_SOURCE_MECHANISM:-tracked-remote}"
 donor_sha="${METEORITE_DONOR_SHA:-}"
 donor_ref="${METEORITE_DONOR_REF:-}"
 cid=""
+proof_namespace="refs/bpa-meteorite-proofs"
+proof_mirror_namespace="refs/bpa-meteorite-proof-mirrors"
+artifact_written=0
 tested_sha="UNMEASURED"
 result="NO-GO"
 blocker="runner did not reach a measured stage"
@@ -220,6 +245,71 @@ write_artifact() {
   mv "$tmp" "$artifact"
 }
 
+# Extract the pinned origin URL from an instance/params.yaml stream: the first
+# `git_remote:` value with any trailing ` # comment` stripped. Identical to
+# gate/land.sh's land_origin_pin() by construction -- both are readers of the
+# one home, instance/params.yaml, not second copies of the value.
+meteorite_origin_pin() {
+  sed -n 's/^[[:space:]]*git_remote:[[:space:]]*//p' | head -n 1 | sed 's/[[:space:]]#.*$//; s/[[:space:]]*$//'
+}
+
+# Bind the finalized artifact to a durable, origin-visible anchor. Runs after
+# the artifact's atomic replace and never touches it again: the digest is of the
+# exact bytes a reader will read, so any later write to that file -- including
+# one by this runner -- would be a different artifact with no anchor.
+publish_proof_anchor() {
+  local pin digest leaf ref mirror persisted persisted_mirror
+  if ((artifact_written == 0)); then
+    printf 'ERROR: [meteorite] no artifact was written, so no proof anchor was published\n' >&2
+    return 1
+  fi
+  # Before the clone stage measures the tree there is no commit for an anchor to
+  # name or to point at. Such a run is already NO-GO with tree_sha UNMEASURED;
+  # it is reported here too so that "unanchored" is never a silent state.
+  if [[ ! "$tested_sha" =~ ^[0-9a-f]{40}$ ]]; then
+    printf 'ERROR: [meteorite] no measured tree (tree_sha=%s); the artifact is unanchored and is not evidence\n' "$tested_sha" >&2
+    return 1
+  fi
+  if ! git -C "$repo_root" rev-parse --verify -q "$tested_sha^{commit}" >/dev/null 2>&1; then
+    printf 'ERROR: [meteorite] the measured tree %s is not a commit in %s; the artifact is unanchored and is not evidence\n' "$tested_sha" "$repo_root" >&2
+    return 1
+  fi
+  pin="$(git -C "$repo_root" show "$tested_sha:instance/params.yaml" 2>/dev/null | meteorite_origin_pin)" || pin=""
+  if [[ -z "$pin" ]]; then
+    printf 'ERROR: [meteorite] the proven tree %s tracks no repos.git_remote pin; the artifact is unanchored and is not evidence\n' "$tested_sha" >&2
+    return 1
+  fi
+  if ! digest="$(sha256sum "$artifact")"; then
+    printf 'ERROR: [meteorite] could not digest the artifact: %s\n' "$artifact" >&2
+    return 1
+  fi
+  digest="${digest%% *}"
+  if [[ ! "$digest" =~ ^[0-9a-f]{64}$ ]]; then
+    printf 'ERROR: [meteorite] artifact digest is not a sha256: %s\n' "$digest" >&2
+    return 1
+  fi
+  leaf="$tested_sha/$digest"
+  ref="$proof_namespace/$leaf"
+  mirror="$proof_mirror_namespace/$leaf"
+  if ! git -C "$repo_root" push --atomic "$pin" "$tested_sha:$ref" "$tested_sha:$mirror" >/dev/null; then
+    printf 'ERROR: [meteorite] proof anchor NOT published to %s: %s; the artifact on this host is unanchored and is not evidence\n' "$pin" "$ref" >&2
+    return 1
+  fi
+  # Read back from the same URL that was written, exactly as gate/land.sh does
+  # with its attempt refs: a push that reported success and left the remote
+  # without both refs has published nothing a reader can find.
+  persisted="$(git -C "$repo_root" ls-remote --refs "$pin" "$ref" 2>/dev/null | awk 'NR == 1 { print $1 }')"
+  persisted_mirror="$(git -C "$repo_root" ls-remote --refs "$pin" "$mirror" 2>/dev/null | awk 'NR == 1 { print $1 }')"
+  if [[ "$persisted" != "$tested_sha" || "$persisted_mirror" != "$tested_sha" ]]; then
+    printf 'ERROR: [meteorite] proof anchor did not persist at %s: %s found=%s mirror=%s expected=%s\n' \
+      "$pin" "$ref" "${persisted:-missing}" "${persisted_mirror:-missing}" "$tested_sha" >&2
+    return 1
+  fi
+  printf '[meteorite] proof anchor: %s -> %s (%s)\n' "$ref" "$tested_sha" "$pin"
+  printf '[meteorite] proof mirror: %s\n' "$mirror"
+  return 0
+}
+
 teardown() {
   local status=$?
   if [[ -n "$cid" ]]; then
@@ -236,9 +326,16 @@ teardown() {
     printf 'ERROR: could not write report: %s\n' "$report" >&2
   fi
   if write_artifact; then
+    artifact_written=1
     printf '[meteorite] artifact: %s\n' "$artifact"
   else
     printf 'ERROR: could not write artifact: %s\n' "$artifact" >&2
+  fi
+  # The last act of every run, success and failure alike. A run that cannot
+  # anchor its artifact does not get to exit 0 -- otherwise the one difference
+  # between a proof and a file someone wrote would be invisible to its caller.
+  if ! publish_proof_anchor; then
+    ((status != 0)) || status=1
   fi
   return "$status"
 }

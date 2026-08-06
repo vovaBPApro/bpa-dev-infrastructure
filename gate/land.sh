@@ -731,6 +731,16 @@ land_pass retained-branches
 
 if [ "$run_verify" = true ]; then
   # Trust model: report verify commands are coder-authored and guard-validated.
+  #
+  # The post-merge verify below runs through `env -u BUN_BIN -u LAND_CHECK_PATH`
+  # for the same reason gate/completion-guard.ts strips them from its own verify
+  # child: land_resolve_bun EXPORTED both into this shell (gate/land-lib.sh:146-161),
+  # and a verify that reaches land_resolve_bun again -- a nested gate/push-guard.sh
+  # or gate/land.sh -- would die at `preflight detail=caller-bun-override-refused`
+  # instead of running. This site is NOT covered by the guard's fix: when
+  # --run-verify is set, gate/land.sh:484 passes --defer-verify, so the guard does
+  # not run the verify at all and this is the only place it executes at landing.
+  # The refusal itself is unchanged; a real caller override is still refused.
   verify_command=$(sed -n 's/^verify:[[:space:]]*//p' "$report" | head -n 1)
   verify_count_claim=$(sed -n 's/^verify-count:[[:space:]]*//p' "$report")
   if [ -n "$verify_count_claim" ]; then
@@ -758,7 +768,7 @@ if [ "$run_verify" = true ]; then
     land_pass reviewed-verify
   fi
   verify_output=$(mktemp)
-  if [ -z "$verify_command" ] || ! (cd "$repo" && sh -c "$verify_command") >"$verify_output" 2>&1; then
+  if [ -z "$verify_command" ] || ! (cd "$repo" && env -u BUN_BIN -u LAND_CHECK_PATH sh -c "$verify_command") >"$verify_output" 2>&1; then
     cat "$verify_output"
     rm -f "$verify_output"
     if ! land_force_reset "$repo" "$pre_merge_sha"; then

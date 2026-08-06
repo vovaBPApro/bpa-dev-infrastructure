@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
 import {
   copyFileSync,
@@ -9,6 +9,7 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from "fs";
 import { tmpdir } from "os";
 import { join, relative } from "path";
@@ -45,6 +46,22 @@ import { join, relative } from "path";
 // The fix is one line per fixture -- `unset BUN_BIN`, as gate/land.test.sh:3
 // has carried all along -- and this file locks it so the next such test cannot
 // be added without it.
+//
+// V3-5.28 note. Everything the paragraphs above describe was locked as a
+// WORKAROUND: each affected shell test was made to own its environment. The
+// leak itself stayed open for another three weeks and cost two more lanes
+// (ag-v3-5.23's verify, ag-v3-5.25 r2's test), because the workaround is only
+// available to a file someone remembers to edit -- a report's `verify:` command
+// is written by a lane that has never read this file, and ~100 retained reports
+// carry a defensive `env -u BUN_BIN` as folklore.
+//
+// The source is now closed at both of the two places a `verify:` is executed:
+// gate/completion-guard.ts:runVerification strips the gate's own
+// land_resolve_bun exports from the verify child, and gate/land.sh's post-merge
+// verify runs through `env -u BUN_BIN -u LAND_CHECK_PATH`. The landing site is
+// locked end to end in gate/land.test.sh (the verify-env-scrub fixture); the
+// guard site is locked at the bottom of this file. The refusal itself is
+// unchanged in both directions, and that is asserted rather than asserted-about.
 //
 // Round 2 note (review of f2a4aab). Two of this file's assertions were
 // themselves false greens and are rewritten below: the premise assertion was a
@@ -306,6 +323,155 @@ test(
   },
   120_000,
 );
+
+// ---------------------------------------------------------------------------
+// V3-5.28: the leak at its source, measured through the real entry points.
+//
+// gate/lane-exit.sh sources land-lib.sh and calls land_resolve_bun BEFORE it
+// runs the guard, so the guard process always carries BUN_BIN and
+// LAND_CHECK_PATH -- no caller has to supply anything. That is the whole defect:
+// the gate exported the variable its own preflight refuses, then handed it to
+// the verify child.
+
+const guardScript = join(repoRoot, "gate/completion-guard.ts");
+const laneExit = join(repoRoot, "gate/lane-exit.sh");
+
+// The env a shell has before any gate touches it.
+const cleanEnvironment = (): Record<string, string> => {
+  const environment = { ...process.env } as Record<string, string>;
+  delete environment.BUN_BIN;
+  delete environment.LAND_CHECK_PATH;
+  return environment;
+};
+
+const shellStep = (command: string, cwd: string): string => {
+  const result = spawnSync(command, { cwd, shell: true, encoding: "utf8", env: cleanEnvironment() });
+  if (result.status !== 0) throw new Error(`${command} exited ${result.status}\n${result.stdout}${result.stderr}`);
+  return result.stdout.trim();
+};
+
+const temporaryRoots: string[] = [];
+
+// A one-commit repo on branch `lane` plus a coder report pinned to its tip --
+// the shape a lane actually hands the exit gate.
+const laneFixture = (verify: string, { withLandLib = false } = {}) => {
+  const directory = mkdtempSync(join(tmpdir(), "verify-env-leak-"));
+  temporaryRoots.push(directory);
+  const repo = join(directory, "repo");
+  mkdirSync(repo);
+  shellStep("git init --quiet --initial-branch=lane .", repo);
+  shellStep("git config user.email guard@example.test && git config user.name Guard", repo);
+  writeFileSync(join(repo, "evidence.txt"), "evidence\n");
+  if (withLandLib) {
+    mkdirSync(join(repo, "gate"));
+    copyFileSync(join(repoRoot, "gate/land-lib.sh"), join(repo, "gate/land-lib.sh"));
+  }
+  shellStep("git add -A && git commit --quiet -m fixture", repo);
+  const report = join(directory, "report.md");
+  writeFileSync(
+    report,
+    `commit: ${shellStep("git rev-parse HEAD", repo)} fixture\n` +
+      `verify: ${verify}\nresult: clean\nsecret-scan: clean\nremaining: none\n`,
+  );
+  return { repo, report };
+};
+
+// What gate/lane-exit.sh does to the guard: land_resolve_bun has already run, so
+// both variables are exported into the process that spawns the verify.
+const runGuardAfterPreflight = (fixture: { repo: string; report: string }) =>
+  spawnSync("bun", [guardScript, "--report", fixture.report, "--repo", fixture.repo, "--branch", "lane"], {
+    encoding: "utf8",
+    env: { ...cleanEnvironment(), BUN_BIN: resolveBun(), LAND_CHECK_PATH: "/usr/local/bin:/usr/bin:/bin" },
+  });
+
+// A shell probe, not a claim: the verify prints its own view of both variables,
+// and the guard's evidence tail carries that output back. Remove either delete
+// in verificationEnvironment() and the values appear here instead of `unset`.
+const ENVIRONMENT_PROBE =
+  'echo "BUN_BIN=[${BUN_BIN-unset}] LAND_CHECK_PATH=[${LAND_CHECK_PATH-unset}]"';
+
+afterEach(() => {
+  while (temporaryRoots.length) rmSync(temporaryRoots.pop()!, { recursive: true, force: true });
+});
+
+test("the guard's verify child inherits neither of the gate's resolution exports", () => {
+  const result = runGuardAfterPreflight(laneFixture(ENVIRONMENT_PROBE));
+  const output = `${result.stdout}${result.stderr}`;
+  expect(result.status, `guard exited ${result.status}\n${output}`).toBe(0);
+  expect(output, "the verify child saw the gate's BUN_BIN").toContain("BUN_BIN=[unset]");
+  expect(output, "the verify child saw the gate's LAND_CHECK_PATH").toContain("LAND_CHECK_PATH=[unset]");
+});
+
+// The probe above is only worth having if the same probe would report the values
+// when they ARE present -- otherwise `[unset]` could just be how it always reads.
+test("the probe reports a value when one is actually present", () => {
+  const result = spawnSync(ENVIRONMENT_PROBE, {
+    shell: true,
+    encoding: "utf8",
+    env: { ...cleanEnvironment(), BUN_BIN: "/leaked/bun", LAND_CHECK_PATH: "/leaked/path" },
+  });
+  expect(result.stdout).toContain("BUN_BIN=[/leaked/bun]");
+  expect(result.stdout).toContain("LAND_CHECK_PATH=[/leaked/path]");
+});
+
+// ag-v3-5.23 in miniature and hermetic: a verify that reaches a gate preflight.
+// Its report was contract-valid in every other respect and still could not
+// report clean, because this verify died at the refusal instead of running.
+const NESTED_PREFLIGHT_VERIFY = 'bash -c "set -u; . gate/land-lib.sh; land_resolve_bun"';
+
+test("a verify that reaches the gate preflight runs instead of being refused", () => {
+  const result = runGuardAfterPreflight(laneFixture(NESTED_PREFLIGHT_VERIFY, { withLandLib: true }));
+  const output = `${result.stdout}${result.stderr}`;
+  expect(output, "the gate's own export refused the gate's own verify child").not.toContain(
+    "caller-bun-override-refused",
+  );
+  expect(result.status, `guard exited ${result.status}\n${output}`).toBe(0);
+});
+
+// ...and the same verify, handed a BUN_BIN, still refuses -- so the test above
+// is locking a real member of the defect class rather than a command that would
+// have succeeded either way.
+test("that same verify is refused when its environment really does carry BUN_BIN", () => {
+  const fixture = laneFixture(NESTED_PREFLIGHT_VERIFY, { withLandLib: true });
+  const result = spawnSync("bash", ["-c", "set -u; . gate/land-lib.sh; land_resolve_bun"], {
+    cwd: fixture.repo,
+    encoding: "utf8",
+    env: { ...cleanEnvironment(), BUN_BIN: resolveBun() },
+  });
+  expect(result.status, "a caller-supplied BUN_BIN must still be refused").not.toBe(0);
+  expect(`${result.stdout}${result.stderr}`).toContain("caller-bun-override-refused");
+});
+
+// End to end through the entry point a lane actually runs, from a clean shell:
+// the whole ag-v3-5.23 path, exit code read directly.
+test(
+  "gate/lane-exit.sh clears a report whose verify reaches the gate preflight",
+  () => {
+    const fixture = laneFixture(NESTED_PREFLIGHT_VERIFY, { withLandLib: true });
+    const result = spawnSync(
+      "bash",
+      [laneExit, "--report", fixture.report, "--repo", fixture.repo, "--branch", "lane", "--role", "coder"],
+      { cwd: repoRoot, encoding: "utf8", env: cleanEnvironment() },
+    );
+    const output = `${result.stdout}${result.stderr}`;
+    expect(result.status, `lane-exit exited ${result.status}\n${output}`).toBe(0);
+    expect(output).toContain("LANE-EXIT verdict=clear");
+  },
+  120_000,
+);
+
+// The refusal is a control, not collateral: stripping the CHILD's environment
+// must not make the entry point accept a caller override of its own interpreter.
+test("gate/lane-exit.sh still refuses a caller-supplied BUN_BIN at preflight", () => {
+  const fixture = laneFixture("true");
+  const result = spawnSync(
+    "bash",
+    [laneExit, "--report", fixture.report, "--repo", fixture.repo, "--branch", "lane", "--role", "coder"],
+    { cwd: repoRoot, encoding: "utf8", env: { ...cleanEnvironment(), BUN_BIN: resolveBun() } },
+  );
+  expect(result.status).toBe(2);
+  expect(`${result.stdout}${result.stderr}`).toContain("LANE-EXIT verdict=blocked step=preflight");
+});
 
 // ...and the fixture is exercised in both directions, so the scan above is
 // locking a real member of the defect class rather than a plausible-looking

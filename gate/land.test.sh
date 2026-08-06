@@ -771,6 +771,35 @@ assert_output_has "$verify_fail_output" 'merge reset to ORIG_HEAD'
 assert test "$(git -C "$fixture_root/verify-fail-repo" rev-parse HEAD)" = "$verify_fail_before"
 assert git -C "$fixture_root/verify-fail-repo" show-ref --verify --quiet refs/heads/ag-verify-fail
 
+# V3-5.28 regression lock: the post-merge verify must not inherit the gate's own
+# resolution exports. This shell sets no BUN_BIN (line 3 unsets it) -- the leak
+# was self-inflicted: land_resolve_bun EXPORTS BUN_BIN and LAND_CHECK_PATH into
+# gate/land.sh's own environment, and the verify child inherited them, so any
+# verify reaching a nested gate preflight (gate/push-guard.sh, a recursive
+# gate/land.sh, a direct `. land-lib.sh; land_resolve_bun`) died at
+# `caller-bun-override-refused` instead of running. Measured on ag-v3-5.23.
+#
+# The verify below is the smallest honest probe of the child's environment: it
+# fails if either variable is merely PRESENT, so removing the `env -u` restores
+# a red. Landing must still succeed end to end, which is what proves the strip
+# did not break the verify path itself.
+make_fixture verify-env-scrub
+verify_env_sha=$(make_lane "$fixture_root/verify-env-scrub-repo" ag-verify-env-scrub)
+printf 'commit: %s fixture\nverify: %s\nresult: clean\nsecret-scan: clean\nremaining: none\n' \
+  "$verify_env_sha" 'test -z "${BUN_BIN+set}" && test -z "${LAND_CHECK_PATH+set}"' \
+  > "$fixture_root/verify-env-scrub-report.md"
+verify_env_output="$fixture_root/verify-env-scrub-output.txt"
+"$land" --branch ag-verify-env-scrub --item-id ag-verify-env-scrub --report "$fixture_root/verify-env-scrub-report.md" --repo "$fixture_root/verify-env-scrub-repo" --run-verify >"$verify_env_output" 2>&1
+assert_output_has "$verify_env_output" 'LAND step=post-merge-verify status=pass'
+assert_output_lacks "$verify_env_output" 'caller-bun-override-refused'
+assert git -C "$fixture_root/verify-env-scrub-repo" merge-base --is-ancestor "$verify_env_sha" HEAD
+
+# ...and the refusal it depends on is NOT weakened: the gate entry point still
+# refuses a genuine caller-supplied BUN_BIN before it does anything else.
+verify_env_override_output="$fixture_root/verify-env-override-output.txt"
+if BUN_BIN=/bin/false "$land" --branch ag-verify-env-scrub --item-id ag-verify-env-scrub --report "$fixture_root/verify-env-scrub-report.md" --repo "$fixture_root/verify-env-scrub-repo" --run-verify >"$verify_env_override_output" 2>&1; then exit 1; fi
+assert_output_has "$verify_env_override_output" 'detail=caller-bun-override-refused'
+
 # W-16 regression lock: the old gate landed this report because it accepted the
 # typed 168/168 claim without comparing it with the mandated command's output.
 make_fixture verify-count-mismatch

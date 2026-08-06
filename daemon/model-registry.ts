@@ -67,14 +67,14 @@ export const MODEL_CATALOG: readonly ModelChoice[] = [
     provider: 'claude',
     model: 'claude-opus-5',
     envKey: 'ORCH_CLAUDE_MODEL',
-    role: 'default — базовий рівень (пін у launch.sh)',
+    role: 'default — базовий рівень',
   },
   {
     name: 'fable',
     provider: 'claude',
     model: 'claude-fable-5',
     envKey: 'ORCH_CLAUDE_MODEL',
-    role: 'escalation — важкий інцидент, потім назад униз',
+    role: 'resting — пін у launch.sh (HR-2613), важкий інцидент теж тут',
   },
   {
     name: 'sol',

@@ -71,6 +71,12 @@ valid_report() {
     # would take; where the namespace works, the declaration is unused and the
     # run is full-fidelity. The scenario below proves the UNdeclared case still
     # blocks, so this line cannot hide the wiring.
+    #
+    # It must stay HERE, inside the contiguous contract-header block: a granting
+    # field is read at column 0 in that block and nowhere else (lane-lifecycle,
+    # gate/report-contract.ts contractHeader). Move it below the blank line and
+    # every scenario in this file starts failing on a maskless host -- which is
+    # the fixture telling the truth, not a flake.
     printf 'bare-world: capability=mount-namespace reason=this-fixture-must-also-run-where-unprivileged-namespaces-are-unavailable\n'
   } > "$out"
 }

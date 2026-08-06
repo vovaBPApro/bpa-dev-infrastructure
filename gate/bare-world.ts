@@ -55,10 +55,20 @@
 // what the first round of this row did and what its review rejected -- a
 // harness built to end silent environmental passes must not contain one. The
 // only way past it is a DECLARATION in the terminal report, per
-// instructions/lane-capabilities.md, which is durable and reviewable:
+// instructions/lane-capabilities.md, which is durable and reviewable. It is
+// read from ONE position -- the report's contract header block, column 0, case
+// exact (gate/report-contract.ts contractHeader) -- and a line that looks like
+// it anywhere else in the report is prose:
 //
 //     bare-world: capability=mount-namespace reason=<why>   (no usable namespace)
 //     bare-world: capability=maskable-home  reason=<why>    (nothing to mask)
+//
+// The position is the mechanism, not a nicety. This field GRANTS a clearance
+// past a fail-closed gate, so every line a reader matches by accident is a
+// grant nobody wrote. Two review rounds found two such lines -- a fenced
+// example, then an indented one -- in a reader wide enough to reach prose at
+// all. A report may now DOCUMENT the syntax as often as it likes, in any
+// markdown shape, without claiming it once.
 //
 // A test affordance may not mint that clearance either: when this host DOES
 // have a usable namespace and INFRA_TEST_FORCE_MISSING_CAPABILITIES asks the
@@ -80,7 +90,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { fieldValues, lineValue } from "./report-contract";
+import { headerValues, lineValue } from "./report-contract";
 
 // Same literal fallback as gate/land-lib.sh's trusted baseline, used ONLY when
 // the gate has not already resolved one. gate/lane-exit.sh calls
@@ -120,6 +130,11 @@ const DECLARABLE_CAPABILITIES = new Map<string, "failure" | "fidelity">([
   ["mount-namespace", "fidelity"],
   ["maskable-home", "fidelity"],
 ]);
+
+/** The capability names a declaration line asks for, in the order written. */
+function capabilityNames(declaration: string): string[] {
+  return (declaration.match(/(?:^|\s)capability=(\S+)/)?.[1] ?? "").split(",").filter(Boolean);
+}
 
 type Options = { report: string; repo: string };
 
@@ -255,12 +270,12 @@ export function maskingDecision(options: {
     ? [
         "maskable-home",
         "no-maskable-home-or-xdg-directory-was-identified",
-        "run-with-a-maskable-HOME-or-declare 'bare-world: capability=maskable-home reason=<why>'",
+        "run-with-a-maskable-HOME-or-declare-in-the-report-contract-header 'bare-world: capability=maskable-home reason=<why>'",
       ]
     : [
         "mount-namespace",
         probe.detail,
-        "run-where-an-unprivileged-mount-namespace-works-or-declare 'bare-world: capability=mount-namespace reason=<why>'",
+        "run-where-an-unprivileged-mount-namespace-works-or-declare-in-the-report-contract-header 'bare-world: capability=mount-namespace reason=<why>'",
       ];
   return {
     masking: false,
@@ -515,17 +530,20 @@ function main(): void {
   const result = lineValue(contents, "result");
   const verify = lineValue(contents, "verify");
   const commit = lineValue(contents, "commit");
-  // Fence-aware, because this field GRANTS a clearance: a report documenting the
-  // declaration syntax in a fenced code block must not thereby make one. Found
-  // on this row's own terminal report, which did exactly that.
-  const declarations = fieldValues(contents, "bare-world");
-  if (declarations.unterminatedFence) {
-    refuse(["verdict=refused reason=report-malformed detail=unterminated-fenced-block"]);
+  // Contract-header position only, because this field GRANTS a clearance: a
+  // report DOCUMENTING the declaration -- fenced, indented, quoted, in prose --
+  // must not thereby make one. Both happened on this row's own reports.
+  const declarations = headerValues(contents, "bare-world");
+  if (declarations.length > 1) {
+    // Name what was actually read. The refusal used to print a hard-coded
+    // `capability=host-state`, which was the one capability neither line need
+    // have mentioned.
+    const named = [...new Set(declarations.flatMap(capabilityNames))];
+    refuse([
+      `verdict=refused reason=declaration-duplicated NO-GO capability=${named.join(",") || "unreadable"} count=${declarations.length}`,
+    ]);
   }
-  if (declarations.values.length > 1) {
-    refuse([`verdict=refused reason=declaration-duplicated NO-GO capability=host-state count=${declarations.values.length}`]);
-  }
-  const declaration = declarations.values[0];
+  const declaration = declarations[0];
 
   if (result !== "clean") {
     // A NO-GO report's verify was never run normally either
@@ -545,7 +563,7 @@ function main(): void {
   const declaredFailure: string[] = [];
   const declaredFidelity: string[] = [];
   if (declaration !== undefined) {
-    const names = (declaration.match(/(?:^|\s)capability=(\S+)/)?.[1] ?? "").split(",").filter(Boolean);
+    const names = capabilityNames(declaration);
     const reason = declaration.match(/(?:^|\s)reason=(.+)$/)?.[1]?.trim();
     const unknown = names.filter((name) => !DECLARABLE_CAPABILITIES.has(name));
     if (names.length === 0 || unknown.length > 0) {
@@ -553,7 +571,7 @@ function main(): void {
       // cleanly, never a silent pass.
       refuse([
         `verdict=refused reason=undeclarable-capability NO-GO capability=${unknown.join(",") || "missing"}`,
-        `detail=declare-one-of=${[...DECLARABLE_CAPABILITIES.keys()].join("|")} field='bare-world: capability=<name>[,<name>] reason=<why>'`,
+        `detail=declare-one-of=${[...DECLARABLE_CAPABILITIES.keys()].join("|")} position=report-contract-header field='bare-world: capability=<name>[,<name>] reason=<why>'`,
       ]);
     }
     if (!reason) refuse([`verdict=refused reason=declaration-without-reason NO-GO capability=${names.join(",")}`]);
@@ -709,7 +727,7 @@ function main(): void {
       `verdict=refused ${lines[0]}`,
       ...lines.slice(1),
       "NO-GO capability=host-state",
-      "remedy=make-the-verify-hermetic-or-declare 'bare-world: capability=host-state reason=<why>'",
+      "remedy=make-the-verify-hermetic-or-declare-in-the-report-contract-header 'bare-world: capability=host-state reason=<why>'",
     ]);
   }
 }

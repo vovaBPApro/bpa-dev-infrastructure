@@ -172,6 +172,26 @@ report() {
   } > "$fixture_root/$1.md"
 }
 
+report_body() {
+  # $1 name, $2 verify, $3 extra CONTRACT HEADER line (may be empty), then every
+  # remaining argument as a BODY line, written after the blank line that closes
+  # the header. Whatever those lines look like, they are prose.
+  name="$1"
+  verify="$2"
+  header="$3"
+  shift 3
+  {
+    printf 'commit: %s fixture\n' "$sha"
+    printf 'verify: %s\n' "$verify"
+    printf 'result: clean\n'
+    printf 'secret-scan: clean\n'
+    printf 'remaining: none\n'
+    [ -n "$header" ] && printf '%s\n' "$header"
+    printf '\n'
+    for body_line in "$@"; do printf '%s\n' "$body_line"; done
+  } > "$fixture_root/$name.md"
+}
+
 run_harness() {
   # $1 report name -> writes $fixture_root/$1.out, returns the harness status
   "$bun_bin" "$harness" --report "$fixture_root/$1.md" --repo "$repo" > "$fixture_root/$1.out" 2>&1
@@ -398,6 +418,126 @@ assert_lacks "$fixture_root/fenced.out" "verdict=declared"
 echo "PASS: documenting the declaration does not make one"
 echo
 
+echo "== scenario: the declaration is read in the contract header, and NOWHERE else =="
+# The field GRANTS a clearance past a fail-closed gate, so every line a reader
+# matches by accident is a grant nobody wrote. Round 1 found a fenced example
+# granting one; round 2, after the fence was handled, found an indented one --
+# the shape this very row's reports use to document the syntax. So the reader
+# stopped trying to tell an example from a claim in prose, and reads ONE
+# position instead (gate/report-contract.ts contractHeader).
+#
+# Each case below is a full run of the real harness whose ONLY variable is where
+# the identical line sits. Inert means the umask fixture's failure is refused as
+# undeclared host state, exactly as if the line were not written at all.
+assert_inert() {
+  # $1 name of a report already written to $fixture_root/$1.md
+  case_name="$1"
+  run_harness_permissive "$case_name"
+  status=$?
+  cat "$fixture_root/$case_name.out"
+  assert [ "$status" -eq 2 ]
+  assert_has "$fixture_root/$case_name.out" "NO-GO capability=host-state"
+  assert_lacks "$fixture_root/$case_name.out" "verdict=declared"
+  assert_lacks "$fixture_root/$case_name.out" "declaration=accepted"
+  echo "PASS: $case_name is prose, and prose grants nothing"
+}
+
+inert_declaration() {
+  # $1 name, $2 extra header line (may be empty), $3.. body lines
+  case_name="$1"
+  header_line="$2"
+  shift 2
+  report_body "$case_name" 'bun test umask.test.ts' "$header_line" "$@"
+  assert_inert "$case_name"
+}
+
+# Body positions: markdown has more ways to write an example than a parser has
+# patches, which is the argument for not reading the body at all.
+inert_declaration indented '' '    bare-world: capability=host-state reason=an-indented-example'
+inert_declaration body-exact '' 'bare-world: capability=host-state reason=column-zero-but-below-the-header'
+inert_declaration quoted '' '> bare-world: capability=host-state reason=quoted'
+# A fence that is never closed. Under the previous reader this was a THIRD
+# outcome -- `reason=report-malformed detail=unterminated-fenced-block` -- and
+# the position rule removes the whole category: an unterminated fence is still a
+# malformed report, but gate/completion-guard.ts owns that and refuses it before
+# this harness is ever reached (gate/lane-exit.sh runs the guard first).
+inert_declaration unterminated-fence '' '```text' 'bare-world: capability=host-state reason=never-closed'
+# The same, with a NUL in the opening fence's info string: a byte that decides
+# what a fence-tracking reader thinks it is looking at, and decides nothing
+# here. Written straight to the file -- a command substitution would eat it.
+{
+  printf 'commit: %s fixture\n' "$sha"
+  printf 'verify: bun test umask.test.ts\n'
+  printf 'result: clean\n'
+  printf 'secret-scan: clean\n'
+  printf 'remaining: none\n'
+  printf '\n'
+  printf '```te\x00xt\n'
+  printf 'bare-world: capability=host-state reason=nul-split\n'
+  printf '```\n'
+} > "$fixture_root/nul-fence.md"
+assert_inert nul-fence
+
+# Header-position near-misses. This is where a reader is most tempted to be
+# helpful, and where being helpful mints a clearance nobody wrote.
+inert_declaration case-variant 'Bare-World: capability=host-state reason=capitalised'
+inert_declaration shouted 'BARE-WORLD: capability=host-state reason=upper-case'
+inert_declaration leading-space ' bare-world: capability=host-state reason=indented-by-one'
+inert_declaration pre-colon-space 'bare-world : capability=host-state reason=spaced-before-the-colon'
+echo
+
+echo "== scenario: the SAME line, header vs body, on a genuinely maskless host =="
+# The clearest statement of the whole rule: one report grants, the other does
+# not, and the only difference is which side of the blank line the identical
+# text sits on. Driven maskless, with a hermetic verify, so nothing but the
+# declaration can decide the exit status -- the round-2 review's own method.
+report_body position_body 'bun test hermetic.test.ts' '' \
+  'A lane on a namespace-less host writes, in its contract header:' \
+  '' \
+  '    bare-world: capability=mount-namespace reason=this-container-has-no-unprivileged-mount-namespace'
+run_harness_maskless position_body
+status=$?
+cat "$fixture_root/position_body.out"
+assert [ "$status" -eq 2 ]
+assert_has "$fixture_root/position_body.out" "verdict=refused reason=host-state-mask-not-applied"
+assert_has "$fixture_root/position_body.out" "NO-GO capability=mount-namespace"
+assert_lacks "$fixture_root/position_body.out" "declaration=accepted"
+
+report_body position_header 'bun test hermetic.test.ts' \
+  'bare-world: capability=mount-namespace reason=this-container-has-no-unprivileged-mount-namespace'
+run_harness_maskless position_header
+status=$?
+cat "$fixture_root/position_header.out"
+assert [ "$status" -eq 0 ]
+assert_has "$fixture_root/position_header.out" "declaration=accepted capability=mount-namespace"
+assert_has "$fixture_root/position_header.out" "verdict=pass"
+assert_has "$fixture_root/position_header.out" "fidelity=reduced"
+echo "PASS: documenting the declaration is inert; making it in the header grants, and says so"
+echo
+
+echo "== scenario: a lane may declare AND document the same thing =="
+# The reverse direction of the same defect, and the one that bites the honest
+# lane: under the previous reader a report that correctly declared the missing
+# capability and then showed the reader what it had written was refused
+# `declaration-duplicated` -- for one declaration and one sentence about it.
+report_body declared_and_documented 'bun test hermetic.test.ts' \
+  'bare-world: capability=mount-namespace reason=this-container-has-no-unprivileged-mount-namespace' \
+  'The line above is the declaration. Its syntax, for the next lane:' \
+  '' \
+  '    bare-world: capability=<name>[,<name>] reason=<why>' \
+  '' \
+  '```text' \
+  'bare-world: capability=maskable-home reason=an-example-of-the-other-one' \
+  '```'
+run_harness_maskless declared_and_documented
+status=$?
+cat "$fixture_root/declared_and_documented.out"
+assert [ "$status" -eq 0 ]
+assert_has "$fixture_root/declared_and_documented.out" "declaration=accepted capability=mount-namespace"
+assert_lacks "$fixture_root/declared_and_documented.out" "declaration-duplicated"
+echo "PASS: one declaration plus three examples of it is one declaration"
+echo
+
 echo "== scenario: two declarations are a named refusal, not a silent pick =="
 {
   printf 'commit: %s fixture\n' "$sha"
@@ -405,15 +545,18 @@ echo "== scenario: two declarations are a named refusal, not a silent pick =="
   printf 'result: clean\n'
   printf 'secret-scan: clean\n'
   printf 'remaining: none\n'
-  printf 'bare-world: capability=host-state reason=first\n'
-  printf 'bare-world: capability=host-state reason=second\n'
+  # Deliberately NOT host-state: the refusal used to print `capability=host-state`
+  # from a literal, which named the one capability neither line had asked for.
+  printf 'bare-world: capability=maskable-home reason=first\n'
+  printf 'bare-world: capability=maskable-home reason=second\n'
 } > "$fixture_root/twice.md"
 run_harness_permissive twice
 status=$?
 cat "$fixture_root/twice.out"
 assert [ "$status" -eq 2 ]
 assert_has "$fixture_root/twice.out" "reason=declaration-duplicated"
-echo "PASS: a duplicated declaration is refused by name"
+assert_has "$fixture_root/twice.out" "NO-GO capability=maskable-home count=2"
+echo "PASS: a duplicated declaration is refused by name, and named by what it read"
 echo
 
 # --- the boundaries of the harness's own authority ---------------------------

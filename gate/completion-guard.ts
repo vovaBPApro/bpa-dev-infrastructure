@@ -187,9 +187,12 @@ const reportPath = resolve(options.report!);
 const repoPath = resolve(options.repo!);
 let report: Report | undefined;
 
-// The fence-aware field reader now lives in report-contract.ts, because
-// `bare-world:` needs exactly the same rule and for exactly the same reason:
-// both fields GRANT something, so reading an example as a field is fail-open.
+// The fence-aware field reader lives in report-contract.ts. It is `review:`'s
+// reader and NOT the capability declaration's: `review:` DEMANDS a sibling
+// artifact, so an extra match adds an obligation and is fail-closed, while
+// `bare-world:` GRANTS a clearance, so an extra match is fail-open. The second
+// field is read from the contract header instead (report-contract.ts
+// contractHeader); the disciplines diverge because their directions do.
 // This wrapper keeps the call sites below unchanged.
 function reviewFieldValues(contents: string): { values: string[]; unterminatedFence: boolean } {
   return fieldValues(contents, "review");

@@ -43,8 +43,12 @@ written and red everywhere else, and the cost lands on whoever runs it next.
   environment scrubbed, `umask 077`, and the host's home and config directories
   masked. A verify that only passes outside that world has an undeclared
   dependency on this host.
-- **Declare it in the terminal report** when the dependency is legitimate:
-  `bare-world: capability=<name> reason=<why>`, one line, both parts required.
+- **Declare it in the terminal report's contract header** when the dependency is
+  legitimate: `bare-world: capability=<name> reason=<why>`, one line, both parts
+  required. The declaration grants a clearance, so it is read only from that
+  position and read exactly — `lane-lifecycle` owns the rule. Writing the same
+  line in the body, fenced or indented or in a sentence, documents it and
+  declares nothing.
   `host-state` covers reading the installation's own files and configuration;
   `network`, `docker` and `service-ops` keep the meanings the table above gives
   them. A reason is mandatory because the declaration is a claim someone will
@@ -72,8 +76,9 @@ readable — the exact class the step exists to catch.
   `verification-and-locks` forbids without qualification. Announcing the
   reduction in a log nobody consumes is not a mitigation: the announcement has
   to reach the thing that decides.
-- **The exception is declared, in the same field, and it is the environment
-  that is being declared** — not a preference: `bare-world: capability=mount-namespace
+- **The exception is declared, in the same field and the same position, and it
+  is the environment that is being declared** — not a preference:
+  `bare-world: capability=mount-namespace
   reason=<why>`. It buys a clearance at reduced fidelity and nothing else; it
   accepts no failure, and a capability declared for one gap never covers
   another. Declare several at once as `capability=<name>,<name>`.

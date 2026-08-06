@@ -3,6 +3,8 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { collectDocs } from "./docs.ts";
+import { renderFloor, CLAUDE_FILENAME } from "./floor.ts";
 
 const checker = join(import.meta.dir, "check.ts");
 const generator = join(import.meta.dir, "index.ts");
@@ -16,7 +18,15 @@ afterEach(() => {
 
 // Builds a throwaway repo with an instructions/ dir populated from a map of
 // relative filename -> file contents. Returns the repo root.
-function repoWith(files: Record<string, string>): string {
+//
+// By default the repo is DELIBERATELY partial — no CLAUDE.md, no generated
+// index, no instance/ layer — because most tests here are about one check and
+// want the rest quiet. Since V3-5.44 that partiality is visible: those absent
+// inputs report UNKNOWN (or SKIP where the whole instance/ layer is missing),
+// which is non-blocking without --strict. A test that asserts a --strict exit
+// code must therefore ask for `complete: true`, or it is asserting about its
+// own fixture's gaps rather than about the behavior under test.
+function repoWith(files: Record<string, string>, options: { complete?: boolean } = {}): string {
   const repo = mkdtempSync(join(tmpdir(), "instr-check-"));
   temporaryDirectories.push(repo);
   const root = join(repo, "instructions");
@@ -29,7 +39,21 @@ function repoWith(files: Record<string, string>): string {
     mkdirSync(join(full, ".."), { recursive: true });
     writeFileSync(full, contents);
   }
+  if (options.complete) completeInputs(repo, root);
   return repo;
+}
+
+// Writes every input the checker must read to reach a verdict on all of its
+// checks: the installation layer, its two generated artifacts, and the ledgers.
+function completeInputs(repo: string, instructionsRoot: string): void {
+  const instance = join(repo, "instance");
+  mkdirSync(join(instance, "decisions"), { recursive: true });
+  writeFileSync(join(instance, "params.yaml"), "capture:\n  mode: manual\n");
+  writeFileSync(join(instance, "tags.conf"), "hygiene\n");
+  writeFileSync(join(instance, "packs.conf"), "[coder]\nvalid-doc\n");
+  writeFileSync(join(instance, "decisions", "triage.jsonl"), "");
+  runIndex(repo);
+  writeFileSync(join(repo, CLAUDE_FILENAME), `# Fixture repo\n\n${renderFloor(collectDocs(instructionsRoot))}\n`);
 }
 
 function doc(front: Record<string, string>, body = "Body.\n"): string {
@@ -341,7 +365,9 @@ describe("check.ts ledger aging", () => {
   });
 
   test("a triaged-chatter row does not age", () => {
-    const repo = repoWith({ "valid-doc.md": doc(VALID) });
+    // `complete`: this is the one ledger-aging case that asserts a clean
+    // --strict exit, so the fixture must be able to answer every other check.
+    const repo = repoWith({ "valid-doc.md": doc(VALID) }, { complete: true });
     writeDecision(
       repo,
       "inbox.jsonl",

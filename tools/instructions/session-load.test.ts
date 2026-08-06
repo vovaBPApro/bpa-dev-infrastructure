@@ -124,17 +124,22 @@ describe("collectSessionLoad — composition", () => {
     expect(text).toContain('leases: [{"key":"lane-live","owner":"coder-a","fencingToken":7');
   });
 
+  // `params` is what makes this load healthy rather than merely small: since
+  // V3-5.44 a load whose standing context is absent cannot report ready.
   test("startup verdict is ready on a clean healthy load", () => {
     const root = repo({
+      params: "operator:\n  language: uk\n",
       state: true,
       handoffs: { "2026-07-30T00-00-00.000Z-a-to-b.json": "{}\n" },
     });
     initializeGit(root);
-    expect(collectSessionLoad(root).text).toContain("startup: ready");
+    const load = collectSessionLoad(root);
+    expect(load.unknown).toEqual([]);
+    expect(load.text).toContain("startup: ready");
   });
 
   test("startup verdict is degraded with a reason on a seeded probe fault", () => {
-    const root = repo({});
+    const root = repo({ params: "operator:\n  language: uk\n" });
     const text = collectSessionLoad(root).text;
     expect(text).toContain("missions: unknown");
     expect(text).toContain("startup: degraded (git state unknown; no handoff found; durable state unknown (state DB absent))");
@@ -147,9 +152,15 @@ describe("collectSessionLoad — composition", () => {
     expect(load.text).toContain("language: uk");
   });
 
-  test("params absent -> an (absent) placeholder, not a crash", () => {
+  // Was "params absent -> an (absent) placeholder, not a crash". It still does
+  // not crash; what changed is that "(absent)" said nothing about whether the
+  // session could be trusted, and the verdict below it still read `ready`.
+  test("params absent -> a named UNKNOWN and a NO-GO verdict, not a crash", () => {
     const root = repo({});
-    expect(collectSessionLoad(root).text).toContain("(absent)");
+    const load = collectSessionLoad(root);
+    expect(load.unknown).toContain("instance/params.yaml absent");
+    expect(load.text).toContain("UNKNOWN: instance/ exists but instance/params.yaml is absent");
+    expect(load.text).toContain("startup: NO-GO (unknown: instance/params.yaml absent");
   });
 
   test("prints the lexically latest handoff in full", () => {

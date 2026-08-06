@@ -26,8 +26,10 @@ import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import type { InstructionDoc } from "./docs.ts";
 import { CLAUDE_FILENAME } from "./floor.ts";
+import { instanceInputVerdict, type CheckLevel } from "./outcome.ts";
 
-export type PathLevel = "PASS" | "WARN" | "FAIL" | "SKIP";
+// Shared with check.ts and ledger.ts; UNKNOWN included (outcome.ts).
+export type PathLevel = CheckLevel;
 export type PathFinding = { level: PathLevel; file: string; check: string; detail: string };
 
 // Repo-relative location of the exemption ledger. Same idiom (and same
@@ -352,7 +354,15 @@ function collectSources(repo: string, docs: InstructionDoc[], resolver: PathReso
       tokens: extractBacktickedPathTokens(readFileSync(claudePath, "utf8"), isRepoDirectory),
     });
   } else {
-    findings.push({ level: "SKIP", file: CLAUDE_FILENAME, check: "path-exists", detail: "no CLAUDE.md at repo root" });
+    // UNKNOWN, not SKIP: CLAUDE.md is a source this check must read, and it
+    // belongs to every repo's skeleton in every layer. Absent means its cited
+    // paths went unchecked — a smaller claim than "they are all fine".
+    findings.push({
+      level: "UNKNOWN",
+      file: CLAUDE_FILENAME,
+      check: "path-exists",
+      detail: "no CLAUDE.md at repo root — the paths it cites cannot be checked",
+    });
   }
 
   for (const doc of docs) {
@@ -370,7 +380,8 @@ function collectSources(repo: string, docs: InstructionDoc[], resolver: PathReso
       tokens: extractPathTokens(readFileSync(paramsPath, "utf8"), isRepoDirectory),
     });
   } else {
-    findings.push({ level: "SKIP", file: PARAMS_FILE, check: "path-exists", detail: "no instance/params.yaml" });
+    const verdict = instanceInputVerdict(repo, PARAMS_FILE, "the paths it cites");
+    findings.push({ level: verdict.level, file: PARAMS_FILE, check: "path-exists", detail: verdict.detail });
   }
 
   return { sources, findings };

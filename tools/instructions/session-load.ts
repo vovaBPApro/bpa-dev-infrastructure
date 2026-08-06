@@ -39,6 +39,7 @@ import { collectDocs, type InstructionDoc } from "./docs.ts";
 import { admitsAudience } from "./compose.ts";
 import { latestHandoffPath } from "./handoff.ts";
 import { capturedMsgIds, hrDisposition, isHrOpen, parseHrFields } from "./ledger.ts";
+import { instanceInputVerdict, type CheckLevel } from "./outcome.ts";
 
 // The role a SessionStart load targets. Orchestrator is the only session that
 // gets a SessionStart hook (§2.3); factored out so the checker and tests share
@@ -57,6 +58,12 @@ export type SessionLoad = {
   text: string;
   // Total line count of `text`, the number the budget check caps.
   lineCount: number;
+  // Standing-context inputs that could not be read at all: an absent
+  // params.yaml, an absent decisions ledger, an absent instruction corpus.
+  // These are UNKNOWN in the checker's vocabulary (outcome.ts) and make the
+  // startup verdict a NO-GO — a session that loads without its standing law
+  // must say so, not print a shorter load and call itself ready.
+  unknown: string[];
 };
 
 // Reads a file's contents, or an empty string if absent (a fixture repo without
@@ -254,6 +261,10 @@ export function collectSessionLoad(repo: string): SessionLoad {
 
   const sections: SessionSection[] = [];
   const degradedReasons: string[] = [];
+  // Absent standing context, kept apart from the degraded probes: a dirty tree
+  // or a missing handoff degrades a load that still happened, whereas an absent
+  // params.yaml or ledger means part of the standing law was never loaded.
+  const unknown: string[] = [];
 
   // Repository identity is observed at load time. A failed probe or dirty tree
   // is explicit and degrades the startup verdict.
@@ -261,12 +272,20 @@ export function collectSessionLoad(repo: string): SessionLoad {
   sections.push({ title: "Repository state", lines: repository.lines });
   if (repository.degradedReason) degradedReasons.push(repository.degradedReason);
 
-  // 1. params.yaml
+  // 1. params.yaml. Absence used to render as a bare "(absent)" placeholder and
+  // change nothing else, so a session with no installation parameters at all
+  // still reported `startup: ready` — the exact silent load this section now
+  // refuses to perform.
   const params = readIfExists(join(root, "instance", "params.yaml"));
-  sections.push({
-    title: "instance/params.yaml",
-    lines: params !== undefined ? trimTrailing(params) : ["(absent)"],
-  });
+  let paramLines: string[];
+  if (params !== undefined) {
+    paramLines = trimTrailing(params);
+  } else {
+    const verdict = instanceInputVerdict(root, "instance/params.yaml", "this installation's parameters");
+    paramLines = [`${verdict.level}: ${verdict.detail}`];
+    if (verdict.level === "UNKNOWN") unknown.push("instance/params.yaml absent");
+  }
+  sections.push({ title: "instance/params.yaml", lines: paramLines });
 
   // 2. Open ledger rows: open HR files + untriaged inbox rows.
   //
@@ -289,7 +308,14 @@ export function collectSessionLoad(repo: string): SessionLoad {
   const interim = open.filter((hr) => frontmatterValue(hr.contents, "state") === "pending");
   const indexed = open.filter((hr) => frontmatterValue(hr.contents, "state") !== "pending");
   const ledgerLines: string[] = [];
-  if (open.length === 0) {
+  // "no open rows" and "no ledger to read" are different claims. The first is a
+  // measured empty set; the second is an unread input, and rendering it as the
+  // first would tell a starting orchestrator it owes the operator nothing.
+  if (!existsSync(decisionsDir)) {
+    const verdict = instanceInputVerdict(root, "instance/decisions/", "open Human directives");
+    ledgerLines.push(`${verdict.level}: ${verdict.detail}`);
+    if (verdict.level === "UNKNOWN") unknown.push("instance/decisions/ absent");
+  } else if (open.length === 0) {
     ledgerLines.push("(no open HR rows)");
   }
   for (const hr of interim) {
@@ -361,10 +387,16 @@ export function collectSessionLoad(repo: string): SessionLoad {
   // 5. Orchestrator-audience binding docs, as one-line summaries (id + summary
   // + path). Full bodies are delivered on demand by compose; this is the
   // always-on standing index, kept small by construction.
-  const docs = existsSync(instructionsRoot) ? collectDocs(instructionsRoot) : [];
+  const instructionsPresent = existsSync(instructionsRoot);
+  const docs = instructionsPresent ? collectDocs(instructionsRoot) : [];
   const bindingDocs = collectOrchestratorBindingDocs(docs);
   const docLines: string[] = [];
-  if (bindingDocs.length === 0) {
+  if (!instructionsPresent) {
+    // The corpus is the standing law itself. Its absence is UNKNOWN in every
+    // layer — no repo declares that it has no instructions/ directory.
+    docLines.push("UNKNOWN: no instructions/ directory — the standing law was not read");
+    unknown.push("instructions/ absent");
+  } else if (bindingDocs.length === 0) {
     docLines.push("(no orchestrator binding docs)");
   } else {
     for (const doc of bindingDocs) {
@@ -372,17 +404,24 @@ export function collectSessionLoad(repo: string): SessionLoad {
     }
   }
   sections.push({ title: "Orchestrator binding instructions (index)", lines: docLines });
-  sections.push({
-    title: "Startup verdict",
-    lines: [
-      degradedReasons.length === 0
-        ? "startup: ready"
-        : `startup: degraded (${degradedReasons.join("; ")})`,
-    ],
-  });
+  sections.push({ title: "Startup verdict", lines: [startupVerdict(unknown, degradedReasons)] });
 
   const text = renderText(sections);
-  return { sections, text, lineCount: text.split("\n").length };
+  return { sections, text, lineCount: text.split("\n").length, unknown };
+}
+
+// The load's own NO-GO decision. UNKNOWN standing context is treated like a
+// failure, not like a degradation: a degraded start is a load that happened
+// with a flaw (dirty tree, no handoff, unreadable state DB), while an unknown
+// one is a load that did not read part of the law it exists to deliver. The two
+// are reported in one line so neither can hide behind the other.
+function startupVerdict(unknown: string[], degraded: string[]): string {
+  if (unknown.length === 0) {
+    return degraded.length === 0 ? "startup: ready" : `startup: degraded (${degraded.join("; ")})`;
+  }
+  const parts = [`unknown: ${unknown.join("; ")}`];
+  if (degraded.length > 0) parts.push(`degraded: ${degraded.join("; ")}`);
+  return `startup: NO-GO (${parts.join(" | ")})`;
 }
 
 function renderText(sections: SessionSection[]): string {
@@ -415,7 +454,8 @@ export function renderSessionLoad(repo: string): string {
 export const SESSION_LOAD_FAIL_LINES = 600;
 export const SESSION_LOAD_WARN_LINES = 500;
 
-export type SessionLoadLevel = "PASS" | "WARN" | "FAIL" | "SKIP";
+// Shared with check.ts, ledger.ts and paths.ts; UNKNOWN included (outcome.ts).
+export type SessionLoadLevel = CheckLevel;
 export type SessionLoadFinding = { level: SessionLoadLevel; file: string; detail: string };
 
 function envInt(name: string, fallback: number): number {
@@ -425,15 +465,28 @@ function envInt(name: string, fallback: number): number {
 }
 
 // The [session-load] checker: caps the total line count of the orchestrator
-// SessionStart load. Returns a single finding. A repo without instance/ or
-// instructions/ still produces a load (mostly "(absent)"/"(no ...)" lines) and
-// is well under budget, so this never spuriously SKIPs — it always reports the
-// measured size, which is the point (the cap must bite as the corpus grows).
+// SessionStart load. Returns a single finding. In a complete installation it
+// always reports the measured size — never SKIPs — which is the point (the cap
+// must bite as the corpus grows).
+//
+// When part of the standing context could not be read, the measurement is
+// UNKNOWN rather than PASS. A line count taken over a load that is missing its
+// params, its ledger or its corpus measures the wrong thing and always comes in
+// comfortably under budget: absence would buy head-room and read as green.
 export function runSessionLoadCheck(repo: string): SessionLoadFinding {
   const failAt = envInt("SESSION_LOAD_FAIL_LINES", SESSION_LOAD_FAIL_LINES);
   const warnAt = envInt("SESSION_LOAD_WARN_LINES", SESSION_LOAD_WARN_LINES);
-  const { lineCount } = collectSessionLoad(repo);
+  const { lineCount, unknown } = collectSessionLoad(repo);
   const where = "repo + instance/params.yaml + ledger + latest handoff + durable state + orchestrator binding docs + verdict";
+  if (unknown.length > 0) {
+    return {
+      level: "UNKNOWN",
+      file: "session-load",
+      detail:
+        `SessionStart load is incomplete (${unknown.join("; ")}) — its ${lineCount} lines measure a load that ` +
+        "never read part of its standing context, so the budget verdict is not a verdict",
+    };
+  }
   if (lineCount > failAt) {
     return {
       level: "FAIL",
@@ -493,5 +546,13 @@ function parseArgs(args: string[]): Options {
 
 if (import.meta.main) {
   const options = parseArgs(process.argv.slice(2));
+  // Exits 0 even on a NO-GO verdict, deliberately. orchestrator/hooks/
+  // session-start.sh delivers this text as standing context only when the
+  // loader exits 0, and replaces it with a banner otherwise — so exiting
+  // non-zero here would WITHHOLD the partial load from the very session that
+  // needs to read which part of its context is missing. The NO-GO travels in
+  // the verdict line where the orchestrator reads it, and the blocking half is
+  // carried by check.ts's [session-load] UNKNOWN finding, which the same hook
+  // (and gate/lane-exit.sh, and gate/land.sh) runs with --strict.
   process.stdout.write(renderSessionLoad(options.repo));
 }

@@ -31,9 +31,12 @@ import {
 import { runLedgerChecks } from "./ledger.ts";
 import { runSessionLoadCheck } from "./session-load.ts";
 import { runPathChecks } from "./paths.ts";
+import { LEVEL_ORDER, blocks, instanceInputVerdict, type CheckLevel } from "./outcome.ts";
 
 type Options = { repo: string; strict: boolean };
-type Level = "PASS" | "WARN" | "FAIL" | "SKIP";
+// The outcome vocabulary — including UNKNOWN, the outcome for "this check's
+// inputs are absent, so it did not run" — is defined once in outcome.ts.
+type Level = CheckLevel;
 
 type Finding = { level: Level; file: string; check: string; detail: string };
 
@@ -50,10 +53,13 @@ function usage(exitCode: number): never {
       "Usage: bun tools/instructions/check.ts [--repo <path>] [--strict]",
       "",
       "  --repo <path>   Repository root to check (default: current directory)",
-      "  --strict        Treat missing frontmatter as FAIL (default: WARN)",
+      "  --strict        Treat missing frontmatter as FAIL (default: WARN), and",
+      "                  treat UNKNOWN (a check whose inputs are absent) as",
+      "                  blocking",
       "  -h, --help      Show this usage",
       "",
-      "Exit codes: 0 no failures, 1 one or more FAIL findings, 2 usage error.",
+      "Exit codes: 0 no blocking findings, 1 one or more FAIL findings (or, under",
+      "--strict, one or more UNKNOWN findings), 2 usage error.",
       "",
     ].join("\n"),
   );
@@ -140,10 +146,15 @@ const decisionIds = collectDecisionIds(options.repo);
 // (c) generated-index freshness — only when the index carries the marker.
 const indexPath = join(instructionsRoot, INDEX_FILENAME);
 if (!existsSync(indexPath)) {
-  record("SKIP", INDEX_FILENAME, "index-freshness", "no index file");
+  // UNKNOWN, not SKIP: the index is this check's input. Nothing declares that a
+  // repo has no index — every repo's skeleton carries one (instruction-layers)
+  // — so its absence means freshness was not measured, not that it is fine.
+  record("UNKNOWN", INDEX_FILENAME, "index-freshness", "no index file — freshness cannot be measured");
 } else {
   const current = readFileSync(indexPath, "utf8");
   if (!current.includes(INDEX_MARKER)) {
+    // Genuine SKIP: the artifact itself declares it is not generator-owned by
+    // carrying no marker. The declaration is present and readable, in the file.
     record(
       "SKIP",
       INDEX_FILENAME,
@@ -174,13 +185,22 @@ for (const doc of docs) {
 
 // (e) pack coverage: every `status: binding` doc must be reachable via some
 // role's baseline pack OR ≥1 tag in tags.conf admitted for its audience, OR
-// carry `pack: none`. Runs only when both config files exist (a fixture repo
-// without instance/ SKIPs rather than aborting). FAIL under --strict, WARN
-// otherwise, matching the frontmatter transition-mode policy.
+// carry `pack: none`. FAIL under --strict, WARN otherwise, matching the
+// frontmatter transition-mode policy.
+//
+// Absent config is UNKNOWN in an installation and SKIP in a repo with no
+// instance/ layer at all — the one absence that declares non-applicability
+// (outcome.ts). Deleting tags.conf from THIS repo must not read as "not
+// applicable"; it reads as "coverage was not measured".
 const tagsPath = join(options.repo, "instance", "tags.conf");
 const packsPath = join(options.repo, "instance", "packs.conf");
 if (!existsSync(tagsPath) || !existsSync(packsPath)) {
-  record("SKIP", "instance/", "pack-coverage", "no instance/tags.conf + packs.conf");
+  const verdict = instanceInputVerdict(
+    options.repo,
+    "instance/tags.conf + instance/packs.conf",
+    "pack coverage",
+  );
+  record(verdict.level, "instance/", "pack-coverage", verdict.detail);
 } else {
   const vocabulary = readTagVocabulary(options.repo);
   const packs = readPacks(options.repo);
@@ -215,11 +235,12 @@ if (!existsSync(tagsPath) || !existsSync(packsPath)) {
 // (f) Hard Floor drift: the section between the markers in CLAUDE.md must be
 // byte-identical to what floor.ts generates from `floor: true` docs. A hand-edit
 // (drift), a missing marker, or a floor doc without its floor-line all FAIL —
-// this is what makes the generated section un-forgeable by hand. Runs only when
-// CLAUDE.md exists (a fixture repo without it SKIPs rather than aborting).
+// this is what makes the generated section un-forgeable by hand. CLAUDE.md is
+// this check's input and belongs to every repo's skeleton in every layer, so
+// its absence is UNKNOWN (the floor was not compared), never a licensed SKIP.
 const claudePath = join(options.repo, CLAUDE_FILENAME);
 if (!existsSync(claudePath)) {
-  record("SKIP", CLAUDE_FILENAME, "hard-floor", "no CLAUDE.md at repo root");
+  record("UNKNOWN", CLAUDE_FILENAME, "hard-floor", "no CLAUDE.md at repo root — the Hard Floor cannot be compared");
 } else {
   const claudeText = readFileSync(claudePath, "utf8");
   try {
@@ -343,19 +364,30 @@ function normalize(text: string): string {
 report();
 
 function report(): never {
-  const order: Record<Level, number> = { FAIL: 0, WARN: 1, SKIP: 2, PASS: 3 };
   const sorted = [...findings].sort(
-    (a, b) => order[a.level] - order[b.level] || a.file.localeCompare(b.file),
+    (a, b) => LEVEL_ORDER[a.level] - LEVEL_ORDER[b.level] || a.file.localeCompare(b.file),
   );
   for (const finding of sorted) {
     const detail = finding.detail ? `  ${finding.detail}` : "";
+    // padEnd(4) keeps the four short levels aligned as they always were; UNKNOWN
+    // is deliberately wider than the column, so an unmeasured check is the one
+    // line that breaks the alignment of a scanned report.
     console.log(`${finding.level.padEnd(4)} ${finding.file} [${finding.check}]${detail}`);
   }
-  const counts: Record<Level, number> = { PASS: 0, WARN: 0, SKIP: 0, FAIL: 0 };
+  const counts: Record<Level, number> = { PASS: 0, WARN: 0, UNKNOWN: 0, SKIP: 0, FAIL: 0 };
   for (const finding of findings) counts[finding.level] += 1;
+  // UNKNOWN is counted on its own line, never folded into SKIP: the number of
+  // checks that did not run is the number this whole outcome exists to surface.
   console.log(
-    `\nsummary: ${counts.FAIL} FAIL, ${counts.WARN} WARN, ${counts.SKIP} SKIP, ${counts.PASS} PASS` +
-      ` (${docs.length} docs)`,
+    `\nsummary: ${counts.FAIL} FAIL, ${counts.UNKNOWN} UNKNOWN, ${counts.WARN} WARN,` +
+      ` ${counts.SKIP} SKIP, ${counts.PASS} PASS (${docs.length} docs)`,
   );
-  process.exit(counts.FAIL > 0 ? 1 : 0);
+  if (counts.UNKNOWN > 0 && !options.strict) {
+    console.log(
+      `note: ${counts.UNKNOWN} check(s) could not read their inputs and did not run;` +
+        " --strict treats that as blocking",
+    );
+  }
+  const blocking = findings.filter((finding) => blocks(finding.level, options.strict)).length;
+  process.exit(blocking > 0 ? 1 : 0);
 }

@@ -4,9 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { admitsAudience, PACK_MARKER_PREFIX } from "./compose.ts";
+import { collectDocs } from "./docs.ts";
+import { renderFloor } from "./floor.ts";
 
 const composer = join(import.meta.dir, "compose.ts");
 const checker = join(import.meta.dir, "check.ts");
+const generator = join(import.meta.dir, "index.ts");
 const temporaryDirectories: string[] = [];
 
 afterEach(() => {
@@ -43,13 +46,23 @@ function repoWith(spec: {
     spec.params ??
       "operator:\n  language: uk\nphase:\n  current: sole-mission\n  active_scope: instruction-mechanics-only\ncapture:\n  mode: manual\n",
   );
-  if (spec.decisions) {
-    const decRoot = join(instanceRoot, "decisions");
-    mkdirSync(decRoot, { recursive: true });
-    for (const [name, contents] of Object.entries(spec.decisions)) {
-      writeFileSync(join(decRoot, name), contents);
-    }
+  const decRoot = join(instanceRoot, "decisions");
+  mkdirSync(decRoot, { recursive: true });
+  // A decisions ledger and a triage ledger, present even when empty: since
+  // V3-5.44 an installation (a repo WITH instance/) that lacks them reports
+  // UNKNOWN rather than SKIP, and "complete" in this builder's name has to mean
+  // complete in the checker's sense, not merely enough for the composer.
+  writeFileSync(join(decRoot, "triage.jsonl"), "");
+  for (const [name, contents] of Object.entries(spec.decisions ?? {})) {
+    writeFileSync(join(decRoot, name), contents);
   }
+  // The two generated artifacts every complete repo carries: the marked index
+  // and CLAUDE.md's generator-owned Hard Floor section.
+  spawnSync("bun", [generator, "--repo", repo], { encoding: "utf8" });
+  writeFileSync(
+    join(repo, "CLAUDE.md"),
+    `# Fixture repo\n\n${renderFloor(collectDocs(instrRoot))}\n`,
+  );
   return repo;
 }
 

@@ -23,11 +23,15 @@ import { basename, isAbsolute, join, relative, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { INDEX_FILENAME } from "./docs.ts";
 import { AGENTS_FILENAME, CLAUDE_FILENAME } from "./floor.ts";
+import { instanceInputVerdict, type CheckLevel } from "./outcome.ts";
 
 export const INBOX_TRIAGE_SLA_MS = 24 * 60 * 60 * 1000; // 24h
 export const HR_PENDING_SLA_MS = 72 * 60 * 60 * 1000; // 72h
 
-export type LedgerLevel = "FAIL" | "WARN" | "SKIP" | "PASS";
+// The outcome vocabulary is shared with check.ts and defined once in
+// outcome.ts, so UNKNOWN ("this check's inputs are absent, so it did not run")
+// means the same thing on both sides of the boundary.
+export type LedgerLevel = CheckLevel;
 export type LedgerFinding = { level: LedgerLevel; file: string; detail: string };
 
 export type InboxRow = { msg_id: number | string; ts: string; text?: string };
@@ -557,12 +561,27 @@ export function checkInboxAging(
 
   const inboxPath = join(decisionsDir, "inbox.jsonl");
   if (!existsSync(inboxPath)) {
-    const mode = readCaptureMode(repo);
+    const mode = readDeclaredCaptureMode(repo);
     if (mode === "daemon") {
       findings.push({ level: "FAIL", file: "instance/decisions/inbox.jsonl", detail: "capture.mode=daemon — required inbox.jsonl is missing" });
       return findings;
     }
-    findings.push({ level: "SKIP", file: "instance/decisions/inbox.jsonl", detail: "capture.mode=manual — inbox not expected yet" });
+    if (mode === "manual") {
+      // Genuine SKIP: instance/params.yaml declares that no inbox transport is
+      // running yet, so an absent inbox is the declared state, not an unread
+      // input. The declaration is named here, in place, as a SKIP must be.
+      findings.push({ level: "SKIP", file: "instance/decisions/inbox.jsonl", detail: "capture.mode=manual — inbox not expected yet" });
+      return findings;
+    }
+    // Nothing declares a mode. The old code defaulted to `manual` and SKIPped,
+    // which turned "we cannot tell whether an inbox is expected" into "an inbox
+    // is not expected" — a verdict from an absent file.
+    const verdict = instanceInputVerdict(
+      repo,
+      "instance/params.yaml capture.mode",
+      "whether inbox.jsonl is expected",
+    );
+    findings.push({ level: verdict.level, file: "instance/decisions/inbox.jsonl", detail: verdict.detail });
     return findings;
   }
 
@@ -646,8 +665,18 @@ export function readParkedHorizonDays(repo: string): number {
 }
 
 export function readCaptureMode(repo: string): "manual" | "daemon" {
+  return readDeclaredCaptureMode(repo) ?? "manual";
+}
+
+// The DECLARED capture mode, or undefined when nothing declares one — the file
+// is absent, or it carries no `capture.mode` key. readCaptureMode() above keeps
+// the historical `manual` default for callers that only need a mode to act on;
+// a check that wants to SKIP must use this one, because `manual` inferred from
+// an absent params.yaml is a declaration nobody made (outcome.ts: only a real
+// declaration licenses a SKIP).
+export function readDeclaredCaptureMode(repo: string): "manual" | "daemon" | undefined {
   const path = join(repo, "instance", "params.yaml");
-  if (!existsSync(path)) return "manual";
+  if (!existsSync(path)) return undefined;
   let capture = false;
   for (const raw of readFileSync(path, "utf8").split(/\r?\n/)) {
     if (/^capture:\s*(?:#.*)?$/.test(raw)) {
@@ -660,7 +689,7 @@ export function readCaptureMode(repo: string): "manual" | "daemon" {
       if (match) return match[1] as "manual" | "daemon";
     }
   }
-  return "manual";
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -800,7 +829,11 @@ function applyExemptions(
 export function checkHrStates(repo: string, nowMs: number): LedgerFinding[] {
   const decisionsDir = join(repo, "instance", "decisions");
   if (!existsSync(decisionsDir)) {
-    return [{ level: "SKIP", file: "instance/decisions/", detail: "no decisions ledger" }];
+    // The ledger IS this check's input. In an installation its absence is
+    // UNKNOWN — "no open obligations" and "we did not look" are different
+    // claims, and only the second one is true here.
+    const verdict = instanceInputVerdict(repo, "instance/decisions/", "HR state validity");
+    return [{ level: verdict.level, file: "instance/decisions/", detail: verdict.detail }];
   }
 
   const resolvables = collectResolvables(repo);
@@ -912,7 +945,10 @@ export function checkHrStates(repo: string, nowMs: number): LedgerFinding[] {
 export function checkTriageClosures(repo: string, nowMs: number): LedgerFinding[] {
   const triagePath = join(repo, "instance", "decisions", "triage.jsonl");
   if (!existsSync(triagePath)) {
-    return [{ level: "SKIP", file: "instance/decisions/triage.jsonl", detail: "no triage ledger" }];
+    // repository-hygiene tracks triage.jsonl as durable governance, so in an
+    // installation its absence means the closure claims were not read at all.
+    const verdict = instanceInputVerdict(repo, "instance/decisions/triage.jsonl", "triage closure claims");
+    return [{ level: verdict.level, file: "instance/decisions/triage.jsonl", detail: verdict.detail }];
   }
   const resolvables = collectResolvables(repo);
   const violations: Array<{ subject: string; rule: string; finding: LedgerFinding }> = [];
@@ -963,7 +999,8 @@ export function checkHrAging(repo: string, nowMs: number): LedgerFinding[] {
   const findings: LedgerFinding[] = [];
   const decisionsDir = join(repo, "instance", "decisions");
   if (!existsSync(decisionsDir)) {
-    return [{ level: "SKIP", file: "instance/decisions/", detail: "no decisions ledger" }];
+    const verdict = instanceInputVerdict(repo, "instance/decisions/", "HR pending/parked aging");
+    return [{ level: verdict.level, file: "instance/decisions/", detail: verdict.detail }];
   }
 
   const horizonDays = readParkedHorizonDays(repo);

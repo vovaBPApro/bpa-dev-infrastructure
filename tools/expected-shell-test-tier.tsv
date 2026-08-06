@@ -26,6 +26,7 @@ orchestrator/fleet/launch-lane-cap.test.sh
 orchestrator/fleet/launch-lane.test.sh
 orchestrator/heartbeat-writer.test.sh
 orchestrator/launch-handshake-bounded.test.sh
+orchestrator/launcher-startable-from-git.test.sh
 orchestrator/session-hook-wiring.test.sh
 orchestrator/singleton-failclosed.test.sh
 orchestrator/tmux-isolation.test.sh

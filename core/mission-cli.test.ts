@@ -1,11 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const dirs: string[] = []; const cli = resolve(import.meta.dir, "mission-cli.ts");
 async function db() { const d=await mkdtemp(join(tmpdir(),"v3-cli-")); dirs.push(d); return join(d,"nested","state.sqlite"); }
-async function invoke(database:string,...args:string[]) { const p=Bun.spawn([process.execPath,cli,...args],{env:{...Bun.env,INFRA_STATE_DB:database,BPA_ALLOW_TEST_CLOCK:"1",INFRA_TEST_NOW_MS:"1000"},stdout:"pipe",stderr:"pipe"}); const [stdout,stderr,exitCode]=await Promise.all([new Response(p.stdout).text(),new Response(p.stderr).text(),p.exited]); return {exitCode,stdout:stdout.trim(),stderr:stderr.trim()}; }
+async function invokeAt(database:string,nowMs:number,...args:string[]) { const p=Bun.spawn([process.execPath,cli,...args],{env:{...Bun.env,INFRA_STATE_DB:database,BPA_ALLOW_TEST_CLOCK:"1",INFRA_TEST_NOW_MS:String(nowMs)},stdout:"pipe",stderr:"pipe"}); const [stdout,stderr,exitCode]=await Promise.all([new Response(p.stdout).text(),new Response(p.stderr).text(),p.exited]); return {exitCode,stdout:stdout.trim(),stderr:stderr.trim()}; }
+async function invoke(database:string,...args:string[]) { return invokeAt(database,1000,...args); }
 // Same as invoke(), but also points INFRA_REPO_DIR at a real git repo so
 // `lane complete`'s gate/lane-exit.sh call (instance/workboard.md V3-0.5)
 // has real evidence to check the report and branch tip against.
@@ -210,4 +212,158 @@ test("lane complete rejects a caller-claimed verdict that disagrees with the rep
   expect(result.stderr).toContain("GATE-VERDICT-MISMATCH");
   const lane=await laneSnapshot(database,"lane-mismatch");
   expect(lane.terminalVerdict).toBeNull();
+});
+
+// ── Named leases and the reaper (instance/workboard.md V3-5.37) ─────────────
+// orchestrator/launch.sh and orchestrator/watchdog.sh have called these four
+// verbs since they were written. The CLI implemented none of them, so every
+// start after a state DB existed died on `unknown action` -- the measured
+// container refusal `launch-refused:error-unknown-action`.
+
+// The launcher does not read the CLI's output loosely: it extracts the token
+// and the current holder with two anchored sed patterns. Both are lifted out of
+// launch.sh HERE rather than restated, so a launcher edit that changes what it
+// expects fails these tests instead of silently failing at 03:00.
+function launcherPattern(marker:string):RegExp {
+  const source=readFileSync(resolve(import.meta.dir,"..","orchestrator","launch.sh"),"utf8");
+  const line=source.split("\n").find((text)=>text.includes(marker));
+  if(!line) throw new Error(`orchestrator/launch.sh no longer contains ${marker}`);
+  const extracted=/sed -nE '[a-z]*\/(.*)\/\\1\/p'/.exec(line);
+  if(!extracted) throw new Error(`cannot lift a sed pattern out of: ${line}`);
+  return new RegExp(extracted[1]!);
+}
+const ACQUIRE_LINE=launcherPattern("^LEASE key=orchestrator owner=");
+const STATUS_HOLDER=launcherPattern('"key":"orchestrator","owner":');
+
+function owner(pid:number|string) { return `${hostname()}:${pid}`; }
+async function deadPid():Promise<number> {
+  const spawned=Bun.spawn(["true"],{stdout:"ignore",stderr:"ignore"});
+  const pid=spawned.pid;
+  await spawned.exited;
+  return pid;
+}
+async function leases(database:string,nowMs=1000) {
+  return JSON.parse((await invokeAt(database,nowMs,"status")).stdout).leases as {key:string;owner:string;fencingToken:number;expiresAt:number}[];
+}
+
+test("the launcher's lease handshake works end to end, in the exact shape launch.sh parses", async () => {
+  const database=await db();
+  const me=owner(process.pid);
+  const acquired=await invoke(database,"lease","acquire",me,"orchestrator","180000");
+  expect(acquired.exitCode).toBe(0);
+  // Exact equality, not `toContain`: launch.sh's pattern is anchored at both
+  // ends, so an extra field appended here makes the token unextractable and the
+  // launcher tears down a provider it had already started.
+  expect(acquired.stdout).toBe(`LEASE key=orchestrator owner=${me} token=1`);
+  expect(ACQUIRE_LINE.exec(acquired.stdout)?.[1]).toBe("1");
+
+  const holder=await invoke(database,"status");
+  expect(STATUS_HOLDER.exec(holder.stdout)?.[1]).toBe(me);
+  expect(await leases(database)).toEqual([{key:"orchestrator",owner:me,fencingToken:1,expiresAt:181000}]);
+
+  // Renewal keeps the token and moves the deadline: the launcher renews twice
+  // with the token it was handed, and the watchdog renews with it every tick.
+  const renewed=await invokeAt(database,5000,"lease","renew",me,"orchestrator","1","180000");
+  expect(renewed).toMatchObject({exitCode:0,stdout:`RENEW key=orchestrator owner=${me} token=1 expires_at=185000`});
+
+  const released=await invokeAt(database,6000,"lease","release",me,"orchestrator","1");
+  expect(released).toMatchObject({exitCode:0,stdout:`RELEASE key=orchestrator owner=${me}`});
+  expect(await leases(database,6000)).toEqual([]);
+  // A released lease leaves the key free and the fencing token behind it.
+  const reacquired=await invokeAt(database,6000,"lease","acquire",owner(1),"orchestrator","180000");
+  expect(reacquired.stdout).toBe(`LEASE key=orchestrator owner=${owner(1)} token=2`);
+});
+
+test("a live lease is refused to every other owner, and the refusal names the holder", async () => {
+  const database=await db();
+  const held=owner(process.pid);
+  expect(await invoke(database,"lease","acquire",held,"orchestrator","180000")).toMatchObject({exitCode:0});
+  const contended=await invoke(database,"lease","acquire",owner(99999),"orchestrator","180000");
+  expect(contended.exitCode).toBe(1);
+  expect(contended.stderr).toBe(`ERROR FENCED lease is held: orchestrator owner=${held} token=1 expires_at=181000`);
+  // The refusal must not have moved the lease. A launcher that read a refusal
+  // and a changed holder in the same breath would have nothing to trust.
+  expect(await leases(database)).toEqual([{key:"orchestrator",owner:held,fencingToken:1,expiresAt:181000}]);
+});
+
+test("an expired lease is re-acquired under a NEW token and can never be renewed back to life", async () => {
+  const database=await db();
+  const me=owner(process.pid);
+  await invoke(database,"lease","acquire",me,"orchestrator","5000");
+  expect(await leases(database,7000)).toEqual([]);
+  // watchdog.sh classifies exactly this as uncontested self-expiry: renewal
+  // must fail (so the classification is reached at all) and re-acquisition must
+  // then succeed under a token that differs from the one it just lost.
+  const renewed=await invokeAt(database,7000,"lease","renew",me,"orchestrator","1","180000");
+  expect(renewed).toMatchObject({exitCode:1,stderr:"ERROR FENCED stale or expired lease owner: orchestrator"});
+  const reacquired=await invokeAt(database,7000,"lease","acquire",me,"orchestrator","180000");
+  expect(reacquired.stdout).toBe(`LEASE key=orchestrator owner=${me} token=2`);
+});
+
+test("renew and release are fenced by owner and by token", async () => {
+  const database=await db();
+  const me=owner(process.pid);
+  await invoke(database,"lease","acquire",me,"orchestrator","180000");
+  const fenced="ERROR FENCED stale or expired lease owner: orchestrator";
+  expect(await invoke(database,"lease","renew",owner(99999),"orchestrator","1","180000")).toMatchObject({exitCode:1,stderr:fenced});
+  expect(await invoke(database,"lease","renew",me,"orchestrator","2","180000")).toMatchObject({exitCode:1,stderr:fenced});
+  expect(await invoke(database,"lease","release",owner(99999),"orchestrator","1")).toMatchObject({exitCode:1,stderr:fenced});
+  expect(await invoke(database,"lease","release",me,"orchestrator","2")).toMatchObject({exitCode:1,stderr:fenced});
+  expect(await leases(database)).toEqual([{key:"orchestrator",owner:me,fencingToken:1,expiresAt:181000}]);
+});
+
+test("reap releases a dead holder's unexpired lease and refuses to touch any other kind", async () => {
+  const database=await db();
+  const dead=owner(await deadPid());
+  const live=owner(process.pid);
+  const foreign="some-other-host:1234";
+  const malformed="no-pid-here";
+  for (const [key,holder] of [["orchestrator",dead],["daemon",live],["remote",foreign],["garbled",malformed]] as const) {
+    expect(await invoke(database,"lease","acquire",holder,key,"180000")).toMatchObject({exitCode:0});
+  }
+  const reaped=await invoke(database,"reap");
+  expect(reaped).toMatchObject({exitCode:0,stdout:"REAP leases-reaped=1 leases-live=1 leases-expired=0 leases-unverifiable=2"});
+  // Only the provably-dead holder is gone. `unverifiable` is the fail-closed
+  // half and it is the majority case here on purpose: a foreign host and a
+  // malformed owner are questions this reaper cannot answer, and an unanswered
+  // question must not release a lease that may still have a live holder.
+  expect((await leases(database)).map((lease)=>lease.key)).toEqual(["daemon","garbled","remote"]);
+  // This is the launcher's actual restart path: the previous orchestrator died
+  // inside its TTL, so without the reaper every start refuses with
+  // `orchestrator-lease-held` until the lease ages out.
+  const restarted=await invoke(database,"lease","acquire",live,"orchestrator","180000");
+  expect(restarted.stdout).toBe(`LEASE key=orchestrator owner=${live} token=2`);
+  expect(await invoke(database,"reap")).toMatchObject({stdout:"REAP leases-reaped=0 leases-live=2 leases-expired=0 leases-unverifiable=2"});
+});
+
+test("reap is idempotent and safe on an empty store, which is what bootstrap creates", async () => {
+  const database=await db();
+  expect(await invoke(database,"status")).toMatchObject({exitCode:0});
+  expect(await invoke(database,"reap")).toMatchObject({exitCode:0,stdout:"REAP leases-reaped=0 leases-live=0 leases-expired=0 leases-unverifiable=0"});
+  expect(await invoke(database,"reap")).toMatchObject({exitCode:0,stdout:"REAP leases-reaped=0 leases-live=0 leases-expired=0 leases-unverifiable=0"});
+});
+
+test("the lease vocabulary stays fail-closed: near-misses and bad arity are refused, not guessed at", async () => {
+  const database=await db();
+  const me=owner(process.pid);
+  expect(await invoke(database,"lease","steal",me,"orchestrator","180000")).toMatchObject({exitCode:1,stderr:"ERROR unknown action: lease steal"});
+  expect(await invoke(database,"reap","everything")).toMatchObject({exitCode:1,stderr:"ERROR unknown action: reap everything"});
+  expect((await invoke(database,"lease","acquire",me,"orchestrator")).exitCode).toBe(1);
+  expect((await invoke(database,"lease","acquire",me,"orchestrator","0")).stderr).toBe("ERROR lease duration must be positive");
+  expect((await invoke(database,"lease","acquire","","orchestrator","180000")).stderr).toBe("ERROR lease owner is required");
+  expect(await leases(database)).toEqual([]);
+});
+
+test("a lease key and a lane id can never name the same row in `status`", async () => {
+  const database=await db();
+  const {mission}=await readyLane(database,"lane-collision");
+  expect(await invoke(database,"lease","acquire",owner(process.pid),"lane-collision","180000"))
+    .toMatchObject({exitCode:1,stderr:"ERROR lease key collides with a lane: lane-collision"});
+  // The other direction, from the same store: a lane may not take a live
+  // lease's key either. watchdog.sh resolves the orchestrator lease with a
+  // `find` over this one array, and a duplicated key makes that find arbitrary.
+  await invoke(database,"lease","acquire",owner(process.pid),"orchestrator","180000");
+  await invoke(database,"manager","create",mission,"mgr-collide");
+  expect(await invoke(database,"lane","create",mission,"mgr-collide","orchestrator","accept","1"))
+    .toMatchObject({exitCode:1,stderr:"ERROR lane id collides with a lease key: orchestrator"});
 });

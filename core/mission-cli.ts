@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DurableStore, FencedTransitionError } from "./state";
 import { lineValue } from "../gate/report-contract";
-import { isMissionCliAction } from "./mission-cli-actions";
+import { isMissionCliAction, ownerLiveness } from "./mission-cli-actions";
 
 const path = () => process.env.INFRA_STATE_DB || resolve(import.meta.dir, "..", "runtime", "state.db");
 // The repository this lane's evidence lives in. Defaults to mission-cli.ts's
@@ -106,9 +106,34 @@ function run(args: string[]): void {
       console.log(`TERMINAL lane=${laneId} guard=${derivedVerdict === "NO-GO" ? "no-go" : "pass"}`);
       return;
     }
+    // The named-lease verbs take <owner> BEFORE <key>, because that is the order
+    // orchestrator/launch.sh and orchestrator/watchdog.sh have always called
+    // them with. The store's own methods read (key, owner, ...) like every other
+    // keyed operation on it; the swap happens here, once, at the boundary that
+    // owes the callers compatibility.
+    if (group === "lease" && action === "acquire" && v.length === 3) {
+      const lease = store.acquireLease(required(v[1], "lease key"), required(v[0], "lease owner"), integer(v[2], "lease duration"));
+      // EXACT SHAPE, load-bearing: launch.sh and watchdog.sh both read the token
+      // back with an anchored `^LEASE key=... owner=.* token=([1-9][0-9]*)$`.
+      // Anything appended to this line stops matching and the launcher reports
+      // `orchestrator-lease-invalid` after having already started a provider.
+      console.log(`LEASE key=${lease.key} owner=${lease.owner} token=${lease.fencingToken}`); return;
+    }
+    if (group === "lease" && action === "renew" && v.length === 4) {
+      const lease = store.renewLease(required(v[1], "lease key"), required(v[0], "lease owner"), integer(v[2], "token"), integer(v[3], "lease duration"));
+      console.log(`RENEW key=${lease.key} owner=${lease.owner} token=${lease.fencingToken} expires_at=${lease.expiresAt}`); return;
+    }
+    if (group === "lease" && action === "release" && v.length === 3) {
+      store.releaseLease(required(v[1], "lease key"), required(v[0], "lease owner"), integer(v[2], "token"));
+      console.log(`RELEASE key=${v[1]} owner=${v[0]}`); return;
+    }
+    if (group === "reap" && action === undefined && v.length === 0) {
+      const report = store.reapLeases(ownerLiveness);
+      console.log(`REAP leases-reaped=${report.reaped} leases-live=${report.live} leases-expired=${report.expired} leases-unverifiable=${report.unverifiable}`); return;
+    }
     if (group === "outbox" && action === "enqueue" && v.length === 4) { store.enqueueOutbox({ id:v[0]!, channel:v[1]!, dedupeKey:v[2]!, payload:JSON.parse(v[3]!) }); console.log("OUTBOX"); return; }
     if (group === "status" && action === undefined) { console.log(JSON.stringify(store.reconstruct())); return; }
-    throw new Error("usage: mission create <correlation> <acceptance> | mission complete <mission> | manager create <mission> <manager> | lane create <mission> <manager> <lane> <acceptance> <retries> | lane claim <lane> <owner> <lease-ms> | lane ack <lane> <owner> <token> | lane progress <lane> <owner> <token> <evidence> | lane complete <lane> <owner> <token> <sha> <report-path> <clean|NO-GO> <branch> | outbox enqueue ... | status");
+    throw new Error("usage: mission create <correlation> <acceptance> | mission complete <mission> | manager create <mission> <manager> | lane create <mission> <manager> <lane> <acceptance> <retries> | lane claim <lane> <owner> <lease-ms> | lane ack <lane> <owner> <token> | lane progress <lane> <owner> <token> <evidence> | lane complete <lane> <owner> <token> <sha> <report-path> <clean|NO-GO> <branch> | lease acquire <owner> <key> <ttl-ms> | lease renew <owner> <key> <token> <ttl-ms> | lease release <owner> <key> <token> | reap | outbox enqueue ... | status");
   } finally { store.close(); }
 }
 

@@ -69,6 +69,11 @@ const runnableShellTests = [
   // capability-gated on systemd transient units and reports a named EXCLUDED
   // line where they are unavailable, so it stays runnable in the container.
   "orchestrator/tmux-isolation.test.sh",
+  // V3-5.37. The launcher's rebuild lock: launch.sh invoked directly against a
+  // real state DB, the real core/mission-cli.ts and the real tracked auth
+  // preflight, with no runtime.env and no break-glass. Its full-start case is
+  // capability-gated on /proc/locks visibility and announces its own exclusion.
+  "orchestrator/launcher-startable-from-git.test.sh",
 ] as const;
 
 const excludedShellTests = {} as const;

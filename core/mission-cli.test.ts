@@ -31,7 +31,22 @@ async function gitRepo(branch="ag-lane-1"): Promise<string> {
   return repo;
 }
 function tip(repo:string) { return Bun.spawnSync(["git","-C",repo,"rev-parse","HEAD"]).stdout.toString().trim(); }
-function validReport(sha:string,result:"clean"|"NO-GO"="clean") { return `commit: ${sha} fixture\nverify: true\nresult: ${result}\nsecret-scan: clean\nremaining: none\n`; }
+// `lane complete` runs the real gate/lane-exit.sh, so a report this helper
+// builds has to be contract-valid all the way through the bare-world verify
+// (V3-5.42) -- which refuses every undeclared clearance on a host with no
+// unprivileged mount namespace. The meteorite container is exactly that host:
+// its `bun test` runs without CAP_SYS_ADMIN, `unshare --mount` returns EPERM,
+// and five scenarios below went red on the masking refusal rather than on
+// anything this file is about. Declaring the capability is the portability path
+// a real lane running there would take (instructions/lane-capabilities.md);
+// where the namespace works the declaration is unused and the run is
+// full-fidelity. The rejection scenarios are unaffected either way: they are
+// refused at the report contract, before the bare world is reached.
+//
+// The line stays INSIDE the contiguous contract-header block -- a granting
+// field is read at column 0 there and nowhere else (gate/report-contract.ts,
+// contractHeader) -- so it is appended with nothing interposed before it.
+function validReport(sha:string,result:"clean"|"NO-GO"="clean") { return `commit: ${sha} fixture\nverify: true\nresult: ${result}\nsecret-scan: clean\nremaining: none\nbare-world: capability=mount-namespace reason=this-suite-must-also-pass-where-unprivileged-namespaces-are-unavailable\n`; }
 async function readyLane(database:string,laneId:string) {
   const created=await invoke(database,"mission","create",`corr-${laneId}`,"accept");
   const mission=/id=([^ ]+)/.exec(created.stdout)![1]!;

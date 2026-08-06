@@ -160,6 +160,19 @@ sha=$(git rev-parse HEAD)
 {
   printf 'commit: %s fixture\n' "$sha"
   printf 'verify: true\nresult: clean\nsecret-scan: clean\nremaining: none\n'
+  # The wrapper calls the exit-side gate, whose bare-world verify (V3-5.42)
+  # refuses an undeclared clearance where no unprivileged mount namespace
+  # exists -- the meteorite container, whose `bun test` has no CAP_SYS_ADMIN.
+  # (Named by role, not by path, on purpose: gate/bun-override-isolation.test.ts
+  # scans the RAW source of every *.test.sh for an entry point's basename, and a
+  # comment spelling one here would make this file an unlisted offender for a
+  # BUN_BIN posture it deliberately owns and does not change.)
+  # The `valid` mode has to reach `state: terminal reason: report-valid`, and
+  # without this the lane fails there on the missing capability instead of on
+  # anything the launcher does. Column 0, inside the contiguous contract header,
+  # which is the only position a granting field is read from. `invalid` keeps
+  # failing on its unbacked `review:` below, which the guard refuses first.
+  printf 'bare-world: capability=mount-namespace reason=this-lock-must-also-run-where-unprivileged-namespaces-are-unavailable\n'
   if [[ "$mode" == invalid ]]; then printf 'review: claimed\n'; fi
 } >"$LANE_REPORT_PATH"
 EOF

@@ -3,9 +3,10 @@
 //
 // The gates are NOT invented here. They are the seven bullets under "Definition
 // of cutover-ready" in instance/consilium-cutover-2026-08-04-evening-synthesis.md,
-// quoted verbatim below and re-checked against that file on every run: a gate
-// whose quoted text no longer appears in the source is reported UNKNOWN rather
-// than judged, so a gate cannot be quietly watered down by editing either side.
+// quoted verbatim below and re-checked against that file's own bullet on every
+// run: a gate whose quoted text no longer appears there is reported UNKNOWN
+// rather than judged, so a gate cannot be quietly watered down by editing
+// either side.
 //
 // Three verdicts, and the rule that orders them (the consilium's own):
 //
@@ -17,26 +18,66 @@
 // stronger claim than an unmeasurable sibling. Exit 0 only when every gate is
 // PASS; anything else exits 1. Green is fail-closed (Hard Floor 7).
 //
-// This command measures. It does not fix, and it never runs the thing it judges:
-// it is read-only toward the whole repository, starts no container, mutates no
-// state, and takes well under a second. Where a gate's real verifier already
-// exists it is INSPECTED, not re-implemented (one predicate, one home) -- the
-// meteorite runner for D, the instruction checker for E, the unit-drift checker
-// for B's installed-path half, core/mission-cli-actions.ts for C's vocabulary.
+// ---------------------------------------------------------------------------
+// What "the tree" means here: git's tracked set, and nothing else
+//
+// The definition this command measures says "from a clean clone, with no file
+// from this host". So the file set is `git ls-files`, not the directory: an
+// untracked file is invisible to every gate, and a tracked path that is missing
+// from the working tree is absent. A gate therefore cannot be greened by a
+// host-local file, and `cutover-ready=yes` is reachable from a clean checkout
+// alone -- which is the only environment the definition is written for. Outside
+// a git repository nothing is judged at all.
+//
+// An earlier revision had each of A, E and F consult a SHA-pinned attestation
+// row in a tracked TSV. That was the same defect wearing the opposite mask: a
+// row counts only when its SHA equals HEAD, committing the row changes HEAD, so
+// the only state that could ever reach PASS was an untracked host-local file.
+// Green meant dirty. The mechanism is gone; halves that no tree can settle now
+// say so, and name the mechanism that would settle them.
+//
+// ---------------------------------------------------------------------------
+// How a gate is judged: behaviour or structure, never a substring
+//
+// Reading a whole file for a pattern makes a comment mentioning the pattern
+// enough to pass, which is the "check that cannot fail honestly" class this
+// repository keeps paying for. Every predicate here judges something that
+// executes:
+//
+//   D, and A's clean-clone half   the meteorite's parsed `commands=(...)` stage
+//                                 list -- the entries the runner actually loops
+//                                 over. A comment inside the array is not a
+//                                 stage.
+//   E                             the ledger checker is EXECUTED against a
+//                                 throwaway directory whose inputs are absent,
+//                                 and its own output is read for an UNKNOWN
+//                                 outcome. A word in its source proves nothing.
+//   G                             comment- and heredoc-stripped shell, and the
+//                                 path has to appear in a command position, not
+//                                 merely on a line.
+//   B, C                          comment-stripped source, as before.
+//
+// The E probe is the one place this command executes repository code. It runs
+// the tracked checker against an empty temporary directory, never against this
+// repository, bounds it with a timeout, and treats a kill as UNKNOWN -- a kill
+// is not a pass. Everything else is read-only: no container, no state, well
+// under a second.
+//
+// Where a gate's real verifier already exists it is INSPECTED, not
+// re-implemented (one predicate, one home) -- the meteorite runner for D and A,
+// the instruction checker for E, the unit-drift checker for B's installed-path
+// half, core/mission-cli-actions.ts for C's vocabulary.
 //
 // Halves that can only be settled by an act performed OUTSIDE the repository --
-// starting a clean clone, running the suite from three checkout kinds, proving
-// nothing is stranded off origin -- cannot be read out of the tree at all. Those
-// are proven by a SHA-pinned attestation row in instance/cutover-attestations.tsv:
-//
-//   <gate><TAB><40-char sha><TAB><evidence>
-//
-// A row counts only when its SHA equals HEAD, so an attestation goes stale the
-// moment the tree moves and the gate falls back to UNKNOWN. That file does not
-// exist yet, which is exactly why gates A, E and F cannot report PASS today.
+// running the suite from three checkout kinds, proving nothing is stranded off
+// origin -- have no tracked verifier yet. They report UNKNOWN and name the
+// mechanism id that would settle them, so the way to green is to land that
+// mechanism and register it in instance/required-mechanisms.tsv. That is why
+// gates E and F cannot report PASS today.
 
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { isMissionCliAction } from "../core/mission-cli-actions";
 
 export type Verdict = "PASS" | "FAIL" | "UNKNOWN";
@@ -44,13 +85,30 @@ export type GateResult = { id: string; verdict: Verdict; evidence: string };
 
 const SYNTHESIS = "instance/consilium-cutover-2026-08-04-evening-synthesis.md";
 const LAUNCHER = "orchestrator/launch.sh";
-const ATTESTATIONS = "instance/cutover-attestations.tsv";
 const HOST_STATE = "instance/host-state.tsv";
 const METEORITE = "meteorite/run.sh";
 const LEDGER_CHECKER = "tools/instructions/check.ts";
 const UNIT_DRIFT = "bootstrap/check-unit-drift.sh";
 const WHISPER_INSTALLER = "tools/whisper/install.sh";
 const BOOTSTRAP = "bootstrap/install.sh";
+const REGISTRY = "instance/required-mechanisms.tsv";
+
+// Mechanism ids in REGISTRY. The first exists; the last two do not yet, and
+// naming them is how E and F say what would settle their outside-the-tree half.
+const METEORITE_MECHANISM = "runner:meteorite";
+const CHECKOUT_PARITY = "checker:checkout-parity";
+const STRANDED_WORK = "checker:stranded-work";
+
+// The gate-E probe announces its own bound rather than letting a kill reach the
+// caller as an ordinary status. CUTOVER_PROBE_TIMEOUT_MS exists so the kill path
+// itself can be locked; shortening it can only produce UNKNOWN, never PASS, so
+// it is not a way to launder a green.
+const GIT_TIMEOUT_MS = 30_000;
+
+function probeTimeoutMs(): number {
+  const override = Number(process.env.CUTOVER_PROBE_TIMEOUT_MS);
+  return Number.isFinite(override) && override > 0 ? override : 60_000;
+}
 
 // This file and its test quote gate A's definition (which names the break-glass
 // directory) and print evidence about mission-cli calls. Scanning them would
@@ -59,8 +117,49 @@ const BOOTSTRAP = "bootstrap/install.sh";
 // that matters: a read-only measurement tool is not a caller of anything.
 const SELF = ["tools/check-cutover-readiness.ts", "tools/check-cutover-readiness.test.ts"];
 
-function read(repo: string, path: string): string | null {
-  try { return readFileSync(join(repo, path), "utf8"); } catch { return null; }
+// ---------------------------------------------------------------------------
+// The tracked tree
+
+export type Tree = {
+  repo: string;
+  read(path: string): string | null;
+  has(path: string): boolean;
+  sources(): string[];
+};
+
+// Tracked runtime source, excluding tests and fixtures: a `mission_cli reap`
+// inside a test fixture is test data, not a caller, and reading it as one would
+// make gate C fail on its own evidence.
+function isRuntimeSource(path: string): boolean {
+  if (!/\.(sh|ts)$/.test(path)) return false;
+  if (/\.test\.(ts|sh)$/.test(path) || /\.fixture\.ts$/.test(path)) return false;
+  if (SELF.includes(path)) return false;
+  return !path.split("/").some((segment) => ["tests", "fixtures", "testdata", "vendor", "node_modules"].includes(segment));
+}
+
+// `null` when the tracked set cannot be read at all (not a repository, or git
+// failed). Nothing may be judged from a file set git does not vouch for.
+export function openTree(repo: string): Tree | null {
+  const listed = Bun.spawnSync(["git", "-C", repo, "ls-files", "-z"], { timeout: GIT_TIMEOUT_MS });
+  if (listed.exitCode !== 0) return null;
+  const tracked = new Set(listed.stdout.toString().split("\0").filter(Boolean));
+  const cache = new Map<string, string | null>();
+  return {
+    repo,
+    has: (path) => tracked.has(path) && existsSync(join(repo, path)),
+    read(path) {
+      if (!tracked.has(path)) return null;
+      if (!cache.has(path)) {
+        try { cache.set(path, readFileSync(join(repo, path), "utf8")); } catch { cache.set(path, null); }
+      }
+      return cache.get(path)!;
+    },
+    sources: () => [...tracked].filter(isRuntimeSource).sort(),
+  };
+}
+
+export function sourceFiles(repo: string): string[] {
+  return openTree(repo)?.sources() ?? [];
 }
 
 function worst(verdicts: Verdict[]): Verdict {
@@ -70,129 +169,89 @@ function worst(verdicts: Verdict[]): Verdict {
 }
 
 // ---------------------------------------------------------------------------
+// Shell reading: comments and heredoc bodies are not instructions
+
+export type SourceLine = { line: number; text: string };
+
+// A `#` opens a comment only outside quotes and only at the start of a word, so
+// `${VAR#prefix}` and `sha#1` survive. Backslash escapes are honoured except
+// inside single quotes, where the shell does not honour them either.
+function stripComment(line: string): string {
+  let quote: string | null = null;
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index]!;
+    if (character === "\\" && quote !== "'") { index += 1; continue; }
+    if (quote !== null) { if (character === quote) quote = null; continue; }
+    if (character === '"' || character === "'") { quote = character; continue; }
+    if (character === "#" && (index === 0 || /[\s;&|(]/.test(line[index - 1]!))) return line.slice(0, index);
+  }
+  return line;
+}
+
+// The lines of a shell script that carry instructions: comments removed, and
+// heredoc bodies dropped whole -- a usage banner is text the script prints, not
+// a command it runs, and a gate that read one could be greened by documentation.
+export function executableShellLines(text: string): SourceLine[] {
+  const lines: SourceLine[] = [];
+  let terminator: string | null = null;
+  text.split("\n").forEach((raw, index) => {
+    if (terminator !== null) {
+      if (raw.trim() === terminator) terminator = null;
+      return;
+    }
+    const code = stripComment(raw);
+    const opener = code.match(/<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?/);
+    if (opener) terminator = opener[1]!;
+    if (code.trim()) lines.push({ line: index + 1, text: code });
+  });
+  return lines;
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Lines that RUN `path` rather than merely mentioning it: the path has to sit in
+// a command position -- at the start of a command, after a separator, or as the
+// argument of bash/sh/exec/source -- optionally behind a prefix expansion such
+// as "$REPO_DIR/". A mention inside a variable assignment is deliberately not an
+// invocation: that is fail-closed, and a gate is allowed to under-report a
+// mechanism, never to over-report one.
+export function invocationsOf(lines: SourceLine[], path: string): SourceLine[] {
+  const pattern = new RegExp(`(?:^|[;&|(]|\\$\\(|\`|\\b(?:bash|sh|exec|source)\\s+)\\s*["']?[^"'\\s;&|]*${escapeRegExp(path)}`);
+  return lines.filter((entry) => pattern.test(entry.text));
+}
+
+// ---------------------------------------------------------------------------
 // Shared inputs
 
 // The executable paths orchestrator/launch.sh requires from the tree: its
 // `source` lines and the `${OVERRIDE:-$SCRIPT_DIR/...}` / `$REPO_DIR/...`
-// defaults. Only .sh and .ts are required to EXIST -- the same syntax also
-// names runtime artifacts the launcher creates (locks, state.db, heartbeat
-// files), and a clean clone is supposed not to have those.
+// defaults, in bare and braced form. Only .sh and .ts are required to EXIST --
+// the same syntax also names runtime artifacts the launcher creates (locks,
+// state.db, heartbeat files), and a clean clone is supposed not to have those.
 //
 // This is gate B's predicate and it lives here, once. A future dedicated
 // launcher-path lock imports this function rather than re-deriving the list.
 export type LauncherPath = { path: string; line: number };
 
-export function requiredLauncherPaths(repo: string): LauncherPath[] | null {
-  const text = read(repo, LAUNCHER);
+function launcherPaths(tree: Tree): LauncherPath[] | null {
+  const text = tree.read(LAUNCHER);
   if (text === null) return null;
   const found = new Map<string, number>();
-  text.split("\n").forEach((line, index) => {
-    if (/^\s*#/.test(line)) return;
-    for (const match of line.matchAll(/\$(SCRIPT_DIR|REPO_DIR)\/([A-Za-z0-9._/-]+)/g)) {
+  for (const { line, text: code } of executableShellLines(text)) {
+    for (const match of code.matchAll(/\$\{?(SCRIPT_DIR|REPO_DIR)\}?\/([A-Za-z0-9._/-]+)/g)) {
       const relative = match[1] === "SCRIPT_DIR" ? `orchestrator/${match[2]}` : match[2]!;
       if (!/\.(sh|ts)$/.test(relative)) continue;
-      if (!found.has(relative)) found.set(relative, index + 1);
+      if (!found.has(relative)) found.set(relative, line);
     }
-  });
+  }
   return [...found].map(([path, line]) => ({ path, line }));
 }
 
-// Tracked runtime source, excluding tests and fixtures: a `mission_cli reap`
-// inside a test fixture is test data, not a caller, and reading it as one would
-// make gate C fail on its own evidence.
-const SCAN_DIRS = ["orchestrator", "core", "gate", "hygiene", "daemon", "bootstrap", "tools", "meteorite"];
-
-export function sourceFiles(repo: string): string[] {
-  const out: string[] = [];
-  const walk = (relative: string) => {
-    let entries: string[];
-    try { entries = readdirSync(join(repo, relative)); } catch { return; }
-    for (const entry of entries) {
-      const child = `${relative}/${entry}`;
-      if (entry === "node_modules" || entry === ".git" || entry === "fixtures" || entry === "testdata") continue;
-      let directory = false;
-      try { directory = statSync(join(repo, child)).isDirectory(); } catch { continue; }
-      if (directory) { walk(child); continue; }
-      if (!/\.(sh|ts)$/.test(entry)) continue;
-      if (/\.test\.(ts|sh)$/.test(entry) || /\.fixture\.ts$/.test(entry)) continue;
-      if (SELF.includes(child)) continue;
-      out.push(child);
-    }
-  };
-  for (const dir of SCAN_DIRS) walk(dir);
-  return out.sort();
-}
-
-function headSha(repo: string): string | null {
-  const result = Bun.spawnSync(["git", "-C", repo, "rev-parse", "HEAD"]);
-  if (result.exitCode !== 0) return null;
-  const sha = result.stdout.toString().trim();
-  return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
-}
-
-// A gate half proven outside the repository. Returns the evidence string when a
-// current attestation exists, otherwise a reason the half stays UNKNOWN.
-export function attestation(repo: string, gate: string): { evidence: string } | { reason: string } {
-  const text = read(repo, ATTESTATIONS);
-  if (text === null) return { reason: `no attestation file (${ATTESTATIONS})` };
-  const head = headSha(repo);
-  if (head === null) return { reason: "HEAD is unreadable, so no attestation can be matched to this tree" };
-  let stale = false;
-  for (const line of text.split("\n")) {
-    if (!line.trim() || line.startsWith("#")) continue;
-    const [id, sha, ...rest] = line.split("\t");
-    if (id !== gate) continue;
-    if (sha === head) return { evidence: `${ATTESTATIONS} ${gate} ${head.slice(0, 12)} ${rest.join(" ").trim()}`.trim() };
-    stale = true;
-  }
-  return { reason: stale ? `attestation for ${gate} is stale (not HEAD ${head.slice(0, 12)})` : `no attestation row for ${gate}` };
-}
-
-// ---------------------------------------------------------------------------
-// Gates
-
-type Gate = { id: string; definition: string; judge: (repo: string) => GateResult };
-
-function result(id: string, verdict: Verdict, evidence: string): GateResult {
-  return { id, verdict, evidence };
-}
-
-function missingLauncherPaths(repo: string): LauncherPath[] | null {
-  const required = requiredLauncherPaths(repo);
-  if (required === null) return null;
-  return required.filter(({ path }) => !existsSync(join(repo, path)));
-}
-
-function judgeA(repo: string): GateResult {
-  const missing = missingLauncherPaths(repo);
-  if (missing === null) return result("A", "UNKNOWN", `${LAUNCHER} is unreadable; startability cannot be judged`);
-  if (missing.length) {
-    const first = missing[0]!;
-    return result("A", "FAIL", `${LAUNCHER}:${first.line} requires ${first.path}, absent from the tree — a clean clone cannot start (${missing.length} missing)`);
-  }
-  const glass: string[] = [];
-  for (const file of sourceFiles(repo)) {
-    const text = read(repo, file);
-    if (text && text.includes("oldorch-breakglass")) glass.push(file);
-  }
-  if (glass.length) return result("A", "FAIL", `break-glass path referenced by tracked runtime source: ${glass.join(", ")}`);
-  const proof = attestation(repo, "A");
-  if ("evidence" in proof) return result("A", "PASS", proof.evidence);
-  return result("A", "UNKNOWN", `launcher paths present, but starting a clean clone is not readable from the tree: ${proof.reason}`);
-}
-
-function judgeB(repo: string): GateResult {
-  const required = requiredLauncherPaths(repo);
-  if (required === null) return result("B", "UNKNOWN", `${LAUNCHER} is unreadable`);
-  if (required.length === 0) return result("B", "UNKNOWN", `${LAUNCHER} names no required executable path — the extraction found nothing to check`);
-  const missing = required.filter(({ path }) => !existsSync(join(repo, path)));
-  if (missing.length) {
-    return result("B", "FAIL", `${missing.map((entry) => `${entry.path} (${LAUNCHER}:${entry.line})`).join(", ")} absent from the tree`);
-  }
-  if (!existsSync(join(repo, UNIT_DRIFT))) {
-    return result("B", "UNKNOWN", `${required.length} launcher paths present, but the installed-path verifier ${UNIT_DRIFT} is absent`);
-  }
-  return result("B", "PASS", `${required.length} launcher paths present (${LAUNCHER}); installed paths covered by ${UNIT_DRIFT}`);
+export function requiredLauncherPaths(repo: string): LauncherPath[] | null {
+  const tree = openTree(repo);
+  return tree === null ? null : launcherPaths(tree);
 }
 
 // `mission_cli <group> [<action>]` and `.../mission-cli.ts <group> [<action>]`.
@@ -202,10 +261,10 @@ const MISSION_CLI_CALL = /(?:^|[\s;&|(`"'$])mission[_-]cli(?:\.ts)?\s+([A-Za-z][
 
 export type MissionCliCall = { file: string; line: number; group: string; action?: string };
 
-export function missionCliCalls(repo: string): MissionCliCall[] {
+function missionCalls(tree: Tree): MissionCliCall[] {
   const calls: MissionCliCall[] = [];
-  for (const file of sourceFiles(repo)) {
-    const text = read(repo, file);
+  for (const file of tree.sources()) {
+    const text = tree.read(file);
     if (!text) continue;
     text.split("\n").forEach((line, index) => {
       if (/^\s*(#|\/\/)/.test(line)) return;
@@ -217,8 +276,130 @@ export function missionCliCalls(repo: string): MissionCliCall[] {
   return calls;
 }
 
-function judgeC(repo: string): GateResult {
-  const calls = missionCliCalls(repo);
+export function missionCliCalls(repo: string): MissionCliCall[] {
+  const tree = openTree(repo);
+  return tree === null ? [] : missionCalls(tree);
+}
+
+// The meteorite's executable stage list: the entries of the `commands=(...)`
+// array the runner loops over, as `"<stage>|<command>"`. Comment lines inside
+// the array are not stages, and a line inside it that is neither a comment nor a
+// well-formed entry makes the whole parse fail -- a stage list this function
+// cannot read is reported UNKNOWN, never judged from the raw file text.
+export type MeteoriteStage = { name: string; command: string; line: number };
+
+export function meteoriteStages(tree: Tree): MeteoriteStage[] | null {
+  const text = tree.read(METEORITE);
+  if (text === null) return null;
+  const lines = text.split("\n");
+  const opening = lines.findIndex((line) => /^\s*commands=\(\s*$/.test(line));
+  if (opening < 0) return null;
+  const stages: MeteoriteStage[] = [];
+  for (let index = opening + 1; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    if (/^\s*\)\s*$/.test(line)) return stages;
+    if (!line.trim() || /^\s*#/.test(line)) continue;
+    const entry = line.match(/^\s*"([^|"]+)\|(.*)"\s*$/);
+    if (!entry) return null;
+    stages.push({ name: entry[1]!, command: entry[2]!, line: index + 1 });
+  }
+  return null;
+}
+
+const STARTS_ORCHESTRATOR = /(?:^|[\s;&|(`"'])(?:[^\s"';|&]*\/)?orchestrator\/launch\.sh|systemctl\s+(?:--\S+\s+)*(?:start|enable\s+--now|restart)\s+\S*bpa-orchestrator/;
+const ASSERTS_LIVENESS = /orchestrator\/status\.sh|orchestrator\.lease|orchestrator\.heartbeat|orchestrator\.liveness|systemctl\s+(?:--\S+\s+)*is-active\s+\S*bpa-orchestrator/;
+const CLONES_FROM_REMOTE = /git\s+clone\s+(?:--\S+\s+)*['"]?(?:https?|ssh|git):\/\/|git\s+clone\s+(?:--\S+\s+)*['"]?\$/;
+
+// ---------------------------------------------------------------------------
+// The mechanism registry
+
+export type Mechanism = { id: string; kind: string; target: string };
+
+function mechanisms(tree: Tree): Mechanism[] | null {
+  const text = tree.read(REGISTRY);
+  if (text === null) return null;
+  return text
+    .split("\n")
+    .filter((line) => line.trim() && !line.startsWith("#"))
+    .map((line) => line.split("\t"))
+    .filter((cells) => cells.length >= 3)
+    .map(([id, kind, target]) => ({ id: id!.trim(), kind: kind!.trim(), target: target!.trim() }));
+}
+
+// A mechanism counts only when it is registered AND its tracked target is in
+// the tree: a registry row naming a file nobody landed proves nothing.
+function mechanism(tree: Tree, id: string): { target: string } | { reason: string } {
+  const rows = mechanisms(tree);
+  if (rows === null) return { reason: `${REGISTRY} is absent from the tracked tree` };
+  const row = rows.find((entry) => entry.id === id);
+  if (!row) return { reason: `no mechanism ${id} in ${REGISTRY}` };
+  if (!tree.has(row.target)) return { reason: `${id} names ${row.target}, absent from the tracked tree` };
+  return { target: row.target };
+}
+
+// ---------------------------------------------------------------------------
+// Gates
+
+type Gate = { id: string; definition: string; judge: (tree: Tree) => GateResult };
+
+function result(id: string, verdict: Verdict, evidence: string): GateResult {
+  return { id, verdict, evidence };
+}
+
+// Whether a tracked mechanism proves that a clean clone -- fetched from a
+// remote, carrying no file from this host -- starts the orchestrator. That is
+// the meteorite's job, judged on its parsed stages, not on its prose.
+function cleanCloneStart(tree: Tree): GateResult {
+  const registered = mechanism(tree, METEORITE_MECHANISM);
+  if ("reason" in registered) {
+    return result("A", "UNKNOWN", `starting a clean clone has no registered proof mechanism: ${registered.reason}`);
+  }
+  const stages = meteoriteStages(tree);
+  if (stages === null) {
+    return result("A", "UNKNOWN", `${registered.target} carries no readable stage list, so the clean-clone start is unproven`);
+  }
+  const clone = stages.find((stage) => CLONES_FROM_REMOTE.test(stage.command));
+  const start = stages.find((stage) => STARTS_ORCHESTRATOR.test(stage.command));
+  if (!clone || !start) {
+    const absent = [!clone ? "clones the candidate from a remote" : "", !start ? "starts the orchestrator" : ""].filter(Boolean).join(" and no stage that ");
+    return result("A", "UNKNOWN", `${registered.target} runs ${stages.length} stage(s) but none that ${absent}, so a clean clone starting is unproven`);
+  }
+  return result("A", "PASS", `${registered.target} clones the candidate from a remote (stage ${clone.name}) and starts the orchestrator (stage ${start.name})`);
+}
+
+function judgeA(tree: Tree): GateResult {
+  const required = launcherPaths(tree);
+  if (required === null) return result("A", "UNKNOWN", `${LAUNCHER} is not in the tracked tree; startability cannot be judged`);
+  const missing = required.filter(({ path }) => !tree.has(path));
+  if (missing.length) {
+    const first = missing[0]!;
+    return result("A", "FAIL", `${LAUNCHER}:${first.line} requires ${first.path}, absent from the tree — a clean clone cannot start (${missing.length} missing)`);
+  }
+  const glass: string[] = [];
+  for (const file of tree.sources()) {
+    const text = tree.read(file);
+    if (text && text.includes("oldorch-breakglass")) glass.push(file);
+  }
+  if (glass.length) return result("A", "FAIL", `break-glass path referenced by tracked runtime source: ${glass.join(", ")}`);
+  return cleanCloneStart(tree);
+}
+
+function judgeB(tree: Tree): GateResult {
+  const required = launcherPaths(tree);
+  if (required === null) return result("B", "UNKNOWN", `${LAUNCHER} is not in the tracked tree`);
+  if (required.length === 0) return result("B", "UNKNOWN", `${LAUNCHER} names no required executable path — the extraction found nothing to check`);
+  const missing = required.filter(({ path }) => !tree.has(path));
+  if (missing.length) {
+    return result("B", "FAIL", `${missing.map((entry) => `${entry.path} (${LAUNCHER}:${entry.line})`).join(", ")} absent from the tree`);
+  }
+  if (!tree.has(UNIT_DRIFT)) {
+    return result("B", "UNKNOWN", `${required.length} launcher paths present, but the installed-path verifier ${UNIT_DRIFT} is absent`);
+  }
+  return result("B", "PASS", `${required.length} launcher paths present (${LAUNCHER}); installed paths covered by ${UNIT_DRIFT}`);
+}
+
+function judgeC(tree: Tree): GateResult {
+  const calls = missionCalls(tree);
   if (calls.length === 0) return result("C", "UNKNOWN", "no mission-cli invocation found in tracked runtime source");
   const unknown = calls.filter(({ group, action }) => !isMissionCliAction(group, action));
   if (unknown.length) {
@@ -228,28 +409,61 @@ function judgeC(repo: string): GateResult {
   return result("C", "PASS", `${calls.length} mission-cli call(s) all in core/mission-cli-actions.ts`);
 }
 
-function judgeD(repo: string): GateResult {
-  const text = read(repo, METEORITE);
-  if (text === null) return result("D", "UNKNOWN", `${METEORITE} is absent`);
-  const starts = /orchestrator\/launch\.sh|start\s+bpa-orchestrator|bpa-orchestrator\.service/.test(text);
-  const liveness = /orchestrator\/status\.sh|orchestrator\.liveness|orchestrator\.heartbeat|orchestrator\.lease/.test(text);
-  if (!starts && !liveness) return result("D", "FAIL", `${METEORITE} neither starts the orchestrator nor asserts liveness — its stages end at install and suite`);
-  if (!starts) return result("D", "FAIL", `${METEORITE} asserts liveness state but never starts the orchestrator`);
-  if (!liveness) return result("D", "FAIL", `${METEORITE} starts the orchestrator but asserts no live state`);
-  return result("D", "PASS", `${METEORITE} starts the orchestrator and asserts a live state`);
+function judgeD(tree: Tree): GateResult {
+  if (!tree.has(METEORITE)) return result("D", "UNKNOWN", `${METEORITE} is absent from the tracked tree`);
+  const stages = meteoriteStages(tree);
+  if (stages === null) return result("D", "UNKNOWN", `${METEORITE} carries no readable commands=(...) stage list — refusing to judge its stages from raw file text`);
+  if (stages.length === 0) return result("D", "FAIL", `${METEORITE} runs no stages at all`);
+  const start = stages.find((stage) => STARTS_ORCHESTRATOR.test(stage.command));
+  const liveness = stages.find((stage) => ASSERTS_LIVENESS.test(stage.command));
+  const inventory = `${stages.length} stages (${stages.map((stage) => stage.name).join(", ")})`;
+  if (!start && !liveness) return result("D", "FAIL", `${METEORITE} runs ${inventory}; none starts the orchestrator and none asserts liveness — its stages end at install and suite`);
+  if (!start) return result("D", "FAIL", `${METEORITE} asserts liveness in stage ${liveness!.name} but no stage starts the orchestrator`);
+  if (!liveness) return result("D", "FAIL", `${METEORITE} starts the orchestrator in stage ${start.name} but no stage asserts a live state`);
+  return result("D", "PASS", `${METEORITE} starts the orchestrator (stage ${start.name}) and asserts a live state (stage ${liveness.name})`);
 }
 
-function judgeE(repo: string): GateResult {
-  const checker = read(repo, LEDGER_CHECKER);
-  const absentInputs: GateResult = checker === null
-    ? result("E", "UNKNOWN", `${LEDGER_CHECKER} is absent`)
-    : checker.includes("UNKNOWN")
-      ? result("E", "PASS", `${LEDGER_CHECKER} carries an UNKNOWN outcome for absent inputs`)
-      : result("E", "FAIL", `${LEDGER_CHECKER} has no UNKNOWN outcome — a check whose inputs are absent still passes`);
-  const proof = attestation(repo, "E");
-  const identical: GateResult = "evidence" in proof
-    ? result("E", "PASS", proof.evidence)
-    : result("E", "UNKNOWN", `identical verdict from primary repo, lane worktree and land-main is unproven: ${proof.reason}`);
+// Gate E's first half, measured by BEHAVIOUR: run the tracked ledger checker
+// against a throwaway directory in which its inputs do not exist, and read its
+// own output for an UNKNOWN outcome. Source text is not consulted -- a checker
+// that mentions UNKNOWN in a comment and never emits one is exactly the failure
+// this gate exists to catch.
+function probeAbsentInputs(tree: Tree): GateResult {
+  if (!tree.has(LEDGER_CHECKER)) return result("E", "UNKNOWN", `${LEDGER_CHECKER} is absent from the tracked tree`);
+  const sandbox = mkdtempSync(join(tmpdir(), "cutover-readiness-probe-"));
+  try {
+    // Absolute, because the probe runs with the sandbox as its cwd and a
+    // relative --repo would make the checker unfindable rather than unproven.
+    const probe = Bun.spawnSync([process.execPath, resolve(tree.repo, LEDGER_CHECKER), "--repo", sandbox, "--strict"], {
+      cwd: sandbox,
+      timeout: probeTimeoutMs(),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const output = `${probe.stdout?.toString() ?? ""}${probe.stderr?.toString() ?? ""}`;
+    // A kill is not a pass: an unfinished probe measured nothing.
+    if (probe.exitCode === null || probe.signalCode) {
+      return result("E", "UNKNOWN", `${LEDGER_CHECKER} was killed (${probe.signalCode ?? "no exit status"}) before it could report on absent inputs`);
+    }
+    if (probe.exitCode === 2) {
+      return result("E", "UNKNOWN", `${LEDGER_CHECKER} rejected the absent-input probe as a usage error, so its outcome for absent inputs is unmeasured`);
+    }
+    if (/\bUNKNOWN\b/.test(output)) {
+      return result("E", "PASS", `${LEDGER_CHECKER} reports UNKNOWN when run against a tree whose inputs are absent (probe exit ${probe.exitCode})`);
+    }
+    const firstLine = output.split("\n").map((line) => line.trim()).find((line) => line.length > 0) ?? "no output";
+    return result("E", "FAIL", `${LEDGER_CHECKER} emits no UNKNOWN outcome when its inputs are absent — probe exit ${probe.exitCode}, first line: ${firstLine.slice(0, 120)}`);
+  } finally {
+    rmSync(sandbox, { recursive: true, force: true });
+  }
+}
+
+function judgeE(tree: Tree): GateResult {
+  const absentInputs = probeAbsentInputs(tree);
+  const registered = mechanism(tree, CHECKOUT_PARITY);
+  const identical: GateResult = "target" in registered
+    ? result("E", "PASS", `identical verdict across checkout kinds proven by ${registered.target} (${CHECKOUT_PARITY})`)
+    : result("E", "UNKNOWN", `identical verdict from primary repo, lane worktree and land-main is unproven: ${registered.reason}`);
   const verdict = worst([absentInputs.verdict, identical.verdict]);
   const evidence = verdict === "PASS"
     ? `${absentInputs.evidence}; ${identical.evidence}`
@@ -257,12 +471,15 @@ function judgeE(repo: string): GateResult {
   return result("E", verdict, evidence);
 }
 
-function judgeF(repo: string): GateResult {
-  const inventory = read(repo, HOST_STATE);
+function judgeF(tree: Tree): GateResult {
+  const inventory = tree.read(HOST_STATE);
   let enumerated: GateResult;
   if (inventory === null) {
     enumerated = result("F", "FAIL", `no tracked non-git host-state inventory (${HOST_STATE})`);
   } else {
+    // Arity and non-emptiness only: whether the third column is a command that
+    // actually verifies the item is beyond a read-only tool, and executing an
+    // arbitrary tracked string is not something this command will do.
     const rows = inventory.split("\n").filter((line) => line.trim() && !line.startsWith("#")).map((line) => line.split("\t"));
     const malformed = rows.filter((row) => row.length < 3 || row.some((cell) => !cell.trim()));
     enumerated = rows.length === 0
@@ -271,10 +488,10 @@ function judgeF(repo: string): GateResult {
         ? result("F", "FAIL", `${HOST_STATE} has ${malformed.length} row(s) without a verifying command`)
         : result("F", "PASS", `${HOST_STATE} enumerates ${rows.length} item(s), each with a verifying command`);
   }
-  const proof = attestation(repo, "F");
-  const stranded: GateResult = "evidence" in proof
-    ? result("F", "PASS", proof.evidence)
-    : result("F", "UNKNOWN", `whether ACCEPTed work exists only on this host is unproven: ${proof.reason}`);
+  const registered = mechanism(tree, STRANDED_WORK);
+  const stranded: GateResult = "target" in registered
+    ? result("F", "PASS", `no ACCEPTed work stranded off origin, proven by ${registered.target} (${STRANDED_WORK})`)
+    : result("F", "UNKNOWN", `whether ACCEPTed work exists only on this host is unproven: ${registered.reason}`);
   const verdict = worst([enumerated.verdict, stranded.verdict]);
   const evidence = verdict === "PASS"
     ? `${enumerated.evidence}; ${stranded.evidence}`
@@ -282,14 +499,16 @@ function judgeF(repo: string): GateResult {
   return result("F", verdict, evidence);
 }
 
-function judgeG(repo: string): GateResult {
-  if (!existsSync(join(repo, WHISPER_INSTALLER))) return result("G", "FAIL", `${WHISPER_INSTALLER} is absent — the clean server has nothing to install Whisper with`);
-  const bootstrap = read(repo, BOOTSTRAP);
-  const meteorite = read(repo, METEORITE);
-  if (bootstrap === null) return result("G", "UNKNOWN", `${BOOTSTRAP} is absent; the clean-server install path cannot be read`);
-  if (bootstrap.includes(WHISPER_INSTALLER)) return result("G", "PASS", `${BOOTSTRAP} invokes ${WHISPER_INSTALLER}`);
-  if (meteorite?.includes(WHISPER_INSTALLER)) return result("G", "PASS", `${METEORITE} runs ${WHISPER_INSTALLER} on the clean machine`);
-  return result("G", "FAIL", `${WHISPER_INSTALLER} exists but neither ${BOOTSTRAP} nor ${METEORITE} runs it — a clean server comes up without Whisper`);
+function judgeG(tree: Tree): GateResult {
+  if (!tree.has(WHISPER_INSTALLER)) return result("G", "FAIL", `${WHISPER_INSTALLER} is absent — the clean server has nothing to install Whisper with`);
+  const bootstrap = tree.read(BOOTSTRAP);
+  if (bootstrap === null) return result("G", "UNKNOWN", `${BOOTSTRAP} is absent from the tracked tree; the clean-server install path cannot be read`);
+  const bootstrapRuns = invocationsOf(executableShellLines(bootstrap), WHISPER_INSTALLER)[0];
+  if (bootstrapRuns) return result("G", "PASS", `${BOOTSTRAP}:${bootstrapRuns.line} runs ${WHISPER_INSTALLER}`);
+  const stages = meteoriteStages(tree) ?? [];
+  const stage = stages.find((entry) => invocationsOf([{ line: entry.line, text: entry.command }], WHISPER_INSTALLER).length > 0);
+  if (stage) return result("G", "PASS", `${METEORITE} runs ${WHISPER_INSTALLER} on the clean machine (stage ${stage.name})`);
+  return result("G", "FAIL", `${WHISPER_INSTALLER} exists but no command in ${BOOTSTRAP} or ${METEORITE} runs it — a clean server comes up without Whisper`);
 }
 
 // Verbatim from the synthesis file's "Definition of cutover-ready" bullets. The
@@ -332,23 +551,37 @@ export const GATES: Gate[] = [
   },
 ];
 
-// Gate ids whose quoted definition no longer appears in the synthesis file.
-// `null` means the source itself is unreadable, which drifts every gate at once.
+// Gate ids whose quoted definition is no longer the synthesis file's own bullet.
+// The match is anchored twice -- to the `- **<id>.**` bullet, and to the
+// "Definition of cutover-ready" section it belongs to -- so quoting the original
+// sentence somewhere else in the file (an appendix, a changelog note, a
+// quotation of what a bullet used to say) does not cover for a watered-down
+// definition. `null` means the source itself is unreadable, which drifts every
+// gate at once; a missing section drifts every gate one at a time.
 export function definitionDrift(repo: string): string[] | null {
-  const text = read(repo, SYNTHESIS);
+  const tree = openTree(repo);
+  const text = tree?.read(SYNTHESIS) ?? null;
   if (text === null) return null;
-  const flat = text.replace(/\s+/g, " ");
-  return GATES.filter((gate) => !flat.includes(gate.definition.replace(/\s+/g, " "))).map((gate) => gate.id);
+  const heading = text.search(/^##\s+Definition of cutover-ready\b/m);
+  if (heading < 0) return GATES.map((gate) => gate.id);
+  const rest = text.slice(heading);
+  const next = rest.slice(1).search(/^##\s/m);
+  const section = (next < 0 ? rest : rest.slice(0, next + 1)).replace(/\s+/g, " ");
+  return GATES.filter((gate) => !section.includes(`- **${gate.id}.** ${gate.definition.replace(/\s+/g, " ")}`)).map((gate) => gate.id);
 }
 
 export function checkReadiness(repo: string): GateResult[] {
+  const tree = openTree(repo);
+  if (tree === null) {
+    return GATES.map((gate) => result(gate.id, "UNKNOWN", `the tracked file set of ${repo} is unreadable (not a git repository?) — a gate may not be judged from files git does not carry`));
+  }
   const drift = definitionDrift(repo);
   if (drift === null) {
     return GATES.map((gate) => result(gate.id, "UNKNOWN", `gate definitions unreadable (${SYNTHESIS}) — nothing may be judged against an unread definition`));
   }
   return GATES.map((gate) => (drift.includes(gate.id)
     ? result(gate.id, "UNKNOWN", `definition drifted from ${SYNTHESIS} — refusing to judge a gate whose text moved`)
-    : gate.judge(repo)));
+    : gate.judge(tree)));
 }
 
 export function report(results: GateResult[]): { lines: string[]; exitCode: number } {

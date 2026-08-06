@@ -2,11 +2,12 @@ import { expect, test } from "bun:test";
 import { createVerify } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
   ARCHIVE_MODE,
   ARCHIVE_RE,
   DEST_DIR_MODE,
+  MANIFEST,
   PARTIAL_RE,
   PARTIAL_SUFFIX,
   archiveName,
@@ -14,6 +15,7 @@ import {
   assertPassphraseOffRepo,
   buildArchive,
   checkRows,
+  entryOf,
   LocalTransport,
   makeTransport,
   newestArchive,
@@ -66,12 +68,17 @@ const DEFAULT_FILES: FixtureFile[] = [
 // the default is `none` because that is the mode most of these tests exercise,
 // and `null` means the key is ABSENT, which the tool must refuse rather than
 // default. Nothing here picks the real installation's mode.
+// `passphraseFile` gives the fixture its own custody world: the params key and
+// the matching inventory row, both invented. The path is a REAL absolute path
+// (from `passphrase()`), because the off-repo check resolves it — but it is the
+// fixture's own file, so nothing here consults this host's installation.
 type FixtureOptions = {
   files?: FixtureFile[];
   dirs?: { path: string; members: string[]; inBackup?: boolean }[];
   encryption?: string | null;
   inventoryName?: string;
   params?: boolean;
+  passphraseFile?: string;
 };
 
 function fixture(options: FixtureOptions = {}) {
@@ -100,6 +107,19 @@ function fixture(options: FixtureOptions = {}) {
     lines.push([dir.path, "fixture-dir", "invented fixture directory", "700", `test -d ${onDisk}`, dir.inBackup === false ? "no" : "yes"].join("\t"));
   }
 
+  // Enumerated as host state that must NOT ride inside the archive, exactly the
+  // shape the real installation's row carries.
+  if (options.passphraseFile) {
+    lines.push([
+      options.passphraseFile,
+      "fixture-passphrase",
+      "invented fixture passphrase; never inside the archive it opens",
+      "600",
+      `test -s ${options.passphraseFile}`,
+      "no",
+    ].join("\t"));
+  }
+
   const inventoryName = options.inventoryName ?? "host-state.tsv";
   writeFileSync(join(repo, "instance", inventoryName), lines.join("\n") + "\n");
 
@@ -108,7 +128,8 @@ function fixture(options: FixtureOptions = {}) {
     writeFileSync(
       join(repo, "instance", "params.yaml"),
       ["backup:", `  inventory: instance/${inventoryName}`, "  keep: 10",
-        ...(encryption === null || encryption === undefined ? [] : [`  encryption: ${encryption}`]), ""].join("\n"),
+        ...(encryption === null || encryption === undefined ? [] : [`  encryption: ${encryption}`]),
+        ...(options.passphraseFile ? [`  passphrase_file: ${options.passphraseFile}`] : []), ""].join("\n"),
     );
   }
   return { root, repo, inventory: join(repo, "instance", inventoryName) };
@@ -673,21 +694,33 @@ test("the installation carries the operator's decided encryption mode, and an un
   expect(() => resolveEncryption(params.encryption, undefined)).toThrow("no --passphrase-file was given");
 });
 
-// The custody half of the same ruling. The passphrase is the one piece of host
-// state that must NOT be inside the archive it opens, so the params key and the
-// inventory row are checked against each other rather than trusted separately:
-// two files agreeing by hand is how a passphrase ends up shipped to the Drive
-// inside the thing it decrypts.
-test("the passphrase path is configured, enumerated as host state, and excluded from the archive", () => {
-  const repo = join(import.meta.dir, "..");
+// The custody half of the same ruling: the passphrase is the one piece of host
+// state that must NOT be inside the archive it opens. The chain is params key →
+// inventory row → what the archive actually carries, checked end to end rather
+// than each link trusted separately — two files agreeing by hand is how a
+// passphrase ends up shipped to the Drive inside the thing it decrypts.
+//
+// The fixture owns its whole world: its own passphrase file, its own params key,
+// its own inventory row, its own archive. An earlier form of this test read the
+// INSTALLATION's configured path and stat'ed it, which passed here and failed
+// instantly inside the meteorite rebuild -- a clean container legitimately has
+// no /root/.config/bpa. A test that needs this host's files does not test the
+// mechanism, it tests the host; the tracked-content half is split into the next
+// test, which is true in any checkout.
+test("a configured passphrase is enumerated as host state and stays out of the archive it encrypts", () => {
+  const { dir: keyDir, file: passphraseFile } = passphrase();
+  const { root, repo, inventory } = fixture({ encryption: "operator-passphrase", passphraseFile });
   const params = readBackupParams(repo);
   const configured = resolvePassphraseFile(params);
 
-  expect(configured).toBeTruthy();
-  expect(configured!.startsWith("/")).toBe(true);
-  // Never inside the repository -- one `git add -A` from a committed secret.
+  // (1) configured, absolute, and never inside the repository -- one
+  //     `git add -A` from a committed secret.
+  expect(configured).toBe(passphraseFile);
+  expect(isAbsolute(configured!)).toBe(true);
   expect(() => assertPassphraseOffRepo(configured!, repo)).not.toThrow();
 
+  // (2) enumerated as host state the rebuild must be told about, with the
+  //     permission contract, and marked out of the backup.
   const { rows, errors } = readInventory(repo, resolveInventoryPath(repo, params));
   expect(errors).toEqual([]);
   const row = rows.find((candidate) => candidate.path === configured);
@@ -697,6 +730,54 @@ test("the passphrase path is configured, enumerated as host state, and excluded 
   // The archive selects on inBackup, so prove the exclusion at the selector and
   // not only at the row: this is the assertion that fails if buildArchive ever
   // stops filtering.
+  expect(rows.filter((candidate) => candidate.inBackup).map((candidate) => candidate.path))
+    .not.toContain(configured);
+
+  // (3) and prove it against the bytes: build the encrypted archive with that
+  //     very passphrase, restore it, and read what actually arrived. The
+  //     manifest is the archive's own account of itself, so the key must be
+  //     absent from both the manifest and the restored tree.
+  const { built, stagingDir, outDir } = build(root, rows, passphraseFile);
+  const workDir = mkdtempSync(join(tmpdir(), "host-state-verify-"));
+  try {
+    expect(built.encrypted).toBe(true);
+    expect(built.entries.map((entry) => entry.path)).not.toContain(configured);
+    expect(verifyArchive(built.archivePath, { workDir, passphraseFile })).toEqual([]);
+
+    const manifest = parseManifest(readFileSync(join(workDir, "unpacked", MANIFEST), "utf8"));
+    expect(manifest.length).toBeGreaterThan(0);
+    expect(manifest.map((entry) => entry.path)).not.toContain(configured);
+    expect(existsSync(join(workDir, "unpacked", "files", entryOf(row!)))).toBe(false);
+  } finally {
+    cleanup(root, repo, keyDir, stagingDir, outDir, workDir);
+  }
+});
+
+// The tracked half of the same contract: THIS repository's two files agree about
+// the passphrase. Decided entirely on committed content -- params.yaml and the
+// tracked inventory -- so it holds in a bare clone, in the rebuild container, and
+// on a host where the passphrase has not been provisioned yet. Whether the file
+// itself exists is the row's own verify-command's job (`--check`), not this
+// test's; that separation is what the rebuild failure taught.
+test("this checkout's tracked config keeps the passphrase off-repo and out of the backup", () => {
+  const repo = join(import.meta.dir, "..");
+  const params = readBackupParams(repo);
+  const configured = resolvePassphraseFile(params);
+
+  expect(configured).toBeTruthy();
+  expect(isAbsolute(configured!)).toBe(true);
+  // Off-repo decided on the CONFIGURED path rather than on a file that must be
+  // present: a fresh clone has no passphrase yet, and this claim is still true
+  // there. Compare against the resolved repository root so a `..` or a symlink
+  // in either value cannot read as outside.
+  expect(resolve(configured!).startsWith(`${resolve(repo)}/`)).toBe(false);
+
+  const { rows, errors } = readInventory(repo, resolveInventoryPath(repo, params));
+  expect(errors).toEqual([]);
+  const row = rows.find((candidate) => candidate.path === configured);
+  expect(row, `${configured} must be enumerated in ${resolveInventoryPath(repo, params)}`).toBeTruthy();
+  expect(row!.inBackup, "the passphrase must never ride inside the archive it encrypts").toBe(false);
+  expect(row!.mode).toBe("600");
   expect(rows.filter((candidate) => candidate.inBackup).map((candidate) => candidate.path))
     .not.toContain(configured);
 });

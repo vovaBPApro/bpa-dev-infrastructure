@@ -187,17 +187,44 @@ check "launch.sh does not set the fixture tmux socket" $?
 # measure. If it ever appears in shipped code -- a script, a unit template, an env
 # file -- the protection is off in production and every other assertion here is
 # still green. So the tracked tree is scanned, not trusted.
+#
+# ONE non-test file is allowed to select it, by name and with a condition.
+# meteorite/live-orchestrator-stage.sh starts the orchestrator inside the
+# rebuild container, and a container payload has no systemd: there is no scope
+# for the tmux server to be placed in, so `systemd` is not a mode that can run
+# there and `none` is not a shortcut around a check that could have run. It is
+# allowed only while the stage DECLARES the resulting gap, so the boundary
+# travels with the meteorite's own artifact instead of disappearing into a
+# passing test. The placement property itself is proven by the live rehearsal in
+# section 7 of this file, on a host that has systemd.
 # ───────────────────────────────────────────────────────────────────────────
+ISOLATION_OFF_ALLOWED_FILE='meteorite/live-orchestrator-stage.sh'
+
 mapfile -t isolation_off_files < <(
   cd "$REPO" && git grep -l -E '(^|[[:space:]])(export[[:space:]]+)?ORCH_TMUX_ISOLATION=none' -- . 2>/dev/null || true
 )
 offenders=()
+allowed_seen=0
 for f in ${isolation_off_files[@]+"${isolation_off_files[@]}"}; do
+  if [[ "$f" == "$ISOLATION_OFF_ALLOWED_FILE" ]]; then allowed_seen=1; continue; fi
   [[ "$f" == *.test.sh || "$f" == *.test.ts ]] || offenders+=("$f")
 done
 (( ${#offenders[@]} == 0 ))
 check "the isolation off switch is selected only by test fixtures" $? \
   "shipped files select it: ${offenders[*]:-}"
+
+# The exemption is conditional, and the condition is checked. A stage that stops
+# naming the gap has turned a declared boundary into a silent one, which is the
+# whole failure mode this scan exists to prevent.
+#
+# Held to the DECLARATION, not to the word appearing somewhere in the file: the
+# first version of this check grepped the whole file, and the token also lives in
+# two comments there, so deleting it from the declaration left the check green.
+if (( allowed_seen )); then
+  grep -qE '^unproven="[^"]*cgroup-isolation' "$REPO/$ISOLATION_OFF_ALLOWED_FILE"
+  check "the meteorite stage declares the placement gap its exemption creates" $? \
+    "$ISOLATION_OFF_ALLOWED_FILE selects mode=none without naming cgroup-isolation in its unproven= declaration"
+fi
 
 # Vacuity guard. If the scan matches nothing at all it is not enforcing a rule,
 # it is failing to read -- the exact shape V3-5.19 round 1 had to repair.

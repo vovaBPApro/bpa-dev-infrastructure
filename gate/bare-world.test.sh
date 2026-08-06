@@ -414,7 +414,12 @@ echo "== scenario: the harness never masks a system directory, and then cannot c
 # directory the harness may not mask, nothing was subtracted, and the second
 # half of that is exactly the round-1 defect arriving by another route.
 report hermetic2 'bun test hermetic.test.ts' '' clean
-HOME=/usr run_harness hermetic2
+# The scenario owns its whole environment, HOME and the three XDG dirs alike:
+# leaving the XDG variables to whatever the ambient world has set leaves the
+# harness other things to mask, and the case then silently stops being the case
+# it claims to be. Caught by this very harness -- inside the bare world the XDG
+# variables ARE set, and the scenario passed instead of refusing.
+( export HOME=/usr; unset XDG_CONFIG_HOME XDG_CACHE_HOME XDG_DATA_HOME; run_harness hermetic2 )
 status=$?
 cat "$fixture_root/hermetic2.out"
 assert [ "$status" -eq 2 ]

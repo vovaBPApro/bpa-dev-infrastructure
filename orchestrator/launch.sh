@@ -13,6 +13,10 @@ fi
 source "$SCRIPT_DIR/lib.sh"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/proc-identity.sh"
+# Sourced AFTER the config file so runtime.env can set ORCH_TMUX_SCOPE/
+# ORCH_TMUX_UNIT, and so this file's `${VAR:-default}` reads see those values.
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/tmux-isolation.sh"
 
 SESSION="${ORCH_SESSION:-orchestrator}"
 WORK_DIR="${ORCH_WORK_DIR:-$PWD}"
@@ -660,9 +664,24 @@ start() {
   exec 9>&-
   # The singleton and recovery descriptors belong only to this launcher. The
   # tmux client/server and pane command must never inherit either descriptor.
-  if ! tmux new-session -d -s "$SESSION" -c "$WORK_DIR" \
+  #
+  # Spawned through tmux-isolation.sh, never bare `tmux`: a tmux server inherits
+  # the cgroup of whoever creates it, and two of the three callers of this script
+  # are units whose cgroup dies on their own restart. See that file's header for
+  # the 71-minute outage this replaced (workboard V3-5.29).
+  if ! tmux_isolation_spawn new-session -d -s "$SESSION" -c "$WORK_DIR" \
     "sh -c $(printf '%q' "$singleton_command")" \
     {singleton_guard_fd}>&- {singleton_recovery_fd}>&-; then
+    exec {singleton_guard_fd}>&-
+    return 1
+  fi
+  # Placement is verified against the LIVE server, not assumed from the spawn
+  # succeeding: a tmux client silently attaches to a pre-existing server, whose
+  # cgroup this launcher never chose. An unisolated session is torn down and
+  # refused rather than warned about -- it is an orchestrator that will die on
+  # the next apt upgrade, which is not a started orchestrator.
+  if ! tmux_isolation_assert_session "$SESSION"; then
+    tmux kill-session -t "$SESSION" 2>/dev/null || true
     exec {singleton_guard_fd}>&-
     return 1
   fi

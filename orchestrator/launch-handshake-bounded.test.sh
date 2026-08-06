@@ -54,6 +54,12 @@ export ORCH_MISSION_CLI="$SCRATCH/mission-cli.ts"
 export ORCH_INSTANCE_LOCK_FILE="$SCRATCH/instance.lock"
 export ORCH_AUTH_PREFLIGHT="$SCRATCH/preflight.sh"
 export ORCH_PROVIDER=codex
+# This fixture's tmux is a PATH shim onto a private socket, and its subject is
+# the singleton handshake deadline, not where the server lands. Placement has its
+# own capability-gated rehearsal in orchestrator/tmux-isolation.test.sh; keeping
+# it out of here also keeps this suite runnable where systemd is absent (the
+# meteorite container), which is the only reason the escape exists.
+export ORCH_TMUX_ISOLATION=none
 export ORCH_SESSION=handshake-bounded
 export ORCH_WORK_DIR="$SCRIPT_DIR/.."
 : > "$ORCH_STATE_DB"

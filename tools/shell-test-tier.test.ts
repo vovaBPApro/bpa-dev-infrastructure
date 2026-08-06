@@ -64,6 +64,11 @@ const runnableShellTests = [
   // with V3-5.2 r2 and had never been registered, so nothing in the gate ran it.
   "orchestrator/heartbeat-writer.test.sh",
   "orchestrator/session-hook-wiring.test.sh",
+  // V3-5.29. The daemon-restart rehearsal: the only lock in the tree that proves
+  // the orchestrator outlives the unit that launched it. Its live case is
+  // capability-gated on systemd transient units and reports a named EXCLUDED
+  // line where they are unavailable, so it stays runnable in the container.
+  "orchestrator/tmux-isolation.test.sh",
 ] as const;
 
 const excludedShellTests = {} as const;

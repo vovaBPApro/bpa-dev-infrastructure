@@ -54,6 +54,16 @@ report="$fixture_root/valid.report.md"
   printf 'result: clean\n'
   printf 'secret-scan: clean\n'
   printf 'remaining: none\n'
+  # The exit-side gate's bare-world verify (V3-5.42) refuses an undeclared
+  # clearance where no unprivileged mount namespace exists -- the meteorite
+  # container's `bun test` runs without CAP_SYS_ADMIN. This fixture's defect is
+  # the MISSING `unset BUN_BIN` above, and it can only encode that if the clean
+  # run below is a genuine 0; a masking refusal would make it exit non-zero from
+  # every shell and stop discriminating. The line is the report contract's
+  # declaration, at column 0 inside the contiguous header where a granting field
+  # is read, and it changes nothing about the BUN_BIN direction: that refusal
+  # happens at preflight, before the report is opened at all.
+  printf 'bare-world: capability=mount-namespace reason=this-fixture-must-also-run-where-unprivileged-namespaces-are-unavailable\n'
 } > "$report"
 
 out="$fixture_root/valid.out"

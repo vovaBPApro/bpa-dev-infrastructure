@@ -4,7 +4,7 @@ import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync } from "node:f
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { lineValue } from "./report-contract";
+import { fieldValues, lineValue } from "./report-contract";
 
 type Options = {
   report?: string;
@@ -187,28 +187,15 @@ const reportPath = resolve(options.report!);
 const repoPath = resolve(options.repo!);
 let report: Report | undefined;
 
+// The fence-aware field reader lives in report-contract.ts. It is `review:`'s
+// reader and NOT the capability declaration's: `review:` DEMANDS a sibling
+// artifact, so an extra match adds an obligation and is fail-closed, while
+// `bare-world:` GRANTS a clearance, so an extra match is fail-open. The second
+// field is read from the contract header instead (report-contract.ts
+// contractHeader); the disciplines diverge because their directions do.
+// This wrapper keeps the call sites below unchanged.
 function reviewFieldValues(contents: string): { values: string[]; unterminatedFence: boolean } {
-  const values: string[] = [];
-  let fence: { marker: "`" | "~"; length: number } | undefined;
-
-  for (const line of contents.split(/\r?\n/)) {
-    if (fence) {
-      const closing = line.match(/^\s{0,3}(`+|~+)\s*$/);
-      if (closing && closing[1][0] === fence.marker && closing[1].length >= fence.length) fence = undefined;
-      continue;
-    }
-
-    const opening = line.match(/^\s{0,3}(`{3,}|~{3,})(?:[^\r\n]*)$/);
-    if (opening) {
-      fence = { marker: opening[1][0] as "`" | "~", length: opening[1].length };
-      continue;
-    }
-
-    const field = line.match(/^\s*review\s*:\s*(.*)$/i);
-    if (field) values.push(field[1].trim());
-  }
-
-  return { values, unterminatedFence: fence !== undefined };
+  return fieldValues(contents, "review");
 }
 
 function checkClaimedReview(contents: string, commit: string | undefined): void {

@@ -368,10 +368,26 @@ const laneFixture = (verify: string, { withLandLib = false } = {}) => {
   }
   shellStep("git add -A && git commit --quiet -m fixture", repo);
   const report = join(directory, "report.md");
+  // The `bare-world:` line is portability, not decoration. gate/lane-exit.sh
+  // runs the bare-world verify (V3-5.42) after the guard, and that step refuses
+  // every undeclared clearance where no unprivileged mount namespace exists --
+  // the meteorite container, whose `bun test` has no CAP_SYS_ADMIN, so
+  // `unshare --mount` returns EPERM. This file's subject is BUN_BIN, and without
+  // the declaration the masking refusal stands in for the result under test:
+  // "clears a report whose verify reaches the gate preflight" went red there on
+  // a capability, not on the leak it locks. Declaring it is what a real lane on
+  // that host would do (instructions/lane-capabilities.md); where the namespace
+  // works the declaration is unused and the run is full-fidelity.
+  //
+  // It stays inside the contiguous contract header -- a granting field is read
+  // at column 0 there and nowhere else (gate/report-contract.ts, contractHeader).
+  // The BUN_BIN control below is untouched by it: that refusal happens at
+  // preflight, before any of this is read.
   writeFileSync(
     report,
     `commit: ${shellStep("git rev-parse HEAD", repo)} fixture\n` +
-      `verify: ${verify}\nresult: clean\nsecret-scan: clean\nremaining: none\n`,
+      `verify: ${verify}\nresult: clean\nsecret-scan: clean\nremaining: none\n` +
+      `bare-world: capability=mount-namespace reason=this-lock-must-also-run-where-unprivileged-namespaces-are-unavailable\n`,
   );
   return { repo, report };
 };

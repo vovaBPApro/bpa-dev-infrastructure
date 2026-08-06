@@ -31,6 +31,62 @@ Before an operation, check its capability against the declared mode. A denied
 or unknown mode or capability emits exactly `NO-GO capability=<name>` and stops
 cleanly. It must never stall waiting for interactive recovery.
 
+## The verify's own capability: `host-state`
+
+A lane's `verify:` command carries a capability too — what it needs from the
+machine it runs on. A verify that reads the running installation's files,
+configured paths, ambient environment or permissive umask is green where it was
+written and red everywhere else, and the cost lands on whoever runs it next.
+
+- **The default is hermetic**, and it is enforced rather than requested: the
+  lane-exit gate re-runs the declared `verify:` in a clean clone with the
+  environment scrubbed, `umask 077`, and the host's home and config directories
+  masked. A verify that only passes outside that world has an undeclared
+  dependency on this host.
+- **Declare it in the terminal report's contract header** when the dependency is
+  legitimate: `bare-world: capability=<name> reason=<why>`, one line, both parts
+  required. The declaration grants a clearance, so it is read only from that
+  position and read exactly — `lane-lifecycle` owns the rule. Writing the same
+  line in the body, fenced or indented or in a sentence, documents it and
+  declares nothing.
+  `host-state` covers reading the installation's own files and configuration;
+  `network`, `docker` and `service-ops` keep the meanings the table above gives
+  them. A reason is mandatory because the declaration is a claim someone will
+  have to re-read when the verify breaks on another machine.
+- **A declaration accepts the failure; it never hides it.** The delta is still
+  reported, so a lane that declared out of habit is visible as one whose verify
+  is doing something it need not do.
+- **Absence of a declaration is a named refusal**, not a silent red: the lane
+  exit reports `NO-GO capability=host-state` together with the environmental
+  delta it could diagnose — the host path that was read, the scrubbed variable,
+  the permission or mode. An unknown capability name is refused the same way,
+  per the fail-closed rule above.
+
+### A check that could not run has not passed
+
+The environment can be missing what the check itself needs. The masking step
+requires an unprivileged mount namespace and a maskable home directory, and
+without them an absolute path into the installation's config dirs stays
+readable — the exact class the step exists to catch.
+
+- **A degraded run may not clear the step.** It reports the missing capability
+  by name (`NO-GO capability=mount-namespace`, `NO-GO capability=maskable-home`)
+  and blocks exactly as a failed check does. "It ran at reduced fidelity and
+  passed" is a partial result reported as clean, which
+  `verification-and-locks` forbids without qualification. Announcing the
+  reduction in a log nobody consumes is not a mitigation: the announcement has
+  to reach the thing that decides.
+- **The exception is declared, in the same field and the same position, and it
+  is the environment that is being declared** — not a preference:
+  `bare-world: capability=mount-namespace
+  reason=<why>`. It buys a clearance at reduced fidelity and nothing else; it
+  accepts no failure, and a capability declared for one gap never covers
+  another. Declare several at once as `capability=<name>,<name>`.
+- **A test affordance may never grant what the environment lacks.** Where a
+  suite forces a capability missing to exercise the degraded path, that may only
+  make the gate stricter: on a host that really has the capability, forcing it
+  missing is refused outright and no declaration is honoured.
+
 ## Declared command bounds
 
 A lane's harness may kill a foreground command at a bound the lane did not

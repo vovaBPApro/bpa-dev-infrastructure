@@ -45,6 +45,9 @@ const runnableShellTests = [
   "gate/meteorite-gate.test.sh",
   "gate/land-target-branch.test.sh",
   "gate/lane-exit.test.sh",
+  // V3-5.42. The bare-world verify's own locks. Its host-config case is
+  // capability-gated on a usable mount namespace and announces its exclusion.
+  "gate/bare-world.test.sh",
   "gate/push-guard.test.sh",
   "orchestrator/launch-handshake-bounded.test.sh",
   "orchestrator/singleton-failclosed.test.sh",
@@ -159,7 +162,7 @@ test(
       const env = { ...process.env };
       delete env.BUN_BIN;
       env.INFRA_TEST_FORCE_MISSING_CAPABILITIES =
-        "immutable-file,proc-lock-observability,pid-mount-namespace,systemd-transient-unit";
+        "immutable-file,proc-lock-observability,pid-mount-namespace,systemd-transient-unit,mount-namespace";
       const result = spawnSync("bash", [file], { cwd: repoRoot, encoding: "utf8", env });
       expect(result.status, `${file}: ${result.stdout}${result.stderr}`).toBe(0);
       for (const line of result.stdout.split("\n")) {

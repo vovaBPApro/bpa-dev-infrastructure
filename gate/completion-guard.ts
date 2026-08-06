@@ -140,6 +140,32 @@ function parseVerificationCount(output: string): { passed: number; failed: numbe
   return { passed: Number(passed[0][1]), failed: Number(failed[0][1]) };
 }
 
+// Variables land_resolve_bun() EXPORTS into whatever invoked the gate
+// (gate/land-lib.sh:146-161). They are the gate's own resolution state, not the
+// lane's, and they must not reach the report's verify command.
+//
+// Why: gate/lane-exit.sh sources land-lib.sh and calls land_resolve_bun before
+// running this guard, so this process carries both variables; the verify child
+// inherited them, and any verify that reaches land_resolve_bun AGAIN -- a nested
+// gate/push-guard.sh, gate/land.sh, or a direct `. land-lib.sh; land_resolve_bun`
+// -- died at `LAND step=preflight status=fail detail=caller-bun-override-refused`.
+// The override refusal was refusing its own parent. Two lanes paid for it
+// (V3-5.23's verify, V3-5.25 r2's test) and ~100 retained reports carry a
+// defensive `env -u BUN_BIN` in their verify line as folklore.
+//
+// A `verify:` command exists to measure what a FRESH shell would measure, which
+// is exactly what stripping restores. This changes the CHILD environment only:
+// land_resolve_bun is untouched, so a genuine caller override of a gate entry
+// point is still refused (gate/push-guard.test.sh:250, and the end-to-end locks
+// in gate/bun-override-isolation.test.ts).
+const GATE_RESOLUTION_EXPORTS = ["BUN_BIN", "LAND_CHECK_PATH"] as const;
+
+function verificationEnvironment(): Record<string, string | undefined> {
+  const environment: Record<string, string | undefined> = { ...process.env };
+  for (const name of GATE_RESOLUTION_EXPORTS) delete environment[name];
+  return environment;
+}
+
 function runVerification(repo: string, sha: string, command: string) {
   const temporaryRoot = mkdtempSync(join(tmpdir(), "completion-verify-"));
   const checkout = join(temporaryRoot, "checkout");
@@ -149,7 +175,7 @@ function runVerification(repo: string, sha: string, command: string) {
     return { status: added.status, stdout: added.stdout, stderr: added.stderr };
   }
   try {
-    return spawnSync(command, { cwd: checkout, shell: true, encoding: "utf8" });
+    return spawnSync(command, { cwd: checkout, shell: true, encoding: "utf8", env: verificationEnvironment() });
   } finally {
     git(repo, ["worktree", "remove", "--force", checkout]);
     rmSync(temporaryRoot, { recursive: true, force: true });

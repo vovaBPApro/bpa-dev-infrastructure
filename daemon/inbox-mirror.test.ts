@@ -8,6 +8,7 @@ import {
   type MirrorReceipt,
   appendInboxLine,
   mirrorFailureNotice,
+  mirrorFailureSendOptions,
   mirrorInbound,
   resolveInboxPath,
   serializeInboxLine,
@@ -272,6 +273,14 @@ describe("appendInboxLine", () => {
 // Models handleInbound's real ordering: mirror first, then deliver
 // unconditionally, then react ONLY on a stored receipt. Delivery is outside
 // every mirror branch on purpose — that is requirement 2 made executable.
+//
+// V3-5.7: the 👀 site in server.ts also sits inside `if (tmuxLive &&
+// text.trim())`, so a receipt alone does not put eyes on a message with no
+// text — this model carries that condition too rather than asserting a reaction
+// the daemon cannot produce. (The configured access.ackReaction site has no
+// text gate; it is a different symbol and is not modelled here.) Which reaction
+// sites exist and what each is gated on is locked against the real source by
+// inbox-receipt-wiring.test.ts.
 function inboundLikeServer(
   repoRoot: string,
   record: InboxRecord,
@@ -290,7 +299,7 @@ function inboundLikeServer(
   });
 
   delivered.push(record.text); // never gated on the mirror
-  if (receipt.stored === true) reacted.push("👀");
+  if (receipt.stored === true && record.text.trim()) reacted.push("👀");
 
   return { receipt, delivered, reacted, pinged };
 }
@@ -380,10 +389,15 @@ describe("mirrorInbound — the HR-2486 receipt", () => {
     }
   });
 
-  test("an attachment-only message with no caption still earns a row and a receipt", () => {
+  test("an attachment-only message with no caption still earns a stored row", () => {
     // A photo with no caption is still something he sent, and the file_id
     // (W-15) is exactly what makes it recoverable. It must be storable, so the
     // receipt means the same thing for it as for a text directive.
+    //
+    // What it does NOT get is the eyes: server.ts's 👀 site sits inside
+    // `if (tmuxLive && text.trim())` and is unreachable without text, so the
+    // row and the receipt are the whole claim here. Asserting a 👀 for this case
+    // would state something the daemon cannot do (V3-5.7).
     const repo = tempRepo();
     const result = inboundLikeServer(repo, {
       msg_id: 77,
@@ -395,7 +409,7 @@ describe("mirrorInbound — the HR-2486 receipt", () => {
     });
 
     expect(result.receipt.stored).toBe(true);
-    expect(result.reacted).toEqual(["👀"]);
+    expect(result.reacted).toEqual([]);
 
     const row = JSON.parse(
       readFileSync(join(repo, DEFAULT_INBOX_RELATIVE), "utf8").trim(),
@@ -410,6 +424,34 @@ describe("mirrorInbound — the HR-2486 receipt", () => {
     expect(notice.split("\n").length).toBeLessThanOrEqual(5);
     // A message with no id still produces a usable notice rather than "undefined".
     expect(mirrorFailureNotice("")).not.toContain("undefined");
+  });
+
+  test("REGRESSION V3-5.7: the notice survives a deleted reply target", () => {
+    // The notice replies to the offending message so he knows which one. Before
+    // this, that reply was mandatory: Telegram refuses sendMessage when the
+    // reply target no longer exists (deleted message, cleared history), so the
+    // one message telling him a requirement never reached disk was lost exactly
+    // when the message it was about had been removed.
+    //
+    // allow_sending_without_reply downgrades the reply to best-effort: the
+    // notice is sent unthreaded instead of failing. Without the flag this
+    // assertion is red.
+    const options = mirrorFailureSendOptions(4242);
+    expect(options.reply_parameters).toEqual({
+      message_id: 4242,
+      allow_sending_without_reply: true,
+    });
+    // Still loud: a receipt withheld silently is not a receipt withheld.
+    expect(options.disable_notification).toBe(false);
+  });
+
+  test("a notice with no message id is sent unthreaded rather than not at all", () => {
+    // msgId is optional in handleInbound; a missing one must not produce
+    // reply_parameters with an undefined target, which Telegram rejects.
+    const options = mirrorFailureSendOptions(undefined);
+    expect(options.reply_parameters).toBeUndefined();
+    expect(options.disable_notification).toBe(false);
+    expect(Object.keys(options)).toEqual(["disable_notification"]);
   });
 
   test("a throwing failure sink still cannot reach the delivery path", () => {

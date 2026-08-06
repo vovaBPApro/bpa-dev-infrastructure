@@ -29,6 +29,7 @@ orchestrator/launch-handshake-bounded.test.sh
 orchestrator/launcher-startable-from-git.test.sh
 orchestrator/session-hook-wiring.test.sh
 orchestrator/singleton-failclosed.test.sh
+orchestrator/singleton-namespace-boundary.test.sh
 orchestrator/tmux-isolation.test.sh
 orchestrator/watchdog-supervision.test.sh
 orchestrator/watchdog.test.sh

@@ -206,12 +206,81 @@ no_artifacts derived
 launch derived-ok 0 || fail "a lane below the lowered cap was refused"
 
 # An unreadable cap is a refusal: an unknown ceiling is not an absent one.
-sed -i 's/^  cap: [0-9]*/  cap: not-a-number/' "$REPO_DIR/instance/params.yaml"
+set_cap() { sed -i "s/^  cap: .*/  cap: $1/" "$REPO_DIR/instance/params.yaml"; }
+set_cap not-a-number
 if launch unreadable 0; then
   fail "the launcher launched against an unreadable cap"
 fi
 grep -Fq 'cannot read fleet.cap' "$SCRATCH/unreadable.error" ||
   fail "the unreadable-cap refusal did not name the parameter"
 no_artifacts unreadable
+
+# ── 7. A leading-zero cap is refused, never read as octal ───────────────────
+# This failed OPEN before the lock (review F1). `fleet_cap` accepted `09` as
+# digits, and `((running >= cap))` in the launcher reads a leading-zero literal
+# as OCTAL: `09` is not a valid octal literal, so the arithmetic errored,
+# evaluated false, and the `elif` chain fell through to a launch. `set -e` does
+# not stop it, because the expression sits in a condition. Executed at twelve
+# lanes running, it launched.
+#
+# `010` is the quiet half of the same defect: bash reads octal 8, so the
+# enforced ceiling silently became 8 while every message quoted `010`.
+#
+# REFUSAL, not decimal normalisation with `10#`. The value is genuinely
+# ambiguous across the readers that see it: bash arithmetic and a YAML 1.1
+# loader both read `010` as 8, YAML 1.2 reads the string `010`, and
+# tools/check-fleet-cap.ts reads 10. Normalising in one reader buys agreement
+# with the checker at the price of disagreeing with a YAML loader — the same
+# silent divergence between two readers of one number that this row exists to
+# remove. There is no cap an operator can state only with a leading zero.
+set_cap 09
+if launch octal09 12; then
+  fail "the launcher launched with a cap of 09 and 12 lanes running — a leading zero fails open"
+fi
+grep -Fq 'cannot read fleet.cap' "$SCRATCH/octal09.error" ||
+  { cat "$SCRATCH/octal09.error" >&2; fail "a cap of 09 was not refused as an unreadable cap"; }
+no_artifacts octal09
+
+set_cap 010
+if launch octal010 9; then
+  fail "the launcher launched with a cap of 010 (read as octal 8) and 9 lanes running"
+fi
+grep -Fq 'cannot read fleet.cap' "$SCRATCH/octal010.error" ||
+  { cat "$SCRATCH/octal010.error" >&2; fail "a cap of 010 was not refused as an unreadable cap"; }
+no_artifacts octal010
+
+# ── 8. A comment in column 1 does not end the fleet block ───────────────────
+# The reader's block terminator was `/^[^ \t]/`, which a `#` in column 1
+# satisfies (review F4). An unreadable cap is a refusal and `--allow-over-cap` is
+# evaluated AFTER the cap read, so a benign comment reflow in instance/params.yaml
+# stopped every dispatch in the fleet with no override path. Proven here on the
+# launcher rather than only on the reader, because that total-refusal blast
+# radius is the launcher's.
+set_cap 3
+sed -i 's/^  cap: 3$/# a comment reflowed to column 1\n  cap: 3/' "$REPO_DIR/instance/params.yaml"
+grep -Fxq '# a comment reflowed to column 1' "$REPO_DIR/instance/params.yaml" ||
+  fail "the column-1 comment fixture was not written"
+launch comment-reflow 0 ||
+  { cat "$SCRATCH/comment-reflow.error" >&2; fail "a column-1 comment inside the fleet block stopped every dispatch"; }
+sed -i '/^# a comment reflowed to column 1$/d' "$REPO_DIR/instance/params.yaml"
+
+# ── 9. Every journaled decision is a line a JSON parser accepts ─────────────
+# The cap was interpolated unguarded as `"cap":%s` while the neighbouring
+# `running` field WAS guarded, so an unvalidated cap emitted `"cap":010` and left
+# a record of a refused dispatch that nothing can read (review F2). Asserted over
+# the whole journal, not one line: this file is the only durable evidence that
+# the fleet is hitting its ceiling.
+# shellcheck disable=SC1091
+BUN_BIN=$(. "$HOST_REPO/orchestrator/lib.sh"; printf '%s' "$BUN_BIN")
+[ -x "$BUN_BIN" ] || fail "cannot resolve bun to parse the cap journal"
+JOURNAL_PATH="$JOURNAL" "$BUN_BIN" -e '
+  const path = process.env.JOURNAL_PATH;
+  const lines = require("fs").readFileSync(path, "utf8").split("\n").filter((l) => l.length);
+  if (!lines.length) { console.error("the cap journal is empty; nothing was journaled"); process.exit(1); }
+  lines.forEach((line, i) => {
+    try { JSON.parse(line); }
+    catch (error) { console.error(`journal line ${i + 1} is not JSON: ${error.message}\n${line}`); process.exit(1); }
+  });
+' || fail "the cap journal carries a line no JSON parser accepts"
 
 printf 'launch-lane cap enforcement: PASS\n'

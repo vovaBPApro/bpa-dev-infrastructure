@@ -221,6 +221,61 @@ params_reader_locks() {
   if fleet_cap "$fixture" >/dev/null; then
     fail "${AWK_LABEL:-awk}: fleet_cap accepted a non-numeric cap"
   fi
+
+  # A leading zero is digits, and used to pass — then the launcher's
+  # `((running >= cap))` read it as octal and FAILED OPEN at twelve lanes
+  # running. The launcher-level proof is in launch-lane-cap.test.sh; this is the
+  # reader's half, replayed under mawk with the rest.
+  for bad_cap in 09 010 03 00 0; do
+    printf 'fleet:\n  cap: %s\n  status: active\n' "$bad_cap" >"$fixture/instance/params.yaml"
+    if fleet_cap "$fixture" >/dev/null; then
+      fail "${AWK_LABEL:-awk}: fleet_cap accepted a leading-zero cap of $bad_cap"
+    fi
+  done
+
+  # A comment in column 1 is a comment, not the end of the block. The old
+  # terminator `/^[^ \t]/` matched a `#`, and because an unreadable cap is a
+  # refusal evaluated BEFORE --allow-over-cap, that truncation stopped every
+  # dispatch in the fleet with no override.
+  printf 'fleet:\n# a comment reflowed to column 1\n  cap: 4\n  declared_by: HR-4711\n\nother:\n  cap: 9\n' \
+    >"$fixture/instance/params.yaml"
+  [ "$(fleet_cap "$fixture")" = 4 ] ||
+    fail "${AWK_LABEL:-awk}: a column-1 comment inside the fleet block made the cap unreadable"
+  [ "$(fleet_declared_by "$fixture")" = HR-4711 ] ||
+    fail "${AWK_LABEL:-awk}: a column-1 comment inside the fleet block hid declared_by"
+
+  # ...and the block still ENDS at the next real top-level key, so the comment
+  # rule did not buy F4 by making the reader read the whole file.
+  printf 'fleet:\n  status: active\n\n# a comment between blocks\nother:\n  cap: 9\n' \
+    >"$fixture/instance/params.yaml"
+  if fleet_cap "$fixture" >/dev/null; then
+    fail "${AWK_LABEL:-awk}: skipping comments let the reader run past the end of the fleet block"
+  fi
+
+  # Depth. A `cap:` nested under any subkey of `fleet:` is a different parameter
+  # wearing the same name; the reader used to answer with it.
+  printf 'fleet:\n  budget:\n    cap: 99\n  status: active\n' >"$fixture/instance/params.yaml"
+  if fleet_cap "$fixture" >/dev/null; then
+    fail "${AWK_LABEL:-awk}: fleet_cap answered with a cap nested under a fleet subkey"
+  fi
+  # The block's own key is still found when a nested one sits above it.
+  printf 'fleet:\n  budget:\n    cap: 99\n  cap: 4\n  status: active\n' >"$fixture/instance/params.yaml"
+  [ "$(fleet_cap "$fixture")" = 4 ] ||
+    fail "${AWK_LABEL:-awk}: the depth rule hid the fleet block's own cap"
+
+  # A quoted scalar is valid YAML, and refusing it was a total dispatch refusal.
+  for quoted in '"3"' "'3'"; do
+    printf 'fleet:\n  cap: %s\n  declared_by: "HR-4711"\n' "$quoted" >"$fixture/instance/params.yaml"
+    [ "$(fleet_cap "$fixture")" = 3 ] ||
+      fail "${AWK_LABEL:-awk}: fleet_cap refused the quoted scalar $quoted"
+    [ "$(fleet_declared_by "$fixture")" = HR-4711 ] ||
+      fail "${AWK_LABEL:-awk}: fleet_declared_by refused a quoted ruling id"
+  done
+  # An empty quoted scalar is an absent value, not an empty cap.
+  printf 'fleet:\n  cap: ""\n  status: active\n' >"$fixture/instance/params.yaml"
+  if fleet_cap "$fixture" >/dev/null; then
+    fail "${AWK_LABEL:-awk}: fleet_cap read an empty quoted scalar as a cap"
+  fi
 }
 params_reader_locks
 
@@ -253,6 +308,57 @@ else
   awk_portability=SKIPPED
   awk_portability_skip_notice 'fleet-nudge.test.sh'
 fi
+
+# ── The census, against systemd's actual line shape ─────────────────────────
+# `fleet_running_lanes` is the number the launcher REFUSES against, so an
+# undercount here is the fail-open direction: lanes that exist but are not seen.
+# The pattern was `^[ \t]*lane-`, where a BRE `[ \t]` is the literal set
+# {space, backslash, t} and not a tab — so systemd's `●` marker column, which it
+# prefixes to a unit that is not happy, made that unit invisible to the cap. No
+# awk on this path, so it is proven once rather than replayed.
+census_locks() {
+  local shim="$TMP/census-bin" count
+  mkdir -p "$shim"
+  cat >"$shim/systemctl" <<'EOF'
+#!/usr/bin/env bash
+[[ "${1:-}" == list-units ]] || exit 0
+printf '  lane-plain.service loaded active running Ordinary lane\n'
+printf '\xe2\x97\x8f lane-bulleted.service loaded active running A lane systemd marked\n'
+printf '\tlane-tabbed.service loaded active running A tab in the marker column\n'
+printf '  daemon-other.service loaded active running Not a lane\n'
+printf '  watchdog.service loaded active running Mentions lane-ghost.service in its text\n'
+EOF
+  chmod +x "$shim/systemctl"
+  count=$(PATH="$shim:$PATH" fleet_running_lanes) ||
+    fail "the census failed against a well-formed systemctl listing"
+  [ "$count" = 3 ] ||
+    fail "the census counted $count of the 3 lane units listed (bulleted and tabbed lines must count, descriptions must not)"
+
+  # An empty listing is still a census: zero, not a failure.
+  cat >"$shim/systemctl" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  chmod +x "$shim/systemctl"
+  count=$(PATH="$shim:$PATH" fleet_running_lanes) ||
+    fail "an empty lane listing was reported as an untakeable census"
+  [ "$count" = 0 ] || fail "an empty lane listing counted $count"
+
+  # A census that cannot be taken is a failure, never a zero — the launcher
+  # turns this into a refusal and the watchdog into a nudge, deliberately.
+  cat >"$shim/systemctl" <<'EOF'
+#!/usr/bin/env bash
+printf 'Failed to list units: connection refused\n' >&2
+exit 1
+EOF
+  chmod +x "$shim/systemctl"
+  if PATH="$shim:$PATH" fleet_running_lanes >/dev/null; then
+    fail "a failed census reported a number instead of failing"
+  fi
+}
+# shellcheck source=orchestrator/fleet/fleet-params.sh
+. "$DIR/fleet-params.sh"
+census_locks
 
 # ── Timer path, through mocked process boundaries ───────────────────────────
 mkdir "$TMP/bin"

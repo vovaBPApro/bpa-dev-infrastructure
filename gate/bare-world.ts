@@ -80,7 +80,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { lineValue } from "./report-contract";
+import { fieldValues, lineValue } from "./report-contract";
 
 // Same literal fallback as gate/land-lib.sh's trusted baseline, used ONLY when
 // the gate has not already resolved one. gate/lane-exit.sh calls
@@ -515,7 +515,17 @@ function main(): void {
   const result = lineValue(contents, "result");
   const verify = lineValue(contents, "verify");
   const commit = lineValue(contents, "commit");
-  const declaration = lineValue(contents, "bare-world");
+  // Fence-aware, because this field GRANTS a clearance: a report documenting the
+  // declaration syntax in a fenced code block must not thereby make one. Found
+  // on this row's own terminal report, which did exactly that.
+  const declarations = fieldValues(contents, "bare-world");
+  if (declarations.unterminatedFence) {
+    refuse(["verdict=refused reason=report-malformed detail=unterminated-fenced-block"]);
+  }
+  if (declarations.values.length > 1) {
+    refuse([`verdict=refused reason=declaration-duplicated NO-GO capability=host-state count=${declarations.values.length}`]);
+  }
+  const declaration = declarations.values[0];
 
   if (result !== "clean") {
     // A NO-GO report's verify was never run normally either

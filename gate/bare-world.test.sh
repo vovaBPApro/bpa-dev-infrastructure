@@ -372,6 +372,50 @@ assert_has "$fixture_root/noreason.out" "reason=declaration-without-reason"
 echo "PASS: a reasonless declaration cannot buy an exemption"
 echo
 
+echo "== scenario: a fenced EXAMPLE of the declaration is not a declaration =="
+# The report contract says a field-looking line inside a closed fenced block is
+# an example (lane-lifecycle). This field GRANTS a clearance, so reading an
+# example as a field is fail-open -- and it happened, on this row's own terminal
+# report, which documented the syntax in a fenced block and was read as
+# declaring it.
+{
+  printf 'commit: %s fixture\n' "$sha"
+  printf 'verify: bun test umask.test.ts\n'
+  printf 'result: clean\n'
+  printf 'secret-scan: clean\n'
+  printf 'remaining: none\n'
+  printf 'A lane whose verify legitimately needs host state writes:\n'
+  printf '```text\n'
+  printf 'bare-world: capability=host-state reason=an-example-not-a-claim\n'
+  printf '```\n'
+} > "$fixture_root/fenced.md"
+run_harness_permissive fenced
+status=$?
+cat "$fixture_root/fenced.out"
+assert [ "$status" -eq 2 ]
+assert_has "$fixture_root/fenced.out" "NO-GO capability=host-state"
+assert_lacks "$fixture_root/fenced.out" "verdict=declared"
+echo "PASS: documenting the declaration does not make one"
+echo
+
+echo "== scenario: two declarations are a named refusal, not a silent pick =="
+{
+  printf 'commit: %s fixture\n' "$sha"
+  printf 'verify: bun test umask.test.ts\n'
+  printf 'result: clean\n'
+  printf 'secret-scan: clean\n'
+  printf 'remaining: none\n'
+  printf 'bare-world: capability=host-state reason=first\n'
+  printf 'bare-world: capability=host-state reason=second\n'
+} > "$fixture_root/twice.md"
+run_harness_permissive twice
+status=$?
+cat "$fixture_root/twice.out"
+assert [ "$status" -eq 2 ]
+assert_has "$fixture_root/twice.out" "reason=declaration-duplicated"
+echo "PASS: a duplicated declaration is refused by name"
+echo
+
 # --- the boundaries of the harness's own authority ---------------------------
 
 echo "== scenario: an honest NO-GO is not-applicable, never a second failure =="

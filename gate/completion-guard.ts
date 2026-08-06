@@ -4,7 +4,7 @@ import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync } from "node:f
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { lineValue } from "./report-contract";
+import { fieldValues, lineValue } from "./report-contract";
 
 type Options = {
   report?: string;
@@ -187,28 +187,12 @@ const reportPath = resolve(options.report!);
 const repoPath = resolve(options.repo!);
 let report: Report | undefined;
 
+// The fence-aware field reader now lives in report-contract.ts, because
+// `bare-world:` needs exactly the same rule and for exactly the same reason:
+// both fields GRANT something, so reading an example as a field is fail-open.
+// This wrapper keeps the call sites below unchanged.
 function reviewFieldValues(contents: string): { values: string[]; unterminatedFence: boolean } {
-  const values: string[] = [];
-  let fence: { marker: "`" | "~"; length: number } | undefined;
-
-  for (const line of contents.split(/\r?\n/)) {
-    if (fence) {
-      const closing = line.match(/^\s{0,3}(`+|~+)\s*$/);
-      if (closing && closing[1][0] === fence.marker && closing[1].length >= fence.length) fence = undefined;
-      continue;
-    }
-
-    const opening = line.match(/^\s{0,3}(`{3,}|~{3,})(?:[^\r\n]*)$/);
-    if (opening) {
-      fence = { marker: opening[1][0] as "`" | "~", length: opening[1].length };
-      continue;
-    }
-
-    const field = line.match(/^\s*review\s*:\s*(.*)$/i);
-    if (field) values.push(field[1].trim());
-  }
-
-  return { values, unterminatedFence: fence !== undefined };
+  return fieldValues(contents, "review");
 }
 
 function checkClaimedReview(contents: string, commit: string | undefined): void {

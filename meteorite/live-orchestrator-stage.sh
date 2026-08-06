@@ -26,6 +26,19 @@
 # The assertion half is reachable on its own (`--assert-liveness`), so a host
 # test can drive it against a fabricated runtime directory without a container.
 #
+# MEASURED 2026-08-06, and the reason this stage currently reports NO-GO: the
+# launcher refuses to start inside a container at all. `launch.sh` verifies its
+# singleton owner by finding the lock in `/proc/locks`
+# (singleton_kernel_owner_pid), and that file is namespace-filtered — inside a
+# container it reads EMPTY while a flock is held (measured: 11 FLOCK rows on the
+# host, 0 in the container, same probe), so the launcher fails closed with
+# `ERROR orchestrator-singleton-owner-unverified`. That refusal token now travels
+# in this stage's reason, because a bare `launch-refused` sends the reader to a
+# container log by hand. It is a real finding about a control-plane check being
+# unmeasurable in the rebuild environment, not a defect of this stage, and it is
+# NOT worked around here: weakening a fail-closed singleton check is Tier-A
+# review work and belongs to its own row.
+#
 # Usage:
 #   meteorite/live-orchestrator-stage.sh
 #   meteorite/live-orchestrator-stage.sh --assert-liveness <runtime-dir> <interval-s> [<deadline-s>]
@@ -245,13 +258,31 @@ chmod +x "$scratch/bin/$provider"
 printf '[live-orchestrator] starting %s in session %s (install=%s)\n' \
   "$provider" "$session" "$install_root" >&2
 
+# The launcher's own refusal token is carried into the reason, so the artifact
+# names WHICH mechanism refused rather than an exit status. `launch-refused`
+# alone sent the first reader of this stage to read a container log by hand.
+# Buffered rather than streamed for that reason only; it is replayed verbatim
+# below either way.
+launch_log="$scratch/launch.log"
 start_status=0
-run_launcher start >&2 || start_status=$?
+run_launcher start >"$launch_log" 2>&1 || start_status=$?
+cat "$launch_log" >&2
 if ((start_status != 0)); then
   if ((start_status == 124)); then
     fail launch-timeout "launch.sh start did not return within ${start_timeout}s"
   fi
-  fail launch-refused "launch.sh start exited $start_status"
+  refusal="$(sed -n 's/.*ERROR \(orchestrator-[a-z-]*\).*/\1/p' "$launch_log" | head -n 1)"
+  if [[ -z "$refusal" ]]; then
+    # Not every launcher refusal carries an `ERROR orchestrator-*` token: the
+    # missing auth preflight, the missing provider binary and the unsupported
+    # provider all print bare prose. Slugify the last real line rather than
+    # emitting a bare `launch-refused` for exactly the refusals a rebuilt host is
+    # most likely to hit. Truncated at the first colon so a path never becomes
+    # part of the token.
+    refusal="$(grep -v -e '^WARN ' -e '^$' "$launch_log" | tail -n 1 | cut -d: -f1 |
+      tr '[:upper:] ' '[:lower:]-' | tr -cd 'a-z0-9-' | cut -c1-60)"
+  fi
+  fail "launch-refused${refusal:+:$refusal}" "launch.sh start exited $start_status"
 fi
 started=1
 

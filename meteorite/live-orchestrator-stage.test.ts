@@ -167,6 +167,59 @@ describe("live-orchestrator stage refusals", () => {
     expect(run.stdout.toString()).toContain("METEORITE-LIVENESS proven=no reason=launcher-missing");
   });
 
+  test("a refusing launcher has its own error token carried into the reason", async () => {
+    // Measured on 2026-08-06: inside a container the launcher refuses with
+    // `ERROR orchestrator-singleton-owner-unverified`, because /proc/locks is
+    // namespace-filtered and its singleton-owner check cannot observe the lock it
+    // just took. A bare `launch-refused` in the artifact sends the next reader to
+    // a container log by hand, so the launcher's own token travels with it.
+    const root = await scratch("live-stage-refusal-token-");
+    await mkdir(join(root, "install", "orchestrator"), { recursive: true });
+    await writeFile(
+      join(root, "install", "orchestrator", "launch.sh"),
+      "#!/usr/bin/env bash\nprintf 'ERROR orchestrator-singleton-owner-unverified provider_pid=1 kernel_owner=unknown\\n' >&2\nexit 1\n",
+    );
+    await writeFile(join(root, "state.db"), "");
+    const run = Bun.spawnSync(["bash", stage], {
+      env: {
+        ...process.env,
+        METEORITE_LIVE_INSTALL_ROOT: join(root, "install"),
+        METEORITE_LIVE_STATE_DB: join(root, "state.db"),
+        METEORITE_LIVE_RUNTIME_DIR: join(root, "runtime"),
+      },
+    });
+    expect(run.exitCode).toBe(1);
+    expect(run.stdout.toString()).toContain(
+      "METEORITE-LIVENESS proven=no reason=launch-refused:orchestrator-singleton-owner-unverified",
+    );
+  });
+
+  test("a launcher refusal with no error token is still named, not left bare", async () => {
+    // This is the refusal a rebuilt host actually hits first today:
+    // orchestrator/preflight-cli-auth.sh is absent from the repository, and
+    // launch.sh says so in bare prose with no ERROR token to harvest. The path is
+    // deliberately dropped at the first colon so the token stays a token.
+    const root = await scratch("live-stage-bare-refusal-");
+    await mkdir(join(root, "install", "orchestrator"), { recursive: true });
+    await writeFile(
+      join(root, "install", "orchestrator", "launch.sh"),
+      "#!/usr/bin/env bash\nprintf 'auth preflight missing or not executable: /work/install/orchestrator/preflight-cli-auth.sh\\n' >&2\nexit 2\n",
+    );
+    await writeFile(join(root, "state.db"), "");
+    const run = Bun.spawnSync(["bash", stage], {
+      env: {
+        ...process.env,
+        METEORITE_LIVE_INSTALL_ROOT: join(root, "install"),
+        METEORITE_LIVE_STATE_DB: join(root, "state.db"),
+        METEORITE_LIVE_RUNTIME_DIR: join(root, "runtime"),
+      },
+    });
+    expect(run.exitCode).toBe(1);
+    expect(run.stdout.toString()).toContain(
+      "METEORITE-LIVENESS proven=no reason=launch-refused:auth-preflight-missing-or-not-executable",
+    );
+  });
+
   test("an unknown argument is refused rather than treated as the default run", () => {
     const run = Bun.spawnSync(["bash", stage, "--start-everything"]);
     expect(run.exitCode).toBe(2);
@@ -175,9 +228,33 @@ describe("live-orchestrator stage refusals", () => {
 });
 
 // ── The live rehearsal ─────────────────────────────────────────────────────
+//
+// Capability-gated, and the gate is measured rather than assumed. `launch.sh`
+// verifies its singleton owner by locating the lock in /proc/locks, and that
+// file is namespace-filtered: inside a container it reads EMPTY while a flock is
+// held, so the launcher fails closed and no rehearsal is possible there. This
+// suite runs inside the meteorite container, so an ungated rehearsal would fail
+// the rebuild proof on an environment property rather than on a defect — the
+// exact host-dependent-test shape V3-2.8 was filed for. An excluded case
+// announces itself by name; it is never silently green.
 const tmuxAvailable = Bun.which("tmux") !== null;
 
-describe.if(tmuxAvailable)("live-orchestrator stage rehearsal", () => {
+function singletonOwnershipObservable(): boolean {
+  const probe = Bun.spawnSync([
+    "bash", "-c", 'f=$(mktemp); exec 9>"$f"; flock -n 9 || exit 1; grep -c FLOCK /proc/locks 2>/dev/null || printf 0',
+  ]);
+  return Number(probe.stdout.toString().trim() || "0") > 0;
+}
+
+const rehearsalRunnable = tmuxAvailable && singletonOwnershipObservable();
+if (!rehearsalRunnable) {
+  console.log(
+    "live-orchestrator-stage: EXCLUDED case=launch-rehearsal capability=" +
+      (tmuxAvailable ? "proc-locks-visibility" : "tmux"),
+  );
+}
+
+describe.if(rehearsalRunnable)("live-orchestrator stage rehearsal", () => {
   test("the stage starts the real launcher, proves a renewing pulse, and tears it down", async () => {
     const root = await scratch("live-stage-rehearsal-");
     const socket = `meteorite-live-stage-${process.pid}`;

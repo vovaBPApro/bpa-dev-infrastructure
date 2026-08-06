@@ -64,6 +64,8 @@ Options:
                          command that cannot be run, is UNKNOWN and refuses.
   --proc-root PATH      Root of the proc filesystem used by the process probe
                          (default: /proc). Unreadable means UNKNOWN, not empty.
+                         A directory of symlinks into the real /proc scopes the
+                         probe to named processes without faking any of them.
   -h, --help            Show this help without changing anything
 
 All commands are dry-run by default. A branch is deleted under --apply only
@@ -560,7 +562,8 @@ holding_worktree_now() {
 # and the readlink is genuinely gone and ignored; a pid that is STILL THERE
 # whose cwd we could not read is ambiguity, and ambiguity is never absence.
 processes_inside() {
-  local path="$1" real pid entry target proc_state unknown_pid=""
+  local path="$1" real pid entry target proc_state proc_comm proc_reason readlink_err
+  local unknown_pid="" unknown_comm="" unknown_reason=""
   real="$(cd "$path" 2>/dev/null && pwd -P)" || { printf 'worktree-path-unresolvable\n'; return 2; }
   [[ -n "$real" ]] || { printf 'worktree-path-unresolvable\n'; return 2; }
   if [[ ! -d "$proc_root" || ! -r "$proc_root" ]]; then
@@ -576,7 +579,8 @@ processes_inside() {
     # has been deleted -- which would turn "a process is sitting in a deleted
     # worktree" into an unreadable-cwd UNKNOWN for no reason.
     if [[ ! -d "$entry" ]]; then continue; fi
-    if ! target="$(readlink "$entry/cwd" 2>/dev/null)" || [[ -z "$target" ]]; then
+    readlink_err=""
+    if ! target="$(LC_ALL=C readlink "$entry/cwd" 2>/dev/null)" || [[ -z "$target" ]]; then
       # An unreadable cwd is only ambiguous if the process could HAVE one.
       # Measured on this host: a zombie's /proc/<pid>/cwd readlink fails
       # outright, while a kernel thread's resolves to "/". A reaper that called
@@ -589,12 +593,43 @@ processes_inside() {
       # comm (field 2) is parenthesised and may itself contain spaces and ')',
       # so everything after the LAST ') ' is fixed-position; state is first
       # there. Same parse as orchestrator/proc-identity.sh, for the same reason.
+      proc_comm="${proc_state#*(}"
+      proc_comm="${proc_comm%)*}"
       proc_state="${proc_state##*) }"
       # `if`, not `[[ ... ]] && continue`, throughout this file -- see the note
       # in load_protected_file for what the short form silently does to a
       # `set -e` script when the left side is false.
       if [[ "${proc_state%% *}" == "Z" ]]; then continue; fi
-      unknown_pid="$pid"
+      # WHY the cwd could not be read decides what the operator has to do about
+      # it, so measure it instead of asserting one cause. EACCES here is not a
+      # busy lane at all: reading a NON-DUMPABLE process's cwd (gpg-agent sets
+      # itself non-dumpable to protect its memory, and so does anything that
+      # dropped privileges) needs CAP_SYS_PTRACE, which the default Docker
+      # capability set omits. One such process anywhere on the machine makes
+      # EVERY worktree UNKNOWN -- the refusal is correct, because ambiguity is
+      # never absence, but it is a statement about this reaper's environment
+      # and not about this worktree, and a bare pid never said so. Measured:
+      # this is exactly how a landing-blocking, meteorite-only failure looked
+      # (V3-5.34), and the pid it named was gone before anyone could look it up.
+      # `-v`: coreutils readlink is SILENT on failure by default, so without it
+      # every unreadable cwd looks alike and the reason would be a guess.
+      readlink_err="$(LC_ALL=C readlink -v "$entry/cwd" 2>&1 >/dev/null)" || true
+      case "$readlink_err" in
+        *"Permission denied"*) proc_reason="permission-denied (non-dumpable process; measuring it needs CAP_SYS_PTRACE, which this reaper does not have here -- environmental, not this worktree)" ;;
+        "") proc_reason="empty-cwd" ;;
+        *) proc_reason="${readlink_err##*: }" ;;
+      esac
+      # One unmeasurable process is enough to refuse, so only one is named --
+      # and a permission-denied one is named in preference to any other,
+      # because it is the only class of them an operator can do something
+      # about. Without that preference the name is whichever pid the glob
+      # happened to reach last: on this host, running unprivileged, that was a
+      # kworker with no cwd at all, which tells the reader nothing.
+      if [[ -z "$unknown_pid" || ( "$unknown_reason" != permission-denied* && "$proc_reason" == permission-denied* ) ]]; then
+        unknown_pid="$pid"
+        unknown_comm="$proc_comm"
+        unknown_reason="$proc_reason"
+      fi
       continue
     fi
     target="${target% (deleted)}"
@@ -604,7 +639,8 @@ processes_inside() {
     fi
   done
   if [[ -n "$unknown_pid" ]]; then
-    printf 'process-cwd-unreadable pid=%s\n' "$unknown_pid"
+    printf 'process-cwd-unreadable pid=%s comm=%s reason=%s\n' \
+      "$unknown_pid" "${unknown_comm:-unknown}" "${unknown_reason:-unknown}"
     return 2
   fi
   return 0

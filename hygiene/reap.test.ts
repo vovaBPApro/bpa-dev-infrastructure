@@ -10,6 +10,7 @@ import {
   chmodSync,
   readlinkSync,
   realpathSync,
+  symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -661,6 +662,37 @@ function spawnLaneIn(dir: string): number {
   throw new Error(`fixture setup failed: lane process ${pid} never entered ${dir}`);
 }
 
+// A view of the REAL /proc holding exactly the processes this fixture created:
+// a directory of symlinks into /proc, handed to the sweep as --proc-root. Every
+// read the probe makes still lands on the kernel -- the real cwd of a real
+// process, the real stat, the real dangling link when it dies -- so this is a
+// scoped view and not a fake /proc, which the file's whole liveness argument
+// depends on it not being.
+//
+// It exists because a verdict of TERMINAL is otherwise an assertion about the
+// WHOLE MACHINE, not about the fixture: the probe must rule out every process
+// on the host, so one process it may not measure makes every worktree UNKNOWN
+// and every terminal-classification test fail. That is not hypothetical. It is
+// V3-5.34: `tools/backup-host-state.ts` runs `gpg`, `gpg` leaves a `gpg-agent`
+// daemon behind, gpg-agent is non-dumpable, and measuring a non-dumpable
+// process needs CAP_SYS_PTRACE -- which this host's root has and the default
+// Docker capability set does not. So these seven tests passed here, failed
+// inside the meteorite rebuild container, and blocked every landing until the
+// fixture stopped depending on a host fact that the clean-machine proof
+// legitimately lacks.
+//
+// Tests that must prove the probe against the real, unscoped /proc (a running
+// lane is refused; an unreadable proc root is UNKNOWN) deliberately do NOT use
+// this. The unmeasurable-process test DOES use it, and must: see the block
+// above spawnUnmeasurableIn for why naming an ambient process was the same
+// disease in a second form.
+function scopedProcRoot(dir: string, pids: number[] = []): string {
+  const root = join(dir, "proc-scope");
+  mkdirSync(root, { recursive: true });
+  for (const pid of pids) symlinkSync(`/proc/${pid}`, join(root, String(pid)));
+  return root;
+}
+
 // A repo with a real remote, holding one landed lane branch, one lane branch
 // that never landed, and one protected branch -- all three present on the
 // remote, which is where the reaper could not previously look.
@@ -755,7 +787,16 @@ test("remote-branches: a remote branch whose tip moved since it was measured is 
   );
   chmodSync(racer, 0o755);
 
-  const apply = run(["remote-branches", "--repo", repo, "--apply", "--liveness-cmd", racer]);
+  const apply = run([
+    "remote-branches",
+    "--repo",
+    repo,
+    "--apply",
+    "--liveness-cmd",
+    racer,
+    "--proc-root",
+    scopedProcRoot(dir),
+  ]);
   expect(apply.status).toBe(0);
   expect(apply.stdout).toContain(
     "remote refused the delete (tip moved since it was measured?), retaining: origin/ag-merged-remote",
@@ -785,15 +826,18 @@ test("branches: says out loud when it could not look at the remote at all", () =
 });
 
 test("a merged branch behind a terminal worktree is reaped, worktree FIRST -- the deadlock that stranded the branches", () => {
-  const { repo, worktree } = buildFixture();
+  const { dir, repo, worktree } = buildFixture();
+  // This fixture started no process, so its scoped view of /proc is empty and
+  // the worktree's terminal verdict is decided by the fixture alone.
+  const procRoot = scopedProcRoot(dir);
 
   // The default is unchanged: any worktree still refuses its branch outright.
-  const guarded = run(["branches", "--repo", repo, "--apply"]);
+  const guarded = run(["branches", "--repo", repo, "--apply", "--proc-root", procRoot]);
   expect(guarded.status).toBe(0);
   expect(guarded.stdout).toContain("held by live worktree, refusing: worktree-held");
   expect(existsSync(worktree)).toBe(true);
 
-  const apply = run(["branches", "--repo", repo, "--with-worktrees", "--apply"]);
+  const apply = run(["branches", "--repo", repo, "--with-worktrees", "--apply", "--proc-root", procRoot]);
   expect(apply.status).toBe(0);
   const removedAt = apply.stdout.indexOf(`removed terminal worktree: ${worktree}`);
   const deletedAt = apply.stdout.indexOf("deleted merged branch: worktree-held");
@@ -823,19 +867,20 @@ test("worktrees: a running lane's worktree is refused, and its branch survives w
 });
 
 test("worktrees: classification is always reported; removal needs --apply --terminal", () => {
-  const { repo, worktree } = buildFixture();
+  const { dir, repo, worktree } = buildFixture();
+  const procRoot = scopedProcRoot(dir);
 
-  const report = run(["worktrees", "--repo", repo]);
+  const report = run(["worktrees", "--repo", repo, "--proc-root", procRoot]);
   expect(report.status).toBe(0);
   expect(report.stdout).toContain(`terminal worktree: ${worktree}`);
   expect(existsSync(worktree)).toBe(true);
 
-  const unarmed = run(["worktrees", "--repo", repo, "--apply"]);
+  const unarmed = run(["worktrees", "--repo", repo, "--apply", "--proc-root", procRoot]);
   expect(unarmed.status).toBe(0);
   expect(unarmed.stdout).toContain(`not removing without --terminal: ${worktree}`);
   expect(existsSync(worktree)).toBe(true);
 
-  const armed = run(["worktrees", "--repo", repo, "--apply", "--terminal"]);
+  const armed = run(["worktrees", "--repo", repo, "--apply", "--terminal", "--proc-root", procRoot]);
   expect(armed.status).toBe(0);
   expect(armed.stdout).toContain(`removed terminal worktree: ${worktree}`);
   expect(existsSync(worktree)).toBe(false);
@@ -890,7 +935,18 @@ test("liveness is re-measured at the moment of removal, not once at classificati
 
   const apply = spawnSync(
     "bash",
-    [reap, "branches", "--repo", repo, "--with-worktrees", "--apply", "--liveness-cmd", probe],
+    [
+      reap,
+      "branches",
+      "--repo",
+      repo,
+      "--with-worktrees",
+      "--apply",
+      "--liveness-cmd",
+      probe,
+      "--proc-root",
+      scopedProcRoot(dir),
+    ],
     { encoding: "utf8", env: { ...process.env, PROBE_COUNTER: counter } },
   );
   expect(apply.status).toBe(0);
@@ -909,8 +965,21 @@ test("a liveness probe that cannot answer is UNKNOWN, and UNKNOWN refuses", () =
   const broken = join(dir, "broken-probe.sh");
   writeFileSync(broken, "#!/usr/bin/env bash\nexit 3\n");
   chmodSync(broken, 0o755);
+  // The liveness-cmd is the answer under test here, so the process probe ahead
+  // of it must not be the thing that refuses.
+  const procRoot = scopedProcRoot(dir);
 
-  const odd = run(["worktrees", "--repo", repo, "--apply", "--terminal", "--liveness-cmd", broken]);
+  const odd = run([
+    "worktrees",
+    "--repo",
+    repo,
+    "--apply",
+    "--terminal",
+    "--liveness-cmd",
+    broken,
+    "--proc-root",
+    procRoot,
+  ]);
   expect(odd.status).toBe(0);
   expect(odd.stdout).toContain("liveness-cmd exit=3 (UNKNOWN, refusing)");
   expect(existsSync(worktree)).toBe(true);
@@ -924,6 +993,8 @@ test("a liveness probe that cannot answer is UNKNOWN, and UNKNOWN refuses", () =
     "--terminal",
     "--liveness-cmd",
     join(dir, "no-such-probe"),
+    "--proc-root",
+    procRoot,
   ]);
   expect(missing.status).toBe(0);
   expect(missing.stdout).toContain("(UNKNOWN, refusing)");
@@ -945,6 +1016,211 @@ test("an unreadable proc root is UNKNOWN, never an empty list of processes", () 
   expect(apply.status).toBe(0);
   expect(apply.stdout).toContain("proc-root-unreadable");
   expect(apply.stdout).toContain("held by live worktree, refusing: worktree-held");
+  expect(existsSync(worktree)).toBe(true);
+  expect(sh("git show-ref --verify --quiet refs/heads/worktree-held && echo present", repo).trim()).toBe(
+    "present",
+  );
+});
+
+// --- V3-5.34: a process the reaper may not measure ---------------------------
+//
+// The probe's rule -- ambiguity is never absence -- is unchanged and correct.
+// What it did NOT say was WHICH process, WHY it was unmeasurable, and that the
+// answer was about the reaper's environment rather than about the worktree in
+// front of it. `process-cwd-unreadable pid=16464` cost two landing attempts and
+// a lane: by the time anyone read it, pid 16464 was gone, and nothing recorded
+// that it had been a gpg-agent (non-dumpable, so measuring it needs
+// CAP_SYS_PTRACE, which the meteorite container's root does not have).
+//
+// The FIRST version of this test proved that refusal by dropping to uid 65534
+// and sweeping the real, unscoped /proc, where some root-owned process --
+// pid 1, if nothing else -- is unmeasurable to the sweeper. It was green in the
+// lane and red in the gate, for two independent reasons, and both of them are
+// the same disease this row exists to kill: a fixture that asserts a property
+// of the HOST instead of a property it built.
+//
+//  1. It depended on the ambient process table for the very process it named:
+//     `pid=[0-9]+ comm=\S+` matched whichever unmeasurable process the glob
+//     reached, so the test could neither say which process it had measured nor
+//     notice that it had measured nothing of its own.
+//  2. It depended on the sweeping user being able to READ the fixture, which
+//     depends on the umask of whoever ran `bun test`. Measured, not guessed:
+//     orchestrator/launch.sh sets `umask 077` in start(), so the orchestrator
+//     process runs at 0077 (`grep Umask /proc/<orchestrator>/status`) and every
+//     child it spawns -- gate/land.sh, and the `bun test` of
+//     land_run_declared_checks -- inherits it, while a lane shell runs at 0022.
+//     At 0077 `git worktree add` creates the worktree 0700 with a 0600 `.git`,
+//     uid 65534 cannot traverse it, and worktree_is_terminal returns
+//     `status-unreadable` from the git-status check BEFORE processes_inside is
+//     ever called. The asserted branch was not merely unproven; it was
+//     unreachable, and the fixture's own `chmod -R a+rX` covered only the repo.
+//
+// So the fixture now owns every part of the world it asserts, and asserts the
+// kernel gate itself rather than a side effect of who happens to be running:
+//
+//  - the unmeasurable process is one THIS test spawns, holds alive across the
+//    sweep, and kills in teardown, which makes itself non-dumpable with
+//    prctl(PR_SET_DUMPABLE, 0) -- the exact thing gpg-agent does to itself;
+//  - the sweep sees a --proc-root containing that pid and nothing else, so the
+//    pid and comm in the message are asserted EXACTLY. An ambient process can
+//    no longer supply the refusal, and a fixture that stopped producing one can
+//    no longer be papered over by the host;
+//  - the sweep runs as root WITHOUT CAP_SYS_PTRACE (`setpriv --bounding-set`),
+//    which is precisely the meteorite container's capability set. Root reads the
+//    fixture regardless of umask, so cause 2 cannot come back; and the capability
+//    is proven to be the decisive variable below, by reading the same link with
+//    it and without it.
+const CAP_SYS_PTRACE = 19n;
+const SETPRIV = "/usr/bin/setpriv";
+
+// The holder, written into the fixture and run as a child of this test. It
+// reports its pid only AFTER it is non-dumpable, so the sweep can never race
+// the prctl and see a measurable process.
+const UNMEASURABLE_HOLDER_SOURCE = [
+  'import { dlopen, FFIType } from "bun:ffi";',
+  'import { writeFileSync } from "node:fs";',
+  "",
+  "const signature = {",
+  "  args: [FFIType.i32, FFIType.u64, FFIType.u64, FFIType.u64, FFIType.u64],",
+  "  returns: FFIType.i32,",
+  "};",
+  "let libc = null;",
+  "const errors = [];",
+  'for (const soname of ["libc.so.6", "libc.so"]) {',
+  "  try {",
+  "    libc = dlopen(soname, { prctl: signature });",
+  "    break;",
+  "  } catch (error) {",
+  '    errors.push(soname + ": " + String(error));',
+  "  }",
+  "}",
+  'if (!libc) throw new Error("holder cannot reach libc prctl: " + errors.join("; "));',
+  "// PR_SET_DUMPABLE = 4 with SUID_DUMP_DISABLE = 0, then PR_GET_DUMPABLE = 3 to",
+  "// prove it took. Establishing the property is not the same as asserting it:",
+  "// a holder that silently stayed dumpable would hand the test a green from a",
+  "// process the sweeper could read perfectly well.",
+  'if (libc.symbols.prctl(4, 0n, 0n, 0n, 0n) !== 0) throw new Error("holder: prctl(PR_SET_DUMPABLE, 0) failed");',
+  'if (libc.symbols.prctl(3, 0n, 0n, 0n, 0n) !== 0) throw new Error("holder: still dumpable after PR_SET_DUMPABLE");',
+  "writeFileSync(process.argv[2], String(process.pid));",
+  "// Outlive the sweep, never outlive the run: afterEach kills this, and this is",
+  "// the backstop for the case where the test process dies before it can.",
+  "setTimeout(() => process.exit(0), 300000);",
+  "",
+].join("\n");
+
+function procComm(pid: number): string {
+  const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+  const open = stat.indexOf("(");
+  const close = stat.lastIndexOf(")");
+  if (open < 0 || close < open) throw new Error(`fixture setup failed: unparsable /proc/${pid}/stat: ${stat}`);
+  // Same parse as reap.sh and orchestrator/proc-identity.sh: comm is
+  // parenthesised and may itself contain spaces and ')'.
+  return stat.slice(open + 1, close);
+}
+
+// A live process, created and owned by this fixture, that no reader without
+// CAP_SYS_PTRACE may measure -- whatever else is running on the host.
+function spawnUnmeasurableIn(dir: string, cwd: string): { pid: number; comm: string } {
+  const script = join(dir, "unmeasurable-holder.ts");
+  const ready = join(dir, "unmeasurable-holder.pid");
+  const log = join(dir, "unmeasurable-holder.log");
+  writeFileSync(script, UNMEASURABLE_HOLDER_SOURCE);
+  const started = spawnSync(
+    "bash",
+    [
+      "-c",
+      `cd ${JSON.stringify(cwd)} && exec ${JSON.stringify(process.execPath)} ${JSON.stringify(script)} ` +
+        `${JSON.stringify(ready)} >${JSON.stringify(log)} 2>&1 & echo $!`,
+    ],
+    { encoding: "utf8" },
+  );
+  const pid = Number(started.stdout.trim());
+  if (!Number.isInteger(pid) || pid <= 0) {
+    throw new Error(`fixture setup failed: no holder pid\n${started.stdout}\n${started.stderr}`);
+  }
+  livePids.push(pid);
+  const holderLog = () => (existsSync(log) ? readFileSync(log, "utf8") : "");
+  for (let attempt = 0; attempt < 1000; attempt++) {
+    if (existsSync(ready)) {
+      const reported = Number(readFileSync(ready, "utf8").trim());
+      if (reported !== pid) {
+        throw new Error(`fixture setup failed: holder pid disagreement shell=${pid} self=${reported}`);
+      }
+      return { pid, comm: procComm(pid) };
+    }
+    if (!existsSync(`/proc/${pid}`)) {
+      throw new Error(`fixture setup failed: holder died before it became unmeasurable\n${holderLog()}`);
+    }
+    spawnSync("sleep", ["0.01"]);
+  }
+  throw new Error(`fixture setup failed: holder never reported itself non-dumpable\n${holderLog()}`);
+}
+
+function hasCapSysPtrace(): boolean {
+  const field = /^CapEff:\s*([0-9a-fA-F]+)$/m.exec(readFileSync("/proc/self/status", "utf8"));
+  // Unmeasurable capability set: assume we HAVE it, which only makes the
+  // fixture stricter (it will then insist on setpriv rather than trusting the
+  // ambient environment to already be de-privileged).
+  if (!field) return true;
+  return (BigInt(`0x${field[1]}`) & (1n << CAP_SYS_PTRACE)) !== 0n;
+}
+
+// Runs argv with CAP_SYS_PTRACE removed from the bounding set, which for a
+// root process execing an ordinary file removes it from the effective set too.
+// This is the meteorite container's condition reproduced on a host that has the
+// capability, rather than waited for.
+function withoutPtraceCapability(argv: string[]): string[] {
+  if (existsSync(SETPRIV)) return [SETPRIV, "--bounding-set=-sys_ptrace", ...argv];
+  if (!hasCapSysPtrace()) return argv;
+  throw new Error(
+    "setpriv is required to prove this refusal here: this process HAS CAP_SYS_PTRACE, so it can measure " +
+      "every process on the host, and without dropping the capability the test would pass without " +
+      "exercising the branch at all",
+  );
+}
+
+test("a process this reaper may not measure is named, with the reason and the missing capability", () => {
+  const { dir, repo, worktree } = buildFixture();
+  // Deliberately NOT inside the worktree: the gpg-agent that caused V3-5.34 was
+  // nowhere near the worktree it blocked. What refuses here is ambiguity about
+  // an unrelated process, which is exactly the message that has to name itself.
+  const holder = spawnUnmeasurableIn(dir, dir);
+  const procRoot = scopedProcRoot(dir, [holder.pid]);
+  const cwdLink = `/proc/${holder.pid}/cwd`;
+
+  // The capability is the decisive variable, proven here rather than asserted:
+  // with it the holder is measurable, without it the kernel refuses. The first
+  // half is skipped where the environment has already dropped the capability
+  // (the meteorite container), because there it cannot be true.
+  if (hasCapSysPtrace()) {
+    const measured = spawnSync("readlink", ["-v", cwdLink], { encoding: "utf8" });
+    if (measured.status !== 0) {
+      throw new Error(`fixture setup failed: holder unreadable even WITH CAP_SYS_PTRACE\n${measured.stderr}`);
+    }
+  }
+  const denyArgv = withoutPtraceCapability(["readlink", "-v", cwdLink]);
+  const denied = spawnSync(denyArgv[0], denyArgv.slice(1), { encoding: "utf8" });
+  if (denied.status === 0 || !denied.stderr.includes("Permission denied")) {
+    throw new Error(
+      `fixture setup failed: holder is still measurable without CAP_SYS_PTRACE ` +
+        `(status=${denied.status}, stderr=${denied.stderr.trim()})`,
+    );
+  }
+
+  // Report-only: the point is the classification the probe produces.
+  const argv = withoutPtraceCapability(["bash", reap, "worktrees", "--repo", repo, "--proc-root", procRoot]);
+  const result = spawnSync(argv[0], argv.slice(1), { encoding: "utf8" });
+
+  expect(result.status).toBe(0);
+  expect(result.stdout).toContain(`live worktree, refusing: ${worktree}`);
+  // Exact pid and comm: the refusal came from the process this test built, and
+  // no ambient process could have supplied it.
+  expect(result.stdout).toContain(
+    `process-cwd-unreadable pid=${holder.pid} comm=${holder.comm} reason=permission-denied`,
+  );
+  // The operator's next action is in the message or the message is useless.
+  expect(result.stdout).toContain("CAP_SYS_PTRACE");
+  // Fail-closed is unchanged: unmeasurable still refuses, and nothing moved.
   expect(existsSync(worktree)).toBe(true);
   expect(sh("git show-ref --verify --quiet refs/heads/worktree-held && echo present", repo).trim()).toBe(
     "present",
@@ -991,6 +1267,7 @@ function laneDispatchingProbe(
   branch: string,
   at: string,
   pidFile: string,
+  procRoot: string,
 ): string {
   const probe = join(dir, name);
   writeFileSync(
@@ -999,10 +1276,16 @@ function laneDispatchingProbe(
       "#!/usr/bin/env bash",
       `at=${JSON.stringify(at)}`,
       `pidfile=${JSON.stringify(pidFile)}`,
+      `procroot=${JSON.stringify(procRoot)}`,
       'if [[ ! -d "$at" ]]; then',
       `  git -C ${JSON.stringify(repo)} worktree add -q "$at" ${JSON.stringify(branch)} >/dev/null 2>&1`,
       '  ( cd "$at" && exec sleep 300 ) >/dev/null 2>&1 &',
       '  printf %s "$!" > "$pidfile"',
+      // The lane enters the fixture's scoped view of /proc at the instant it is
+      // dispatched, exactly as a new lane enters the real /proc: the sweep is
+      // already running and its census is already taken. The link points AT the
+      // kernel's own entry, so what the sweep reads next is the real process.
+      '  ln -sfn "/proc/$(cat "$pidfile")" "$procroot/$(cat "$pidfile")"',
       '  target="$(cd "$at" && pwd -P)"',
       "  for _ in $(seq 1 500); do",
       '    if [[ "$(readlink "/proc/$(cat "$pidfile")/cwd" 2>/dev/null)" == "$target" ]]; then break; fi',
@@ -1049,13 +1332,24 @@ test("branches: a lane dispatched while the sweep is running keeps its branch, c
   const { dir, repo } = buildMidSweepFixture();
   const victimWorktree = join(dir, "zzz-victim-wt");
   const pidFile = join(dir, "probe.pid");
-  const probe = laneDispatchingProbe(dir, "dispatch.sh", repo, "zzz-victim", victimWorktree, pidFile);
+  const procRoot = scopedProcRoot(dir);
+  const probe = laneDispatchingProbe(dir, "dispatch.sh", repo, "zzz-victim", victimWorktree, pidFile, procRoot);
 
   // --with-worktrees is here only because --liveness-cmd is the one hook the
   // `branches` sweep runs mid-loop; it opens the window deterministically. The
   // code under test -- delete_local_branch -- is reached identically by the
   // installed cron argv, which is how the reviewer reproduced this by timing.
-  const apply = run(["branches", "--repo", repo, "--with-worktrees", "--apply", "--liveness-cmd", probe]);
+  const apply = run([
+    "branches",
+    "--repo",
+    repo,
+    "--with-worktrees",
+    "--apply",
+    "--liveness-cmd",
+    probe,
+    "--proc-root",
+    procRoot,
+  ]);
   adoptProbeLane(pidFile);
 
   expect(apply.status).toBe(0);
@@ -1224,9 +1518,27 @@ test("remote-branches: a lane dispatched while the sweep is running keeps its re
   sh(`git worktree add -q ${JSON.stringify(trigger)} aaa-trigger`, repo);
   const victimWorktree = join(dir, "ag-merged-remote-wt");
   const pidFile = join(dir, "probe.pid");
-  const probe = laneDispatchingProbe(dir, "dispatch.sh", repo, "ag-merged-remote", victimWorktree, pidFile);
+  const procRoot = scopedProcRoot(dir);
+  const probe = laneDispatchingProbe(
+    dir,
+    "dispatch.sh",
+    repo,
+    "ag-merged-remote",
+    victimWorktree,
+    pidFile,
+    procRoot,
+  );
 
-  const apply = run(["remote-branches", "--repo", repo, "--apply", "--liveness-cmd", probe]);
+  const apply = run([
+    "remote-branches",
+    "--repo",
+    repo,
+    "--apply",
+    "--liveness-cmd",
+    probe,
+    "--proc-root",
+    procRoot,
+  ]);
   adoptProbeLane(pidFile);
 
   expect(apply.status).toBe(0);

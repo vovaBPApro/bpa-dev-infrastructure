@@ -31,6 +31,33 @@ Before an operation, check its capability against the declared mode. A denied
 or unknown mode or capability emits exactly `NO-GO capability=<name>` and stops
 cleanly. It must never stall waiting for interactive recovery.
 
+## The verify's own capability: `host-state`
+
+A lane's `verify:` command carries a capability too — what it needs from the
+machine it runs on. A verify that reads the running installation's files,
+configured paths, ambient environment or permissive umask is green where it was
+written and red everywhere else, and the cost lands on whoever runs it next.
+
+- **The default is hermetic**, and it is enforced rather than requested: the
+  lane-exit gate re-runs the declared `verify:` in a clean clone with the
+  environment scrubbed, `umask 077`, and the host's home and config directories
+  masked. A verify that only passes outside that world has an undeclared
+  dependency on this host.
+- **Declare it in the terminal report** when the dependency is legitimate:
+  `bare-world: capability=<name> reason=<why>`, one line, both parts required.
+  `host-state` covers reading the installation's own files and configuration;
+  `network`, `docker` and `service-ops` keep the meanings the table above gives
+  them. A reason is mandatory because the declaration is a claim someone will
+  have to re-read when the verify breaks on another machine.
+- **A declaration accepts the failure; it never hides it.** The delta is still
+  reported, so a lane that declared out of habit is visible as one whose verify
+  is doing something it need not do.
+- **Absence of a declaration is a named refusal**, not a silent red: the lane
+  exit reports `NO-GO capability=host-state` together with the environmental
+  delta it could diagnose — the host path that was read, the scrubbed variable,
+  the permission or mode. An unknown capability name is refused the same way,
+  per the fail-closed rule above.
+
 ## Declared command bounds
 
 A lane's harness may kill a foreground command at a bound the lane did not

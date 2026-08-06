@@ -15,12 +15,20 @@
 # moment a lane declares itself done, so a bad report is caught while the
 # lane (or the orchestrator right after it) can still fix it.
 #
-# This is a thin, honest forwarding wrapper: it does not weaken or duplicate
-# completion-guard.ts's checks, it only resolves a trusted `bun` the same way
-# gate/land.sh does (land_resolve_bun) and forwards the exit code unchanged:
+# It adds one check of its own on top of that forwarding (gate/bare-world.ts,
+# V3-5.42): a coder report that passes the guard has had its `verify:` run once
+# in this host's world, so the same command is run once more with the ambient
+# host state subtracted. A verify that only passes here is a landing failure
+# already, discovered ten minutes and one meteorite rebuild earlier.
+#
+# Otherwise this is a thin, honest forwarding wrapper: it does not weaken or
+# duplicate completion-guard.ts's checks, it only resolves a trusted `bun` the
+# same way gate/land.sh does (land_resolve_bun) and forwards the exit code
+# unchanged:
 #   0  report is contract-valid and clean               -> lane may end
 #   2  contract violation (missing report, wrong shape,  -> lane is NOT done;
-#      commit != branch tip, ...)                           fix and rerun
+#      commit != branch tip, a verify that needs undeclared    fix and rerun
+#      ambient host state, ...)
 #   3  report is contract-valid and honestly NO-GO       -> lane may end
 #      (a legitimate parked row per Hard Rule 13, not a violation)
 #
@@ -111,6 +119,28 @@ fi
 
 "$BUN_BIN" "$script_dir/completion-guard.ts" --report "$report" --repo "$repo" --branch "$branch" --role "$role"
 status=$?
+
+# The bare-world verify (V3-5.42). completion-guard.ts has just run the report's
+# declared `verify:` and it passed -- in THIS host's world. Three lanes on
+# 2026-08-06 (V3-5.34, V3-5.39, V3-5.25) proved that green here and green in a
+# clean clone are different claims, and each learned the difference a full
+# landing attempt later. So the same command runs once more with the ambient
+# host state subtracted; gate/bare-world.ts documents exactly what is removed
+# and what a clean clone legitimately keeps.
+#
+# Gated on exit 0 only: exit 3 is an honest NO-GO, whose verify completion-guard
+# never ran, so there is no passing baseline for a bare run to contradict.
+# Reviewer lanes have no `verify:` at all and are skipped by the same condition.
+# Unpiped, $? read directly -- a bounded or killed run behind a pipe reports the
+# pipe's last status, which is how a kill becomes a pass.
+if [ "$status" -eq 0 ] && [ "$role" = "coder" ]; then
+  "$BUN_BIN" "$script_dir/bare-world.ts" --report "$report" --repo "$repo"
+  bare_status=$?
+  if [ "$bare_status" -ne 0 ]; then
+    echo "LANE-EXIT verdict=blocked role=$role step=bare-world report=$report branch=$branch exit=$bare_status" >&2
+    exit 2
+  fi
+fi
 
 if [ "$status" -eq 0 ] || [ "$status" -eq 3 ]; then
   echo "LANE-EXIT verdict=clear role=$role report=$report branch=$branch exit=$status"

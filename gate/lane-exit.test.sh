@@ -400,4 +400,56 @@ rm -rf "$fixture_root"/repo "$fixture_root"/*.md "$fixture_root"/*.out
 echo "PASS: the escape hatch is a reviewable diff, not an rm"
 echo
 
+# --- the bare-world verify is WIRED, not merely present (V3-5.42) ------------
+#
+# gate/bare-world.test.sh owns what the harness decides. These two scenarios own
+# the only thing that file cannot prove: that gate/lane-exit.sh actually calls
+# it, that a refusal becomes `verdict=blocked step=bare-world` with exit 2, and
+# that the honest lane above still exits 0 through the added step.
+
+echo "== scenario: a verify that needs ambient host state blocks the lane exit =="
+make_repo
+# The verify reads $HOME, which the bare world replaces with an empty directory.
+# In the lane's own world the marker is there, so gate/completion-guard.ts runs
+# the same command and finds it green -- which is precisely the escape this step
+# exists to close.
+marker="${HOME:-/root}/.lane-exit-bare-world-$$"
+printf 'present\n' > "$marker"
+tip=$(git -C "$repo" rev-parse HEAD)
+report="$fixture_root/needs-host.report.md"
+{
+  printf 'commit: %s fixture\n' "$tip"
+  printf 'verify: test -f "$HOME/%s"\n' "$(basename "$marker")"
+  printf 'result: clean\n'
+  printf 'secret-scan: clean\n'
+  printf 'remaining: none\n'
+} > "$report"
+out="$fixture_root/needs-host.out"
+"$lane_exit" --report "$report" --repo "$repo" --branch ag-lane-1 --role coder >"$out" 2>&1
+status=$?
+rm -f "$marker"
+cat "$out"
+assert [ "$status" -eq 2 ]
+assert_output_has "$out" "LANE-EXIT verdict=blocked"
+assert_output_has "$out" "step=bare-world"
+assert_output_has "$out" "BARE-WORLD verdict=refused"
+rm -rf "$fixture_root"/repo "$fixture_root"/*.md "$fixture_root"/*.out
+echo "PASS: the bare-world verify is reached from lane exit and blocks on a host-state read"
+echo
+
+echo "== scenario: a reviewer lane is not put through a verify it never declared =="
+make_repo
+subject=$(git -C "$repo" rev-parse HEAD)
+record="$fixture_root/rev-bare.report.md"
+review_record ACCEPT "$subject" "$record"
+out="$fixture_root/rev-bare.out"
+"$lane_exit" --report "$record" --repo "$repo" --branch ag-lane-1 --role reviewer >"$out" 2>&1
+status=$?
+cat "$out"
+assert [ "$status" -eq 0 ]
+assert_not grep -q "BARE-WORLD" "$out"
+rm -rf "$fixture_root"/repo "$fixture_root"/*.md "$fixture_root"/*.out
+echo "PASS: the bare world is a coder-contract step and leaves reviewers alone"
+echo
+
 echo "ALL PASS"

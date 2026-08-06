@@ -8,3 +8,4 @@ orchestrator/fleet/lane-payload-systemd.test.sh	systemd-eats-braced-expansions	s
 orchestrator/fleet/lane-payload-systemd.test.sh	role-across-systemd	systemd-transient-unit
 orchestrator/fleet/lane-payload-systemd.test.sh	pipestatus-across-systemd	systemd-transient-unit
 orchestrator/fleet/lane-unit-namespace.test.sh	long-lived-probe-invisible-to-census	systemd-transient-unit
+gate/bare-world.test.sh	masked-host-path	mount-namespace

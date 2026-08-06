@@ -190,12 +190,17 @@
 //      greened D and A on a correctly pinned checkout with one `git config`
 //      write -- `url.<local path>.insteadOf`, and `core.sshCommand` by a second
 //      route -- both in the SHARED config any lane worktree can write, neither
-//      visible in `remote.origin.url`. So the anchor read now leaves the
-//      repository entirely: no `-C`, a scratch cwd asserted to be inside no
-//      worktree, global/system config neutralized, and the inherited
-//      GIT_DIR/GIT_CONFIG* overrides deleted (anchorReadEnv, anchorReadCwd).
-//      Forging a green costs push access to origin -- the landing gate's own
-//      boundary -- rather than one `printf` or one config line.
+//      visible in `remote.origin.url`. The sixth recut moved the read out of
+//      the repository and asserted its scratch cwd was inside no worktree; the
+//      seventh review defeated that assertion with a BARE repository, which has
+//      no worktree to find and a config git honors anyway. So the read no
+//      longer asserts anything about its surroundings: it runs against a bare
+//      repository this command creates in a private directory and names
+//      explicitly through GIT_DIR, with global/system config neutralized and
+//      the inherited GIT_DIR/GIT_CONFIG*/GIT_TEMPLATE_DIR overrides deleted
+//      (anchorReadEnv, anchorReadContext). Forging a green costs push access to
+//      origin -- the landing gate's own boundary -- rather than one `printf`,
+//      one config line, or one directory planted in /tmp.
 //
 // The writer half of rule 2 IS NOT LANDED. meteorite/run.sh writes no anchor
 // today (the artifact writer itself lives unlanded on ag-v3-5.36), so the
@@ -930,17 +935,36 @@ function anchorOrigin(tree: Tree): { url: string } | { reason: string } {
 // Enumerating the redirect knobs (url.*.insteadOf, url.*.pushInsteadOf,
 // core.sshCommand, proxies, protocol settings, and whatever the next git adds)
 // would be one release behind forever. This command therefore does not
-// enumerate them: it LEAVES THE CONTEXT THAT SUPPLIES THEM. Every remote read
+// enumerate them: it OWNS THE CONTEXT THAT SUPPLIES THEM. Every remote read
 // runs
 //
-//   - with no `-C <repo>`, from a scratch directory ASSERTED to be inside no
-//     git worktree, so there is no local or common-dir config to consult;
+//   - with GIT_DIR pointing EXPLICITLY at a bare repository this command
+//     created moments earlier in a private directory, so git performs no
+//     discovery at all and no ancestor of the cwd is consulted;
 //   - with GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM at /dev/null (and
 //     GIT_CONFIG_NOSYSTEM set), so ~/.gitconfig and /etc/gitconfig supply
 //     nothing either;
-//   - with every inherited GIT_CONFIG*, GIT_DIR, GIT_WORK_TREE and sibling
-//     override deleted from the child environment, so a rewrite that can no
-//     longer arrive from a file cannot arrive from the environment instead.
+//   - with every inherited GIT_CONFIG*, GIT_DIR, GIT_WORK_TREE, GIT_TEMPLATE_DIR
+//     and sibling override deleted from the child environment, so a rewrite
+//     that can no longer arrive from a file cannot arrive from the environment
+//     instead.
+//
+// The seventh review is why this is OWNERSHIP and not an assertion. The sixth
+// recut asked the same question the other way round -- it ran from a scratch
+// cwd it ASSERTED was outside a repository, using `git rev-parse
+// --show-toplevel` and reading a non-zero exit as "outside". A BARE repository
+// has no worktree, so that probe exits 128 inside one and the assertion waved
+// it through, while `git ls-remote` walking up from the same cwd still found
+// that bare repo as its GIT_DIR and still honored its `insteadOf`. A bare repo
+// planted at an ancestor of the scratch directory -- default /tmp, world
+// -writable, `git init --bare` plus one config line, no credential -- revived
+// the whole forgery. Sharpening the probe (--absolute-git-dir, a ceiling, both)
+// would have been the fifth consecutive repair of the same shape: a check that
+// must recognize every context git might find. Asserting absence means
+// enumerating what could be present. Creating the context ends the question --
+// there is nothing to recognize, because the answer was supplied rather than
+// discovered, and nothing on this host can pre-plant configuration into a
+// directory that did not exist a moment ago.
 //
 // What is deliberately NOT scrubbed: PATH and the ssh transport variables
 // (GIT_SSH_COMMAND, GIT_SSH). Whoever sets this command's environment already
@@ -967,15 +991,25 @@ const GIT_CONTEXT_ENV = [
   "GIT_NAMESPACE",
   "GIT_CEILING_DIRECTORIES",
   "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+  // `git init` copies a template directory into the new repository BEFORE it
+  // writes core.*, and a template may contain a `config` file -- so a template
+  // is a config injection route into a repository this command creates. The
+  // explicit `--template` below already overrides this variable; deleting it
+  // too means the override is belt and braces rather than the only guard.
+  "GIT_TEMPLATE_DIR",
 ];
 
-export function anchorReadEnv(): Record<string, string> {
+// The environment every git call in the anchor read runs with. With `gitDir`
+// it also names the owned repository EXPLICITLY, which is what stops discovery
+// from walking up out of the scratch directory and finding somebody else's.
+export function anchorReadEnv(gitDir?: string): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(process.env)) {
     if (value === undefined) continue;
     if (GIT_CONTEXT_ENV.includes(name) || name.startsWith("GIT_CONFIG")) continue;
     env[name] = value;
   }
+  if (gitDir !== undefined) env.GIT_DIR = gitDir;
   env.GIT_CONFIG_GLOBAL = "/dev/null";
   env.GIT_CONFIG_SYSTEM = "/dev/null";
   env.GIT_CONFIG_NOSYSTEM = "1";
@@ -985,25 +1019,56 @@ export function anchorReadEnv(): Record<string, string> {
   return env;
 }
 
-// The directory a remote read runs in. git discovers configuration by walking
-// UP from its cwd, so "outside every repository" is a claim about the whole
-// ancestor chain -- asserted here, never assumed, because a temp root that
-// happens to sit inside a checkout would restore exactly the surface this
-// function exists to leave. A failed assertion is a refusal, not a fallback.
-function anchorReadCwd(): { dir: string } | { reason: string } {
+// The git context a remote read runs in: BUILT HERE, never found. git resolves
+// configuration from the repository it is operating on, so the honest way to
+// control which config answers is to hand git a repository whose config this
+// process wrote -- not to search the filesystem for reasons to believe no other
+// repository is nearby. Three properties carry the whole argument, and each one
+// is enforced rather than described:
+//
+//   1. The directory is created, not adopted. mkdtemp(2) makes a fresh 0700
+//      directory or fails, and the two directories inside it are created with
+//      mkdir(2), which fails with EEXIST rather than accepting whatever is
+//      already at that path. So nothing that existed before this call is used
+//      -- which is the property a planted bare repository would need.
+//   2. The repository is bare, empty and template-free. `--template` names an
+//      empty directory this process just created, because `git init` copies a
+//      template into the new repository and a template `config` file survives
+//      that copy. The resulting config is core.* and nothing else.
+//   3. GIT_DIR names it explicitly on every read. With GIT_DIR set git does no
+//      discovery, so no ancestor of the cwd is examined, whether it is a
+//      worktree, a bare repository, or anything a future git learns to find.
+//
+// Any failure here is a refusal, never a fallback to an ambient context.
+export function anchorReadContext(): { dir: string; gitDir: string } | { reason: string } {
   let dir: string;
   try {
     dir = mkdtempSync(join(tmpdir(), "cutover-anchor-read-"));
   } catch {
-    return { reason: `there is no temporary directory to ask origin from, and this command does not ask from inside a repository` };
+    return { reason: `there is no temporary directory to build an owned git context in, and this command does not ask origin through a git context it did not create` };
   }
-  const discovered = Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], { cwd: dir, env: anchorReadEnv(), timeout: GIT_TIMEOUT_MS });
-  if (discovered.exitCode === 0) {
-    const top = discovered.stdout.toString().trim() || "an enclosing checkout";
+  const gitDir = join(dir, "owned.git");
+  const template = join(dir, "empty-template");
+  try {
+    // Exclusive creation, not "ensure it exists": no `recursive`, so an
+    // existing path is an error rather than something to reuse.
+    mkdirSync(gitDir);
+    mkdirSync(template);
+  } catch (err) {
     rmSync(dir, { recursive: true, force: true });
-    return { reason: `the scratch directory a remote read would run from (${dir}) is inside the git worktree ${top}, whose configuration can rewrite the URL being asked, so the anchor was not asked for at all` };
+    return { reason: `the git context this command owns (${gitDir}) could not be created exclusively (${err instanceof Error ? err.message : String(err)}), so the anchor was not asked for at all` };
   }
-  return { dir };
+  const init = Bun.spawnSync(["git", "init", "--bare", `--template=${template}`, gitDir], {
+    cwd: dir,
+    env: anchorReadEnv(),
+    timeout: GIT_TIMEOUT_MS,
+  });
+  if (init.exitCode !== 0) {
+    const detail = init.signalCode ?? init.stderr.toString().trim().split("\n")[0] ?? "no detail";
+    rmSync(dir, { recursive: true, force: true });
+    return { reason: `the git context this command owns (${gitDir}) could not be initialized (git init exited ${init.exitCode}: ${detail}), so the anchor was not asked for at all` };
+  }
+  return { dir, gitDir };
 }
 
 // Does ORIGIN carry the anchor for exactly these bytes? Both namespaces must
@@ -1017,16 +1082,16 @@ function proofAnchor(tree: Tree, artifact: RebuildArtifact): { ref: string } | {
   const leaf = `${artifact.treeSha}/${artifact.digest}`;
   const ref = `${PROOF_ANCHOR_NAMESPACE}/${leaf}`;
   const mirror = `${PROOF_ANCHOR_MIRROR_NAMESPACE}/${leaf}`;
-  // Asked from outside every repository, with ambient configuration
-  // neutralized: the URL was verified four ways above, and this is what stops
-  // the config under it from deciding where that URL leads.
-  const scratch = anchorReadCwd();
+  // Asked through a git context this command created, with ambient
+  // configuration neutralized: the URL was verified four ways above, and this
+  // is what stops the config under it from deciding where that URL leads.
+  const scratch = anchorReadContext();
   if ("reason" in scratch) return { reason: scratch.reason };
   let listed: ReturnType<typeof Bun.spawnSync>;
   try {
     listed = Bun.spawnSync(["git", "ls-remote", "--refs", origin.url, ref, mirror], {
       cwd: scratch.dir,
-      env: anchorReadEnv(),
+      env: anchorReadEnv(scratch.gitDir),
       timeout: GIT_TIMEOUT_MS,
     });
   } finally {

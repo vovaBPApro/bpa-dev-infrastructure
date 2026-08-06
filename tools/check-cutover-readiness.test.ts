@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   GATES,
+  anchorReadContext,
   anchorReadEnv,
   checkReadiness,
   definitionDrift,
@@ -1235,10 +1236,11 @@ test("the anchor read's environment carries no repository or configuration overr
       GIT_CONFIG_COUNT: "1",
       GIT_CONFIG_KEY_0: "url./tmp/forged.git.insteadOf",
       GIT_CONFIG_VALUE_0: "git@github.com:vovaBPApro/bpa-dev-infrastructure.git",
+      GIT_TEMPLATE_DIR: "/tmp/hostile-template",
     },
     () => anchorReadEnv(),
   );
-  for (const name of ["GIT_DIR", "GIT_WORK_TREE", "GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"]) {
+  for (const name of ["GIT_DIR", "GIT_WORK_TREE", "GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_TEMPLATE_DIR"]) {
     expect(env[name]).toBeUndefined();
   }
   expect(env.GIT_CONFIG_GLOBAL).toBe("/dev/null");
@@ -1250,17 +1252,132 @@ test("the anchor read's environment carries no repository or configuration overr
   expect(env.PATH).toBe(process.env.PATH);
 });
 
-// "Outside the repository" is a claim about the whole ancestor chain, because
-// git walks UP from its cwd. It is asserted, and a failed assertion refuses.
-test("a scratch directory inside a git worktree is refused rather than read from", () => {
+// --- round 7's finding: the context the read runs IN ------------------------
+//
+// The sixth recut moved the read out of the repository and ASSERTED its scratch
+// cwd was inside no worktree, using `git rev-parse --show-toplevel`. The seventh
+// review defeated the assertion with a BARE repository: it has no worktree, so
+// the probe exits non-zero and the guard reads that as "outside", while
+// `ls-remote` walking up from the same cwd still finds it as GIT_DIR and still
+// honors its `insteadOf`. The read no longer asserts anything about its
+// surroundings -- it names a repository this command created, through GIT_DIR --
+// so these lock the property that ancestors are not consulted at all.
+
+// Run a plain `git` in a chosen directory with the ambient config neutralized
+// exactly as the anchor read neutralizes it, to establish what a read that
+// DISCOVERED its context would have been answered.
+function gitFrom(cwd: string, ...args: string[]) {
+  return Bun.spawnSync(["git", ...args], {
+    cwd,
+    env: { ...process.env, GIT_DIR: undefined, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } as Record<string, string>,
+  });
+}
+
+// The reviewer's construction, whole: a bare repository at the temp root the
+// scratch directory is created under. Planting it is `git init --bare` plus one
+// config line against a world-writable directory -- no credential, no push to
+// origin, nothing tracked changed.
+test("round 7's forgery: a bare repository at the scratch directory's temp root redirects nothing", () => {
+  withFixture({ anchor: null }, (repo) => {
+    publishAnchor(repo, { remote: bareRepo(forgedOriginFor(repo)) });
+    const tmproot = bareRepo(`${repo}-tmproot.git`);
+    Bun.spawnSync(["git", "--git-dir", tmproot, "config", `url.${forgedOriginFor(repo)}.insteadOf`, originFor(repo)]);
+    const scratch = join(tmproot, "scratch");
+    mkdirSync(scratch, { recursive: true });
+    // The redirect is real: a read that DISCOVERS its context from this cwd is
+    // answered by the forged repository while being asked for origin.
+    expect(gitFrom(scratch, "ls-remote", "--refs", originFor(repo)).stdout.toString()).toContain("refs/bpa-meteorite-proofs/");
+    // And it is invisible to the probe round 7 relied on: a bare repository has
+    // no worktree, so `--show-toplevel` fails and "outside a repository" was
+    // exactly the wrong conclusion to draw from that failure.
+    expect(gitFrom(scratch, "rev-parse", "--show-toplevel").exitCode).not.toBe(0);
+    expect(gitFrom(scratch, "rev-parse", "--absolute-git-dir").stdout.toString().trim()).toBe(tmproot);
+    const measured = withEnv({ TMPDIR: scratch }, () => measure(repo));
+    expect(measured.verdicts.D).toBe("UNKNOWN");
+    expect(measured.verdicts.A).toBe("UNKNOWN");
+    expect(measured.evidence("D")).toContain("0 of the 2 anchor refs");
+    expect(measured.exitCode).toBe(1);
+    expect(porcelain(repo)).toBe("");
+  });
+});
+
+// The same shape one level less exotic: a non-bare enclosing worktree, which is
+// what the sixth recut's probe DID catch. It is re-locked here against the owned
+// context, and the property is stronger than "refused" -- the redirect fails
+// because the enclosing repository is never consulted.
+test("a hostile enclosing worktree at the temp root redirects nothing either", () => {
+  withFixture({ anchor: null }, (repo) => {
+    publishAnchor(repo, { remote: bareRepo(forgedOriginFor(repo)) });
+    const enclosing = `${repo}-tmproot`;
+    const scratch = join(enclosing, "tmp");
+    mkdirSync(scratch, { recursive: true });
+    git(enclosing, "init", "-q");
+    git(enclosing, "config", `url.${forgedOriginFor(repo)}.insteadOf`, originFor(repo));
+    expect(gitFrom(scratch, "ls-remote", "--refs", originFor(repo)).stdout.toString()).toContain("refs/bpa-meteorite-proofs/");
+    const measured = withEnv({ TMPDIR: scratch }, () => measure(repo));
+    expect(measured.verdicts.D).toBe("UNKNOWN");
+    expect(measured.evidence("D")).toContain("0 of the 2 anchor refs");
+  });
+});
+
+// The other half of owning the context rather than asserting about it: an
+// enclosing repository is not a reason to REFUSE either. A genuinely anchored
+// artifact is still read, from a temp root inside a checkout, because what that
+// checkout says was never consulted in the first place.
+test("an enclosing repository does not stop the genuine anchor from being read", () => {
   withFixture({}, (repo) => {
     const enclosing = `${repo}-tmproot`;
-    mkdirSync(join(enclosing, "tmp"), { recursive: true });
+    const scratch = join(enclosing, "tmp");
+    mkdirSync(scratch, { recursive: true });
     git(enclosing, "init", "-q");
-    const measured = withEnv({ TMPDIR: join(enclosing, "tmp") }, () => measure(repo));
-    expect(measured.verdicts.D).toBe("UNKNOWN");
-    expect(measured.evidence("D")).toContain("is inside the git worktree");
+    const measured = withEnv({ TMPDIR: scratch }, () => measure(repo));
+    expect(measured.verdicts.D).toBe("PASS");
+    expect(measured.verdicts.A).toBe("PASS");
+    expect(measured.exitCode).toBe(0);
   });
+});
+
+// `git init` copies a template directory into the new repository BEFORE writing
+// core.*, and a template `config` file survives that copy -- so a template is a
+// config injection route into the very context this command creates. The
+// explicit `--template` at an empty owned directory overrides GIT_TEMPLATE_DIR.
+test("a hostile git template cannot plant configuration in the owned git context", () => {
+  withFixture({ anchor: null }, (repo) => {
+    publishAnchor(repo, { remote: bareRepo(forgedOriginFor(repo)) });
+    const template = `${repo}-template`;
+    mkdirSync(template, { recursive: true });
+    writeFileSync(join(template, "config"), `[url "${forgedOriginFor(repo)}"]\n\tinsteadOf = ${originFor(repo)}\n`);
+    // The template really does inject into a repository initialized with it.
+    const planted = `${repo}-planted.git`;
+    Bun.spawnSync(["git", "init", "--bare", "-q", `--template=${template}`, planted]);
+    expect(readFileSync(join(planted, "config"), "utf8")).toContain("insteadOf");
+    const measured = withEnv({ GIT_TEMPLATE_DIR: template }, () => measure(repo));
+    expect(measured.verdicts.D).toBe("UNKNOWN");
+    expect(measured.evidence("D")).toContain("0 of the 2 anchor refs");
+  });
+});
+
+// The context itself: created rather than adopted, empty of everything that
+// could rewrite a URL, and named explicitly so no discovery runs.
+test("the anchor read's git context is created by this command, bare, and free of rewrites", () => {
+  const built = anchorReadContext();
+  expect("gitDir" in built).toBe(true);
+  const context = built as { dir: string; gitDir: string };
+  try {
+    expect(context.gitDir.startsWith(context.dir)).toBe(true);
+    // Exclusive creation: the path is this process's own, so creating it again
+    // is an error rather than an adoption of what is already there.
+    expect(() => mkdirSync(context.gitDir)).toThrow();
+    const listed = Bun.spawnSync(["git", "--git-dir", context.gitDir, "config", "--local", "--list"]).stdout.toString();
+    expect(listed).toContain("core.bare=true");
+    expect(listed).not.toContain("insteadof");
+    expect(listed).not.toContain("sshcommand");
+    // Named explicitly, which is what makes discovery -- and therefore every
+    // ancestor of the cwd, bare or not -- irrelevant.
+    expect(anchorReadEnv(context.gitDir).GIT_DIR).toBe(context.gitDir);
+  } finally {
+    rmSync(context.dir, { recursive: true, force: true });
+  }
 });
 
 // A URL only the checkout could resolve names nothing where the question is

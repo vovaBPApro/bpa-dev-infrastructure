@@ -1,6 +1,107 @@
 #!/usr/bin/env bash
 # Shared fail-closed checks for individual and batch landing.
 
+# The committer identity the landing gate uses for the commits IT authors: the
+# merge commit and the review-round amend on top of it. Until this existed the
+# gate authored those commits with whatever identity the checkout happened to
+# carry, and a FRESH CLONE carries none -- `gate/land.sh` died at the merge with
+# a bare `fatal: unable to auto-detect email address` after passing every guard,
+# measured landing ag-v3-5.25-r3 from a clone of origin/main on 2026-08-06
+# (workboard V3-5.27). Ambient canonical-checkout state a rebuilt host would not
+# have is exactly what Hard Floor 5 refuses, and the landing path is not exempt
+# from it.
+#
+# PLACEMENT. This value's one home is here, in the gate, and deliberately NOT in
+# instance/params.yaml. Routing question 1 asks whether it is an instance fact:
+# it is not. It names the MECHANISM -- these commits are authored by the landing
+# gate, not by the operator, not by a person, and not by a host -- so it survives
+# a stranger's completely different product unchanged (question 2) and belongs to
+# L1 generic infrastructure. Parameterizing it per installation would put the
+# committer of a merge commit back under host-specific control, which is the
+# defect this closes rather than a feature. Every clone of this gate therefore
+# produces byte-identical committer metadata for a merge, which is a property the
+# meteorite test wants and a per-host value would destroy.
+#
+# `.invalid` is the RFC 2606 reserved TLD: guaranteed never to resolve, which is
+# correct for a machine identity that must never receive mail.
+LAND_GATE_IDENTITY_NAME='BPA Landing Gate'
+LAND_GATE_IDENTITY_EMAIL='landing-gate@bpa.invalid'
+
+# Run git with the gate's own identity forced through the environment rather
+# than through `-c user.name=`. The environment form is used because it outranks
+# every config layer AND the `-c` overrides themselves: GIT_COMMITTER_* wins over
+# user.* no matter where user.* was set, so a host that DOES carry an identity
+# cannot silently reintroduce the variance either. The identity is supplied
+# unconditionally, never conditionally on the host lacking one -- a fallback that
+# only fires when the host is bare would leave two different behaviours to test
+# and only one of them exercised here.
+land_gate_git() {
+  GIT_AUTHOR_NAME="$LAND_GATE_IDENTITY_NAME" GIT_AUTHOR_EMAIL="$LAND_GATE_IDENTITY_EMAIL" \
+  GIT_COMMITTER_NAME="$LAND_GATE_IDENTITY_NAME" GIT_COMMITTER_EMAIL="$LAND_GATE_IDENTITY_EMAIL" \
+  git "$@"
+}
+
+# Preconditions that a landing needs and that a FRESH CLONE does not have.
+#
+# The contract this enforces is narrow and decidable: every such precondition is
+# either MATERIALIZED by the gate itself, or refused here by NAME with what is
+# missing listed. What must never happen again is the third outcome that both
+# V3-5.27 gaps produced -- a mid-flight `fatal:` from a git plumbing command,
+# hundreds of lines into a landing, translated by an outer handler into a generic
+# blocker (`rebuild-proof-failed`) that names neither the missing precondition
+# nor the hand-step that would supply it.
+#
+# Checks, in the order a bare clone hits them:
+#
+#   gate-identity      the tracked identity above is well-formed
+#   commit-capability  this gate can actually create a commit object in $repo
+#                      with no host identity configured -- proven, not assumed,
+#                      because assuming it is what died at the merge step
+#   meteorite-donor    every ref the rebuild proof dereferences resolves (the
+#                      prover materializes what it can; absence still fails)
+#
+# The donor question is asked OF THE PROVER rather than answered here, so the
+# set of refs the meteorite dereferences keeps exactly one home -- the script
+# that dereferences them. A prover that does not advertise `--preflight` (the
+# minimal fixture and product-repo stubs) is reported not-applicable rather than
+# guessed at.
+land_preflight_preconditions() {
+  local repo="$1" prover donor_output probe_tree probe_commit
+  local -a missing=()
+  if [ -z "$LAND_GATE_IDENTITY_NAME" ] || [[ "$LAND_GATE_IDENTITY_EMAIL" != *@?*.?* ]] ||
+     printf '%s\n%s' "$LAND_GATE_IDENTITY_NAME" "$LAND_GATE_IDENTITY_EMAIL" | LC_ALL=C grep -q '[^ -~]'; then
+    missing+=(gate-identity)
+  else
+    # A real commit object, built from the checked-out tree and pointed at by no
+    # ref: it proves the capability without moving anything. It is unreachable
+    # the moment this function returns and is collected by the next `git gc`.
+    probe_tree=$(git -C "$repo" rev-parse --verify --quiet 'HEAD^{tree}') || probe_tree=""
+    if [ -z "$probe_tree" ] ||
+       ! probe_commit=$(land_gate_git -C "$repo" commit-tree -m 'landing-gate identity probe' "$probe_tree" 2>/dev/null) ||
+       [ -z "$probe_commit" ]; then
+      missing+=(commit-capability)
+    fi
+  fi
+
+  prover="$repo/meteorite/prove-candidate.sh"
+  if [ -r "$prover" ] && grep -Fq -- '--preflight' "$prover"; then
+    if donor_output=$(bash "$prover" --preflight 2>&1); then
+      printf '%s\n' "$donor_output"
+    else
+      printf '%s\n' "$donor_output" >&2
+      missing+=(meteorite-donor)
+    fi
+  else
+    echo "LAND preflight meteorite-donor=not-applicable detail=prover-does-not-advertise-preflight"
+  fi
+
+  if [ "${#missing[@]}" -ne 0 ]; then
+    echo "LAND step=preflight status=fail missing=$(IFS=,; printf '%s' "${missing[*]}")" >&2
+    return 1
+  fi
+  echo "LAND preflight identity=gate-provided name=$LAND_GATE_IDENTITY_NAME email=$LAND_GATE_IDENTITY_EMAIL"
+}
+
 # Resolve the canonical changed-range base. Normal landings set
 # LAND_DEFAULT_BRANCH to their integration branch; standalone family scans may
 # set it to a remote ref such as origin/v3. An orphan family whose remote ref is

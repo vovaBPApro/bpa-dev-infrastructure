@@ -338,6 +338,17 @@ if [ -n "$pinned_origin_url" ] && [ "$pinned_origin_url" != "$origin_url" ]; the
 fi
 land_pass freshness
 
+# Clone-fragile preconditions, checked once and named (V3-5.27). Placed here
+# rather than at the top because the donor tier that MATERIALIZES a missing ref
+# fetches from origin, and origin must be the single verified URL first -- the
+# freshness block above is what establishes that. Placed before every mutation
+# below for the reason the row exists: a precondition that a rebuilt host lacks
+# must cost a named refusal at the start, not a `fatal:` at the merge.
+if ! land_preflight_preconditions "$repo"; then
+  land_fail preflight 2
+fi
+land_pass preflight
+
 # Bind caller input to tracked authority on the target branch. Instance repos
 # register a stable branch root for each work item; disposable -rN recuts map
 # back to that root. Minimal fixture/product repos without the registry retain
@@ -644,7 +655,7 @@ else
   fi
 fi
 
-if ! git -C "$repo" merge --no-ff "$branch" -m "[ORCH] land lane $branch" -m "secret-scan: clean"; then
+if ! land_gate_git -C "$repo" merge --no-ff "$branch" -m "[ORCH] land lane $branch" -m "secret-scan: clean"; then
   git -C "$repo" merge --abort >/dev/null 2>&1 || true
   land_fail merge
 fi
@@ -660,7 +671,7 @@ fi
 mkdir -p "$(dirname "$review_round_history")" || land_fail review-rounds 2
 if ! install -m 600 "$review_round_state" "$review_round_history" ||
    ! git -C "$repo" add -- "$review_round_history_rel" ||
-   ! git -C "$repo" commit --amend --no-edit >/dev/null; then
+   ! land_gate_git -C "$repo" commit --amend --no-edit >/dev/null; then
   land_fail review-rounds 2
 fi
 merge_sha=$(git -C "$repo" rev-parse HEAD)

@@ -259,10 +259,22 @@ describe("check.ts [hard-floor]", () => {
     expect(result.stdout).toContain("no floor-line");
   });
 
-  test("SKIP when the repo has no CLAUDE.md", () => {
+  // Was "SKIP when the repo has no CLAUDE.md" until V3-5.44. A SKIP reads as
+  // "not applicable here", and nothing declares that a repo has no root agent
+  // contract — the floor simply went uncompared. The outcome is UNKNOWN, and
+  // under --strict it blocks.
+  test("UNKNOWN when the repo has no CLAUDE.md, and --strict blocks on it", () => {
     const repo = repoWith({ "r.md": doc({ ...VALID, id: "r-rule" }) });
     runIndex(repo);
-    const result = runCheck(repo);
-    expect(result.stdout).toContain("SKIP CLAUDE.md [hard-floor]");
+    const lenient = runCheck(repo);
+    expect(lenient.stdout).toContain("UNKNOWN CLAUDE.md [hard-floor]");
+    expect(lenient.stdout).toContain("the Hard Floor cannot be compared");
+    expect(lenient.stdout).not.toContain("SKIP CLAUDE.md [hard-floor]");
+    // Visible without --strict, and non-blocking there.
+    expect(lenient.status).toBe(0);
+
+    const strict = runCheck(repo, ["--strict"]);
+    expect(strict.stdout).toContain("UNKNOWN CLAUDE.md [hard-floor]");
+    expect(strict.status).toBe(1);
   });
 });

@@ -72,10 +72,24 @@ describe("parseHrFields", () => {
 });
 
 describe("checkInboxAging", () => {
-  test("missing inbox.jsonl is a single SKIP", () => {
+  // Until V3-5.44 this SKIPped, on a `manual` capture mode inferred from an
+  // absent params.yaml — a declaration nobody made. An installation that cannot
+  // say whether an inbox is expected has not established that a missing one is
+  // fine, so the outcome is UNKNOWN.
+  test("missing inbox.jsonl with no declared capture mode is UNKNOWN", () => {
     const findings = checkInboxAging(repo(), NOW, true);
     expect(findings).toHaveLength(1);
+    expect(findings[0].level).toBe("UNKNOWN");
+    expect(findings[0].detail).toContain("capture.mode");
+  });
+
+  test("missing inbox.jsonl under a DECLARED capture.mode=manual is a SKIP", () => {
+    const root = repo();
+    writeFileSync(join(root, "instance", "params.yaml"), "capture:\n  mode: manual\n");
+    const findings = checkInboxAging(root, NOW, true);
+    expect(findings).toHaveLength(1);
     expect(findings[0].level).toBe("SKIP");
+    expect(findings[0].detail).toContain("capture.mode=manual");
   });
 
   test("an aged, untriaged, unrouted row FAILs under strict, WARNs otherwise", () => {

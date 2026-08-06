@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -47,6 +48,10 @@ type Options = {
   // Overrides merged into the green `meteorite-result/v1` artifact; `null`
   // writes no artifact at all, which is this repository's state today.
   artifact?: Record<string, unknown> | null;
+  // How the artifact's trust anchor is published to the fixture's origin.
+  // `null` publishes none, which is the state of the real writer today and the
+  // state every forgery leaves behind.
+  anchor?: AnchorOptions | null;
 };
 
 // A runnable meteorite with the given stage lines. Nothing in this file's gates
@@ -189,9 +194,45 @@ function headSha(repo: string): string {
   return git(repo, "rev-parse", "HEAD").stdout.toString().trim();
 }
 
-// Outside the repository, exactly as meteorite/run.sh writes it.
+// Outside the repository, exactly as meteorite/run.sh writes it: the fixture's
+// own XDG state root plus the tracked path constant. There is no override to
+// hand over any more, so `${repo}-state` IS the address, and pointing
+// XDG_STATE_HOME at it is how a fixture's artifact becomes findable.
+function stateHomeFor(repo: string): string {
+  return `${repo}-state`;
+}
+
 function artifactPathFor(repo: string): string {
-  return join(`${repo}-state`, "bpa-dev-infrastructure/evidence/meteorite-latest.json");
+  return join(stateHomeFor(repo), "bpa-dev-infrastructure/evidence/meteorite-latest.json");
+}
+
+// The fixture's origin: a local bare repository, so the anchor lookup is a real
+// `git ls-remote` against a real remote and the suite still touches no network.
+function originFor(repo: string): string {
+  return `${repo}-origin.git`;
+}
+
+function sha256Of(path: string): string {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+// The writer half of the trust anchor, in the shape specified for
+// meteorite/run.sh: the artifact's sha256 is the ref name, the commit the run
+// proved is the ref target, and a mirror in a second namespace is pushed with
+// it. `options` exists so a test can publish a DEFECTIVE anchor -- one side
+// only, a digest for different bytes, a ref pointing elsewhere -- because each
+// of those is a way a forged artifact could try to look anchored.
+type AnchorOptions = { digest?: string; target?: string; mirror?: boolean; namespaceOnly?: boolean };
+
+function publishAnchor(repo: string, options: AnchorOptions = {}): void {
+  const sha = headSha(repo);
+  const digest = options.digest ?? sha256Of(artifactPathFor(repo));
+  const leaf = `${sha}/${digest}`;
+  const target = options.target ?? sha;
+  const refs = [`${target}:refs/bpa-meteorite-proofs/${leaf}`];
+  if (options.mirror !== false) refs.push(`${target}:refs/bpa-meteorite-proof-mirrors/${leaf}`);
+  const pushed = git(repo, "push", "-q", "--force", originFor(repo), ...refs);
+  if (pushed.exitCode !== 0) throw new Error(`fixture anchor push failed: ${pushed.stderr.toString()}`);
 }
 
 function writeArtifact(repo: string, overrides: Record<string, unknown> = {}): void {
@@ -240,19 +281,37 @@ function fixture(options: Options = {}): string {
   git(repo, "init", "-q");
   git(repo, "add", "-A");
   git(repo, "commit", "-qm", "fixture");
-  if (options.artifact !== null) writeArtifact(repo, options.artifact ?? {});
+  Bun.spawnSync(["git", "init", "--bare", "-q", originFor(repo)]);
+  git(repo, "remote", "add", "origin", originFor(repo));
+  if (options.artifact !== null) {
+    writeArtifact(repo, options.artifact ?? {});
+    if (options.anchor !== null) publishAnchor(repo, options.anchor ?? {});
+  }
   for (const [path, content] of Object.entries(options.untracked ?? {})) write(repo, path, content);
   return repo;
 }
 
+// A tracked file added after the fixture's first commit moves HEAD, so the
+// artifact and its anchor are both re-made: an artifact about the previous SHA
+// would be stale, and an anchor for the previous bytes would not vouch for it.
+function commitAndReanchor(repo: string): void {
+  git(repo, "add", "-A");
+  git(repo, "commit", "-qm", "extra");
+  writeArtifact(repo);
+  publishAnchor(repo);
+}
+
 function discard(repo: string): void {
   rmSync(repo, { recursive: true, force: true });
-  rmSync(`${repo}-state`, { recursive: true, force: true });
+  rmSync(stateHomeFor(repo), { recursive: true, force: true });
+  rmSync(originFor(repo), { recursive: true, force: true });
 }
 
 // One measurement per call: the executed probes make a measurement cost real
 // time, so tests read verdicts and evidence from a single run. The artifact's
-// address is handed over exactly as an operator's environment hands it over.
+// address is NOT handed over -- there is no way to hand it over any more. The
+// fixture's XDG state root is set exactly as a host sets it, and the reader
+// resolves the rest itself.
 type Measured = {
   verdicts: Record<string, string>;
   evidence: (gate: string) => string;
@@ -260,20 +319,24 @@ type Measured = {
   lines: string[];
 };
 
-function withArtifactAddress<T>(path: string | undefined, body: () => T): T {
-  const previous = process.env.METEORITE_ARTIFACT;
-  if (path === undefined) delete process.env.METEORITE_ARTIFACT;
-  else process.env.METEORITE_ARTIFACT = path;
+function withEnv<T>(values: Record<string, string | undefined>, body: () => T): T {
+  const previous = Object.fromEntries(Object.keys(values).map((name) => [name, process.env[name]]));
+  const apply = (entries: Record<string, string | undefined>) => {
+    for (const [name, value] of Object.entries(entries)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  };
+  apply(values);
   try {
     return body();
   } finally {
-    if (previous === undefined) delete process.env.METEORITE_ARTIFACT;
-    else process.env.METEORITE_ARTIFACT = previous;
+    apply(previous);
   }
 }
 
 function measure(repo: string): Measured {
-  return withArtifactAddress(artifactPathFor(repo), () => {
+  return withEnv({ XDG_STATE_HOME: stateHomeFor(repo), METEORITE_ARTIFACT: undefined }, () => {
     const results = checkReadiness(repo);
     const { lines, exitCode } = report(results);
     return {
@@ -325,14 +388,14 @@ test("an empty gate list is not cutover-ready", () => {
 test("the command itself carries the exit code, not just the library", () => {
   withFixture({}, (repo) => {
     const green = Bun.spawnSync([process.execPath, join(REAL_REPO, "tools/check-cutover-readiness.ts"), "--repo", repo], {
-      env: { ...process.env, METEORITE_ARTIFACT: artifactPathFor(repo) },
+      env: { ...process.env, XDG_STATE_HOME: stateHomeFor(repo) },
     });
     expect(green.exitCode).toBe(0);
     expect(green.stdout.toString()).toContain("CUTOVER-READINESS A PASS");
   });
   withFixture({ omit: ["instance/host-state.tsv"] }, (repo) => {
     const red = Bun.spawnSync([process.execPath, join(REAL_REPO, "tools/check-cutover-readiness.ts"), "--repo", repo], {
-      env: { ...process.env, METEORITE_ARTIFACT: artifactPathFor(repo) },
+      env: { ...process.env, XDG_STATE_HOME: stateHomeFor(repo) },
     });
     expect(red.exitCode).toBe(1);
     expect(red.stdout.toString()).toContain("CUTOVER-READINESS F FAIL");
@@ -582,11 +645,47 @@ test("C does not read a block comment about the mission CLI as a call", () => {
   ].join("\n");
   withFixture({}, (repo) => {
     write(repo, "core/notes.ts", prose);
-    git(repo, "add", "-A");
-    git(repo, "commit", "-qm", "prose");
-    writeArtifact(repo);
+    commitAndReanchor(repo);
     expect(missionCliCalls(repo).filter((call) => call.file === "core/notes.ts")).toEqual([]);
     expect(measure(repo).verdicts.C).toBe("PASS");
+  });
+});
+
+// ...and the skip that does it is a LINE-PREFIX rule, not a `/*`...`*/` scan.
+// Round 5 tracked block comments across lines, and because `/*` is an ordinary
+// shell glob it skipped every line after one — 5,106 lines of tracked runtime
+// source and 6 of this repository's 12 mission-cli calls, including the
+// orchestrator's own `mission_cli status` and `reap`. Both idioms below are
+// this repository's own shell, and both used to turn an observed violation into
+// a green. The call after them must be SEEN.
+for (const [name, glob] of [
+  ["a for-loop glob", 'for f in "$dir"/*.in; do :; done'],
+  ["a pattern match", '[[ "$p" == /* ]] || exit 1'],
+] as const) {
+  test(`C sees a mission-cli call that follows ${name} — a glob is not a block comment`, () => {
+    withFixture({}, (repo) => {
+      write(repo, "hygiene/probe.sh", `#!/usr/bin/env bash\n${glob}\nmission_cli bogusgroup bogusaction\n`);
+      commitAndReanchor(repo);
+      expect(missionCliCalls(repo).filter((call) => call.file === "hygiene/probe.sh")).toEqual([
+        { file: "hygiene/probe.sh", line: 3, group: "bogusgroup", action: "bogusaction" },
+      ]);
+      const measured = measure(repo);
+      expect(measured.verdicts.C).toBe("FAIL");
+      expect(measured.evidence("C")).toContain("hygiene/probe.sh:3 bogusgroup bogusaction");
+    });
+  });
+}
+
+// The count is part of the claim: "N calls, all in core/mission-cli-actions.ts"
+// is read as coverage, so a scan that silently stops reading files must not be
+// able to say it. Every tracked runtime source file is scanned to its end.
+test("C scans every line of every tracked runtime source file", () => {
+  withFixture({}, (repo) => {
+    const before = missionCliCalls(repo).length;
+    write(repo, "hygiene/probe.sh", `#!/usr/bin/env bash\nfor f in "$dir"/*.in; do :; done\nmission_cli lane claim\nmission_cli status\n`);
+    commitAndReanchor(repo);
+    expect(missionCliCalls(repo).length).toBe(before + 2);
+    expect(measure(repo).evidence("C")).toContain(`${before + 2} mission-cli call(s)`);
   });
 });
 
@@ -790,6 +889,41 @@ test("A FAILs when the clone stage itself did not pass", () => {
   });
 });
 
+// Gate D's sentence is only about starting the orchestrator, and gate A judges
+// the clone. But "executed against this SHA" reads as a claim about the whole
+// run, so when the run's provenance stage is not a clean PASS, D says which part
+// of the run it did not read rather than letting the reader assume it did.
+test("D names the clone stage it did not read when that stage is not a clean PASS", () => {
+  withFixture({
+    artifact: {
+      stages: [{ name: "clone", verdict: "NO-GO" }, { name: "orchestrator-live", verdict: "PASS" }],
+    },
+  }, (repo) => {
+    const measured = measure(repo);
+    expect(measured.verdicts.D).toBe("PASS");
+    expect(measured.verdicts.A).toBe("FAIL");
+    expect(measured.evidence("D")).toContain("this gate reads only the orchestrator-live stage");
+    expect(measured.evidence("D")).toContain("clone stage recorded NO-GO, which gate A judges");
+  });
+});
+
+test("D says so when the run recorded no clone stage at all", () => {
+  withFixture({
+    artifact: { stages: GREEN_STAGES.filter((stage) => stage.name !== "clone") },
+  }, (repo) => {
+    const measured = measure(repo);
+    expect(measured.verdicts.D).toBe("PASS");
+    expect(measured.evidence("D")).toContain("clone stage is absent, which gate A judges");
+  });
+});
+
+// A clean run says nothing extra: the caveat is a caveat, not boilerplate.
+test("D adds no clone caveat when the run's clone stage passed", () => {
+  withFixture({}, (repo) => {
+    expect(measure(repo).evidence("D")).not.toContain("this gate reads only");
+  });
+});
+
 // `finished: true` with `result: NO-GO` is a complete run that refused. Gate A
 // is about the whole rebuild, so a refusal anywhere in it is a FAIL even when
 // the orchestrator did come up.
@@ -825,20 +959,155 @@ test("D is UNKNOWN when the tracked tree carries no meteorite at all", () => {
   });
 });
 
-// The artifact's address is the runner's own: METEORITE_ARTIFACT first, then
-// $XDG_STATE_HOME. A reader that resolved it differently would be reading a
-// file nothing writes.
+// The artifact's address is the runner's own -- $XDG_STATE_HOME (or
+// $HOME/.local/state) plus the tracked path constant -- and nothing else
+// participates in resolving it. A reader that resolved it differently would be
+// reading a file nothing writes.
 test("the artifact is found at the address meteorite/run.sh writes it to", () => {
   withFixture({}, (repo) => {
-    const previousState = process.env.XDG_STATE_HOME;
-    process.env.XDG_STATE_HOME = `${repo}-state`;
+    const results = withEnv({ XDG_STATE_HOME: stateHomeFor(repo) }, () => checkReadiness(repo));
+    expect(results.find((entry) => entry.id === "D")!.verdict).toBe("PASS");
+  });
+});
+
+// --- round 5's forgery, and the two rules that refuse it --------------------
+//
+// The fifth review greened gate D and gate A's clean-clone half on this
+// repository with one `printf` of 300 bytes at an address it chose, and showed
+// that the same file plus two stubs produced `cutover-ready=yes`, exit 0. Both
+// halves of that are locked here: the caller no longer chooses the address, and
+// a file at the right address is not evidence until origin vouches for it.
+
+test("round 5's forgery, part 1: METEORITE_ARTIFACT no longer selects the proof", () => {
+  withFixture({}, (repo) => {
+    // The strongest form of the attack: the bytes are the fixture's own real,
+    // anchored artifact. Everything about the file is right except that a
+    // caller, not the runner's own address, chose it.
+    const chosen = join(`${repo}-chosen`, "meteorite-latest.json");
+    mkdirSync(join(chosen, ".."), { recursive: true });
+    writeFileSync(chosen, readFileSync(artifactPathFor(repo)));
+    const empty = `${repo}-empty-state`;
+    mkdirSync(empty, { recursive: true });
     try {
-      const results = withArtifactAddress(undefined, () => checkReadiness(repo));
-      expect(results.find((entry) => entry.id === "D")!.verdict).toBe("PASS");
+      const results = withEnv({ XDG_STATE_HOME: empty, METEORITE_ARTIFACT: chosen }, () => checkReadiness(repo));
+      const gateD = results.find((entry) => entry.id === "D")!;
+      expect(gateD.verdict).toBe("UNKNOWN");
+      expect(gateD.evidence).toContain("does not exist");
+      expect(gateD.evidence).not.toContain(chosen);
     } finally {
-      if (previousState === undefined) delete process.env.XDG_STATE_HOME;
-      else process.env.XDG_STATE_HOME = previousState;
+      rmSync(`${repo}-chosen`, { recursive: true, force: true });
+      rmSync(empty, { recursive: true, force: true });
     }
+  });
+});
+
+test("round 5's forgery, part 2: the reviewer's own printf at the resolved address is unanchored, not evidence", () => {
+  withFixture({ anchor: null }, (repo) => {
+    const sha = headSha(repo);
+    // Verbatim from ag-v3-5.32-r5.review.md finding 1, with this fixture's SHA.
+    writeFileSync(
+      artifactPathFor(repo),
+      `{"schema":"meteorite-result/v1","finished":true,"result":"clean","blocker":"none",`
+      + `"requested_sha":"${sha}","tree_sha":"${sha}",`
+      + `"stages":[{"name":"clone","verdict":"PASS"},{"name":"orchestrator-live","verdict":"PASS"}],`
+      + `"liveness":{"proven":true,"pid":"1"},"finished_at":"2026-08-06T23:00:00Z"}`,
+    );
+    const measured = measure(repo);
+    expect(measured.verdicts.D).toBe("UNKNOWN");
+    expect(measured.verdicts.A).toBe("UNKNOWN");
+    expect(measured.evidence("D")).toContain("present but unanchored, which is not evidence");
+    expect(measured.evidence("A")).toContain("present but unanchored, which is not evidence");
+    // The whole point of the finding: exit 0 was reachable. It is not.
+    expect(measured.exitCode).toBe(1);
+    expect(measured.lines.at(-1)).toContain("cutover-ready=no");
+  });
+});
+
+// A ref name that is the digest of the bytes is what makes an anchor about ONE
+// file. Semantically identical JSON with one byte added is a different artifact.
+test("an anchor published for other bytes does not vouch for this artifact", () => {
+  withFixture({}, (repo) => {
+    writeFileSync(artifactPathFor(repo), `${readFileSync(artifactPathFor(repo), "utf8")}\n`);
+    const measured = measure(repo);
+    expect(measured.verdicts.D).toBe("UNKNOWN");
+    expect(measured.evidence("D")).toContain("0 of the 2 anchor refs");
+  });
+});
+
+// The mirror namespace exists so a record forged or suppressed in only one
+// namespace is detectable — gate/land.sh's rule, applied to this artifact.
+test("an anchor present in only one namespace is not an anchor", () => {
+  withFixture({ anchor: { mirror: false } }, (repo) => {
+    const measured = measure(repo);
+    expect(measured.verdicts.D).toBe("UNKNOWN");
+    expect(measured.evidence("D")).toContain("refs/bpa-meteorite-proof-mirrors/");
+    expect(measured.evidence("D")).toContain("1 of the 2 anchor refs");
+  });
+});
+
+test("an anchor pointing at a commit other than the proved one is refused", () => {
+  withFixture({ anchor: null }, (repo) => {
+    const decoy = git(repo, "commit-tree", `${headSha(repo)}^{tree}`, "-m", "decoy").stdout.toString().trim();
+    publishAnchor(repo, { target: decoy });
+    const measured = measure(repo);
+    expect(measured.verdicts.D).toBe("UNKNOWN");
+    expect(measured.evidence("D")).toContain("not at the commit the artifact claims to have proved");
+  });
+});
+
+// gate/land.sh's reason, verbatim in behaviour: local refs — refs/remotes/origin/*
+// included — are writable by any lane sharing this Git directory, so only the
+// answer ORIGIN gives at the one verified URL is evidence.
+test("a locally written ref is not an anchor — only origin's answer is", () => {
+  withFixture({ anchor: null }, (repo) => {
+    const leaf = `${headSha(repo)}/${sha256Of(artifactPathFor(repo))}`;
+    git(repo, "update-ref", `refs/bpa-meteorite-proofs/${leaf}`, headSha(repo));
+    git(repo, "update-ref", `refs/bpa-meteorite-proof-mirrors/${leaf}`, headSha(repo));
+    const measured = measure(repo);
+    expect(measured.verdicts.D).toBe("UNKNOWN");
+    expect(measured.evidence("D")).toContain("0 of the 2 anchor refs");
+  });
+});
+
+test("with no origin at all there is nothing to ask, so the artifact stays unanchored", () => {
+  withFixture({}, (repo) => {
+    git(repo, "remote", "remove", "origin");
+    const measured = measure(repo);
+    expect(measured.verdicts.D).toBe("UNKNOWN");
+    expect(measured.evidence("D")).toContain("no single origin");
+  });
+});
+
+// The pin has one home (instance/params.yaml: repos.git_remote) and gate/land.sh
+// reads it from the tracked tree. A checkout pointed somewhere else may not
+// launder an anchor through a remote the repository does not vouch for.
+test("an origin that contradicts the tracked pin anchors nothing", () => {
+  withFixture({}, (repo) => {
+    write(repo, "instance/params.yaml", "repos:\n  git_remote: git@example.invalid:pinned.git\n");
+    commitAndReanchor(repo);
+    const measured = measure(repo);
+    expect(measured.verdicts.D).toBe("UNKNOWN");
+    expect(measured.evidence("D")).toContain("repos.git_remote");
+  });
+});
+
+test("a pushurl splits publish from read, so it is refused", () => {
+  withFixture({}, (repo) => {
+    git(repo, "config", "remote.origin.pushurl", originFor(repo));
+    const measured = measure(repo);
+    expect(measured.verdicts.D).toBe("UNKNOWN");
+    expect(measured.evidence("D")).toContain("pushurl");
+  });
+});
+
+// An anchored PASS must be re-derivable by the next reader without trusting this
+// host: one `git ls-remote origin <ref>`, and the ref is printed.
+test("the evidence names the anchor ref a reviewer can re-derive the verdict from", () => {
+  withFixture({}, (repo) => {
+    const measured = measure(repo);
+    expect(measured.verdicts.D).toBe("PASS");
+    expect(measured.evidence("D")).toContain(`anchored at refs/bpa-meteorite-proofs/${headSha(repo)}/`);
+    expect(measured.evidence("D")).toContain(sha256Of(artifactPathFor(repo)));
   });
 });
 
@@ -1304,6 +1573,23 @@ test("a Whisper mention only in the meteorite is UNKNOWN — real evidence this 
   });
 });
 
+// FAIL beats UNKNOWN, here as everywhere else in this file. The bootstrap arm
+// names the installer and, executed to completion, never runs it — an observed
+// violation. The meteorite arm can now never be anything but UNKNOWN, and it
+// used to swallow that FAIL, so the gate reported "unmeasured" about a thing it
+// had measured.
+test("an observed bootstrap violation surfaces even beside an unmeasurable meteorite arm", () => {
+  const withWhisper = meteoriteWith(CLONE_STAGE, '"whisper|bash tools/whisper/install.sh"');
+  withFixture({ bootstrap: 'echo "see tools/whisper/install.sh for details"\n', meteorite: withWhisper }, (repo) => {
+    const measured = measure(repo);
+    expect(measured.verdicts.G).toBe("FAIL");
+    expect(measured.evidence("G")).toContain("executed to completion in the rehearsal world, never ran it");
+    // The unmeasurable sibling is still reported; it is simply not the verdict.
+    expect(measured.evidence("G")).toContain("no longer executes meteorite/run.sh in any form");
+    expect(measured.exitCode).toBe(1);
+  });
+});
+
 test("an env-prefix stage naming the installer greens nothing either", () => {
   const meteorite = meteoriteWith(CLONE_STAGE, '"whisper|WHISPER_INSTALLER=tools/whisper/install.sh bash bootstrap/check-unit-drift.sh"');
   withFixture({ bootstrap: "echo nothing here\n", meteorite }, (repo) => {
@@ -1358,20 +1644,36 @@ test("the checker is registered in both mechanism inventories", () => {
 
 // The honest baseline, and requirement 4 of the recut: the rebuild artifact
 // does not exist on main, so gate D and gate A's clean-clone half are UNKNOWN.
-// Pointed at an address that carries nothing, this is hermetic — it measures
-// the repository, not whatever this host happens to have run.
+// The state root is pointed at an empty directory, which makes this hermetic in
+// both directions — it measures the repository and not whatever this host
+// happens to have run, and with no artifact to anchor the reader asks origin
+// nothing, so the suite reaches no network.
+function emptyStateHome(): string {
+  const root = mkdtempSync(join(tmpdir(), "cutover-readiness-no-artifact-"));
+  return root;
+}
+
 test("with no rebuild artifact for this SHA, the real repository's gate D is UNKNOWN", () => {
-  const nowhere = join(tmpdir(), "cutover-readiness-no-artifact", "meteorite-latest.json");
-  const results = withArtifactAddress(nowhere, () => checkReadiness(REAL_REPO));
-  const gateD = results.find((entry) => entry.id === "D")!;
-  expect(gateD.verdict).toBe("UNKNOWN");
-  expect(gateD.evidence).toContain("no rehearsal artifact at this SHA");
+  const state = emptyStateHome();
+  try {
+    const results = withEnv({ XDG_STATE_HOME: state, METEORITE_ARTIFACT: undefined }, () => checkReadiness(REAL_REPO));
+    const gateD = results.find((entry) => entry.id === "D")!;
+    expect(gateD.verdict).toBe("UNKNOWN");
+    expect(gateD.evidence).toContain("no rehearsal artifact at this SHA");
+  } finally {
+    rmSync(state, { recursive: true, force: true });
+  }
 });
 
 test("the real repository is measured, and is not cutover-ready yet", () => {
-  const results = checkReadiness(REAL_REPO);
-  expect(results.map((entry) => entry.id)).toEqual(["A", "B", "C", "D", "E", "F", "G"]);
-  expect(results.every((entry) => entry.evidence.trim().length > 0)).toBe(true);
-  expect(results.some((entry) => entry.verdict !== "PASS")).toBe(true);
-  expect(report(results).exitCode).toBe(1);
+  const state = emptyStateHome();
+  try {
+    const results = withEnv({ XDG_STATE_HOME: state, METEORITE_ARTIFACT: undefined }, () => checkReadiness(REAL_REPO));
+    expect(results.map((entry) => entry.id)).toEqual(["A", "B", "C", "D", "E", "F", "G"]);
+    expect(results.every((entry) => entry.evidence.trim().length > 0)).toBe(true);
+    expect(results.some((entry) => entry.verdict !== "PASS")).toBe(true);
+    expect(report(results).exitCode).toBe(1);
+  } finally {
+    rmSync(state, { recursive: true, force: true });
+  }
 });

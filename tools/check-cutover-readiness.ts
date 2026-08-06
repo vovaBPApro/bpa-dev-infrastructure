@@ -63,7 +63,8 @@
 //
 // Concretely, per gate:
 //
-//   D, and A's clean-clone half   READ from the run's own artifact.
+//   D, and A's clean-clone half   READ from the run's own artifact, and only
+//                                 once origin vouches for it.
 //                                 meteorite/run.sh writes a
 //                                 `meteorite-result/v1` JSON artifact on every
 //                                 run -- outside any checkout, replaced
@@ -77,11 +78,14 @@
 //                                   absent, unreadable, or recording a tree SHA
 //                                   that is not this tree's HEAD  -> UNKNOWN
 //                                   ("no rehearsal artifact at this SHA");
+//                                   present but not anchored on origin ->
+//                                   UNKNOWN ("an artifact is present but
+//                                   unanchored, which is not evidence");
 //                                   finished:false, or the live stage failed or
 //                                   is absent from the stage list  -> FAIL, in
 //                                   the artifact's own words;
-//                                   a finished run whose live stage PASSed at
-//                                   this SHA                        -> PASS.
+//                                   a finished, anchored run whose live stage
+//                                   PASSed at this SHA               -> PASS.
 //                                 No text of meteorite/run.sh is read by either
 //                                 gate: not its stage array, not its clone line,
 //                                 not a mention of anything. A stage list is a
@@ -144,21 +148,60 @@
 // willing to run. Nothing is executed from a tree that names no wiring, which
 // is why measuring an unfamiliar repository stays inert unless it opted in.
 //
+// ---------------------------------------------------------------------------
+// The artifact's trust anchor: origin, not this host
+//
 // The rebuild artifact D and A read is host state by design (an artifact inside
 // the tree would make the next landing refuse a dirty worktree), and it is the
 // one input to this command that the measured tree cannot produce: nothing from
-// that tree runs, so a tree can no longer certify itself. The forgery ceiling
-// the fourth review recorded -- a rehearsed script executing the sentinel's own
-// line to write a journal entry it never earned -- is therefore discharged for
-// these two gates by construction rather than by a sharper check. What remains
-// is a different and narrower boundary, stated plainly rather than implied:
-// whoever can write the evidence path can write a green artifact, exactly as
-// whoever can write the tree can write a green checker. Both sit inside "point
-// this command at a tree, and a host, you would be willing to run"; neither is
-// reachable by drift, which is what the four rejected rounds were about. Gate
-// G's bootstrap arm still greens on a journal and still carries the original
-// ceiling, unchanged and unclosed: the cheap tell named there ($0 must be the
-// sentinel's own path) remains available and unused.
+// that tree runs, so a tree can no longer certify itself. The fourth review's
+// forgery ceiling -- a rehearsed script executing the sentinel's own line -- is
+// therefore dead for these two gates by construction.
+//
+// The fifth review found what replaced it, and it was worse: one `printf` of
+// 300 bytes, at an address the CALLER chose (a METEORITE_ARTIFACT environment
+// override), greened gate D on this repository, and kept greening it on every
+// later run. A local file nobody signed is not evidence, and a caller who picks
+// which file is the proof is choosing the verdict. Two rules from elsewhere in
+// this repository answer both halves, and both are applied here:
+//
+//   1. The caller does not select the trust root. gate/review-rounds.ts dies
+//      with `caller-controlled-trust-root-refused` when a caller supplies
+//      --allowed-signers or --decision-file. So METEORITE_ARTIFACT is DELETED,
+//      not sharpened: the artifact's address is the XDG host-state root the
+//      runner itself resolves (meteorite/run.sh:17) plus a path constant tracked
+//      here, and nothing else. A caller wanting a different artifact read is a
+//      caller forging evidence.
+//   2. Durable, origin-visible refs are what a local file cannot forge.
+//      gate/land.sh publishes each reviewed attempt into refs/bpa-review-
+//      attempts/* with a mirror in a second namespace, asks ORIGIN for them at
+//      the single configured URL (local refs, refs/remotes/origin/* included,
+//      are writable by any lane sharing this Git directory), and cross-checks
+//      the two namespaces. The rebuild proof's artifact is anchored the same
+//      way: the run publishes the artifact's sha256 as a ref NAME under
+//      refs/bpa-meteorite-proofs/<tree_sha>/<sha256>, mirrored under
+//      refs/bpa-meteorite-proof-mirrors/<tree_sha>/<sha256>, both pointing at
+//      the commit the run proved. This command recomputes the digest of the
+//      bytes it read, asks origin for both refs, and requires both to exist and
+//      to point at that same commit. Forging a green now costs push access to
+//      origin -- the landing gate's own boundary -- rather than one `printf`,
+//      and a reviewer can re-derive the whole claim with one command:
+//      `git ls-remote origin refs/bpa-meteorite-proofs/<sha>/<digest>`, which
+//      the evidence string prints.
+//
+// The writer half of rule 2 IS NOT LANDED. meteorite/run.sh writes no anchor
+// today (the artifact writer itself lives unlanded on ag-v3-5.36), so the
+// reader is written against the ref shape specified above and the gate stays
+// honestly UNKNOWN until it exists: an artifact present without its anchor is
+// reported "present but unanchored, which is not evidence", never PASS. That is
+// deliberate -- this command must be correct both before and after the writer
+// lands -- and it means gate D cannot go green by a reader-side change alone.
+//
+// What remains outside this boundary is stated plainly: whoever can push to
+// origin can anchor whatever they wrote, exactly as whoever can push to origin
+// can land a green checker. Gate G's bootstrap arm still greens on a journal and
+// still carries the original ceiling, unchanged and unclosed: the cheap tell
+// named there ($0 must be the sentinel's own path) remains available and unused.
 //
 // The rehearsal world is honest about its limits: a script that needs state
 // this world does not provide aborts, and the gate reports UNKNOWN quoting the
@@ -179,7 +222,7 @@
 // mechanism exists and this command did not run it -- rather than claiming the
 // act was proven.
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   chmodSync,
   copyFileSync,
@@ -218,12 +261,25 @@ const STRANDED_WORK = "checker:stranded-work";
 // The rebuild proof's machine-readable artifact: the interface meteorite/run.sh
 // documents in its own header and writes on every run. Its address is resolved
 // exactly as the runner resolves it, so this reader and that writer cannot
-// disagree about where the artifact is. There is one file, replaced atomically
-// per run, which is what makes "the newest artifact" a path rather than a
-// search: the runner never leaves an older one behind to be picked by mistake.
-const REBUILD_ARTIFACT_ENV = "METEORITE_ARTIFACT";
+// disagree about where the artifact is -- and it is resolved from the runner's
+// XDG host-state root and this tracked constant ALONE. There is deliberately no
+// environment override: an override is a caller choosing which file is the
+// proof, which is the shape gate/review-rounds.ts refuses outright. There is one
+// file, replaced atomically per run, which is what makes "the newest artifact" a
+// path rather than a search: the runner never leaves an older one behind to be
+// picked by mistake.
 const REBUILD_ARTIFACT_RELATIVE = "bpa-dev-infrastructure/evidence/meteorite-latest.json";
 const REBUILD_SCHEMA = "meteorite-result/v1";
+// The artifact's trust anchor, in the shape gate/land.sh uses for reviewed
+// attempts: a durable origin-visible ref plus a mirror in a second namespace, so
+// a record forged or suppressed in only one is detectable. The digest of the
+// artifact's bytes is the ref NAME, so the ref cannot be made to vouch for a
+// file it was not published for; the ref's TARGET is the commit the run proved.
+const PROOF_ANCHOR_NAMESPACE = "refs/bpa-meteorite-proofs";
+const PROOF_ANCHOR_MIRROR_NAMESPACE = "refs/bpa-meteorite-proof-mirrors";
+// Where the origin URL pin lives, read from the tracked tree exactly as
+// gate/land.sh reads it (repos.git_remote).
+const PARAMS = "instance/params.yaml";
 // Stage names from the runner's own `required_stages` contract.
 const CLONE_STAGE = "clone";
 const LIVE_STAGE = "orchestrator-live";
@@ -401,30 +457,31 @@ const MISSION_CLI_CALL = /(?:^|[\s;&|(`"'$])mission[_-]cli(?:\.ts)?\s+([A-Za-z][
 
 export type MissionCliCall = { file: string; line: number; group: string; action?: string };
 
-// A comment is not a call. `#` and `//` lines were always skipped; a `/* ... */`
-// block was not, and prose inside one is exactly where a source file explains
-// its own relationship to the mission CLI. `core/mission-cli-actions.ts` says
-// "It lives in this module and not in mission-cli.ts because mission-cli.ts
-// runs its `main` at import time", and gate C read `because` as an action and
-// FAILed the real repository on a sentence about itself. Skipping a comment can
-// only ever hide a call that was already not a call, which is the same
-// fail-closed direction executableShellLines is used in for gate B.
+// A comment is not a call, and the skip is a LINE-PREFIX rule: `#`, `//`, and
+// `*` (a block comment's continuation lines, as every such comment in this
+// repository is written). `core/mission-cli-actions.ts` says "It lives in this
+// module and not in mission-cli.ts because mission-cli.ts runs its `main` at
+// import time" on a ` * ` line, and gate C read `because` as an action and
+// FAILed the real repository on a sentence about itself. The ` * ` prefix is
+// what fixes that, and it is all that is needed.
+//
+// Tracking `/*` and `*/` ACROSS lines was tried in round 5 and is deleted here,
+// because it made the gate blind rather than accurate. `/*` is a block-comment
+// opener in TypeScript; in shell it is an ordinary glob, and this repository's
+// own shell is full of `for f in "$dir"/*.in` and `[[ "$p" == /* ]]`. Every line
+// after one of those was skipped until some later line happened to contain `*/`,
+// which hid 5,106 lines of tracked runtime source and 6 of the repository's 12
+// mission-cli calls -- including the orchestrator's own `mission_cli status` and
+// `reap` -- while the gate printed a sentence an operator reads as coverage. A
+// scan that hides a call is not the fail-closed direction executableShellLines
+// is used in for gate B; it is the opposite one. The tests below lock both
+// halves: the prose sentence is not a call, and a call after a glob IS one.
 function missionCalls(tree: Tree): MissionCliCall[] {
   const calls: MissionCliCall[] = [];
   for (const file of tree.sources()) {
     const text = tree.read(file);
     if (!text) continue;
-    let inBlockComment = false;
     text.split("\n").forEach((line, index) => {
-      const opens = line.lastIndexOf("/*");
-      const closes = line.lastIndexOf("*/");
-      const wasInBlockComment = inBlockComment;
-      if (inBlockComment) {
-        if (closes >= 0) inBlockComment = false;
-      } else if (opens >= 0 && closes < opens) {
-        inBlockComment = true;
-      }
-      if (wasInBlockComment || inBlockComment) return;
       if (/^\s*(#|\/\/|\*)/.test(line)) return;
       for (const match of line.matchAll(MISSION_CLI_CALL)) {
         calls.push({ file, line: index + 1, group: match[1]!, action: match[2] });
@@ -699,6 +756,13 @@ type RebuildStage = { name: string; verdict: string };
 
 type RebuildArtifact = {
   path: string;
+  // sha256 of the exact bytes read from `path`. This is what origin's anchor ref
+  // is named after, so a green artifact and the ref that vouches for it cannot
+  // be a different file.
+  digest: string;
+  // The anchor ref origin answered with, printed in the evidence so a reviewer
+  // can re-derive the claim. Empty until the anchor has been verified.
+  anchor: string;
   finished: boolean;
   result: string;
   blocker: string;
@@ -712,15 +776,16 @@ type RebuildArtifact = {
 
 type Rebuild = { kind: "unread"; evidence: string } | { kind: "read"; artifact: RebuildArtifact };
 
-// Resolved exactly as meteorite/run.sh resolves it, so the reader and the
-// writer cannot end up looking at different files: the METEORITE_ARTIFACT
-// override first, then $XDG_STATE_HOME, then $HOME/.local/state.
+// Resolved exactly as meteorite/run.sh resolves it, so the reader and the writer
+// cannot end up looking at different files: $XDG_STATE_HOME, then
+// $HOME/.local/state (meteorite/run.sh:17), plus the tracked path constant.
+// That is the whole address. No caller-supplied selector participates -- see the
+// trust-anchor note in the header for why the override that used to sit here is
+// deleted rather than validated.
 function rebuildArtifactPath(): { path: string } | { reason: string } {
-  const override = process.env[REBUILD_ARTIFACT_ENV];
-  if (override) return { path: override };
   const state = process.env.XDG_STATE_HOME || (process.env.HOME ? join(process.env.HOME, ".local/state") : "");
   if (!state) {
-    return { reason: `neither ${REBUILD_ARTIFACT_ENV}, XDG_STATE_HOME nor HOME is set, so the rebuild proof's artifact has no address on this host` };
+    return { reason: `neither XDG_STATE_HOME nor HOME is set, so the rebuild proof's artifact has no address on this host` };
   }
   return { path: join(state, REBUILD_ARTIFACT_RELATIVE) };
 }
@@ -746,8 +811,14 @@ function measuredSha(tree: Tree): { sha: string } | { reason: string } {
 
 function readRebuildArtifact(path: string): RebuildArtifact | { error: string } {
   if (!existsSync(path)) return { error: "does not exist" };
+  // The bytes are hashed BEFORE they are parsed, and the parse reads those same
+  // bytes: the digest origin vouches for is the digest of what was read, not of
+  // a second read that could have changed underneath it.
+  let bytes: Buffer;
+  try { bytes = readFileSync(path); } catch { return { error: "is not readable" }; }
+  const digest = createHash("sha256").update(bytes).digest("hex");
   let parsed: unknown;
-  try { parsed = JSON.parse(readFileSync(path, "utf8")); } catch { return { error: "is not readable JSON" }; }
+  try { parsed = JSON.parse(bytes.toString("utf8")); } catch { return { error: "is not readable JSON" }; }
   if (typeof parsed !== "object" || parsed === null) return { error: "is not a JSON object" };
   const record = parsed as Record<string, unknown>;
   if (record.schema !== REBUILD_SCHEMA) return { error: `carries schema ${JSON.stringify(record.schema) ?? "none"}, not ${REBUILD_SCHEMA}` };
@@ -768,6 +839,8 @@ function readRebuildArtifact(path: string): RebuildArtifact | { error: string } 
     .join(" ");
   return {
     path,
+    digest,
+    anchor: "",
     finished: record.finished,
     result: typeof record.result === "string" ? record.result : "unstated",
     blocker: typeof record.blocker === "string" ? record.blocker : "none stated",
@@ -780,10 +853,75 @@ function readRebuildArtifact(path: string): RebuildArtifact | { error: string } 
   };
 }
 
+// The pinned origin URL, read from the TRACKED instance parameters -- the same
+// one home gate/land.sh reads (repos.git_remote). `null` means this repository
+// tracks no pin (minimal fixtures and product repos), which is not an error.
+function pinnedRemote(tree: Tree): string | null {
+  const text = tree.read(PARAMS);
+  if (text === null) return null;
+  return text.match(/^\s+git_remote:\s*(\S+)/m)?.[1] ?? null;
+}
+
+// The single URL the anchor may be asked of. Everything here is refused rather
+// than worked around, for gate/land.sh's reason: local refs -- including
+// refs/remotes/origin/* -- are writable by any lane sharing this Git directory,
+// so only the answer origin itself gives at one verified URL is evidence.
+function anchorOrigin(tree: Tree): { url: string } | { reason: string } {
+  const configured = Bun.spawnSync(["git", "-C", tree.repo, "config", "--get-all", "remote.origin.url"], { timeout: GIT_TIMEOUT_MS });
+  const urls = configured.stdout.toString().split("\n").map((line) => line.trim()).filter(Boolean);
+  if (urls.length !== 1) {
+    return { reason: `${tree.repo} configures ${urls.length} remote.origin.url value(s), so there is no single origin the anchor could be asked of` };
+  }
+  const pushurls = Bun.spawnSync(["git", "-C", tree.repo, "config", "--get-all", "remote.origin.pushurl"], { timeout: GIT_TIMEOUT_MS });
+  if (pushurls.stdout.toString().trim()) {
+    return { reason: `remote.origin.pushurl is set on ${tree.repo}, so the URL a proof is published to and the URL it is read from need not be the same one` };
+  }
+  const pin = pinnedRemote(tree);
+  if (pin !== null && pin !== urls[0]) {
+    return { reason: `origin is configured as ${urls[0]} but the tracked pin (${PARAMS}: repos.git_remote) is ${pin}, so this checkout is pointed at a remote the repository does not vouch for` };
+  }
+  return { url: urls[0]! };
+}
+
+// Does ORIGIN carry the anchor for exactly these bytes? Both namespaces must
+// hold the ref, and both must point at the commit the artifact claims to have
+// proved. Anything else -- absent, one-sided, pointing elsewhere, unaskable, or
+// killed -- is UNKNOWN, because the absence of an anchor is the absence of
+// evidence and never evidence of a forgery either.
+function proofAnchor(tree: Tree, artifact: RebuildArtifact): { ref: string } | { reason: string } {
+  const origin = anchorOrigin(tree);
+  if ("reason" in origin) return { reason: origin.reason };
+  const leaf = `${artifact.treeSha}/${artifact.digest}`;
+  const ref = `${PROOF_ANCHOR_NAMESPACE}/${leaf}`;
+  const mirror = `${PROOF_ANCHOR_MIRROR_NAMESPACE}/${leaf}`;
+  const listed = Bun.spawnSync(["git", "-C", tree.repo, "ls-remote", "--refs", origin.url, ref, mirror], { timeout: GIT_TIMEOUT_MS });
+  if (listed.signalCode || listed.exitCode === null) {
+    return { reason: `asking ${origin.url} for ${ref} was killed (${listed.signalCode ?? "no exit status"}), so whether origin vouches for this artifact is unmeasured` };
+  }
+  if (listed.exitCode !== 0) {
+    return { reason: `${origin.url} could not be asked for ${ref} (git ls-remote exited ${listed.exitCode}: ${listed.stderr.toString().trim().split("\n")[0] ?? "no detail"})` };
+  }
+  const found = new Map(
+    listed.stdout.toString().split("\n").filter(Boolean)
+      .map((line) => line.split("\t"))
+      .filter((cells) => cells.length >= 2)
+      .map((cells) => [cells[1]!.trim(), cells[0]!.trim()] as const),
+  );
+  const missing = [ref, mirror].filter((name) => !found.has(name));
+  if (missing.length) {
+    return { reason: `${origin.url} carries ${2 - missing.length} of the 2 anchor refs for sha256 ${artifact.digest.slice(0, 16)} (missing ${missing.join(", ")}) — anyone can write a file at that address, so only a run that published its digest to origin has produced evidence` };
+  }
+  const wrong = [ref, mirror].filter((name) => found.get(name) !== artifact.treeSha);
+  if (wrong.length) {
+    return { reason: `${origin.url} carries ${wrong[0]} pointing at ${found.get(wrong[0]!)!.slice(0, 12)}, not at the commit the artifact claims to have proved (${artifact.treeSha.slice(0, 12)})` };
+  }
+  return { ref };
+}
+
 // One read per measurement, shared by D and A's clean-clone half. Every path
-// out of it that is not `read` is UNKNOWN: an absent, unreadable or stale
-// artifact is the absence of evidence, and this gate has never been allowed to
-// spend that as evidence of absence.
+// out of it that is not `read` is UNKNOWN: an absent, unreadable, stale or
+// unanchored artifact is the absence of evidence, and this gate has never been
+// allowed to spend that as evidence of absence.
 function rebuildProof(tree: Tree): Rebuild {
   return once(tree, "rebuild-artifact", (): Rebuild => {
     const measured = measuredSha(tree);
@@ -803,7 +941,17 @@ function rebuildProof(tree: Tree): Rebuild {
         evidence: `no rehearsal artifact at this SHA: ${address.path} records tree_sha ${artifact.treeSha.slice(0, 12)} (finished_at ${artifact.finishedAt}) and HEAD is ${measured.sha.slice(0, 12)} — a rebuild proof vouches for the tree it measured and no other`,
       };
     }
-    return { kind: "read", artifact };
+    // Only now, with an artifact that is about THIS tree, is origin asked
+    // anything. A repository with no artifact reaches no network at all, which
+    // is why today's honest UNKNOWN costs nothing and stays hermetic.
+    const anchored = proofAnchor(tree, artifact);
+    if ("reason" in anchored) {
+      return {
+        kind: "unread",
+        evidence: `an artifact is present but unanchored, which is not evidence: ${address.path} (tree_sha ${artifact.treeSha.slice(0, 12)}, sha256 ${artifact.digest.slice(0, 16)}) — ${anchored.reason}`,
+      };
+    }
+    return { kind: "read", artifact: { ...artifact, anchor: anchored.ref } };
   });
 }
 
@@ -814,7 +962,10 @@ function rebuildProof(tree: Tree): Rebuild {
 type LiveVerdict = { proven: boolean; evidence: string };
 
 function liveStageVerdict(artifact: RebuildArtifact): LiveVerdict {
-  const where = `${artifact.path} (tree_sha ${artifact.treeSha.slice(0, 12)}, finished_at ${artifact.finishedAt})`;
+  // The anchor ref is part of the evidence, not decoration: it is the one string
+  // that lets the next reader re-derive this verdict without trusting this host
+  // (`git ls-remote origin <ref>`).
+  const where = `${artifact.path} (tree_sha ${artifact.treeSha.slice(0, 12)}, finished_at ${artifact.finishedAt}, anchored at ${artifact.anchor})`;
   const inventory = artifact.stages.length
     ? `${artifact.stages.length} executed stage(s): ${artifact.stages.map((stage) => `${stage.name} ${stage.verdict}`).join(", ")}`
     : "no executed stages at all";
@@ -950,7 +1101,15 @@ function judgeD(tree: Tree): GateResult {
   const proof = rebuildProof(tree);
   if (proof.kind === "unread") return result("D", "UNKNOWN", proof.evidence);
   const live = liveStageVerdict(proof.artifact);
-  return result("D", live.proven ? "PASS" : "FAIL", live.evidence);
+  // D's sentence is only about starting the orchestrator, and gate A judges the
+  // clone the run started from. But "executed against this SHA" would otherwise
+  // read as a claim about the whole run, so when the run's provenance stage is
+  // not a clean PASS this gate says which part of it it did not read.
+  const clone = proof.artifact.stages.find((stage) => stage.name === CLONE_STAGE);
+  const caveat = clone?.verdict === "PASS"
+    ? ""
+    : `; this gate reads only the ${LIVE_STAGE} stage — the run's ${CLONE_STAGE} stage ${clone ? `recorded ${clone.verdict}` : "is absent"}, which gate A judges`;
+  return result("D", live.proven ? "PASS" : "FAIL", `${live.evidence}${caveat}`);
 }
 
 // The ledger checker's printed finding grammar -- one line per finding,
@@ -1247,12 +1406,21 @@ function judgeG(tree: Tree): GateResult {
   if (meteoriteMention) {
     arms.push(result("G", "UNKNOWN", `${METEORITE}:${meteoriteMention.line} names ${WHISPER_INSTALLER}, but this command no longer executes ${METEORITE} in any form and its rebuild artifact carries no Whisper evidence — that mention is unmeasured here; the clean-server install path this gate can execute is ${BOOTSTRAP}`));
   }
+  // This gate's arms are DISJUNCTIVE -- either install path bringing Whisper up
+  // satisfies "the runtime models come up on the clean server" -- which is why
+  // worst() is not used here as it is for E's and F's conjunctive halves: it
+  // would let an unmeasurable sibling veto a proven install path. But the file's
+  // ordering rule still applies to the rest: FAIL beats UNKNOWN, because an
+  // observed violation is a stronger claim than an unmeasurable sibling. It used
+  // to be the other way round here, so with the meteorite arm now permanently
+  // UNKNOWN the bootstrap arm's FAIL -- an installer named and, executed to
+  // completion, never run -- could never surface as the gate's verdict.
   const pass = arms.find((arm) => arm.verdict === "PASS");
   if (pass) return pass;
-  if (arms.some((arm) => arm.verdict === "UNKNOWN")) {
-    return result("G", "UNKNOWN", arms.map((arm) => arm.evidence).join("; "));
+  if (arms.some((arm) => arm.verdict === "FAIL")) {
+    return result("G", "FAIL", `${arms.map((arm) => arm.evidence).join("; ")} — a clean server comes up without Whisper`);
   }
-  return result("G", "FAIL", `${arms.map((arm) => arm.evidence).join("; ")} — a clean server comes up without Whisper`);
+  return result("G", "UNKNOWN", arms.map((arm) => arm.evidence).join("; "));
 }
 
 // Verbatim from the synthesis file's "Definition of cutover-ready" bullets. The

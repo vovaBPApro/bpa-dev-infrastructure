@@ -58,6 +58,30 @@ written and red everywhere else, and the cost lands on whoever runs it next.
   the permission or mode. An unknown capability name is refused the same way,
   per the fail-closed rule above.
 
+### A check that could not run has not passed
+
+The environment can be missing what the check itself needs. The masking step
+requires an unprivileged mount namespace and a maskable home directory, and
+without them an absolute path into the installation's config dirs stays
+readable — the exact class the step exists to catch.
+
+- **A degraded run may not clear the step.** It reports the missing capability
+  by name (`NO-GO capability=mount-namespace`, `NO-GO capability=maskable-home`)
+  and blocks exactly as a failed check does. "It ran at reduced fidelity and
+  passed" is a partial result reported as clean, which
+  `verification-and-locks` forbids without qualification. Announcing the
+  reduction in a log nobody consumes is not a mitigation: the announcement has
+  to reach the thing that decides.
+- **The exception is declared, in the same field, and it is the environment
+  that is being declared** — not a preference: `bare-world: capability=mount-namespace
+  reason=<why>`. It buys a clearance at reduced fidelity and nothing else; it
+  accepts no failure, and a capability declared for one gap never covers
+  another. Declare several at once as `capability=<name>,<name>`.
+- **A test affordance may never grant what the environment lacks.** Where a
+  suite forces a capability missing to exercise the degraded path, that may only
+  make the gate stricter: on a host that really has the capability, forcing it
+  missing is refused outright and no declaration is honoured.
+
 ## Declared command bounds
 
 A lane's harness may kill a foreground command at a bound the lane did not

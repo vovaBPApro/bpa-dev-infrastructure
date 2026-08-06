@@ -46,17 +46,36 @@
 // only ever mean "the verify read host state", never "the harness changed the
 // rules".
 //
+// NO CLEARANCE WITHOUT THE SUBTRACTION. The mask is the only one of the four
+// subtractions that catches an absolute path into the operator's config dirs --
+// case 2 above, and the lock at gate/bare-world.test.sh proves it is the mask
+// and not some other subtraction that catches it. So a run that did not mask
+// cannot clear the step: it exits 2 naming the missing capability, exactly as a
+// failed verify does. It does NOT print `fidelity=reduced` and pass, which is
+// what the first round of this row did and what its review rejected -- a
+// harness built to end silent environmental passes must not contain one. The
+// only way past it is a DECLARATION in the terminal report, per
+// instructions/lane-capabilities.md, which is durable and reviewable:
+//
+//     bare-world: capability=mount-namespace reason=<why>   (no usable namespace)
+//     bare-world: capability=maskable-home  reason=<why>    (nothing to mask)
+//
+// A test affordance may not mint that clearance either: when this host DOES
+// have a usable namespace and INFRA_TEST_FORCE_MISSING_CAPABILITIES asks the
+// harness to pretend otherwise, no declaration is honoured -- the refusal is
+// unconditional (see maskingDecision).
+//
 // The residual boundary, stated rather than hidden: the verify runs as the same
-// uid, so a uid-specific behaviour is NOT reproduced, and where a mount
-// namespace is unavailable the masking step degrades to a named
-// `masking=unavailable fidelity=reduced` line instead of silently passing as if
-// it had run.
+// uid, so a uid-specific behaviour is NOT reproduced, and the bare run carries
+// no timeout of its own, so a verify that hangs only here hangs the lane exit
+// (parity with gate/completion-guard.ts's own unbounded run).
 //
 // Exit codes:
 //   0  the verify survived the bare world, or the run does not apply, or the
 //      lane DECLARED the host capability its verify needs
-//   2  refused: the verify needs ambient host state it did not declare, with
-//      the environmental delta named as far as it is diagnosable
+//   2  refused: the verify needs ambient host state it did not declare, or the
+//      world could not perform the host-state subtraction at all, with the
+//      environmental delta or the missing capability named
 
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -83,10 +102,24 @@ const UNMASKABLE = new Set([
   "/run", "/sbin", "/srv", "/sys", "/tmp", "/usr", "/var",
 ]);
 
-// The capability a verify declares when it legitimately needs host state that a
-// clean clone on a clean host does not have. Its contract lives in
-// instructions/lane-capabilities.md; this is the executable half.
-const DECLARABLE_CAPABILITIES = new Set(["host-state", "network", "docker", "service-ops"]);
+// The capabilities a report may declare, and what each declaration BUYS. Its
+// contract lives in instructions/lane-capabilities.md; this is the executable
+// half. The two kinds are not interchangeable and one may never stand in for
+// the other:
+//
+//   failure   the verify legitimately needs host state a clean clone on a clean
+//             host does not have, so a bare-world FAILURE is accepted (and
+//             still named).
+//   fidelity  the environment cannot perform one of the subtractions, so a run
+//             at reduced fidelity may CLEAR. It accepts no failure whatsoever.
+const DECLARABLE_CAPABILITIES = new Map<string, "failure" | "fidelity">([
+  ["host-state", "failure"],
+  ["network", "failure"],
+  ["docker", "failure"],
+  ["service-ops", "failure"],
+  ["mount-namespace", "fidelity"],
+  ["maskable-home", "fidelity"],
+]);
 
 type Options = { report: string; repo: string };
 
@@ -156,17 +189,86 @@ function inside(child: string, parent: string): boolean {
 // tools/shell-test-tier.test.ts and instance/expected-shell-capability-exclusions.tsv):
 // a test may force one missing so the degraded path is exercised on a host that
 // happens to have it.
+//
+// It is read here, in a non-test file, for exactly one purpose: to stop the
+// harness USING a capability. It can never grant one, and maskingDecision below
+// refuses unconditionally when it is in play on a host whose real probe
+// succeeds -- so the affordance can only ever make this gate stricter. That is
+// the property the round-1 review asked for; "a test affordance cannot mint a
+// pass" has its own lock.
 function capabilityForcedMissing(name: string): boolean {
   const forced = process.env.INFRA_TEST_FORCE_MISSING_CAPABILITIES ?? "";
   return `,${forced},`.includes(`,${name},`);
 }
 
-function mountNamespaceAvailable(): { available: boolean; detail: string } {
-  if (capabilityForcedMissing("mount-namespace")) return { available: false, detail: "forced-missing" };
+/** The REAL capability of this host, never the test affordance. */
+export function probeMountNamespace(): { available: boolean; detail: string } {
   const probe = spawnSync("unshare", ["--mount", "--propagation", "private", "--", "true"], { encoding: "utf8" });
   if (probe.error) return { available: false, detail: "unshare-unavailable" };
   if (probe.status !== 0) return { available: false, detail: `unshare-exit=${probe.status ?? "signal"}` };
   return { available: true, detail: "ok" };
+}
+
+export type MaskingDecision = {
+  /** Whether the host's home and XDG directories are actually masked. */
+  masking: boolean;
+  /** `full` and `declared-reduced` may clear the step; `refused` may not. */
+  clearance: "full" | "declared-reduced" | "refused";
+  /** The capability that is missing, named for the lane. Empty when `full`. */
+  capability: string;
+  detail: string;
+  remedy: string;
+};
+
+/**
+ * Whether this run is entitled to clear the bare-world step at all.
+ *
+ * The subtraction either happened or it did not, and only the first case earns
+ * a green on its own. Both ways of not happening -- no usable mount namespace,
+ * or nothing identified to mask -- leave an absolute path into the operator's
+ * config dirs readable, which is the V3-5.39 class this row exists to catch.
+ * Each names its own capability so the lane is told which thing was missing,
+ * and each is declarable in the terminal report EXCEPT the test affordance,
+ * which is not a property of the environment and buys nothing.
+ */
+export function maskingDecision(options: {
+  probe: { available: boolean; detail: string };
+  forcedMissing: boolean;
+  candidateTargets: string[];
+  declaredFidelity: string[];
+}): MaskingDecision {
+  const { probe, forcedMissing, candidateTargets, declaredFidelity } = options;
+
+  if (probe.available && !forcedMissing && candidateTargets.length > 0) {
+    return { masking: true, clearance: "full", capability: "", detail: "ok", remedy: "" };
+  }
+  if (forcedMissing && probe.available) {
+    return {
+      masking: false,
+      clearance: "refused",
+      capability: "mount-namespace",
+      detail: "forced-missing real-probe=available",
+      remedy: "unset-INFRA_TEST_FORCE_MISSING_CAPABILITIES=mount-namespace a-test-affordance-may-not-mint-a-clearance",
+    };
+  }
+  const [capability, detail, remedy] = probe.available
+    ? [
+        "maskable-home",
+        "no-maskable-home-or-xdg-directory-was-identified",
+        "run-with-a-maskable-HOME-or-declare 'bare-world: capability=maskable-home reason=<why>'",
+      ]
+    : [
+        "mount-namespace",
+        probe.detail,
+        "run-where-an-unprivileged-mount-namespace-works-or-declare 'bare-world: capability=mount-namespace reason=<why>'",
+      ];
+  return {
+    masking: false,
+    clearance: declaredFidelity.includes(capability) ? "declared-reduced" : "refused",
+    capability,
+    detail,
+    remedy,
+  };
 }
 
 /**
@@ -219,6 +321,26 @@ function cloneAt(repo: string, sha: string, destination: string): string | undef
 
 const INTERNAL_MARKER = "BARE-WORLD-INTERNAL";
 
+/**
+ * What the bare world PROVIDES, as opposed to what `env -i` removes: each of
+ * these variables is repointed into the throwaway world, not scrubbed. One
+ * list, used both to build the environment and to keep nameDeltas from telling
+ * a refused lane that a facility it still has was taken away. A second list
+ * would drift, and the drift would be a false diagnosis.
+ */
+function providedEnvironment(world: string, trustedPath: string): Record<string, string> {
+  return {
+    PATH: trustedPath,
+    HOME: join(world, "home"),
+    XDG_CONFIG_HOME: join(world, "config"),
+    XDG_CACHE_HOME: join(world, "cache"),
+    XDG_DATA_HOME: join(world, "data"),
+    TMPDIR: join(world, "tmp"),
+  };
+}
+
+export const PROVIDED_ENV_NAMES: readonly string[] = Object.keys(providedEnvironment("", ""));
+
 type Run = { status: number | null; output: string; seconds: number };
 
 function runBare(options: {
@@ -230,14 +352,9 @@ function runBare(options: {
   trustedPath: string;
 }): Run {
   const { world, checkout, verifyScript, masks, useNamespace, trustedPath } = options;
-  const environment = [
-    `PATH=${shellQuote(trustedPath)}`,
-    `HOME=${shellQuote(join(world, "home"))}`,
-    `XDG_CONFIG_HOME=${shellQuote(join(world, "config"))}`,
-    `XDG_CACHE_HOME=${shellQuote(join(world, "cache"))}`,
-    `XDG_DATA_HOME=${shellQuote(join(world, "data"))}`,
-    `TMPDIR=${shellQuote(join(world, "tmp"))}`,
-  ].join(" ");
+  const environment = Object.entries(providedEnvironment(world, trustedPath))
+    .map(([name, value]) => `${name}=${shellQuote(value)}`)
+    .join(" ");
 
   const script = [
     "set -u",
@@ -338,8 +455,10 @@ export function nameDeltas(options: {
   masks: string[];
   repo: string;
   checkouts: string[];
+  /** The trusted verifier directories, which EXIST inside the bare world. */
+  pathDirectories: string[];
 }): string[] {
-  const { fresh, masks, repo, checkouts } = options;
+  const { fresh, masks, repo, checkouts, pathDirectories } = options;
   const deltas: string[] = [];
   const text = fresh.join("\n");
 
@@ -347,6 +466,10 @@ export function nameDeltas(options: {
   for (const match of text.matchAll(ABSOLUTE_PATH)) paths.add(match[0]);
   for (const path of paths) {
     if (checkouts.some((checkout) => inside(path, checkout))) continue;
+    // Provided, not subtracted: the verifier directories and the system
+    // directories the world is forbidden to mask are all reachable inside it.
+    // Naming one of them sends the refused lane after a delta that is not one.
+    if (pathDirectories.some((directory) => inside(path, directory)) || UNMASKABLE.has(path)) continue;
     const mask = masks.find((target) => inside(path, target));
     if (mask) {
       deltas.push(`delta=masked-host-path path=${path} mask=${mask} host-exists=${existsSync(path) ? "yes" : "no"}`);
@@ -366,7 +489,16 @@ export function nameDeltas(options: {
 
   for (const name of Object.keys(process.env)) {
     if (name.length < 3 || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) continue;
-    if (new RegExp(`\\b${name}\\b`).test(text)) deltas.push(`delta=env name=${name} detail=scrubbed-by-env-i`);
+    if (!new RegExp(`\\b${name}\\b`).test(text)) continue;
+    // A provided variable still HAS a value in the bare world -- an empty one
+    // inside the throwaway world, or the gate's trusted PATH. That can well be
+    // the delta, but it is not the delta `env -i` made, and saying so sent the
+    // lane looking for a variable that was never removed.
+    deltas.push(
+      PROVIDED_ENV_NAMES.includes(name)
+        ? `delta=env name=${name} detail=repointed-into-the-bare-world`
+        : `delta=env name=${name} detail=scrubbed-by-env-i`,
+    );
   }
 
   if (PERMISSION_SIGNAL.test(text)) deltas.push("delta=permission-or-mode detail=the-bare-world-runs-at-umask-077");
@@ -397,23 +529,31 @@ function main(): void {
   const sha = (commit ?? "").split(/\s+/, 1)[0];
   if (!/^[0-9a-f]{40}$/i.test(sha)) refuse(["verdict=refused reason=commit-sha-unreadable"]);
 
-  let declaredCapability: string | undefined;
+  // One line, one or more comma-separated capabilities: a lane on a host with no
+  // usable namespace whose verify also legitimately reads host state has two
+  // things to declare, and the report contract allows the field only once.
+  const declaredFailure: string[] = [];
+  const declaredFidelity: string[] = [];
   if (declaration !== undefined) {
-    const name = declaration.match(/(?:^|\s)capability=(\S+)/)?.[1];
+    const names = (declaration.match(/(?:^|\s)capability=(\S+)/)?.[1] ?? "").split(",").filter(Boolean);
     const reason = declaration.match(/(?:^|\s)reason=(.+)$/)?.[1]?.trim();
-    if (!name || !DECLARABLE_CAPABILITIES.has(name)) {
+    const unknown = names.filter((name) => !DECLARABLE_CAPABILITIES.has(name));
+    if (names.length === 0 || unknown.length > 0) {
       // lane-capabilities.md: an unknown capability is a named refusal that stops
       // cleanly, never a silent pass.
       refuse([
-        `verdict=refused reason=undeclarable-capability NO-GO capability=${name ?? "missing"}`,
-        `detail=declare-one-of=${[...DECLARABLE_CAPABILITIES].join("|")} field='bare-world: capability=<name> reason=<why>'`,
+        `verdict=refused reason=undeclarable-capability NO-GO capability=${unknown.join(",") || "missing"}`,
+        `detail=declare-one-of=${[...DECLARABLE_CAPABILITIES.keys()].join("|")} field='bare-world: capability=<name>[,<name>] reason=<why>'`,
       ]);
     }
-    if (!reason) refuse([`verdict=refused reason=declaration-without-reason NO-GO capability=${name}`]);
-    declaredCapability = name;
+    if (!reason) refuse([`verdict=refused reason=declaration-without-reason NO-GO capability=${names.join(",")}`]);
+    for (const name of names) {
+      (DECLARABLE_CAPABILITIES.get(name) === "fidelity" ? declaredFidelity : declaredFailure).push(name);
+    }
   }
 
-  const namespace = mountNamespaceAvailable();
+  const namespace = probeMountNamespace();
+  const namespaceForcedMissing = capabilityForcedMissing("mount-namespace");
   const trustedPath = process.env.LAND_CHECK_PATH || FALLBACK_TRUSTED_PATH;
   const pathDirectories = trustedPath.split(":").filter(Boolean).map((directory) => resolve(directory));
 
@@ -434,10 +574,38 @@ function main(): void {
 
   const { targets: candidateMasks, skipped } = maskTargets(world, pathDirectories);
   for (const entry of skipped) say(`mask=skipped target=${entry}`);
-  // Without a mount namespace nothing is masked, so nothing may be REPORTED as
+  const decision = maskingDecision({
+    probe: namespace,
+    forcedMissing: namespaceForcedMissing,
+    candidateTargets: candidateMasks,
+    declaredFidelity,
+  });
+  // Nothing is masked unless the mask actually ran, so nothing may be REPORTED as
   // masked either: a diagnosis that names a mask the run never applied would send
   // the next lane looking for the wrong delta.
-  const masks = namespace.available ? candidateMasks : [];
+  const masks = decision.masking ? candidateMasks : [];
+
+  /**
+   * The clearance check, called at every exit-0 site. A run that did not
+   * subtract the host's home and XDG directories cannot say the verify survived
+   * their absence -- it never tested that -- so it refuses with the missing
+   * capability named, and gate/lane-exit.sh blocks it exactly as it blocks a
+   * failed verify.
+   */
+  const refuseUnlessCleared = (context: string[]): void => {
+    if (decision.clearance !== "refused") return;
+    refuse([
+      `verdict=refused reason=host-state-mask-not-applied NO-GO capability=${decision.capability}`,
+      `detail=${decision.detail} hermeticity=undetermined fidelity=reduced`,
+      "note=the-mask-is-the-only-subtraction-that-catches-an-absolute-host-path-read",
+      ...context,
+      `remedy=${decision.remedy}`,
+    ]);
+  };
+
+  const sayUnusedDeclarations = (names: string[]): void => {
+    for (const name of names) say(`declaration=unused capability=${name} detail=the-run-did-not-need-it`);
+  };
 
   {
     const verifyScript = join(world, "verify.sh");
@@ -447,13 +615,19 @@ function main(): void {
     const cloneError = cloneAt(options.repo, sha, bareCheckout);
     if (cloneError) refuse([`verdict=refused reason=preflight detail=${cloneError}`]);
 
-    if (namespace.available) {
-      say(`masking=on targets=${masks.join(",") || "none"}`);
-      if (masks.length === 0) say("masking=on detail=nothing-to-mask-this-process-has-no-home-or-xdg-dirs");
+    if (decision.masking) {
+      say(`masking=on targets=${masks.join(",")}`);
     } else {
-      // Named, never silent: the world is still scrubbed, cloned and umask-077,
-      // but an absolute path into the host's config dirs is reachable.
-      say(`masking=unavailable detail=${namespace.detail} fidelity=reduced note=absolute-host-paths-remain-reachable`);
+      // Named, never silent, and never a pass on its own: the world is still
+      // scrubbed, cloned and umask-077, but an absolute path into the host's
+      // config dirs is reachable, so this run may not clear the step unless the
+      // report declared the missing capability.
+      say(
+        `masking=unavailable capability=${decision.capability} detail=${decision.detail} fidelity=reduced note=absolute-host-paths-remain-reachable`,
+      );
+      if (decision.clearance === "declared-reduced") {
+        say(`declaration=accepted capability=${decision.capability} detail=this-run-may-clear-at-reduced-fidelity`);
+      }
     }
 
     const bare = runBare({
@@ -461,7 +635,7 @@ function main(): void {
       checkout: bareCheckout,
       verifyScript,
       masks,
-      useNamespace: namespace.available,
+      useNamespace: decision.masking,
       trustedPath,
     });
 
@@ -471,8 +645,11 @@ function main(): void {
 
     const cost = `bare-seconds=${bare.seconds.toFixed(2)}`;
     if (bare.status === 0) {
-      if (declaredCapability) say(`declaration=unused capability=${declaredCapability} detail=the-verify-did-not-need-it`);
-      say(`verdict=pass ${cost} note=this-doubles-the-verify-step`);
+      // A green from a world that did not perform the subtraction is exactly the
+      // silent environmental pass this harness exists to end.
+      refuseUnlessCleared([`bare-verdict=would-have-passed-unmasked ${cost}`]);
+      sayUnusedDeclarations([...declaredFailure, ...(decision.masking ? declaredFidelity : [])]);
+      say(`verdict=pass ${cost}${decision.masking ? "" : " fidelity=reduced"} note=this-doubles-the-verify-step`);
       process.exit(0);
     }
 
@@ -495,7 +672,13 @@ function main(): void {
       ]);
     }
 
-    const deltas = nameDeltas({ fresh, masks, repo: options.repo, checkouts: [bareCheckout, controlCheckout] });
+    const deltas = nameDeltas({
+      fresh,
+      masks,
+      repo: options.repo,
+      checkouts: [bareCheckout, controlCheckout],
+      pathDirectories,
+    });
     const lines = [
       `reason=verify-needs-ambient-host-state exit=${bare.status ?? "signal"} ${cost} control-seconds=${control.seconds.toFixed(2)}`,
       ...(deltas.length === 0 ? ["delta=undiagnosed detail=the-new-failure-names-no-host-path-env-or-permission"] : deltas),
@@ -503,9 +686,13 @@ function main(): void {
       ...interestingLines(fresh).slice(0, 8).map((line) => `detail=${JSON.stringify(line.slice(0, 220))}`),
     ];
 
-    if (declaredCapability) {
+    if (declaredFailure.length > 0) {
       for (const line of lines) say(line);
-      say(`verdict=declared capability=${declaredCapability} detail=failure-accepted-against-the-declaration`);
+      // A failure declaration accepts a failure; it does not entitle an unmasked
+      // world to clear. One kind of declaration never stands in for the other.
+      refuseUnlessCleared([`bare-verdict=failed-and-declared capability=${declaredFailure.join(",")}`]);
+      sayUnusedDeclarations(decision.masking ? declaredFidelity : []);
+      say(`verdict=declared capability=${declaredFailure.join(",")} detail=failure-accepted-against-the-declaration`);
       process.exit(0);
     }
     refuse([

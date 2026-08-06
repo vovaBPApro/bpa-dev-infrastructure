@@ -63,6 +63,15 @@ valid_report() {
     printf 'result: %s\n' "$result"
     printf 'secret-scan: clean\n'
     printf 'remaining: none\n'
+    # This file's subject is the forwarding, not the bare world, and a coder
+    # report that clears must clear on every host the suite runs on -- including
+    # a rebuild container with no unprivileged mount namespace, where
+    # gate/bare-world.ts refuses every undeclared clearance by design (V3-5.42
+    # round 2). Declaring it is the same portability path a real lane there
+    # would take; where the namespace works, the declaration is unused and the
+    # run is full-fidelity. The scenario below proves the UNdeclared case still
+    # blocks, so this line cannot hide the wiring.
+    printf 'bare-world: capability=mount-namespace reason=this-fixture-must-also-run-where-unprivileged-namespaces-are-unavailable\n'
   } > "$out"
 }
 
@@ -435,6 +444,36 @@ assert_output_has "$out" "step=bare-world"
 assert_output_has "$out" "BARE-WORLD verdict=refused"
 rm -rf "$fixture_root"/repo "$fixture_root"/*.md "$fixture_root"/*.out
 echo "PASS: the bare-world verify is reached from lane exit and blocks on a host-state read"
+echo
+
+echo "== scenario: a world that cannot mask blocks the lane exit, it does not clear it =="
+# The round-1 review's reproduction, inverted and locked. One lane, one report,
+# one variable: with the host-state mask unavailable, the SAME verify that
+# clears above must now block. Round 1 printed `fidelity=reduced` here and
+# reported `LANE-EXIT verdict=clear exit=0` -- a lane cleared by a run that had
+# not performed the subtraction the step exists to perform.
+make_repo
+tip=$(git -C "$repo" rev-parse HEAD)
+report="$fixture_root/unmasked.report.md"
+{
+  printf 'commit: %s fixture\n' "$tip"
+  printf 'verify: true\n'          # hermetic, and it still may not clear
+  printf 'result: clean\n'
+  printf 'secret-scan: clean\n'
+  printf 'remaining: none\n'
+} > "$report"
+out="$fixture_root/unmasked.out"
+INFRA_TEST_FORCE_MISSING_CAPABILITIES=mount-namespace \
+  "$lane_exit" --report "$report" --repo "$repo" --branch ag-lane-1 --role coder >"$out" 2>&1
+status=$?
+cat "$out"
+assert [ "$status" -eq 2 ]
+assert_output_has "$out" "LANE-EXIT verdict=blocked"
+assert_output_has "$out" "step=bare-world"
+assert_output_has "$out" "NO-GO capability=mount-namespace"
+assert_not grep -q "LANE-EXIT verdict=clear" "$out"
+rm -rf "$fixture_root"/repo "$fixture_root"/*.md "$fixture_root"/*.out
+echo "PASS: an unmasked bare world blocks at lane exit, exactly as a failed verify does"
 echo
 
 echo "== scenario: a reviewer lane is not put through a verify it never declared =="

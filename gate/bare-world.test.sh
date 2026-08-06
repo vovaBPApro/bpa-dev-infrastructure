@@ -19,8 +19,17 @@
 # ...and the fourth, `hermetic`, is the one that must NOT change: a harness that
 # is merely hostile would fail every lane and be switched off within a day.
 #
-# The masked-host-path case is capability-gated on a usable mount namespace and
-# announces its own exclusion, per instance/expected-shell-capability-exclusions.tsv.
+# The round-2 addition is the clearance rule: a world that could not mask may
+# not clear the step. The host-path fixture is therefore driven through BOTH
+# configurations of the one variable the round-1 review changed -- namespace
+# usable, and namespace genuinely absent -- and it must not pass in either. The
+# maskless configuration is produced honestly, by running the harness with a
+# PATH that has no `unshare` on it, so those scenarios are true on every host
+# and need no capability exclusion of their own.
+#
+# The cases that need a REAL mask (the delta naming, and the two that must
+# reach a clearance) are capability-gated on a usable mount namespace and
+# announce their exclusion, per instance/expected-shell-capability-exclusions.tsv.
 set -u
 set -o pipefail
 
@@ -44,6 +53,24 @@ fi
 capability_forced_missing() {
   [[ ",${INFRA_TEST_FORCE_MISSING_CAPABILITIES:-}," == *",$1,"* ]]
 }
+
+# A scenario may only expect a mask to have been applied when both hold. Under
+# the tier run (tools/shell-test-tier.test.ts forces mount-namespace missing)
+# and on a host without unprivileged mount namespaces, the harness refuses every
+# clearance by design, so those scenarios announce an exclusion instead.
+namespace_usable() {
+  ! capability_forced_missing mount-namespace && unshare --mount --propagation private -- true >/dev/null 2>&1
+}
+
+# A world where the capability is genuinely absent, produced WITHOUT the test
+# affordance -- so the scenarios that use it prove the real environmental path,
+# not the harness's own pretend switch. The harness decides by running
+# `unshare`, and a kernel with `unprivileged_userns_clone=0` answers exactly
+# like this: the binary is there and it fails. The rest of PATH is untouched.
+no_unshare_bin="$fixture_root/no-unshare-bin"
+mkdir -p "$no_unshare_bin"
+printf '#!/bin/sh\nexit 1\n' > "$no_unshare_bin/unshare"
+chmod 0700 "$no_unshare_bin/unshare"
 
 assert() {
   if ! "$@"; then
@@ -161,16 +188,28 @@ run_harness_permissive() {
   ( umask 022; run_harness "$1" )
 }
 
+# The same harness, on a host whose mount namespace is genuinely unusable.
+run_harness_maskless() {
+  ( umask 022; PATH="$no_unshare_bin:$PATH" run_harness "$1" )
+}
+
 # --- green-after: the honest lane is untouched -------------------------------
 
 echo "== scenario: a hermetic verify passes the bare world unchanged =="
-report hermetic 'bun test hermetic.test.ts' '' clean
-run_harness hermetic
-status=$?
-cat "$fixture_root/hermetic.out"
-assert [ "$status" -eq 0 ]
-assert_has "$fixture_root/hermetic.out" "verdict=pass"
-echo "PASS: hermetic verify survives the bare world"
+if namespace_usable; then
+  report hermetic 'bun test hermetic.test.ts' '' clean
+  run_harness hermetic
+  status=$?
+  cat "$fixture_root/hermetic.out"
+  assert [ "$status" -eq 0 ]
+  assert_has "$fixture_root/hermetic.out" "verdict=pass"
+  assert_lacks "$fixture_root/hermetic.out" "fidelity=reduced"
+  echo "PASS: hermetic verify survives the bare world"
+else
+  # Not a pass at reduced fidelity: without a mask there is no full-fidelity
+  # clearance to observe, so the case is excluded rather than weakened.
+  echo 'bare-world: EXCLUDED case=hermetic-pass capability=mount-namespace'
+fi
 echo
 
 # --- red-before: the three measured escapes ----------------------------------
@@ -210,20 +249,70 @@ assert_lacks "$fixture_root/untracked.out" "delta=masked-host-path"
 echo "PASS: the clean-clone class is refused upstream and not misnamed here"
 echo
 
-echo "== scenario: V3-5.39's host config file is refused, and named =="
-if capability_forced_missing mount-namespace || ! unshare --mount --propagation private -- true >/dev/null 2>&1; then
-  # Without a mount namespace the host's real config dirs stay reachable by
-  # absolute path, so this case cannot be reproduced -- and the harness says so
-  # itself rather than passing as though it had run.
-  echo 'bare-world: EXCLUDED case=masked-host-path capability=mount-namespace'
-  report hostfile_reduced 'bun test hostfile.test.ts' '' clean
-  INFRA_TEST_FORCE_MISSING_CAPABILITIES=mount-namespace run_harness hostfile_reduced
-  status=$?
-  cat "$fixture_root/hostfile_reduced.out"
-  assert [ "$status" -eq 0 ]
-  assert_has "$fixture_root/hostfile_reduced.out" "masking=unavailable"
-  assert_has "$fixture_root/hostfile_reduced.out" "fidelity=reduced"
-else
+# The V3-5.39 fixture, driven through both settings of the one variable the
+# round-1 review changed. In round 1 the second setting produced `verdict=pass`
+# and `LANE-EXIT verdict=clear exit=0` -- a lane reading an absolute host path,
+# cleared by the harness built to catch exactly that. In NO configuration may it
+# pass now.
+
+echo "== scenario: V3-5.39's host config file, masking unavailable: the STEP refuses =="
+report hostfile_maskless 'bun test hostfile.test.ts' '' clean
+run_harness_maskless hostfile_maskless
+status=$?
+cat "$fixture_root/hostfile_maskless.out"
+# The verify itself passes here -- the file is reachable, nothing was masked.
+# That is precisely why the harness may not: it never tested the absence.
+assert [ "$status" -eq 2 ]
+assert_has "$fixture_root/hostfile_maskless.out" "masking=unavailable capability=mount-namespace"
+assert_has "$fixture_root/hostfile_maskless.out" "verdict=refused reason=host-state-mask-not-applied"
+assert_has "$fixture_root/hostfile_maskless.out" "NO-GO capability=mount-namespace"
+assert_has "$fixture_root/hostfile_maskless.out" "hermeticity=undetermined"
+assert_lacks "$fixture_root/hostfile_maskless.out" "verdict=pass"
+echo "PASS: a world that could not mask refuses instead of clearing at reduced fidelity"
+echo
+
+echo "== scenario: the reduced-fidelity run is a DECLARED exception, and only that =="
+report hostfile_declared 'bun test hostfile.test.ts' \
+  'bare-world: capability=mount-namespace reason=this-container-has-no-unprivileged-mount-namespace' clean
+run_harness_maskless hostfile_declared
+status=$?
+cat "$fixture_root/hostfile_declared.out"
+assert [ "$status" -eq 0 ]
+assert_has "$fixture_root/hostfile_declared.out" "declaration=accepted capability=mount-namespace"
+assert_has "$fixture_root/hostfile_declared.out" "verdict=pass"
+# The clearance is never silent about what it did not do.
+assert_has "$fixture_root/hostfile_declared.out" "fidelity=reduced"
+echo "PASS: the only way past the mask is a declaration in the lane's own report"
+echo
+
+echo "== scenario: a host-state declaration does not buy the missing namespace =="
+report hostfile_wrongcap 'bun test hostfile.test.ts' \
+  'bare-world: capability=host-state reason=the-wrong-declaration-for-this-gap' clean
+run_harness_maskless hostfile_wrongcap
+status=$?
+cat "$fixture_root/hostfile_wrongcap.out"
+assert [ "$status" -eq 2 ]
+assert_has "$fixture_root/hostfile_wrongcap.out" "NO-GO capability=mount-namespace"
+echo "PASS: one declaration cannot stand in for another"
+echo
+
+echo "== scenario: the test affordance cannot mint a clearance either =="
+# The repository's own force-missing idiom, applied to the harness. It may make
+# this gate stricter and nothing else; that it is refused even WITH a
+# declaration, on a host whose real probe succeeds, is locked in
+# gate/bare-world-deltas.test.ts's clearance table.
+report affordance 'bun test hermetic.test.ts' '' clean
+INFRA_TEST_FORCE_MISSING_CAPABILITIES=mount-namespace run_harness affordance
+status=$?
+cat "$fixture_root/affordance.out"
+assert [ "$status" -eq 2 ]
+assert_has "$fixture_root/affordance.out" "NO-GO capability=mount-namespace"
+assert_lacks "$fixture_root/affordance.out" "verdict=pass"
+echo "PASS: even a hermetic verify cannot clear an unmasked world"
+echo
+
+echo "== scenario: V3-5.39's host config file is refused, and the masked path named =="
+if namespace_usable; then
   report hostfile 'bun test hostfile.test.ts' '' clean
   run_harness hostfile
   status=$?
@@ -232,35 +321,35 @@ else
   assert_has "$fixture_root/hostfile.out" "delta=masked-host-path"
   assert_has "$fixture_root/hostfile.out" "$host_fixture/configured"
   assert_has "$fixture_root/hostfile.out" "host-exists=yes"
-
-  # The same fixture, same host, masking off: it passes. That is the proof that
-  # the mask -- not some other subtraction -- is what caught it.
-  report hostfile_reduced 'bun test hostfile.test.ts' '' clean
-  INFRA_TEST_FORCE_MISSING_CAPABILITIES=mount-namespace run_harness hostfile_reduced
-  status=$?
-  assert [ "$status" -eq 0 ]
-  assert_has "$fixture_root/hostfile_reduced.out" "masking=unavailable"
-  assert_lacks "$fixture_root/hostfile_reduced.out" "masked:"
+  echo "PASS: the host-config read is refused with the masked path named"
+else
+  # Naming the mask requires having applied one. The refusal itself is proven
+  # unconditionally by the maskless scenarios above, so nothing is lost silently.
+  echo 'bare-world: EXCLUDED case=masked-host-path capability=mount-namespace'
 fi
-echo "PASS: the host-config read is refused with the masked path named"
 echo
 
 # --- the declaration path, per instructions/lane-capabilities.md -------------
 
 echo "== scenario: a declared host-state capability is a named acceptance =="
-# Driven by the umask fixture, not the host-file one: this scenario must mean
-# the same thing on a host without a usable mount namespace, where the host-file
-# fixture legitimately passes.
-report declared 'bun test umask.test.ts' \
-  'bare-world: capability=host-state reason=this-lane-verifies-the-installed-custody' clean
-run_harness_permissive declared
-status=$?
-cat "$fixture_root/declared.out"
-assert [ "$status" -eq 0 ]
-assert_has "$fixture_root/declared.out" "verdict=declared capability=host-state"
-# Named, not silent: the delta is still reported against the declaration.
-assert_has "$fixture_root/declared.out" "reason=verify-needs-ambient-host-state"
-echo "PASS: a declared capability accepts the failure and still names it"
+if namespace_usable; then
+  # Driven by the umask fixture, not the host-file one: the failure it declares
+  # is one the bare world produces through a subtraction that always happens.
+  report declared 'bun test umask.test.ts' \
+    'bare-world: capability=host-state reason=this-lane-verifies-the-installed-custody' clean
+  run_harness_permissive declared
+  status=$?
+  cat "$fixture_root/declared.out"
+  assert [ "$status" -eq 0 ]
+  assert_has "$fixture_root/declared.out" "verdict=declared capability=host-state"
+  # Named, not silent: the delta is still reported against the declaration.
+  assert_has "$fixture_root/declared.out" "reason=verify-needs-ambient-host-state"
+  echo "PASS: a declared capability accepts the failure and still names it"
+else
+  # A failure declaration accepts a failure; it does not entitle an unmasked
+  # world to clear, which is asserted unconditionally two scenarios up.
+  echo 'bare-world: EXCLUDED case=declared-host-state capability=mount-namespace'
+fi
 echo
 
 echo "== scenario: an undeclarable capability stops cleanly, per lane-capabilities =="
@@ -319,14 +408,20 @@ assert_has "$fixture_root/unstable_declared.out" "reason=verify-unstable"
 echo "PASS: the declaration is scoped to host state, not to failure in general"
 echo
 
-echo "== scenario: the harness never masks a directory holding its verifiers =="
+echo "== scenario: the harness never masks a system directory, and then cannot clear =="
+# Refusing the mask target is right -- masking /usr would make the world broken
+# rather than bare. Clearing afterwards would not: with HOME pointed at a
+# directory the harness may not mask, nothing was subtracted, and the second
+# half of that is exactly the round-1 defect arriving by another route.
 report hermetic2 'bun test hermetic.test.ts' '' clean
 HOME=/usr run_harness hermetic2
 status=$?
 cat "$fixture_root/hermetic2.out"
-assert [ "$status" -eq 0 ]
+assert [ "$status" -eq 2 ]
 assert_has "$fixture_root/hermetic2.out" "mask=skipped target=/usr reason=system-directory"
-echo "PASS: a system directory is refused as a mask target and named"
+assert_has "$fixture_root/hermetic2.out" "verdict=refused reason=host-state-mask-not-applied"
+assert_lacks "$fixture_root/hermetic2.out" "verdict=pass"
+echo "PASS: a system directory is refused as a mask target, and an unmasked world is refused a clearance"
 echo
 
 echo "ALL BARE-WORLD SCENARIOS PASS"

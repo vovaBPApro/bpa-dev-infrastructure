@@ -401,3 +401,100 @@ test("the block reader stops at the next top-level key", () => {
   expect(fleetBlockText(yaml)).toBe("fleet:\n  cap: 3   # comment\n");
   expect(shellDefault('CAP=$(int_or "${FLEET_NUDGE_CAP:-3}" 3)', "FLEET_NUDGE_CAP")).toBe(3);
 });
+
+// ── The V3-5.10 review's reader findings, on this side of the pair ──────────
+
+// F1/F2 here. `/^\d+$/` accepted `09` and Number() answered 9, while bash
+// arithmetic on the launch path errored on the same characters and fell through
+// to a LAUNCH. Two readers of one number must not disagree about whether it is a
+// number at all, so both refuse it.
+test("a leading-zero cap is not a number to this checker either", () => {
+  for (const written of ["09", "010", "03"]) {
+    const errors = errorsFor({ fleet: DEFAULT_FLEET.replace("cap: 3", `cap: ${written}`) });
+    expect(errors, `cap: ${written}`).toContain(
+      "instance/params.yaml:5 fleet.cap: missing or not a positive integer — the operator's cap must be stated as a number",
+    );
+  }
+});
+
+// F4 here. The shell reader's `#`-in-column-1 truncation stopped every dispatch;
+// this reader's identical truncation would instead report `fleet.cap: missing`
+// on a file that plainly states one — the gate refusing a landing over a comment
+// reflow. Both halves are the same one-character bug.
+test("a comment in column 1 does not end the block for this reader", () => {
+  const yaml = "fleet:\n# a comment reflowed to column 1\n  cap: 3\n  declared_by: HR-2342\n\norchestrator:\n  cap: 99\n";
+  expect(readFleetBlock(yaml).get("cap")).toEqual({ value: "3", line: 3 });
+  expect(fleetBlockText(yaml)).toContain("# a comment reflowed to column 1");
+  expect(fleetBlockText(yaml)).not.toContain("cap: 99");
+  const errors = errorsFor({ fleet: "# a comment reflowed to column 1\n" + DEFAULT_FLEET });
+  expect(errors.some((error) => error.includes("fleet.cap: missing"))).toBe(false);
+});
+
+// F5 here: depth, and quoted scalars.
+test("only keys at the block's own indentation are the block's keys", () => {
+  const nested = "fleet:\n  budget:\n    cap: 99\n  status: active\n";
+  expect(readFleetBlock(nested).get("cap")).toBeUndefined();
+  const both = "fleet:\n  budget:\n    cap: 99\n  cap: 3\n";
+  expect(readFleetBlock(both).get("cap")).toEqual({ value: "3", line: 4 });
+});
+
+test("a quoted scalar is the same value as a bare one", () => {
+  expect(readFleetBlock('fleet:\n  cap: "3"\n').get("cap")!.value).toBe("3");
+  expect(readFleetBlock("fleet:\n  cap: '3'\n").get("cap")!.value).toBe("3");
+  expect(readFleetBlock('fleet:\n  declared_by: "HR-2342"\n').get("declared_by")!.value).toBe("HR-2342");
+  const errors = errorsFor({ fleet: DEFAULT_FLEET.replace("cap: 3", 'cap: "3"').replace("declared_by: HR-2342", 'declared_by: "HR-2342"') });
+  expect(errors).toEqual([]);
+});
+
+// The pair, held against each other on the grammar itself rather than only on
+// today's file. The existing agreement test above compares one repository, which
+// both readers happen to parse the same way; every finding in the review's F4/F5
+// was a disagreement this shape of test would have caught and that one could not.
+test("the two readers accept and refuse the same grammar", () => {
+  const repo = join(import.meta.dir, "..");
+  const cases = [
+    { label: "column-1 comment inside the block", yaml: "fleet:\n# reflowed\n  cap: 4\n  status: active\n", want: "4" },
+    { label: "cap nested under a fleet subkey", yaml: "fleet:\n  budget:\n    cap: 99\n  status: active\n", want: null },
+    { label: "the block's own cap past a nested one", yaml: "fleet:\n  budget:\n    cap: 99\n  cap: 4\n", want: "4" },
+    { label: "double-quoted scalar", yaml: 'fleet:\n  cap: "4"\n  status: active\n', want: "4" },
+    { label: "single-quoted scalar", yaml: "fleet:\n  cap: '4'\n  status: active\n", want: "4" },
+    { label: "trailing comment", yaml: "fleet:\n  cap: 4   # the cap\n  status: active\n", want: "4" },
+    { label: "a same-named key outside the block", yaml: "other:\n  cap: 9\n\nfleet:\n  status: active\n", want: null },
+    { label: "a comment between blocks still ends it", yaml: "fleet:\n  status: active\n\n# between\nother:\n  cap: 9\n", want: null },
+  ];
+  for (const row of cases) {
+    const dir = mkdtempSync(join(tmpdir(), "fleet-grammar-"));
+    try {
+      mkdirSync(join(dir, "instance"), { recursive: true });
+      writeFileSync(join(dir, "instance", "params.yaml"), row.yaml);
+      const shell = Bun.spawnSync(["bash", "-c", '. orchestrator/fleet/fleet-params.sh; fleet_cap "$1"', "--", dir], { cwd: repo });
+      const fromShell = shell.exitCode === 0 ? shell.stdout.toString() : null;
+      const fromChecker = readFleetBlock(row.yaml).get("cap")?.value ?? null;
+      expect(fromShell, `${row.label}: orchestrator/fleet/fleet-params.sh`).toBe(row.want);
+      expect(fromChecker, `${row.label}: tools/check-fleet-cap.ts`).toBe(row.want);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+// F6. `declared_by` was already HR-2538 while the paragraph above it introduced
+// HR-2456's five as the operator's cap, and session-load.ts delivers that
+// paragraph to every new session verbatim. A correct field beside a superseded
+// sentence is how a machine reads clean and an agent reads wrong.
+test("the fleet block may not OPEN on a superseded ruling", () => {
+  const rulings = [
+    { id: "HR-2342", body: "status: binding\nlane_cap: 5\nlane_cap_superseded_by: HR-2538\n" },
+    { id: "HR-2538", body: "status: binding\nlane_cap: 3\n" },
+  ];
+  const fleet = DEFAULT_FLEET.replace("declared_by: HR-2342", "declared_by: HR-2538");
+  const stale = errorsFor({ rulings, fleet: "  # the operator's cap: HR-2342 — «до 5»\n" + fleet });
+  expect(stale).toContain(
+    "instance/params.yaml: the fleet block opens by citing HR-2342, which does not declare the live cap (HR-2538) — " +
+      "session-load.ts delivers this prose to every new session as the standing ruling, so a superseded one here is read " +
+      "as current; cite the live ruling first and keep the superseded one as history below it",
+  );
+  // The live ruling first, the superseded one kept below it as history: clean.
+  const fixed = errorsFor({ rulings, fleet: "  # the operator's cap: HR-2538. It replaced HR-2342's five.\n" + fleet });
+  expect(fixed).toEqual([]);
+});

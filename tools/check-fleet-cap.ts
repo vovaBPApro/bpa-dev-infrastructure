@@ -109,13 +109,24 @@ const WAKE_KEYS = new Map([
 
 export type FleetEntry = { value: string; line: number };
 
+/**
+ * This file and orchestrator/fleet/fleet-params.sh are TWO readers of one
+ * parameter block, which is the arrangement this whole check exists to police.
+ * The grammar below is therefore the shell reader's, stated once there and
+ * mirrored here deliberately: a comment in column 1 does not close the block,
+ * only keys at the block's own indentation are the block's keys, and a scalar
+ * may be bare or quoted. The V3-5.10 review found the pair disagreeing on all
+ * three, plus on a leading zero (`integer` below).
+ */
+const COMMENT_LINE = /^\s*#/;
+
 /** The raw `fleet:` block, comments included — the text an agent actually reads. */
 export function fleetBlockText(yaml: string): string {
   const lines = yaml.split(/\r?\n/);
   const start = lines.findIndex((line) => /^fleet:\s*(#.*)?$/.test(line));
   if (start < 0) return "";
   const rest = lines.slice(start + 1);
-  const end = rest.findIndex((line) => /^\S/.test(line));
+  const end = rest.findIndex((line) => /^\S/.test(line) && !COMMENT_LINE.test(line));
   return [lines[start]!, ...(end < 0 ? rest : rest.slice(0, end))].join("\n");
 }
 
@@ -124,14 +135,20 @@ export function readFleetBlock(yaml: string): Map<string, FleetEntry> {
   const entries = new Map<string, FleetEntry>();
   const lines = yaml.split(/\r?\n/);
   let inside = false;
+  let depth = 0;
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]!;
-    if (/^fleet:\s*(#.*)?$/.test(line)) { inside = true; continue; }
+    if (/^fleet:\s*(#.*)?$/.test(line)) { inside = true; depth = 0; continue; }
     if (!inside) continue;
+    if (COMMENT_LINE.test(line)) continue;             // a comment, wherever its `#` sits
     if (/^\S/.test(line)) break;                       // the next top-level key ends the block
-    const match = line.match(/^\s+([A-Za-z][A-Za-z0-9_]*):\s*(.*)$/);
-    if (!match) continue;                              // a comment or a blank line
-    entries.set(match[1]!, { value: match[2]!.replace(/\s+#.*$/, "").trim(), line: index + 1 });
+    const match = line.match(/^(\s+)([A-Za-z][A-Za-z0-9_]*):\s*(.*)$/);
+    if (!match) continue;                              // a blank line, or not a key
+    const indent = match[1]!.length;
+    if (depth === 0) depth = indent;
+    if (indent !== depth) continue;                    // nested under a subkey: a different parameter
+    const value = match[3]!.replace(/\s+#.*$/, "").trim().replace(/^(["'])(.*)\1$/, "$2");
+    entries.set(match[2]!, { value, line: index + 1 });
   }
   return entries;
 }
@@ -189,8 +206,14 @@ export function declaredLaneCaps(repo: string): DecisionRecord[] {
   return decisionRecords(repo).filter((row) => row.cap !== undefined);
 }
 
+// A leading zero is refused rather than read, matching `fleet_cap` in
+// orchestrator/fleet/fleet-params.sh. `/^\d+$/` accepted `09` and `Number()`
+// answered 9, while bash arithmetic on the launch path answered "invalid octal"
+// and fell through to a launch, and a YAML 1.1 loader would answer 8 for `010`.
+// One number with three answers is not a parameter; the value is refused so that
+// no reader has to be the one that guessed right.
 function integer(entry: FleetEntry | undefined): number | undefined {
-  if (!entry || !/^\d+$/.test(entry.value)) return undefined;
+  if (!entry || !/^(0|[1-9][0-9]*)$/.test(entry.value)) return undefined;
   return Number(entry.value);
 }
 
@@ -286,6 +309,29 @@ export function checkFleetCap(repo: string): string[] {
     errors.push(
       `${at("declared_by")}: ${declaredBy} is not the set of rulings declaring the live cap ` +
         `(${expectedDeclaredBy}) — the operator would be quoted a ruling that does not declare this number`,
+    );
+  }
+
+  // 2b. The block's PROSE must open on the live ruling too (V3-5.10 review F6).
+  // `declared_by` was correct at HR-2538 while the paragraph above it still
+  // introduced the number as "the operator's cap of 2026-08-05: HR-2456 —
+  // «Дозволяю підняти ліміт лейнів до 5»", a ruling HR-2538 superseded the same
+  // day. Nobody reads a field and ignores the sentence next to it, and this
+  // sentence is not merely documentation: session-load.ts pushes this file into
+  // every new orchestrator session's standing context verbatim, so a superseded
+  // cap was being delivered as the current one at every session start.
+  //
+  // The check is the first citation rather than every citation, because a
+  // superseded ruling is legitimate HISTORY further down — this block explains
+  // what it amends, and must keep being able to. What it may not do is OPEN on
+  // one. First-cited is the one a reader takes as the declaring ruling.
+  const liveIds = new Set(live.map((row) => row.id));
+  const firstCitation = fleetBlockText(params).match(/\bHR-\d+\b/)?.[0];
+  if (firstCitation && liveIds.size > 0 && !liveIds.has(firstCitation)) {
+    errors.push(
+      `${PARAMS_FILE}: the fleet block opens by citing ${firstCitation}, which does not declare the live cap ` +
+        `(${[...liveIds].sort().join(", ")}) — session-load.ts delivers this prose to every new session as the standing ` +
+        `ruling, so a superseded one here is read as current; cite the live ruling first and keep the superseded one as history below it`,
     );
   }
 

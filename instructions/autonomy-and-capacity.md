@@ -30,10 +30,17 @@ ask for a routine “go” when the work is outside the irreversible set.
   host's real capacity does not merely slow the fleet, it corrupts the fleet's
   evidence: the suite is the measurement instrument and it stretches under load
   until deadlines kill passing runs. A wider fleet that produces less trustworthy
-  greens is a worse fleet. The current cap is `instance/params.yaml: fleet.cap`,
-  ruled by `instance/decisions/HR-2456.md` and measured by workboard row
-  V3-0.34; `instance/decisions/HR-2342.md` carries the reasoning it was first
-  written with.
+  greens is a worse fleet. The current cap is `instance/params.yaml: fleet.cap`
+  and the ruling that declares it is `fleet.declared_by` — read both from there,
+  never from a sentence, including this one. Capacity was measured by workboard
+  row V3-0.34; `instance/decisions/HR-2342.md` carries the reasoning the cap was
+  first written with.
+- **The cap refuses.** `orchestrator/fleet/launch-lane.sh` counts the running
+  lane units and declines the launch that would exceed `fleet.cap`, before any
+  worktree, branch or unit exists. It is not held by anyone counting by hand,
+  and it fails closed: an unreadable cap or an untakeable census is a refusal.
+  A deliberate exception is `--allow-over-cap REASON`, which states its reason
+  and is journaled — refusal is the default, not the only possibility.
 - **A reviewer is a lane.** Count review slots against the cap, so a cap of N
   buys N−1 coder lanes plus one review slot, and a row on an escalated review
   tier consumes two of the N. Read the number from `fleet.cap` rather than from

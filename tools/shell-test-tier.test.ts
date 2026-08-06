@@ -51,6 +51,7 @@ const runnableShellTests = [
   "gate/land-rollback.test.sh",
   "orchestrator/watchdog-supervision.test.sh",
   "orchestrator/fleet/launch-lane.test.sh",
+  "orchestrator/fleet/launch-lane-cap.test.sh",
   "orchestrator/fleet/lane-payload-systemd.test.sh",
   "orchestrator/fleet/lane-unit-namespace.test.sh",
   "orchestrator/watchdog.test.sh",

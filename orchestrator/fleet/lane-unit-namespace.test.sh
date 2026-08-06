@@ -4,9 +4,14 @@
 #
 # `orchestrator/fleet/lane-payload-systemd.test.sh` named its six transient
 # units `lane-payload-probe-<pid>-*`, and `lane-*` is the glob two independent
-# readers use to mean "a live lane": the fleet census in fleet-nudge.sh and the
+# readers use to mean "a live lane": the fleet census the watchdog takes and the
 # completion channel in daemon/server.ts. So the fixture was counted as running
 # lanes and reported as lanes finishing.
+#
+# The census was inline in fleet-nudge.sh when this lock was written; V3-5.10
+# moved it into `fleet_running_lanes` in fleet-params.sh so the watchdog and the
+# launcher count from one home. The glob text did not change, only its address —
+# see the re-derived pin below.
 #
 # The half that makes this a lock rather than tidiness: since V3-5.9 the census
 # is the input to the idle dwell, and `streak_break idle` runs on ANY busy
@@ -350,9 +355,18 @@ printf '%s\n' 'lane-unit-namespace: RAN case=fixtures-outside-lane-namespace'
 # text moves or changes shape, which is the safe direction: a reader that no
 # longer matches its pin gets re-derived by hand rather than assumed.
 # ---------------------------------------------------------------------------
+# Re-derived by hand for V3-5.10, which moved the census out of fleet-nudge.sh
+# into `fleet_running_lanes` in fleet-params.sh. The glob text is unchanged, so
+# the property this pin protects is unchanged; only the address moved. Both
+# halves are asserted, because either one alone can be satisfied while a fixture
+# becomes visible again: the helper must still glob `lane-*`, AND the watchdog
+# must still be the caller that counts through it. A watchdog that stopped
+# calling the helper would leave this pin green over a census nothing takes.
 grep -q "systemctl list-units --type=service --state=running --no-legend 'lane-\*'" \
-  "$REPO/orchestrator/fleet/fleet-nudge.sh" ||
+  "$REPO/orchestrator/fleet/fleet-params.sh" ||
   fail 'the fleet census no longer globs lane-* — re-derive the fixture namespace rule against its new form'
+grep -q 'fleet_running_lanes' "$REPO/orchestrator/fleet/fleet-nudge.sh" ||
+  fail 'the fleet watchdog no longer counts through fleet_running_lanes — re-derive which census it takes'
 grep -q "'lane-\*'," "$REPO/daemon/server.ts" ||
   fail 'the daemon lane census no longer globs lane-* — re-derive the fixture namespace rule against its new form'
 grep -Fq '/^lane-[^\s]+\.service$/' "$REPO/daemon/autonomy-keepalive.ts" ||

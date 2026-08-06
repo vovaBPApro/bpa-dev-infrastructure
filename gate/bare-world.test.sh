@@ -150,6 +150,17 @@ run_harness() {
   "$bun_bin" "$harness" --report "$fixture_root/$1.md" --repo "$repo" > "$fixture_root/$1.out" 2>&1
 }
 
+# For every scenario whose expected delta IS the umask, the control side must be
+# permissive on purpose rather than by inheritance. This file is otherwise the
+# V3-5.34 defect itself: run under the orchestrator's `umask 077` -- or inside
+# this very harness, which is how it was caught before landing -- the umask
+# fixture fails on BOTH sides and the harness correctly reports `verify-unstable`
+# instead of the delta the scenario asserts. A lock that only holds at one
+# ambient umask cannot be the lock for umask dependence.
+run_harness_permissive() {
+  ( umask 022; run_harness "$1" )
+}
+
 # --- green-after: the honest lane is untouched -------------------------------
 
 echo "== scenario: a hermetic verify passes the bare world unchanged =="
@@ -166,7 +177,7 @@ echo
 
 echo "== scenario: V3-5.34's umask delta is refused, and named =="
 report umask 'bun test umask.test.ts' '' clean
-run_harness umask
+run_harness_permissive umask
 status=$?
 cat "$fixture_root/umask.out"
 assert [ "$status" -eq 2 ]
@@ -242,7 +253,7 @@ echo "== scenario: a declared host-state capability is a named acceptance =="
 # fixture legitimately passes.
 report declared 'bun test umask.test.ts' \
   'bare-world: capability=host-state reason=this-lane-verifies-the-installed-custody' clean
-run_harness declared
+run_harness_permissive declared
 status=$?
 cat "$fixture_root/declared.out"
 assert [ "$status" -eq 0 ]
@@ -254,7 +265,7 @@ echo
 
 echo "== scenario: an undeclarable capability stops cleanly, per lane-capabilities =="
 report badcap 'bun test umask.test.ts' 'bare-world: capability=telepathy reason=x' clean
-run_harness badcap
+run_harness_permissive badcap
 status=$?
 cat "$fixture_root/badcap.out"
 assert [ "$status" -eq 2 ]
@@ -264,7 +275,7 @@ echo
 
 echo "== scenario: a declaration without a reason is refused =="
 report noreason 'bun test umask.test.ts' 'bare-world: capability=host-state' clean
-run_harness noreason
+run_harness_permissive noreason
 status=$?
 cat "$fixture_root/noreason.out"
 assert [ "$status" -eq 2 ]

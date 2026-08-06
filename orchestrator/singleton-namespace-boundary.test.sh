@@ -15,8 +15,17 @@
 #     a sentinel, says so, and starts;
 #   * with the sentinel recorded, automatic stale-lock recovery can never be
 #     proven -- a leaked lock stays an operator decision;
-#   * and where the kernel DOES attribute locks, an unresolvable owner is still
-#     a hard refusal, so the degradation cannot be reached on a real host.
+#   * where the kernel DOES attribute locks, an unresolvable owner is still a
+#     hard refusal, so the degradation cannot be reached on a real host;
+#   * and BROKEN TOOLING is never mistaken for a kernel boundary. This is the
+#     r2 addition. Round 1's adjudicating probe resolved its own probe file
+#     through singleton_lock_key() -- the very helper whose failure is one of
+#     the two degradation triggers -- so a globally failing findmnt made the
+#     trigger fire and guaranteed the probe would agree with it. A fully
+#     attributing host silently started degraded where it had always refused.
+#     Two cases below pin the repair: the probe answers `available` under a
+#     globally broken findmnt, and `start` refuses in that world in BOTH
+#     worlds rather than degrading in either.
 #
 # Unshared pid+mount namespaces stand in for docker here: the kernel path under
 # test is the namespace translation itself, which is identical either way.
@@ -29,6 +38,41 @@ FINDMNT_BIN="$(command -v findmnt || true)"
 
 capability_forced_missing() {
   [[ ",${INFRA_TEST_FORCE_MISSING_CAPABILITIES:-}," == *",$1,"* ]]
+}
+
+# ── The driver's own oracle, owing nothing to the subject under test ─────────
+# Deliberately NOT `launch.sh singleton-attribution`. A driver that classifies
+# its world by asking the binary under test cannot tell "this world is blind"
+# from "the subject is broken or does not implement that question yet" -- and
+# it resolves both to a silent EXCLUDED. Run against the pre-V3-5.38 tree the
+# old driver exited 2 on `Usage:` and reported the host half EXCLUDED, so the
+# lock's red-before was never the regression. With an independent oracle the
+# same run is a named FAILURE of the subject, which is what it is.
+#
+# Same question, minimal parts: take a flock through a child that exits, then
+# ask /proc/locks whether the row still names that child.
+world_attributes_locks() {
+  local dir fd pid found=1
+  local -a fields=()
+  [[ -r /proc/locks ]] || return 1
+  dir="$(mktemp -d)"
+  exec {fd}>"$dir/probe"
+  flock -n "$fd" &
+  pid=$!
+  if ! wait "$pid"; then
+    exec {fd}>&-
+    rm -rf "$dir"
+    return 1
+  fi
+  while read -ra fields; do
+    if [[ "${fields[1]:-}" == FLOCK && "${fields[4]:-}" == "$pid" ]]; then
+      found=0
+      break
+    fi
+  done < /proc/locks
+  exec {fd}>&-
+  rm -rf "$dir"
+  return "$found"
 }
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
@@ -73,9 +117,14 @@ scenario() {
   local shim="$SCRATCH/bin"
   local singleton_lock="$SCRATCH/orchestrator.singleton.lock"
 
-  # The fixture owns its world: private tmux socket, private HOME, no systemd,
-  # no state DB, a fixed umask. Nothing here reads host configuration.
+  # The fixture owns its world: private tmux socket IN ITS OWN SCRATCH DIR,
+  # private HOME, no systemd, no state DB, a fixed umask. Nothing here reads
+  # host configuration and nothing survives the scratch dir. TMUX_TMPDIR is
+  # what keeps the second half of that true: a `-L` socket otherwise lands in
+  # the shared /tmp/tmux-$UID and the file outlives `kill-server`, so a lock
+  # that is otherwise perfectly hermetic still litters one entry per run.
   umask 022
+  export TMUX_TMPDIR="$SCRATCH"
   mkdir -p "$shim" "$SCRATCH/home"
   cat > "$shim/tmux" <<'EOF'
 #!/usr/bin/env bash
@@ -91,12 +140,25 @@ EOF
 printf '%s\n' "$$" >> "${ORCH_TEST_PROVIDER_PIDS:?}"
 exec sleep 1000
 EOF
-  # Denies MAJ:MIN resolution for one exact path, so the "this kernel attributes
-  # locks, but cannot name THIS one" anomaly can be produced on a real host.
+  # Two distortion modes, because the guard's two triggers are NOT one failure
+  # and r2 exists because round 1 treated them as one:
+  #   ORCH_TEST_FINDMNT_WRONG_DEV=<path> -- reports a plausible but wrong
+  #     device for one exact path. singleton_lock_key() then SUCCEEDS and
+  #     returns a well-formed key that matches no row in /proc/locks, which is
+  #     the real "this kernel attributes locks, but will not name THIS one"
+  #     anomaly -- an unnameable owner with the identity path intact.
+  #   ORCH_TEST_FINDMNT_DENY_ALL=1 -- findmnt broken outright, the util-linux
+  #     absence of a minimal image. This takes out singleton_lock_key()
+  #     globally, which is BOTH a degradation trigger and, in round 1, the
+  #     adjudicating probe's own dependency.
   cat > "$shim/findmnt" <<EOF
 #!/usr/bin/env bash
+[[ -n "\${ORCH_TEST_FINDMNT_DENY_ALL:-}" ]] && exit 1
 for arg in "\$@"; do
-  [[ "\$arg" == "\${ORCH_TEST_FINDMNT_DENY:-}" ]] && exit 1
+  if [[ "\$arg" == "\${ORCH_TEST_FINDMNT_WRONG_DEV:-}" ]]; then
+    printf '999:999\n'
+    exit 0
+  fi
 done
 exec $(printf '%q' "$FINDMNT_BIN") "\$@"
 EOF
@@ -121,8 +183,12 @@ EOF
   export ORCH_AUTH_PREFLIGHT="$SCRATCH/preflight.sh"
 
   # ── The guard's own verdict must match the world it is standing in ────────
+  # The expected value comes from world_attributes_locks(), an oracle the
+  # subject does not supply, so a subject that cannot answer at all fails here
+  # by name instead of being classified as some other world.
   local verdict expected_verdict
-  verdict="$(ORCH_RUNTIME_DIR="$SCRATCH/runtime-probe" bash "$LAUNCH" singleton-attribution)"
+  verdict="$(ORCH_RUNTIME_DIR="$SCRATCH/runtime-probe" bash "$LAUNCH" singleton-attribution 2>&1 ||
+    printf ' <subject exited non-zero>')"
   case "$mode" in
     observable) expected_verdict='singleton-owner-attribution: available' ;;
     blind) expected_verdict='singleton-owner-attribution: unavailable' ;;
@@ -131,10 +197,68 @@ EOF
     fail "$mode world reported the wrong attribution verdict: $verdict"
   printf 'singleton-nsboundary: RAN case=attribution-verdict mode=%s\n' "$mode"
 
+  # ── The probe must not share a failure mode with what it adjudicates ──────
+  # Round 1 answered `unavailable` here on a fully attributing host, because it
+  # resolved its own probe file through singleton_lock_key(). The verdict must
+  # be unchanged by a helper that has nothing to do with the kernel's willingness
+  # to attribute a lock.
+  local broken_key_verdict
+  broken_key_verdict="$(ORCH_TEST_FINDMNT_DENY_ALL=1 \
+    ORCH_RUNTIME_DIR="$SCRATCH/runtime-probe-nokey" bash "$LAUNCH" singleton-attribution 2>&1 ||
+    printf ' <subject exited non-zero>')"
+  [[ "$broken_key_verdict" == "$expected_verdict" ]] ||
+    fail "a broken findmnt changed the $mode world's attribution verdict to: $broken_key_verdict"
+  printf 'singleton-nsboundary: RAN case=probe-independent-of-lock-key mode=%s\n' "$mode"
+
+  # ── ...and must not be forgeable by squatting its path ────────────────────
+  # Round 1's probe file was $RUNTIME_DIR/.singleton-attribution-probe.$$ --
+  # pid-derived, therefore predictable. A directory pre-created there defeated
+  # both the `rm -f` and the `: >`, and the probe reported `unavailable` on an
+  # attributing host. `exec` below preserves the pid, so the squat lands on the
+  # exact path the probe would have chosen.
+  local squat_verdict
+  squat_verdict="$(ORCH_RUNTIME_DIR="$SCRATCH/runtime-probe-squat" bash -c \
+    'mkdir -p "$ORCH_RUNTIME_DIR/.singleton-attribution-probe.$$"
+     exec bash "$1" singleton-attribution' _ "$LAUNCH" 2>&1 ||
+    printf ' <subject exited non-zero>')"
+  [[ "$squat_verdict" == "$expected_verdict" ]] ||
+    fail "a squatted probe path changed the $mode world's verdict to: $squat_verdict"
+  printf 'singleton-nsboundary: RAN case=probe-path-not-squattable mode=%s\n' "$mode"
+
+  # ── Broken tooling is a REFUSAL, in every world ───────────────────────────
+  # This is the r2 regression lock. With findmnt failing outright the launcher
+  # cannot identify its own lock file -- which says nothing about the kernel,
+  # so the pre-V3-5.38 hard refusal stands. Round 1 started here on this host,
+  # printing a WARN that blamed a namespace boundary that did not exist.
+  local nokey_output nokey_status
+  export ORCH_SESSION=nsboundary-nokey ORCH_RUNTIME_DIR="$SCRATCH/runtime-nokey"
+  export ORCH_TEST_PROVIDER_PIDS="$SCRATCH/provider-pids-nokey"
+  export ORCH_TEST_FINDMNT_DENY_ALL=1
+  set +e
+  nokey_output="$(timeout 60 bash "$LAUNCH" start 2>&1)"
+  nokey_status=$?
+  set -e
+  unset ORCH_TEST_FINDMNT_DENY_ALL
+  export ORCH_TEST_PROVIDER_PIDS="$SCRATCH/provider-pids"
+  (( nokey_status != 0 )) ||
+    fail "$mode world started with no resolvable lock identity: $nokey_output"
+  grep -q '^ERROR orchestrator-singleton-owner-unverified .*reason=lock-key-unresolved' \
+    <<<"$nokey_output" ||
+    fail "expected a lock-key-unresolved refusal (rc=$nokey_status), got: $nokey_output"
+  if grep -q 'orchestrator-singleton-owner-unattributable' <<<"$nokey_output"; then
+    fail "broken tooling was reported as a kernel boundary: $nokey_output"
+  fi
+  [[ ! -e "$singleton_lock.owner" ]] ||
+    fail 'a refused launch recorded an owner file'
+  if tmux -L "$SOCKET" has-session -t nsboundary-nokey 2>/dev/null; then
+    fail 'refused no-lock-key session remained running'
+  fi
+  printf 'singleton-nsboundary: RAN case=broken-lock-key-still-refuses mode=%s\n' "$mode"
+
   # ── Where attribution works, an unnameable owner is STILL a hard refusal ──
-  # The degradation must be unreachable on a real host. Denying MAJ:MIN for the
-  # singleton lock alone leaves its owner unresolvable while the guard's probe --
-  # which locks a different path -- still succeeds.
+  # The degradation must be unreachable on a real host. Misreporting the device
+  # of the singleton lock alone keeps its identity resolvable and its /proc/locks
+  # row unfindable, which is the ownership anomaly proper.
   local expected_providers=0
   if [[ "$mode" == observable ]]; then
     local anomaly_output anomaly_status
@@ -144,16 +268,17 @@ EOF
     # and must not be allowed to perturb the exact counts asserted below.
     export ORCH_SESSION=nsboundary-anomaly ORCH_RUNTIME_DIR="$SCRATCH/runtime-anomaly"
     export ORCH_TEST_PROVIDER_PIDS="$SCRATCH/provider-pids-anomaly"
-    export ORCH_TEST_FINDMNT_DENY="$singleton_lock"
+    export ORCH_TEST_FINDMNT_WRONG_DEV="$singleton_lock"
     set +e
     anomaly_output="$(timeout 60 bash "$LAUNCH" start 2>&1)"
     anomaly_status=$?
     set -e
-    unset ORCH_TEST_FINDMNT_DENY
+    unset ORCH_TEST_FINDMNT_WRONG_DEV
     export ORCH_TEST_PROVIDER_PIDS="$SCRATCH/provider-pids"
     (( anomaly_status != 0 )) ||
       fail "an unnameable lock owner started anyway on an attributing host: $anomaly_output"
-    grep -q '^ERROR orchestrator-singleton-owner-unverified ' <<<"$anomaly_output" ||
+    grep -q '^ERROR orchestrator-singleton-owner-unverified .*reason=owner-unnameable' \
+      <<<"$anomaly_output" ||
       fail "expected the unchanged hard refusal, got (rc=$anomaly_status): $anomaly_output"
     if grep -q 'orchestrator-singleton-owner-unattributable' <<<"$anomaly_output"; then
       fail "an attributing host took the degraded path: $anomaly_output"
@@ -287,15 +412,11 @@ fi
 
 # ── Driver ──────────────────────────────────────────────────────────────────
 run_tag="$$"
-probe_dir="$(mktemp -d)"
-trap 'rm -rf "$probe_dir"' EXIT
 
-if capability_forced_missing proc-lock-observability ||
-   [[ "$(ORCH_RUNTIME_DIR="$probe_dir" bash "$LAUNCH" singleton-attribution)" != \
-      'singleton-owner-attribution: available' ]]; then
+if capability_forced_missing proc-lock-observability || ! world_attributes_locks; then
   # This suite also runs inside the rebuilt container, where the ambient world
   # IS the blind one. Say so rather than asserting host behavior that cannot
-  # hold there.
+  # hold there. The classification is the oracle's, not the subject's.
   printf '%s\n' 'singleton-nsboundary: EXCLUDED case=attributing-host capability=proc-lock-observability'
 else
   bash "$SCRIPT_PATH" --scenario observable "host-$run_tag"

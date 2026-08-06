@@ -78,7 +78,11 @@ CODEX_MODEL="${ORCH_CODEX_MODEL:-${MODEL:-gpt-5.6-sol}}"
 # Precedence: ORCH_CLAUDE_MODEL > ORCH_MODEL (legacy) > pin. The Telegram
 # /model command writes ORCH_CLAUDE_MODEL — provider-scoped on purpose, so an
 # escalation to Fable can never leak into a codex launch.
-CLAUDE_MODEL="${ORCH_CLAUDE_MODEL:-${MODEL:-claude-opus-5}}"
+# The pin below is instance/params.yaml orchestrator.top_model, and it is held
+# equal to it by tools/check-model-pin.ts. It read claude-opus-5 from HR-2315
+# (2026-08-04) until HR-2613 (2026-08-05) restored Fable and nothing updated it,
+# so a fresh clone rebuilt from git alone came up on the superseded pin.
+CLAUDE_MODEL="${ORCH_CLAUDE_MODEL:-${MODEL:-claude-fable-5}}"
 # codex-cli defaults this box to `reasoning effort: none`, which is not adequate
 # for the judgement this role does (routing, evidence verdicts, landing calls).
 CODEX_REASONING_EFFORT="${ORCH_CODEX_REASONING_EFFORT:-high}"

@@ -1,12 +1,17 @@
 import { expect, test } from "bun:test";
 import { createVerify } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
+  ARCHIVE_MODE,
   ARCHIVE_RE,
+  DEST_DIR_MODE,
+  PARTIAL_RE,
+  PARTIAL_SUFFIX,
   archiveName,
   archiveStamp,
+  assertPassphraseOffRepo,
   buildArchive,
   checkRows,
   LocalTransport,
@@ -14,13 +19,18 @@ import {
   newestArchive,
   parseInventory,
   parseManifest,
+  planPartialSweep,
   planRetention,
   readBackupParams,
+  resolveEncryption,
+  resolveInventoryPath,
   serializeManifest,
   signedAssertion,
   throwawayServiceAccountKey,
   UNENCRYPTED_WARNING,
+  uploadArchive,
   verifyArchive,
+  type RemoteFile,
   type Row,
 } from "./backup-host-state";
 
@@ -44,7 +54,20 @@ const DEFAULT_FILES: FixtureFile[] = [
 // A temp tree plus an inventory that describes it. `path` stays fixture-absolute
 // so the --root seam is what maps it onto disk, which is the same code path the
 // real run uses with root "/".
-function fixture(options: { files?: FixtureFile[]; dirs?: { path: string; members: string[]; inBackup?: boolean }[] } = {}) {
+//
+// `encryption` writes instance/params.yaml the way the installation carries it:
+// the default is `none` because that is the mode most of these tests exercise,
+// and `null` means the key is ABSENT, which the tool must refuse rather than
+// default. Nothing here picks the real installation's mode.
+type FixtureOptions = {
+  files?: FixtureFile[];
+  dirs?: { path: string; members: string[]; inBackup?: boolean }[];
+  encryption?: string | null;
+  inventoryName?: string;
+  params?: boolean;
+};
+
+function fixture(options: FixtureOptions = {}) {
   const root = mkdtempSync(join(tmpdir(), "host-state-fixture-"));
   const repo = mkdtempSync(join(tmpdir(), "host-state-repo-"));
   mkdirSync(join(repo, "instance"), { recursive: true });
@@ -70,8 +93,31 @@ function fixture(options: { files?: FixtureFile[]; dirs?: { path: string; member
     lines.push([dir.path, "fixture-dir", "invented fixture directory", "700", `test -d ${onDisk}`, dir.inBackup === false ? "no" : "yes"].join("\t"));
   }
 
-  writeFileSync(join(repo, "instance", "host-state.tsv"), lines.join("\n") + "\n");
-  return { root, repo, inventory: join(repo, "instance", "host-state.tsv") };
+  const inventoryName = options.inventoryName ?? "host-state.tsv";
+  writeFileSync(join(repo, "instance", inventoryName), lines.join("\n") + "\n");
+
+  if (options.params !== false) {
+    const encryption = "encryption" in options ? options.encryption : "none";
+    writeFileSync(
+      join(repo, "instance", "params.yaml"),
+      ["backup:", `  inventory: instance/${inventoryName}`, "  keep: 10",
+        ...(encryption === null || encryption === undefined ? [] : [`  encryption: ${encryption}`]), ""].join("\n"),
+    );
+  }
+  return { root, repo, inventory: join(repo, "instance", inventoryName) };
+}
+
+// The operator holds the passphrase off-host, so a test one lives outside the
+// fixture repository too — the tool refuses a passphrase file under the repo.
+function passphrase(): { dir: string; file: string } {
+  const dir = mkdtempSync(join(tmpdir(), "host-state-key-"));
+  const file = join(dir, "passphrase");
+  writeFileSync(file, "fixture-passphrase-not-a-real-secret\n", { mode: 0o600 });
+  return { dir, file };
+}
+
+function modeOf(path: string): number {
+  return statSync(path).mode & 0o777;
 }
 
 function rowsOf(inventoryPath: string): Row[] {
@@ -350,8 +396,7 @@ test("a manifest round-trips through its own serializer", () => {
 
 test("an encrypted archive restores with the passphrase and is refused without it", () => {
   const { root, repo, inventory } = fixture();
-  const passphraseFile = join(repo, "passphrase");
-  writeFileSync(passphraseFile, "fixture-passphrase-not-a-real-secret\n", { mode: 0o600 });
+  const { dir: keyDir, file: passphraseFile } = passphrase();
   const { built, stagingDir, outDir } = build(root, rowsOf(inventory), passphraseFile);
   const withKey = mkdtempSync(join(tmpdir(), "host-state-verify-"));
   const withoutKey = mkdtempSync(join(tmpdir(), "host-state-verify-"));
@@ -363,7 +408,7 @@ test("an encrypted archive restores with the passphrase and is refused without i
     expect(verifyArchive(built.archivePath, { workDir: withKey, passphraseFile })).toEqual([]);
     expect(verifyArchive(built.archivePath, { workDir: withoutKey }).join("\n")).toContain("no --passphrase-file");
   } finally {
-    cleanup(root, repo, stagingDir, outDir, withKey, withoutKey);
+    cleanup(root, repo, stagingDir, outDir, withKey, withoutKey, keyDir);
   }
 });
 
@@ -387,6 +432,138 @@ test("LocalTransport uploads, lists, downloads and removes", async () => {
     expect(await transport.list()).toEqual([]);
   } finally {
     cleanup(dir, source);
+  }
+});
+
+// ── A failed upload creates no version (F1) ────────────────────────────────
+
+// Real bytes land and then the transport dies — which is what a full disk, a
+// dropped connection and a Drive quota all look like from here. The review
+// reproduced this against a 64K tmpfs; this is the same event, hermetic.
+class HalfWayTransport extends LocalTransport {
+  constructor(private readonly dest: string, private readonly failAt: "upload" | "rename") {
+    super(dest);
+  }
+  async upload(localPath: string, name: string): Promise<RemoteFile> {
+    if (this.failAt === "rename") return super.upload(localPath, name);
+    mkdirSync(this.dest, { recursive: true });
+    const bytes = readFileSync(localPath);
+    writeFileSync(join(this.dest, name), bytes.subarray(0, Math.floor(bytes.length / 2)));
+    throw new Error("simulated transport failure mid-write");
+  }
+  async rename(file: RemoteFile, name: string): Promise<RemoteFile> {
+    if (this.failAt === "rename") throw new Error("simulated failure publishing the archive");
+    return super.rename(file, name);
+  }
+}
+
+function seedNames(count: number): string[] {
+  return Array.from({ length: count }, (_, i) => archiveName(`202501${String(i + 1).padStart(2, "0")}T000000Z`, false));
+}
+
+async function seedDest(dest: string, payload: string, archives: string[]): Promise<void> {
+  const transport = new LocalTransport(dest);
+  for (const name of archives) await transport.upload(payload, name);
+}
+
+test.each([["mid-write", "upload"], ["while publishing", "rename"]] as const)(
+  "an upload that fails %s creates no version and evicts nothing",
+  async (_name, failAt) => {
+    const dest = mkdtempSync(join(tmpdir(), "host-state-dest-"));
+    const source = mkdtempSync(join(tmpdir(), "host-state-src-"));
+    try {
+      const payload = join(source, "payload.tar.gz");
+      writeFileSync(payload, `${MARKER}-payload-bytes`);
+      await seedDest(dest, payload, seedNames(10));
+      const before = readdirSync(dest).sort();
+      expect(before).toHaveLength(10);
+
+      const doomedName = archiveName("20250201T000000Z", false);
+      const flaky = new HalfWayTransport(dest, failAt);
+      await expect(uploadArchive(flaky, payload, doomedName)).rejects.toThrow();
+
+      // The review's acceptance, asserted before anything about wording: a
+      // failed upload leaves the destination's archive count unchanged.
+      const after = readdirSync(dest).sort();
+      expect(after.filter((name) => ARCHIVE_RE.test(name))).toHaveLength(10);
+      expect(after).toEqual(before);
+      expect(after.filter((name) => PARTIAL_RE.test(name))).toEqual([]);
+      // Even had it survived, the in-flight name could not have been a version.
+      expect(ARCHIVE_RE.test(`${doomedName}${PARTIAL_SUFFIX}`)).toBe(false);
+
+      // And the corpse is named rather than swallowed.
+      await expect(uploadArchive(flaky, payload, doomedName)).rejects.toThrow("no version was created");
+      await expect(uploadArchive(flaky, payload, doomedName)).rejects.toThrow(
+        `incomplete upload ${doomedName}${PARTIAL_SUFFIX} removed`,
+      );
+    } finally {
+      cleanup(dest, source);
+    }
+  },
+);
+
+test("an upload lands under a non-version name and becomes a version only on rename", async () => {
+  const dest = mkdtempSync(join(tmpdir(), "host-state-dest-"));
+  const source = mkdtempSync(join(tmpdir(), "host-state-src-"));
+  try {
+    const payload = join(source, "payload.tar.gz");
+    writeFileSync(payload, MARKER);
+    const name = archiveName("20250201T000000Z", false);
+    const staged = new LocalTransport(dest);
+    const inFlight = await staged.upload(payload, `${name}${PARTIAL_SUFFIX}`);
+    expect(newestArchive(readdirSync(dest))).toBeNull();
+    expect(planRetention(readdirSync(dest), 1)).toEqual([]);
+
+    await staged.rename(inFlight, name);
+    expect(readdirSync(dest)).toEqual([name]);
+    expect(newestArchive(readdirSync(dest))).toBe(name);
+  } finally {
+    cleanup(dest, source);
+  }
+});
+
+test("retention counts no partial and evicts nothing on a corpse's behalf", () => {
+  const partials = seedNames(3).map((name) => `${name}${PARTIAL_SUFFIX}`);
+  expect(planRetention([...seedNames(10), ...partials], 10)).toEqual([]);
+  expect(partials.every((name) => !ARCHIVE_RE.test(name) && PARTIAL_RE.test(name))).toBe(true);
+});
+
+// A concurrent newer run's in-flight upload is not this run's to delete.
+test("the sweep takes partials older than this run and leaves newer ones alone", () => {
+  const older = `${archiveName("20250101T000000Z", false)}${PARTIAL_SUFFIX}`;
+  const newer = `${archiveName("20250301T000000Z", true)}${PARTIAL_SUFFIX}`;
+  const swept = planPartialSweep([older, newer, ...seedNames(3), "notes.md"], "20250201T000000Z");
+  expect(swept).toEqual([older]);
+});
+
+// The whole cost of F1 in one run: ten good versions, one leftover corpse, a
+// `--keep 10` backup. Exactly one good archive may be evicted — the reviewed
+// defect evicted two and reported `HOST-STATE clean`.
+test("a leftover corpse costs no good version and is swept", async () => {
+  const { root, repo } = fixture({ encryption: "none" });
+  const dest = mkdtempSync(join(tmpdir(), "host-state-dest-"));
+  try {
+    const payload = join(root, "payload.tar.gz");
+    writeFileSync(payload, `${MARKER}-payload-bytes`);
+    await seedDest(dest, payload, seedNames(10));
+    const corpse = `${archiveName("20250105T000000Z", false)}${PARTIAL_SUFFIX}`;
+    writeFileSync(join(dest, corpse), "half an upload");
+
+    const backup = runTool(["--repo", repo, "--root", root, "--dest", `local:${dest}`, "--keep", "10"]);
+    expect(backup.code).toBe(0);
+    const evicted = backup.stdout.split("\n").filter((line) => line.startsWith("retention: removed ") && !line.includes("incomplete"));
+    expect(evicted).toHaveLength(1);
+    expect(evicted[0]).toContain(seedNames(10)[0]!);
+    expect(backup.stdout).toContain(`retention: removed incomplete upload ${corpse}`);
+    expect(backup.stdout).toContain("10 archive(s) retained");
+
+    const survivors = readdirSync(dest);
+    expect(survivors.filter((name) => ARCHIVE_RE.test(name))).toHaveLength(10);
+    expect(survivors.filter((name) => PARTIAL_RE.test(name))).toEqual([]);
+    expect(survivors).not.toContain(seedNames(10)[0]!);
+    expect(survivors).toContain(seedNames(10)[9]!);
+  } finally {
+    cleanup(root, repo, dest);
   }
 });
 
@@ -423,10 +600,17 @@ test("readBackupParams reads the backup block and stops at the next top-level ke
   mkdirSync(join(repo, "instance"), { recursive: true });
   writeFileSync(
     join(repo, "instance", "params.yaml"),
-    "db:\n  legacy_carry_over: none\n\nbackup:\n  drive_folder_id: FOLDER\n  service_account_key: /k.json\n  keep: 7\n\nfleet:\n  keep: 99\n",
+    "db:\n  legacy_carry_over: none\n\nbackup:\n  inventory: instance/host-state.tsv\n  drive_folder_id: FOLDER\n"
+      + "  service_account_key: /k.json\n  keep: 7\n  encryption: none\n\nfleet:\n  keep: 99\n",
   );
   try {
-    expect(readBackupParams(repo)).toEqual({ driveFolderId: "FOLDER", serviceAccountKey: "/k.json", keep: 7 });
+    expect(readBackupParams(repo)).toEqual({
+      inventory: "instance/host-state.tsv",
+      driveFolderId: "FOLDER",
+      serviceAccountKey: "/k.json",
+      keep: 7,
+      encryption: "none",
+    });
   } finally {
     cleanup(repo);
   }
@@ -437,6 +621,53 @@ test("the repository's own params.yaml names a Drive folder and a key path", () 
   expect(params.driveFolderId).toBeTruthy();
   expect(params.serviceAccountKey?.startsWith("/")).toBe(true);
   expect(params.keep).toBe(10);
+});
+
+// The operator's ruling has not landed, so the installation must carry no mode
+// and no backup may run. This test is the tripwire for the day it does land: it
+// fails the moment someone sets the key, which is when the restore paragraph and
+// the passphrase custody row have to be revisited together.
+test("the installation has not yet chosen an encryption mode, so a backup refuses to run", () => {
+  const params = readBackupParams(join(import.meta.dir, ".."));
+  expect(params.encryption).toBeUndefined();
+  expect(() => resolveEncryption(params.encryption, undefined)).toThrow("backup_encryption_2026_08_06");
+});
+
+// F4: the declared key was never read, so editing it changed nothing and the
+// file had two meanings — one of which was false.
+test("backup.inventory selects the inventory that is actually read", () => {
+  const { root, repo } = fixture({ inventoryName: "elsewhere.tsv" });
+  try {
+    expect(existsSync(join(repo, "instance", "host-state.tsv"))).toBe(false);
+    expect(resolveInventoryPath(repo, readBackupParams(repo))).toBe(join(repo, "instance", "elsewhere.tsv"));
+
+    const check = runTool(["--repo", repo, "--check"]);
+    expect(check.stdout).toContain("HOST-STATE clean");
+    expect(check.code).toBe(0);
+    void root;
+  } finally {
+    cleanup(root, repo);
+  }
+});
+
+test("--inventory overrides the param, and an absolute param is taken as written", () => {
+  const { root, repo, inventory } = fixture({ inventoryName: "elsewhere.tsv" });
+  const other = mkdtempSync(join(tmpdir(), "host-state-inv-"));
+  try {
+    expect(resolveInventoryPath(repo, readBackupParams(repo), "/tmp/explicit.tsv")).toBe("/tmp/explicit.tsv");
+    expect(resolveInventoryPath(repo, { inventory: "/abs/host-state.tsv" })).toBe("/abs/host-state.tsv");
+    expect(resolveInventoryPath(repo, {})).toBeUndefined();
+
+    // A broken override must be what the tool reads, or the flag is decorative.
+    const broken = join(other, "broken.tsv");
+    writeFileSync(broken, "/a\tkind\twhat\t600\ttest -e /a\n");
+    const result = runTool(["--repo", repo, "--inventory", broken, "--check"]);
+    expect(result.stderr).toContain("expected 6 tab-separated columns");
+    expect(result.code).toBe(1);
+    void inventory;
+  } finally {
+    cleanup(root, repo, other);
+  }
 });
 
 // ── The CLI, end to end, over LocalTransport ───────────────────────────────
@@ -545,24 +776,158 @@ test("--dry-run builds and reports but uploads and deletes nothing", () => {
   }
 });
 
-// «щоб ми не мучились» — the default is plain, so the default must announce
-// itself every single time rather than being a footnote in a document.
-test("an unencrypted run warns loudly, and an encrypted one does not", () => {
-  const { root, repo } = fixture();
-  const dest = mkdtempSync(join(tmpdir(), "host-state-dest-"));
-  const passphraseFile = join(repo, "passphrase");
-  writeFileSync(passphraseFile, "fixture-passphrase-not-a-real-secret\n", { mode: 0o600 });
-  try {
-    const plain = runTool(["--repo", repo, "--root", root, "--dest", `local:${dest}`]);
-    expect(plain.stderr).toContain(UNENCRYPTED_WARNING);
-    expect(UNENCRYPTED_WARNING).toContain("UNENCRYPTED");
+// ── Encryption is the operator's decision (F2) ─────────────────────────────
 
-    const encrypted = runTool(["--repo", repo, "--root", root, "--dest", `local:${dest}`, "--passphrase-file", passphraseFile]);
-    expect(encrypted.code).toBe(0);
-    expect(encrypted.stderr).not.toContain(UNENCRYPTED_WARNING);
-    expect(readdirSync(dest).some((name) => name.endsWith(".gpg"))).toBe(true);
+// The mode is read from params and never inferred. Each of these would
+// otherwise resolve to "ship it in cleartext and hope", which is exactly the
+// failure a warning cannot prevent.
+test("resolveEncryption refuses every way of not deciding", () => {
+  expect(() => resolveEncryption(undefined, undefined)).toThrow("no backup.encryption");
+  expect(() => resolveEncryption(undefined, undefined)).toThrow("backup_encryption_2026_08_06");
+  expect(() => resolveEncryption("", "/k")).toThrow("no backup.encryption");
+  expect(() => resolveEncryption("aes-maybe", "/k")).toThrow("unrecognised backup.encryption: aes-maybe");
+  expect(() => resolveEncryption("operator-passphrase", undefined)).toThrow("no --passphrase-file was given");
+  expect(() => resolveEncryption("none", "/k")).toThrow("backup.encryption is none");
+  expect(resolveEncryption("none", undefined)).toBe("none");
+  expect(resolveEncryption("operator-passphrase", "/k")).toBe("operator-passphrase");
+});
+
+// The passphrase is the operator's, held off-host. A copy under the repository
+// root is one `git add -A` from being a committed secret that opens an archive
+// the same repository tells you how to find.
+test("a passphrase file inside the repository is refused", () => {
+  const { root, repo } = fixture({ encryption: "operator-passphrase" });
+  const inside = join(repo, "passphrase");
+  writeFileSync(inside, "fixture-passphrase-not-a-real-secret\n", { mode: 0o600 });
+  const dest = mkdtempSync(join(tmpdir(), "host-state-dest-"));
+  try {
+    expect(() => assertPassphraseOffRepo(inside, repo)).toThrow("must not live inside the repository");
+    const result = runTool(["--repo", repo, "--root", root, "--dest", `local:${dest}`, "--passphrase-file", inside]);
+    expect(result.stderr).toContain("must not live inside the repository");
+    expect(result.code).toBe(1);
+    expect(readdirSync(dest)).toEqual([]);
   } finally {
     cleanup(root, repo, dest);
+  }
+});
+
+test.each([
+  ["no backup.encryption at all", null, "backup_encryption_2026_08_06"],
+  ["an unrecognised mode", "aes-maybe", "unrecognised backup.encryption"],
+  ["encrypted mode with no passphrase file", "operator-passphrase", "never stored in the repository"],
+])("a backup refuses to run and uploads nothing: %s", (_name, encryption, expected) => {
+  const { root, repo } = fixture({ encryption });
+  const dest = mkdtempSync(join(tmpdir(), "host-state-dest-"));
+  try {
+    const result = runTool(["--repo", repo, "--root", root, "--dest", `local:${dest}`]);
+    expect(result.stderr).toContain(expected);
+    expect(result.code).toBe(1);
+    expect(readdirSync(dest)).toEqual([]);
+  } finally {
+    cleanup(root, repo, dest);
+  }
+});
+
+test("a passphrase file in `none` mode is a contradiction, not a silent upgrade", () => {
+  const { root, repo } = fixture({ encryption: "none" });
+  const { dir: keyDir, file: passphraseFile } = passphrase();
+  const dest = mkdtempSync(join(tmpdir(), "host-state-dest-"));
+  try {
+    const result = runTool(["--repo", repo, "--root", root, "--dest", `local:${dest}`, "--passphrase-file", passphraseFile]);
+    expect(result.stderr).toContain("backup.encryption is none");
+    expect(result.code).toBe(1);
+    expect(readdirSync(dest)).toEqual([]);
+  } finally {
+    cleanup(root, repo, dest, keyDir);
+  }
+});
+
+// «щоб ми не мучились» — the cleartext mode is legitimate but must announce
+// itself every single time rather than being a footnote in a document.
+test("`none` mode warns loudly and writes a cleartext version", () => {
+  const { root, repo } = fixture({ encryption: "none" });
+  const dest = mkdtempSync(join(tmpdir(), "host-state-dest-"));
+  try {
+    const plain = runTool(["--repo", repo, "--root", root, "--dest", `local:${dest}`]);
+    expect(plain.code).toBe(0);
+    expect(plain.stderr).toContain(UNENCRYPTED_WARNING);
+    expect(UNENCRYPTED_WARNING).toContain("UNENCRYPTED");
+    expect(readdirSync(dest).every((name) => !name.endsWith(".gpg"))).toBe(true);
+  } finally {
+    cleanup(root, repo, dest);
+  }
+});
+
+test("`operator-passphrase` mode encrypts, restores with the passphrase, and keeps it out of everything", () => {
+  const { root, repo } = fixture({ encryption: "operator-passphrase" });
+  const { dir: keyDir, file: passphraseFile } = passphrase();
+  const secret = readFileSync(passphraseFile, "utf8").trim();
+  const dest = mkdtempSync(join(tmpdir(), "host-state-dest-"));
+  try {
+    const backup = runTool(["--repo", repo, "--root", root, "--dest", `local:${dest}`, "--passphrase-file", passphraseFile]);
+    expect(backup.code).toBe(0);
+    expect(backup.stderr).not.toContain(UNENCRYPTED_WARNING);
+    const uploaded = readdirSync(dest);
+    expect(uploaded).toHaveLength(1);
+    expect(uploaded[0]!.endsWith(".tar.gz.gpg")).toBe(true);
+
+    // The archive is unreadable without the operator's passphrase, and the
+    // passphrase itself reaches neither the archive nor the tool's output.
+    const bytes = readFileSync(join(dest, uploaded[0]!)).toString("latin1");
+    expect(bytes).not.toContain(secret);
+    expect(bytes).not.toContain(MARKER);
+    expect(backup.stdout + backup.stderr).not.toContain(secret);
+    expect(readFileSync(join(repo, "instance", "params.yaml"), "utf8")).not.toContain(secret);
+
+    const verify = runTool(["--repo", repo, "--dest", `local:${dest}`, "--verify", "--passphrase-file", passphraseFile]);
+    expect(verify.stdout).toContain("restored intact");
+    expect(verify.code).toBe(0);
+
+    const blind = runTool(["--repo", repo, "--dest", `local:${dest}`, "--verify"]);
+    expect(blind.stdout + blind.stderr).toContain("no --passphrase-file");
+    expect(blind.code).toBe(1);
+  } finally {
+    cleanup(root, repo, dest, keyDir);
+  }
+});
+
+// ── Permissions (F3) ───────────────────────────────────────────────────────
+
+// The archive holds every credential the installation owns. A world-readable
+// copy of them is a different defect from a missing one, not a lesser one.
+test("the archive and any destination this tool creates are not world-readable", () => {
+  const { root, repo } = fixture({ encryption: "none" });
+  const parent = mkdtempSync(join(tmpdir(), "host-state-dest-"));
+  const dest = join(parent, "remote");
+  try {
+    expect(runTool(["--repo", repo, "--root", root, "--dest", `local:${dest}`]).code).toBe(0);
+    expect(modeOf(dest)).toBe(DEST_DIR_MODE);
+    const archive = join(dest, readdirSync(dest)[0]!);
+    expect(modeOf(archive)).toBe(ARCHIVE_MODE);
+  } finally {
+    cleanup(root, repo, parent);
+  }
+});
+
+test("an encrypted archive is written 0600 too", () => {
+  const { root, repo, inventory } = fixture();
+  const { dir: keyDir, file: passphraseFile } = passphrase();
+  const { built, stagingDir, outDir } = build(root, rowsOf(inventory), passphraseFile);
+  try {
+    expect(modeOf(built.archivePath)).toBe(ARCHIVE_MODE);
+    expect(modeOf(outDir)).toBe(DEST_DIR_MODE);
+  } finally {
+    cleanup(root, repo, stagingDir, outDir, keyDir);
+  }
+});
+
+test("a plain archive is written 0600 under a umask that would make it 0644", () => {
+  const { root, repo, inventory } = fixture();
+  const { built, stagingDir, outDir } = build(root, rowsOf(inventory));
+  try {
+    expect(modeOf(built.archivePath)).toBe(ARCHIVE_MODE);
+  } finally {
+    cleanup(root, repo, stagingDir, outDir);
   }
 });
 

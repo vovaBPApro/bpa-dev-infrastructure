@@ -19,11 +19,59 @@
 //              the same file but judges only its SHAPE, and a row that names a
 //              path which stopped existing passes a shape check unharmed.
 //   (default)  stage every `in-backup: yes` row, write a manifest, tar it,
-//              optionally encrypt it, upload it, then apply keep-N retention.
+//              encrypt it as `backup.encryption` requires, upload it, then
+//              apply keep-N retention.
 //   --verify   download the newest archive into an EMPTY directory, unpack it,
 //              and check every manifest entry against the size it was recorded
 //              with. Restore proof, not upload hope -- an upload that returns
 //              200 and a truncated archive are the same event from here.
+//
+// ── Why an upload lands under a `.part` name first ─────────────────────────
+//
+// A version is a name. `ARCHIVE_RE` is what retention counts, what `--verify`
+// targets, and therefore what "we have ten backups" means -- so a half-written
+// file must never carry such a name. It would be the NEWEST version by the
+// lexicographic sort, it would consume a retention slot forever (nothing
+// re-reads it), and every subsequent run would evict one more good archive to
+// make room for it. Ten failed uploads and one success would report
+// `HOST-STATE clean` with nothing restorable left.
+//
+// So the transport writes `<name>.part`, which matches no version pattern, and
+// only the rename makes it a version. A failure at either step removes the
+// partial and says so by name; a partial that could not be removed is named in
+// the error, and any partial older than the current run is swept.
+//
+// ── Encryption is an operator decision, not a tool default ─────────────────
+//
+// `instance/params.yaml: backup.encryption` selects the mode and this tool
+// refuses to choose for the operator:
+//
+//   operator-passphrase  GPG symmetric AES256. The passphrase arrives ONLY via
+//                        --passphrase-file at run time. It is held by the
+//                        operator, off this host; it is never in the repository,
+//                        params, the inventory, the archive or the Drive -- the
+//                        file is refused outright if it lives inside the repo.
+//                        Encrypted mode with no passphrase file fails closed.
+//   none                 cleartext at rest, announced loudly on every run.
+//
+// An unset or unrecognised value is a named failure, never a silent default:
+// picking "none" for the operator would ship live credentials to Drive in
+// cleartext on the strength of a missing line.
+//
+// ── Restoring, from the repository alone ───────────────────────────────────
+//
+// 1. Clone this repository; the Drive folder is `backup.drive_folder_id` and
+//    the credential path is `backup.service_account_key` (both in params.yaml,
+//    neither a secret). Reaching the folder without that key is the operator's
+//    own Google session -- he is the second factor.
+// 2. `bun tools/backup-host-state.ts --verify [--passphrase-file <path>]`
+//    proves the newest archive restores before anything is trusted.
+// 3. Unpack it: every member sits under `files/` at its absolute path minus the
+//    leading slash, and `manifest.tsv` gives the byte and file count each was
+//    recorded with. `instance/host-state.tsv` gives the mode each path must be
+//    restored with and the command that proves it.
+// 4. In `operator-passphrase` mode the passphrase comes from the operator. It
+//    is deliberately not recoverable from this repository or from Drive.
 //
 // ── The transport, and why it is written by hand ───────────────────────────
 //
@@ -49,17 +97,20 @@
 
 import { createSign, generateKeyPairSync } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 
 export const INVENTORY = join("instance", "host-state.tsv");
 export const PARAMS = join("instance", "params.yaml");
@@ -72,6 +123,18 @@ export const DEFAULT_KEEP = 10;
 // being able to find its own backups from the written rule alone.
 export const ARCHIVE_PREFIX = "bpa-host-state-";
 export const ARCHIVE_RE = /^bpa-host-state-(\d{8}T\d{6}Z)\.tar\.gz(\.gpg)?$/;
+
+// The name an upload occupies while it is still in flight. It deliberately does
+// NOT match ARCHIVE_RE: until the rename lands, the bytes are not a version and
+// nothing may count, verify, or evict on their behalf.
+export const PARTIAL_SUFFIX = ".part";
+export const PARTIAL_RE = /^bpa-host-state-(\d{8}T\d{6}Z)\.tar\.gz(\.gpg)?\.part$/;
+
+// The archive holds every credential this installation has. World-readable is a
+// different defect from not-backed-up, and the inventory's own header argues the
+// same point about restored keys.
+export const ARCHIVE_MODE = 0o600;
+export const DEST_DIR_MODE = 0o700;
 
 export type Row = {
   path: string;
@@ -96,6 +159,8 @@ export interface Transport {
   describe(): string;
   list(): Promise<RemoteFile[]>;
   upload(localPath: string, name: string): Promise<RemoteFile>;
+  // Publishing step. An uploaded file becomes a version only when this succeeds.
+  rename(file: RemoteFile, name: string): Promise<RemoteFile>;
   download(file: RemoteFile, destPath: string): Promise<void>;
   remove(file: RemoteFile): Promise<void>;
 }
@@ -266,15 +331,20 @@ export function buildArchive(
   }
   writeFileSync(join(opts.stagingDir, MANIFEST), serializeManifest(entries));
 
-  mkdirSync(opts.outDir, { recursive: true });
+  mkdirSync(opts.outDir, { recursive: true, mode: DEST_DIR_MODE });
+  chmodSync(opts.outDir, DEST_DIR_MODE);
   const plainName = archiveName(opts.stamp, false);
   const plainPath = join(opts.outDir, plainName);
   run(["tar", "-czf", plainPath, "-C", opts.stagingDir, MANIFEST, "files"], "tar");
+  // tar creates under the umask, which is 022 on this host: without this the
+  // archive of every credential the installation owns is world-readable.
+  chmodSync(plainPath, ARCHIVE_MODE);
 
   if (!opts.passphraseFile) return { archivePath: plainPath, name: plainName, entries, encrypted: false };
   const encryptedName = archiveName(opts.stamp, true);
   const encryptedPath = join(opts.outDir, encryptedName);
   encryptArchive(plainPath, encryptedPath, opts.passphraseFile);
+  chmodSync(encryptedPath, ARCHIVE_MODE);
   rmSync(plainPath, { force: true });
   return { archivePath: encryptedPath, name: encryptedName, entries, encrypted: true };
 }
@@ -356,6 +426,17 @@ export function newestArchive(names: string[]): string | null {
   return [...ours].sort((a, b) => (a < b ? 1 : a > b ? -1 : 0))[0]!;
 }
 
+// Partials left by an upload that died between the write and the rename -- an
+// aborted process, a killed lane, a host that went away. Only ones STRICTLY
+// older than the current run are swept, so a concurrent newer run's in-flight
+// upload is never pulled out from under it.
+export function planPartialSweep(names: string[], stamp: string): string[] {
+  return names.filter((name) => {
+    const match = PARTIAL_RE.exec(name);
+    return match !== null && match[1]! < stamp;
+  });
+}
+
 // ── Transports ─────────────────────────────────────────────────────────────
 
 // A directory. Used by every test in this repository and by an operator who
@@ -370,14 +451,24 @@ export class LocalTransport implements Transport {
     return readdirSync(this.dir).map((name) => ({ id: join(this.dir, name), name }));
   }
   async upload(localPath: string, name: string): Promise<RemoteFile> {
-    mkdirSync(this.dir, { recursive: true });
+    mkdirSync(this.dir, { recursive: true, mode: DEST_DIR_MODE });
+    // mkdir's mode is masked by the umask, so say it again where it counts: a
+    // directory this tool creates for archives is not world-traversable.
+    chmodSync(this.dir, DEST_DIR_MODE);
     const dest = join(this.dir, name);
     run(["cp", "-a", localPath, dest], `local upload of ${name}`);
+    chmodSync(dest, ARCHIVE_MODE);
+    return { id: dest, name };
+  }
+  async rename(file: RemoteFile, name: string): Promise<RemoteFile> {
+    const dest = join(this.dir, name);
+    renameSync(file.id, dest);
     return { id: dest, name };
   }
   async download(file: RemoteFile, destPath: string): Promise<void> {
-    mkdirSync(dirname(destPath), { recursive: true });
+    mkdirSync(dirname(destPath), { recursive: true, mode: DEST_DIR_MODE });
     run(["cp", "-a", file.id, destPath], `local download of ${file.name}`);
+    chmodSync(destPath, ARCHIVE_MODE);
   }
   async remove(file: RemoteFile): Promise<void> {
     rmSync(file.id, { force: true });
@@ -503,13 +594,25 @@ export class DriveTransport implements Transport {
     return created;
   }
 
+  async rename(file: RemoteFile, name: string): Promise<RemoteFile> {
+    const response = await this.authorized(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}?supportsAllDrives=true&fields=id,name`,
+      { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }) },
+    );
+    if (!response.ok) throw new Error(`Drive rename of ${file.name} to ${name} failed (HTTP ${response.status})`);
+    const renamed = (await response.json()) as RemoteFile;
+    if (renamed.name !== name) throw new Error(`Drive rename of ${file.name} did not take: remote name is ${renamed.name}`);
+    return renamed;
+  }
+
   async download(file: RemoteFile, destPath: string): Promise<void> {
     const response = await this.authorized(
       `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}?alt=media&supportsAllDrives=true`,
     );
     if (!response.ok) throw new Error(`Drive download of ${file.name} failed (HTTP ${response.status})`);
-    mkdirSync(dirname(destPath), { recursive: true });
+    mkdirSync(dirname(destPath), { recursive: true, mode: DEST_DIR_MODE });
     await Bun.write(destPath, await response.arrayBuffer());
+    chmodSync(destPath, ARCHIVE_MODE);
   }
 
   async remove(file: RemoteFile): Promise<void> {
@@ -521,9 +624,54 @@ export class DriveTransport implements Transport {
   }
 }
 
+// ── Publishing an archive ──────────────────────────────────────────────────
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+// Best effort, and honest about which effort it was: a corpse that could not be
+// removed is NAMED rather than swallowed, because the operator is the only one
+// who can then delete it.
+async function discardPartial(transport: Transport, name: string): Promise<string> {
+  try {
+    const found = (await transport.list()).find((file) => file.name === name);
+    if (!found) return "no incomplete upload was left behind";
+    await transport.remove(found);
+    return `incomplete upload ${name} removed`;
+  } catch (error) {
+    return `incomplete upload ${name} is LEFT BEHIND at ${transport.describe()} and must be deleted by hand (${messageOf(error)})`;
+  }
+}
+
+// Upload under a non-version name, then publish by rename. Either half failing
+// leaves the version set exactly as it was -- which is the whole point: the
+// retention slot belongs to a backup that restores, not to one that reported an
+// error.
+export async function uploadArchive(transport: Transport, archivePath: string, name: string): Promise<RemoteFile> {
+  const partial = `${name}${PARTIAL_SUFFIX}`;
+  let staged: RemoteFile;
+  try {
+    staged = await transport.upload(archivePath, partial);
+  } catch (error) {
+    throw new Error(`upload of ${name} failed: ${messageOf(error)}; ${await discardPartial(transport, partial)}; no version was created`);
+  }
+  try {
+    return await transport.rename(staged, name);
+  } catch (error) {
+    throw new Error(`publishing ${name} failed: ${messageOf(error)}; ${await discardPartial(transport, partial)}; no version was created`);
+  }
+}
+
 // ── Instance parameters ────────────────────────────────────────────────────
 
-export type BackupParams = { driveFolderId?: string; serviceAccountKey?: string; keep?: number };
+export type BackupParams = {
+  inventory?: string;
+  driveFolderId?: string;
+  serviceAccountKey?: string;
+  keep?: number;
+  encryption?: string;
+};
 
 // A deliberately small reader over the `backup:` block of instance/params.yaml,
 // matching how tools/check-fleet-cap.ts reads `fleet:`. The repository has no
@@ -540,11 +688,22 @@ export function readBackupParams(repo: string): BackupParams {
     const match = line.match(/^\s+([a-z_]+):\s*([^\s#]+)/);
     if (!match) continue;
     const [, key, value] = match;
+    if (key === "inventory") params.inventory = value;
     if (key === "drive_folder_id") params.driveFolderId = value;
     if (key === "service_account_key") params.serviceAccountKey = value;
     if (key === "keep") params.keep = Number(value);
+    if (key === "encryption") params.encryption = value;
   }
   return params;
+}
+
+// `backup.inventory` names WHAT is backed up; leaving it declared and unread
+// gave the file two meanings, one of which was a lie. Relative to the repo,
+// because that is how it is written.
+export function resolveInventoryPath(repo: string, params: BackupParams, override?: string): string | undefined {
+  const chosen = override ?? params.inventory;
+  if (!chosen) return undefined;
+  return isAbsolute(chosen) ? chosen : join(repo, chosen);
 }
 
 export function makeTransport(spec: string, params: BackupParams): Transport {
@@ -566,7 +725,51 @@ export function makeTransport(spec: string, params: BackupParams): Transport {
 // ── CLI ────────────────────────────────────────────────────────────────────
 
 export const UNENCRYPTED_WARNING =
-  "WARNING: writing an UNENCRYPTED host-state archive — it carries live credentials in cleartext at rest; pass --passphrase-file to encrypt it.";
+  "WARNING: writing an UNENCRYPTED host-state archive — it carries live credentials in cleartext at rest; backup.encryption is `none`.";
+
+export const ENCRYPTION_MODES = ["operator-passphrase", "none"] as const;
+export type EncryptionMode = (typeof ENCRYPTION_MODES)[number];
+
+// Fail closed on an unset value rather than defaulting. "none" chosen by absence
+// would ship the GitHub deploy key, the provider credentials and the Telegram
+// token to Drive in cleartext on the strength of a missing line, and the run
+// that did it would look exactly like a successful one.
+export function resolveEncryption(value: string | undefined, passphraseFile: string | undefined): EncryptionMode {
+  if (!value) {
+    throw new Error(
+      `no backup.encryption in ${PARAMS} — the operator's decision (backup_encryption_2026_08_06) has not landed, so this tool will not choose for him; set backup.encryption to one of ${ENCRYPTION_MODES.join(" | ")} (or pass --encryption) before a backup runs`,
+    );
+  }
+  if (!(ENCRYPTION_MODES as readonly string[]).includes(value)) {
+    throw new Error(`unrecognised backup.encryption: ${value} (expected ${ENCRYPTION_MODES.join(" | ")})`);
+  }
+  const mode = value as EncryptionMode;
+  if (mode === "operator-passphrase" && !passphraseFile) {
+    throw new Error(
+      "backup.encryption is operator-passphrase but no --passphrase-file was given; the passphrase is held by the operator and passed at run time only — it is never stored in the repository, in params, in the archive, or on the Drive",
+    );
+  }
+  if (mode === "none" && passphraseFile) {
+    throw new Error("--passphrase-file was given but backup.encryption is none; set backup.encryption to operator-passphrase to encrypt");
+  }
+  return mode;
+}
+
+// "Never stored in the repo" enforced rather than asserted. A passphrase under
+// the repository root is one `git add -A` away from being a committed secret,
+// and the archive it opens is on a Drive the same repository tells you how to
+// find.
+export function assertPassphraseOffRepo(passphraseFile: string, repo: string): void {
+  if (!existsSync(passphraseFile)) throw new Error(`passphrase file not found: ${passphraseFile}`);
+  const file = realpathSync(passphraseFile);
+  const root = realpathSync(repo);
+  const inside = file === root || file.startsWith(root.endsWith("/") ? root : `${root}/`);
+  if (inside) {
+    throw new Error(
+      `passphrase file must not live inside the repository: ${passphraseFile} resolves under ${root}; the operator holds the passphrase off-host`,
+    );
+  }
+}
 
 const USAGE = `usage: bun tools/backup-host-state.ts [options]
 
@@ -575,11 +778,13 @@ const USAGE = `usage: bun tools/backup-host-state.ts [options]
   (no mode flag)           build, upload, and apply retention
 
   --repo <path>            repository root (default: cwd)
-  --inventory <path>       override the inventory path
+  --inventory <path>       override the inventory path (default: params.yaml)
   --root <path>            prefix for inventory paths (default: /) — test seam
   --dest local:<dir>|drive:<folderId>   destination (default: params.yaml)
   --keep <n>               archives to retain (default: ${DEFAULT_KEEP})
-  --passphrase-file <path> GPG-encrypt the archive with this passphrase
+  --encryption ${ENCRYPTION_MODES.join("|")}   override backup.encryption
+  --passphrase-file <path> operator-held passphrase, required by and only valid
+                           for the operator-passphrase mode
   --dry-run                build and report, upload nothing, delete nothing`;
 
 function flag(argv: string[], name: string): string | undefined {
@@ -596,7 +801,8 @@ export async function main(argv: string[]): Promise<number> {
     return 0;
   }
   const repo = flag(argv, "--repo") ?? process.cwd();
-  const inventoryPath = flag(argv, "--inventory");
+  const params = readBackupParams(repo);
+  const inventoryPath = resolveInventoryPath(repo, params, flag(argv, "--inventory"));
   const { rows, errors } = readInventory(repo, inventoryPath);
   if (errors.length) {
     for (const error of errors) console.error(`HOST-STATE ${error}`);
@@ -613,7 +819,6 @@ export async function main(argv: string[]): Promise<number> {
     return failed.length ? 1 : 0;
   }
 
-  const params = readBackupParams(repo);
   const keep = Number(flag(argv, "--keep") ?? params.keep ?? DEFAULT_KEEP);
   const passphraseFile = flag(argv, "--passphrase-file");
   const destSpec = flag(argv, "--dest")
@@ -644,29 +849,41 @@ export async function main(argv: string[]): Promise<number> {
     }
   }
 
-  if (!passphraseFile) console.warn(UNENCRYPTED_WARNING);
+  const encryption = resolveEncryption(flag(argv, "--encryption") ?? params.encryption, passphraseFile);
+  if (encryption === "none") console.warn(UNENCRYPTED_WARNING);
+  else assertPassphraseOffRepo(passphraseFile!, repo);
+
   const root = flag(argv, "--root") ?? "/";
   const dryRun = argv.includes("--dry-run");
+  const stamp = archiveStamp(new Date());
   const stagingDir = mkdtempSync(join(tmpdir(), "host-state-stage-"));
   const outDir = mkdtempSync(join(tmpdir(), "host-state-out-"));
   try {
-    const built = buildArchive(rows, { root, stagingDir, outDir, stamp: archiveStamp(new Date()), passphraseFile });
+    const built = buildArchive(rows, { root, stagingDir, outDir, stamp, passphraseFile });
     const totalBytes = built.entries.reduce((sum, entry) => sum + entry.bytes, 0);
     console.log(`built ${built.name} — ${built.entries.length} row(s), ${totalBytes} B, encrypted=${built.encrypted}`);
     if (dryRun) {
       console.log(`HOST-STATE dry run — nothing uploaded to ${transport.describe()}, nothing deleted`);
       return 0;
     }
-    await transport.upload(built.archivePath, built.name);
+    await uploadArchive(transport, built.archivePath, built.name);
     console.log(`uploaded ${built.name} to ${transport.describe()}`);
 
+    // Retention runs only after the archive is a published version, and counts
+    // only published versions. A `.part` left by an earlier death is swept, not
+    // counted -- it never held a slot to begin with.
     const remote = await transport.list();
-    const doomed = planRetention(remote.map((file) => file.name), keep);
+    const versions = remote.map((file) => file.name).filter((name) => ARCHIVE_RE.test(name));
+    const doomed = planRetention(versions, keep);
     for (const name of doomed) {
       await transport.remove(remote.find((file) => file.name === name)!);
       console.log(`retention: removed ${name}`);
     }
-    console.log(`HOST-STATE clean — ${built.name} uploaded, ${Math.min(keep, remote.length - doomed.length)} archive(s) retained`);
+    for (const name of planPartialSweep(remote.map((file) => file.name), stamp)) {
+      await transport.remove(remote.find((file) => file.name === name)!);
+      console.log(`retention: removed incomplete upload ${name}`);
+    }
+    console.log(`HOST-STATE clean — ${built.name} uploaded, ${versions.length - doomed.length} archive(s) retained`);
     return 0;
   } finally {
     rmSync(stagingDir, { recursive: true, force: true });

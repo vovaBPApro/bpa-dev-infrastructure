@@ -30,6 +30,28 @@
 #
 # Every cell must be non-empty; an unknown value is a FAIL, never a blank.
 #
+# RESTORING, after the meteorite -- the enumeration is only half the obligation;
+# the other half is that someone can act on it from the repository alone:
+#
+#   1. Clone this repository. The archive lives in the Drive folder named by
+#      instance/params.yaml `backup.drive_folder_id`, reachable with the key at
+#      `backup.service_account_key` -- or, when that key is itself gone, with the
+#      operator's own Google session on that shared drive.
+#   2. `bun tools/backup-host-state.ts --verify [--passphrase-file <path>]`
+#      proves the newest archive restores BEFORE anything is trusted to it.
+#   3. Unpack it. Every member sits under `files/` at its absolute path minus the
+#      leading slash, `manifest.tsv` records the bytes and file count each was
+#      archived with, and the `mode` column below is the permission each must be
+#      restored with. `--check` then re-runs every verify-command.
+#   4. The backup passphrase is host state that is deliberately NOT on this host
+#      and NOT in this file: `backup.encryption: operator-passphrase` means the
+#      operator holds it in his own store and passes it at run time with
+#      --passphrase-file. It is therefore enumerated here as a fact rather than a
+#      path -- what it is, who holds it, and that no copy exists in the
+#      repository, in params, inside the archive or on the Drive. Losing it loses
+#      every encrypted archive, which is why the alternative mode (`none`) exists
+#      and announces itself on every run.
+#
 # One property of row 3 is deliberate and worth naming once: the service-account
 # key is the credential the backup tool authenticates to Drive with, and it is
 # also inside the archive. Recovering it from the archive therefore needs the

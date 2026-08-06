@@ -238,3 +238,12 @@ backup:
   service_account_key: /root/.config/bpa/oauth/gcp-sa-bpapro-agents.json
   # "Можна навіть зберігати, не знаю, десять останніх версій" — HR-2171.
   keep: 10
+  # DELIBERATELY UNSET until the operator rules (decision backup_encryption_2026_08_06).
+  # `operator-passphrase` = GPG AES256, passphrase supplied at run time via
+  # --passphrase-file and held by the operator off this host; it is never in this
+  # file, the repository, the inventory, the archive or the Drive.
+  # `none` = cleartext at rest, announced loudly on every run.
+  # The tool refuses to back up while this line is absent, and that is the point:
+  # the archive carries every credential the installation owns, so "cleartext by
+  # omission" must not be reachable. Uncomment ONE value when he decides.
+  # encryption: operator-passphrase | none

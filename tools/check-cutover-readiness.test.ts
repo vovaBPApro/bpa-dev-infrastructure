@@ -18,40 +18,44 @@ const REAL_REPO = join(import.meta.dir, "..");
 // A repository in which every gate holds, so each case below changes exactly
 // one input and the verdict it moves is attributable to that one change.
 //
-// Everything the fixture writes is COMMITTED: the checker measures git's
-// tracked set, and a fixture that reached PASS from a dirty tree would be
-// testing a state the definition ("from a clean clone, with no file from this
-// host") does not allow. `untracked` writes files after the commit precisely so
-// the tests below can prove such a file moves nothing.
+// Everything the fixture writes into the repo is COMMITTED: the checker
+// measures git's tracked set, and a fixture that reached PASS from a dirty tree
+// would be testing a state the definition ("from a clean clone, with no file
+// from this host") does not allow. `untracked` writes files after the commit
+// precisely so the tests below can prove such a file moves nothing.
+//
+// The ONE input that is deliberately outside the tree is the rebuild proof's
+// artifact: meteorite/run.sh writes it outside any checkout, because an
+// artifact inside the tree would make the next landing refuse a dirty worktree.
+// It lives in a sibling directory of each fixture repo and is addressed exactly
+// as the runner addresses it.
 //
 // The fixture scripts are RUNNABLE, because the gates execute them: the
-// meteorite is a real runner that loops its `commands=(...)` array through
-// `docker exec` (the rehearsal supplies the docker), the bootstrap really runs,
-// and the ledger checker really reports. A fixture that only LOOKED like a
-// script would be re-importing the defect this revision removes.
+// bootstrap really runs and the ledger checker really reports on the tree it is
+// pointed at. A fixture that only LOOKED like a script would be re-importing
+// the defect these revisions removed.
 type Options = {
   synthesis?: string;
   launcher?: string;
   meteorite?: string;
-  startProof?: string;
   ledgerChecker?: string;
   hostState?: string;
   bootstrap?: string;
   registry?: string;
   omit?: string[];
   untracked?: Record<string, string>;
+  // Overrides merged into the green `meteorite-result/v1` artifact; `null`
+  // writes no artifact at all, which is this repository's state today.
+  artifact?: Record<string, unknown> | null;
 };
 
-// A runnable meteorite with the given stage lines. The stage list is the same
-// literal `commands=(...)` array the real meteorite carries (so the checker's
-// parse reads it), and the loop hands every stage to `docker exec bash -lc`
-// exactly as meteorite/run.sh does.
+// A runnable meteorite with the given stage lines. Nothing in this file's gates
+// reads its text any more -- that is one of the properties under test -- but a
+// fixture runner that could not run would be a worse fixture, not a safer one.
 function meteoriteWith(...stages: string[]): string {
   return [
     "#!/usr/bin/env bash",
     "set -euo pipefail",
-    // The real meteorite defines these before its array; stage spellings that
-    // interpolate them must not kill the fixture at array-definition time.
     'repo_url="https://example.invalid/repo.git"',
     'ref="0000000000000000000000000000000000000000"',
     "commands=(",
@@ -68,7 +72,65 @@ function meteoriteWith(...stages: string[]): string {
 
 const PREREQ_STAGE = '"prerequisites|apt-get update && apt-get install -y git"';
 const CLONE_STAGE = `"clone|git clone --no-checkout 'https://example.invalid/repo.git' /work/source"`;
-const START_STAGE = '"orchestrator-start|bash meteorite/assert-orchestrator-live.sh"';
+const LIVE_STAGE = '"orchestrator-live|bash meteorite/live-orchestrator-stage.sh"';
+
+// The stage list meteorite/run.sh declares as its own contract, with the
+// verdicts a clean run records.
+const GREEN_STAGES = [
+  "container-start",
+  "prerequisites",
+  "clone",
+  "sha-verification",
+  "bootstrap-install",
+  "full-test-suite",
+  "unit-drift",
+  "orchestrator-live",
+].map((name) => ({ name, verdict: "PASS" }));
+
+const GREEN_LIVENESS = {
+  proven: true,
+  session: "meteorite-rehearsal",
+  provider: "codex",
+  pulse_first: "1786018973",
+  pulse_last: "1786018975",
+  startup_handshake: "yes",
+  torn_down: "yes",
+  substitutions: "provider",
+  unproven: "cgroup-isolation,provider-session,telegram-transport,watchdog-supervision",
+};
+
+// A miniature of tools/instructions/check.ts, and a real one: it reads the tree
+// it was pointed at, reports UNKNOWN for each input it cannot see and a
+// measured outcome for each it can, counts its own UNKNOWNs in its summary, and
+// blocks on them only under --strict. `channel` decides whether it also
+// publishes the structured outcome set.
+function checkerScript(options: { channel?: boolean } = {}): string {
+  return [
+    "#!/usr/bin/env bun",
+    'import { existsSync } from "node:fs";',
+    'import { join } from "node:path";',
+    "const argv = process.argv.slice(2);",
+    'const index = argv.indexOf("--repo");',
+    'const repo = index >= 0 ? argv[index + 1] : ".";',
+    'const strict = argv.includes("--strict");',
+    "const findings = [",
+    '  existsSync(join(repo, "instructions/lane-lifecycle.md"))',
+    '    ? { level: "PASS", file: "instructions/lane-lifecycle.md", check: "schema" }',
+    '    : { level: "UNKNOWN", file: "instructions/", check: "schema" },',
+    '  existsSync(join(repo, "instance/params.yaml"))',
+    '    ? { level: "WARN", file: "instance/params.yaml", check: "ledger" }',
+    '    : { level: "UNKNOWN", file: "instance/params.yaml", check: "ledger" },',
+    "];",
+    "for (const finding of findings) console.log(`${finding.level} ${finding.file} [${finding.check}] detail`);",
+    'const unknown = findings.filter((finding) => finding.level === "UNKNOWN").length;',
+    "console.log(`\\nsummary: 0 FAIL, ${unknown} UNKNOWN, 0 WARN, 0 SKIP, 0 PASS (0 docs)`);",
+    options.channel === false
+      ? "// this checker publishes no structured outcome channel"
+      : 'const channel = process.env.CHECK_OUTCOMES_JSON;\nif (channel) await Bun.write(channel, JSON.stringify({ findings }));',
+    "process.exit(strict && unknown > 0 ? 1 : 0);",
+    "",
+  ].join("\n");
+}
 
 const DEFAULTS = {
   // Enough of orchestrator/launch.sh to carry the two things the gates read:
@@ -87,30 +149,9 @@ const DEFAULTS = {
     PREREQ_STAGE,
     "# a comment inside the array is not a stage",
     CLONE_STAGE,
-    START_STAGE,
+    LIVE_STAGE,
   ),
-  // Gates D and A rehearse this, so what it DOES is what is measured. It is
-  // run against an orchestrator analog in three worlds -- live, launcher-
-  // success-without-liveness, dead -- and only a script that launches the
-  // analog and asserts the liveness evidence itself answers all three.
-  startProof: [
-    "#!/usr/bin/env bash",
-    "set -euo pipefail",
-    '"$REPO_DIR/orchestrator/launch.sh" --detach',
-    '"$REPO_DIR/orchestrator/status.sh"',
-    "",
-  ].join("\n"),
-  // Gate E executes this, so what it REPORTS is what is measured -- and the
-  // green path is the structured outcome channel, not the printed lines.
-  ledgerChecker: [
-    "#!/usr/bin/env bun",
-    'console.log("UNKNOWN instructions/ [root] directory not found");',
-    'console.log("\\nsummary: 0 FAIL, 0 WARN, 0 SKIP, 1 UNKNOWN, 0 PASS (0 docs)");',
-    "const channel = process.env.CHECK_OUTCOMES_JSON;",
-    'if (channel) await Bun.write(channel, JSON.stringify({ findings: [{ level: "UNKNOWN", file: "instructions/", check: "root" }] }));',
-    "process.exit(1);",
-    "",
-  ].join("\n"),
+  ledgerChecker: checkerScript(),
   hostState: "# id\tlocation\tverify\nbot-token\t/root/.config/bpa/orchestrator.env\ttest -s /root/.config/bpa/orchestrator.env\n",
   // Runnable: really invokes the installer beside it, whatever directory the
   // rehearsal world put the tree in.
@@ -118,7 +159,6 @@ const DEFAULTS = {
   registry: [
     "# id\tkind\ttracked target",
     "runner:meteorite\trunner\tmeteorite/run.sh",
-    "runner:orchestrator-start-proof\trunner\tmeteorite/assert-orchestrator-live.sh",
     "checker:checkout-parity\tchecker\tgate/checkout-parity.sh",
     "checker:stranded-work\tchecker\thygiene/check-stranded-work.sh",
     "",
@@ -145,6 +185,34 @@ function porcelain(repo: string): string {
   return git(repo, "status", "--porcelain").stdout.toString().trim();
 }
 
+function headSha(repo: string): string {
+  return git(repo, "rev-parse", "HEAD").stdout.toString().trim();
+}
+
+// Outside the repository, exactly as meteorite/run.sh writes it.
+function artifactPathFor(repo: string): string {
+  return join(`${repo}-state`, "bpa-dev-infrastructure/evidence/meteorite-latest.json");
+}
+
+function writeArtifact(repo: string, overrides: Record<string, unknown> = {}): void {
+  const sha = headSha(repo);
+  const artifact = {
+    schema: "meteorite-result/v1",
+    finished: true,
+    result: "clean",
+    blocker: "none",
+    requested_sha: sha,
+    tree_sha: sha,
+    stages: GREEN_STAGES,
+    liveness: GREEN_LIVENESS,
+    finished_at: "2026-08-06T18:04:11Z",
+    ...overrides,
+  };
+  const path = artifactPathFor(repo);
+  mkdirSync(join(path, ".."), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(artifact, null, 2)}\n`);
+}
+
 function fixture(options: Options = {}): string {
   const repo = mkdtempSync(join(tmpdir(), "cutover-readiness-"));
   const omit = new Set(options.omit ?? []);
@@ -158,8 +226,11 @@ function fixture(options: Options = {}): string {
     "bootstrap/install.sh": options.bootstrap ?? DEFAULTS.bootstrap,
     "tools/whisper/install.sh": "# whisper\n",
     "meteorite/run.sh": options.meteorite ?? DEFAULTS.meteorite,
-    "meteorite/assert-orchestrator-live.sh": options.startProof ?? DEFAULTS.startProof,
     "tools/instructions/check.ts": options.ledgerChecker ?? DEFAULTS.ledgerChecker,
+    // The ledger checker's inputs, so a probe of the tracked tree can tell a
+    // checker from a constant.
+    "instructions/lane-lifecycle.md": "---\nid: lane-lifecycle\n---\n",
+    "instance/params.yaml": "phase: fixture\n",
     "instance/host-state.tsv": options.hostState ?? DEFAULTS.hostState,
     "instance/required-mechanisms.tsv": options.registry ?? DEFAULTS.registry,
     "gate/checkout-parity.sh": "# one verdict from every checkout kind\n",
@@ -169,12 +240,19 @@ function fixture(options: Options = {}): string {
   git(repo, "init", "-q");
   git(repo, "add", "-A");
   git(repo, "commit", "-qm", "fixture");
+  if (options.artifact !== null) writeArtifact(repo, options.artifact ?? {});
   for (const [path, content] of Object.entries(options.untracked ?? {})) write(repo, path, content);
   return repo;
 }
 
-// One measurement per call: the executed rehearsals make a measurement cost
-// real time, so tests read verdicts and evidence from a single run.
+function discard(repo: string): void {
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(`${repo}-state`, { recursive: true, force: true });
+}
+
+// One measurement per call: the executed probes make a measurement cost real
+// time, so tests read verdicts and evidence from a single run. The artifact's
+// address is handed over exactly as an operator's environment hands it over.
 type Measured = {
   verdicts: Record<string, string>;
   evidence: (gate: string) => string;
@@ -182,20 +260,34 @@ type Measured = {
   lines: string[];
 };
 
+function withArtifactAddress<T>(path: string | undefined, body: () => T): T {
+  const previous = process.env.METEORITE_ARTIFACT;
+  if (path === undefined) delete process.env.METEORITE_ARTIFACT;
+  else process.env.METEORITE_ARTIFACT = path;
+  try {
+    return body();
+  } finally {
+    if (previous === undefined) delete process.env.METEORITE_ARTIFACT;
+    else process.env.METEORITE_ARTIFACT = previous;
+  }
+}
+
 function measure(repo: string): Measured {
-  const results = checkReadiness(repo);
-  const { lines, exitCode } = report(results);
-  return {
-    verdicts: Object.fromEntries(results.map((entry) => [entry.id, entry.verdict])),
-    evidence: (gate) => results.find((entry) => entry.id === gate)!.evidence,
-    exitCode,
-    lines,
-  };
+  return withArtifactAddress(artifactPathFor(repo), () => {
+    const results = checkReadiness(repo);
+    const { lines, exitCode } = report(results);
+    return {
+      verdicts: Object.fromEntries(results.map((entry) => [entry.id, entry.verdict])),
+      evidence: (gate: string) => results.find((entry) => entry.id === gate)!.evidence,
+      exitCode,
+      lines,
+    };
+  });
 }
 
 function withFixture(options: Options, assertion: (repo: string) => void): void {
   const repo = fixture(options);
-  try { assertion(repo); } finally { rmSync(repo, { recursive: true, force: true }); }
+  try { assertion(repo); } finally { discard(repo); }
 }
 
 // --- the exit-code rule -----------------------------------------------------
@@ -232,12 +324,16 @@ test("an empty gate list is not cutover-ready", () => {
 
 test("the command itself carries the exit code, not just the library", () => {
   withFixture({}, (repo) => {
-    const green = Bun.spawnSync([process.execPath, join(REAL_REPO, "tools/check-cutover-readiness.ts"), "--repo", repo]);
+    const green = Bun.spawnSync([process.execPath, join(REAL_REPO, "tools/check-cutover-readiness.ts"), "--repo", repo], {
+      env: { ...process.env, METEORITE_ARTIFACT: artifactPathFor(repo) },
+    });
     expect(green.exitCode).toBe(0);
     expect(green.stdout.toString()).toContain("CUTOVER-READINESS A PASS");
   });
   withFixture({ omit: ["instance/host-state.tsv"] }, (repo) => {
-    const red = Bun.spawnSync([process.execPath, join(REAL_REPO, "tools/check-cutover-readiness.ts"), "--repo", repo]);
+    const red = Bun.spawnSync([process.execPath, join(REAL_REPO, "tools/check-cutover-readiness.ts"), "--repo", repo], {
+      env: { ...process.env, METEORITE_ARTIFACT: artifactPathFor(repo) },
+    });
     expect(red.exitCode).toBe(1);
     expect(red.stdout.toString()).toContain("CUTOVER-READINESS F FAIL");
   });
@@ -249,8 +345,8 @@ test("cutover-ready=yes is reachable from a clean, fully committed tree", () => 
   withFixture({}, (repo) => {
     expect(porcelain(repo)).toBe("");
     expect(measure(repo).exitCode).toBe(0);
-    // Measuring must also leave the tree clean: the rehearsals run real
-    // commands, and they may not deposit anything in the repository they judge.
+    // Measuring must also leave the tree clean: the probes run real commands,
+    // and they may not deposit anything in the repository they judge.
     expect(porcelain(repo)).toBe("");
   });
 });
@@ -258,7 +354,6 @@ test("cutover-ready=yes is reachable from a clean, fully committed tree", () => 
 test("no untracked file can move any gate toward PASS", () => {
   const inputs: Record<string, string> = {
     "meteorite/run.sh": DEFAULTS.meteorite,
-    "meteorite/assert-orchestrator-live.sh": DEFAULTS.startProof,
     "instance/host-state.tsv": DEFAULTS.hostState,
     "tools/whisper/install.sh": "# whisper\n",
     "bootstrap/install.sh": DEFAULTS.bootstrap,
@@ -275,11 +370,11 @@ test("no untracked file can move any gate toward PASS", () => {
     try {
       expect(porcelain(hostLocal)).not.toBe("");
       const measured = measure(hostLocal);
-      expect(measured.verdicts).toEqual(measure(trackedAbsent).verdicts);
+      expect({ path, verdicts: measured.verdicts }).toEqual({ path, verdicts: measure(trackedAbsent).verdicts });
       expect(measured.exitCode).toBe(1);
     } finally {
-      rmSync(trackedAbsent, { recursive: true, force: true });
-      rmSync(hostLocal, { recursive: true, force: true });
+      discard(trackedAbsent);
+      discard(hostLocal);
     }
   }
 });
@@ -327,34 +422,51 @@ test("a registry row whose target was never landed does not certify anything", (
   });
 });
 
+// Round-4 finding 3: a registered, landed mechanism is not a performed act, and
+// the evidence may not say "proven by" about a file nobody ran.
+test("a registered mechanism claims that the mechanism exists, not that the act was proven", () => {
+  withFixture({}, (repo) => {
+    const measured = measure(repo);
+    for (const gate of ["E", "F"]) {
+      expect(measured.evidence(gate)).toContain("this command does not execute it");
+      expect(measured.evidence(gate)).not.toContain("proven by");
+    }
+    expect(measured.evidence("E")).toContain("not that the three verdicts matched");
+    expect(measured.evidence("F")).toContain("not that the scan came back empty");
+  });
+});
+
 test("an unreadable definition source makes every gate UNKNOWN rather than judged", () => {
   withFixture({ omit: ["instance/consilium-cutover-2026-08-04-evening-synthesis.md"] }, (repo) => {
     const measured = measure(repo);
     expect(Object.values(measured.verdicts).every((verdict) => verdict === "UNKNOWN")).toBe(true);
-    expect(measured.exitCode).toBe(1);
+    expect(measured.evidence("A")).toContain("gate definitions unreadable");
   });
 });
 
 test("a gate whose definition drifted is UNKNOWN; its siblings are still judged", () => {
-  const watered = synthesisText().replace("Every path the launcher requires exists in the tree", "Most paths the launcher requires exist in the tree");
+  const watered = synthesisText().replace(GATES[3]!.definition, "The meteorite runs.");
   withFixture({ synthesis: watered }, (repo) => {
-    expect(definitionDrift(repo)).toEqual(["B"]);
     const measured = measure(repo);
-    expect(measured.verdicts).toMatchObject({ A: "PASS", B: "UNKNOWN", C: "PASS" });
-    expect(measured.evidence("B")).toContain("definition drifted");
+    expect(measured.verdicts.D).toBe("UNKNOWN");
+    expect(measured.evidence("D")).toContain("definition drifted");
+    expect(measured.verdicts.B).toBe("PASS");
   });
 });
 
 test("quoting the original sentence elsewhere does not cover for a watered-down bullet", () => {
-  const watered = `${synthesisText().replace("Every path the launcher requires exists in the tree", "Most paths the launcher requires exist in the tree")}
-## Appendix — what B used to say
-
-- **B.** Every path the launcher requires exists in the tree; a test fails if any required path is absent.
-`;
+  const watered = [
+    "## Definition of cutover-ready (the part nobody had written)",
+    "",
+    ...GATES.map((gate) => `- **${gate.id}.** ${gate.id === "D" ? "The meteorite runs." : gate.definition}`),
+    "",
+    "## What gate D used to say",
+    "",
+    `- **D.** ${GATES[3]!.definition}`,
+    "",
+  ].join("\n");
   withFixture({ synthesis: watered }, (repo) => {
-    // The appendix carries the original text verbatim, but not as gate B's own
-    // bullet in the definition section it was quoted from.
-    expect(measure(repo).verdicts.B).toBe("UNKNOWN");
+    expect(measure(repo).verdicts.D).toBe("UNKNOWN");
   });
 });
 
@@ -382,49 +494,6 @@ test("A is UNKNOWN, not FAIL, when the launcher itself cannot be read", () => {
   });
 });
 
-test("A's clean-clone half is UNKNOWN when no stage clones from a remote", () => {
-  const local = meteoriteWith(PREREQ_STAGE, '"clone|cp -a /root/bpa-dev-infrastructure /work/source"', START_STAGE);
-  withFixture({ meteorite: local }, (repo) => {
-    const measured = measure(repo);
-    expect(measured.verdicts.A).toBe("UNKNOWN");
-    expect(measured.evidence("A")).toContain("clones the candidate from a remote");
-  });
-});
-
-// An honest rewrite of the clone stage must not pin gate A at UNKNOWN forever:
-// `--depth 1`, `-b main` and `-q` are ordinary spellings of a remote clone.
-test("A recognises the ordinary spellings of a clone from a remote", () => {
-  const spellings = [
-    "git clone --depth 1 https://example.invalid/repo.git /work/source",
-    "git clone -b main https://example.invalid/repo.git /work/source",
-    "git clone -q --no-checkout '$repo_url' /work/source",
-    "git clone --depth 1 git@github.invalid:owner/repo.git /work/source",
-    'git clone -b "$ref" ssh://git@example.invalid/repo /work/source',
-  ];
-  for (const spelling of spellings) {
-    const meteorite = meteoriteWith(`"clone|${spelling}"`, START_STAGE);
-    withFixture({ meteorite }, (repo) => {
-      expect({ spelling, A: measure(repo).verdicts.A }).toEqual({ spelling, A: "PASS" });
-    });
-  }
-});
-
-// ...and a local source still must not: a copy from this host is the opposite
-// of the clean clone gate A is about.
-test("A does not read a local-path clone as a clone from a remote", () => {
-  const meteorite = meteoriteWith('"clone|git clone --depth 1 /root/bpa-dev-infrastructure /work/source"', START_STAGE);
-  withFixture({ meteorite }, (repo) => {
-    expect(measure(repo).verdicts.A).toBe("UNKNOWN");
-  });
-});
-
-test("A does not let a later command's URL certify an earlier local clone", () => {
-  const meteorite = meteoriteWith('"clone|git clone /work/donor /work/source && curl -sS https://example.invalid/manifest"', START_STAGE);
-  withFixture({ meteorite }, (repo) => {
-    expect(measure(repo).verdicts.A).toBe("UNKNOWN");
-  });
-});
-
 // Gate A's definition includes "with `orchestrator/runtime.env` renamed away".
 // The clause is about what a clean clone carries, and the tracked set decides
 // that: today the file is gitignored, and this is what ties the clause to that
@@ -436,12 +505,13 @@ test("A FAILs when runtime.env is tracked, because every clean clone would carry
     write(repo, "orchestrator/runtime.env", "ORCH_TOKEN_FILE=/root/.config/bpa/orchestrator.env\n");
     git(repo, "add", "-A");
     git(repo, "commit", "-qm", "track runtime.env");
+    writeArtifact(repo);
     const measured = measure(repo);
     expect(measured.verdicts.A).toBe("FAIL");
     expect(measured.evidence("A")).toContain("renamed away");
     expect(measured.exitCode).toBe(1);
   } finally {
-    rmSync(repo, { recursive: true, force: true });
+    discard(repo);
   }
 });
 
@@ -482,17 +552,49 @@ test("B is UNKNOWN when the installed-path verifier it defers to is absent", () 
 // --- gate C: caller/callee vocabulary --------------------------------------
 
 test("C FAILs on a call outside the implemented vocabulary", () => {
-  withFixture({ launcher: `${DEFAULTS.launcher}\nmission_cli reap\nmission_cli lease acquire "$owner"\n` }, (repo) => {
+  withFixture({ launcher: `${DEFAULTS.launcher}\nmission_cli invent something\n` }, (repo) => {
     const measured = measure(repo);
     expect(measured.verdicts.C).toBe("FAIL");
     expect(measured.evidence("C")).toContain("orchestrator/launch.sh");
-    expect(measured.evidence("C")).toContain("reap");
+    expect(measured.evidence("C")).toContain("invent");
   });
 });
 
 test("C reads calls, not the shell function that wraps them", () => {
   withFixture({}, (repo) => {
     expect(missionCliCalls(repo).map((call) => `${call.group} ${call.action ?? ""}`.trim())).toEqual(["lane claim", "status"]);
+  });
+});
+
+// A block comment is prose, and prose about the mission CLI is not a call to
+// it. core/mission-cli-actions.ts explains itself in one -- "it lives in this
+// module and not in mission-cli.ts because mission-cli.ts runs its `main` at
+// import time" -- and gate C read `because` as an action and FAILed the real
+// repository on a sentence about itself.
+test("C does not read a block comment about the mission CLI as a call", () => {
+  const prose = [
+    "/**",
+    " * This module exists and not mission-cli.ts because mission-cli.ts runs",
+    " * its main at import time. See mission_cli reap for the older spelling.",
+    " */",
+    "export const marker = 1;",
+    "",
+  ].join("\n");
+  withFixture({}, (repo) => {
+    write(repo, "core/notes.ts", prose);
+    git(repo, "add", "-A");
+    git(repo, "commit", "-qm", "prose");
+    writeArtifact(repo);
+    expect(missionCliCalls(repo).filter((call) => call.file === "core/notes.ts")).toEqual([]);
+    expect(measure(repo).verdicts.C).toBe("PASS");
+  });
+});
+
+// ...and a real call on the same line as the end of a block comment is still a
+// call: skipping comments may not become a way to hide one.
+test("C still reads a call that follows a closed block comment", () => {
+  withFixture({ launcher: `${DEFAULTS.launcher}\n/* wrapper */ mission_cli invent something\n` }, (repo) => {
+    expect(measure(repo).verdicts.C).toBe("FAIL");
   });
 });
 
@@ -510,260 +612,321 @@ test("C is UNKNOWN when nothing calls the mission CLI at all", () => {
   });
 });
 
-// --- the start proof, rehearsed in three worlds -----------------------------
+// --- gates D and A: the rebuild proof's own artifact -------------------------
 //
-// Three revisions of this gate were greened by text. The evidence a green
-// consumes here is therefore not text at all: the registered proof is RUN
-// against an orchestrator analog that records being invoked, in a world where
-// the analog comes up live, a world where its launcher succeeds but nothing
-// becomes live, and a world where the launch fails.
+// Four rounds of this gate were greened by something other than a rebuild: a
+// comment naming the launcher, a stage command that mentioned it, a variable
+// assignment that looked like an invocation, and finally a rehearsal of the
+// runner in which "the proof's path executed at some point" was accepted as
+// "the meteorite started the orchestrator". What a green consumes now is the
+// artifact meteorite/run.sh writes about a run that actually happened: the tree
+// SHA it proved, the stages it executed with their verdicts, whether it
+// finished, and the liveness evidence of its orchestrator-live stage.
 
-test("D PASSes only on a rehearsal in which the proof really starts the analog", () => {
+test("D and A's clean-clone half PASS on a finished rebuild proof at this SHA", () => {
   withFixture({}, (repo) => {
     const measured = measure(repo);
-    expect(measured.verdicts).toMatchObject({ A: "PASS", D: "PASS" });
-    expect(measured.evidence("D")).toContain("executed with its container replaced by a rehearsal world, invoked meteorite/assert-orchestrator-live.sh");
-    expect(measured.evidence("D")).toContain("rehearsed against an orchestrator analog in three worlds");
-    expect(measured.evidence("D")).toContain("live exit 0");
+    expect(measured.verdicts.D).toBe("PASS");
+    expect(measured.verdicts.A).toBe("PASS");
+    expect(measured.evidence("D")).toContain("ran orchestrator-live to PASS with liveness proven");
+    expect(measured.evidence("A")).toContain("cloned the candidate (stage clone PASS)");
+    // The declared boundaries a container structurally cannot cross travel with
+    // the green, so a PASS never reads as more than it proved.
+    expect(measured.evidence("D")).toContain("cgroup-isolation");
   });
 });
 
-// The round-2 reviewer's sharpest reproduction, in its own shape: a proof whose
-// text names the launcher and the lease, and whose behaviour is an echo.
-test("D FAILs a proof that only TALKS about launching — the analog records no launch", () => {
-  withFixture({
-    startProof: '#!/usr/bin/env bash\necho "NOT DONE: nothing here runs $REPO_DIR/orchestrator/launch.sh or checks orchestrator.lease yet"\n',
-  }, (repo) => {
+test("with no artifact at all, D and A's clean-clone half are UNKNOWN — not FAIL, not PASS", () => {
+  withFixture({ artifact: null }, (repo) => {
     const measured = measure(repo);
-    expect(measured.verdicts).toMatchObject({ A: "FAIL", D: "FAIL" });
-    expect(measured.evidence("D")).toContain("without ever invoking $REPO_DIR/orchestrator/launch.sh");
-    expect(measured.evidence("D")).toContain("describes a start rather than performing one");
+    expect(measured.verdicts.D).toBe("UNKNOWN");
+    expect(measured.verdicts.A).toBe("UNKNOWN");
+    expect(measured.evidence("D")).toContain("no rehearsal artifact at this SHA");
+    expect(measured.evidence("D")).toContain("does not exist");
+    expect(measured.evidence("A")).toContain("no rehearsal artifact at this SHA");
     expect(measured.exitCode).toBe(1);
   });
 });
 
-test("D FAILs when the proof runs but the start it proves does not work", () => {
-  withFixture({
-    startProof: [
-      "#!/usr/bin/env bash",
-      "set -euo pipefail",
-      '"$REPO_DIR/orchestrator/launch.sh" --detach',
-      '# the orchestrator is up, but this proof requires a pid file nothing writes',
-      'test -s "$RUNTIME_DIR/orchestrator.pid"',
-      "",
-    ].join("\n"),
-  }, (repo) => {
+test("an artifact for another SHA proves nothing about this one", () => {
+  withFixture({ artifact: { tree_sha: "b".repeat(40) } }, (repo) => {
     const measured = measure(repo);
-    expect(measured.verdicts).toMatchObject({ A: "FAIL", D: "FAIL" });
-    expect(measured.evidence("D")).toContain("rehearsed against an orchestrator analog that came up");
+    expect(measured.verdicts.D).toBe("UNKNOWN");
+    expect(measured.verdicts.A).toBe("UNKNOWN");
+    expect(measured.evidence("D")).toContain("no rehearsal artifact at this SHA");
+    expect(measured.evidence("D")).toContain("vouches for the tree it measured and no other");
   });
 });
 
-test("D FAILs a proof that launches but asserts no live state — it exits 0 without liveness", () => {
-  withFixture({
-    startProof: '#!/usr/bin/env bash\n"$REPO_DIR/orchestrator/launch.sh" --detach || true\nexit 0\n',
-  }, (repo) => {
+test("an uncommitted change to a tracked file leaves D unmeasured, not certified", () => {
+  withFixture({}, (repo) => {
+    expect(measure(repo).verdicts.D).toBe("PASS");
+    write(repo, "orchestrator/proc-identity.sh", "# identity, edited but not committed\n");
     const measured = measure(repo);
-    expect(measured.verdicts).toMatchObject({ A: "FAIL", D: "FAIL" });
-    expect(measured.evidence("D")).toContain("asserts no live state");
+    expect(measured.verdicts.D).toBe("UNKNOWN");
+    expect(measured.evidence("D")).toContain("differ from HEAD");
   });
 });
 
-// The same trap one level up: a proof that deletes the thing it is supposed to
-// check still exits 0 whether or not anything is alive.
-test("D FAILs a proof that removes the liveness marker instead of asserting it", () => {
+test("an artifact this reader cannot believe is UNKNOWN, never PASS", () => {
+  const broken: Record<string, Record<string, unknown> | string> = {
+    "wrong schema": { schema: "meteorite-result/v0" },
+    "no finished flag": { finished: "yes" },
+    "no stage list": { stages: "all of them" },
+    "a stage without a verdict": { stages: [{ name: "orchestrator-live" }] },
+  };
+  for (const [label, overrides] of Object.entries(broken)) {
+    withFixture({ artifact: overrides as Record<string, unknown> }, (repo) => {
+      const measured = measure(repo);
+      expect({ label, D: measured.verdicts.D, A: measured.verdicts.A }).toEqual({ label, D: "UNKNOWN", A: "UNKNOWN" });
+      expect(measured.evidence("D")).toContain("no rehearsal artifact at this SHA");
+    });
+  }
+});
+
+test("an artifact that is not JSON at all is UNKNOWN, never PASS", () => {
+  withFixture({}, (repo) => {
+    writeFileSync(artifactPathFor(repo), "the meteorite ran and everything was fine\n");
+    const measured = measure(repo);
+    expect(measured.verdicts.D).toBe("UNKNOWN");
+    expect(measured.evidence("D")).toContain("is not readable JSON");
+  });
+});
+
+// Round-4 finding 1, first construction: a run that never finished. The old
+// wiring check consulted the journal before it consulted survival, so a
+// meteorite that aborted after the proof ran was still PASS.
+test("D FAILs an unfinished rebuild proof, in the artifact's own words", () => {
   withFixture({
-    startProof: '#!/usr/bin/env bash\n"$REPO_DIR/orchestrator/launch.sh" --detach || true\nrm -f "$RUNTIME_DIR/orchestrator.lease"\n',
+    artifact: {
+      finished: false,
+      result: "NO-GO",
+      blocker: "orchestrator-live command failed: launch-refused:error-unknown-action",
+      stages: [{ name: "clone", verdict: "PASS" }, { name: "orchestrator-live", verdict: "NO-GO" }],
+      liveness: { proven: false, reason: "launch-refused:error-unknown-action" },
+    },
   }, (repo) => {
     const measured = measure(repo);
     expect(measured.verdicts.D).toBe("FAIL");
-    expect(measured.evidence("D")).toContain("asserts no live state");
+    expect(measured.evidence("D")).toContain("did not finish its rebuild proof");
+    expect(measured.evidence("D")).toContain("launch-refused:error-unknown-action");
+    expect(measured.verdicts.A).toBe("FAIL");
+    expect(measured.exitCode).toBe(1);
   });
 });
 
-// Round-3 finding 3: a proof that merely propagates the launcher's exit status
-// passed a two-world rehearsal, because the dead launcher already exits 1. The
-// zombie world — launcher exits 0, nothing becomes live — is the world that
-// tells "asserts a live state" from "trusts the launcher".
-test("D FAILs a proof that only propagates the launcher's exit status", () => {
+// Round-4 finding 1, the construction that mattered: stages = clone plus the
+// full test suite, no stage that starts anything. The suite runs the start
+// proof's own regression lock, so the proof's path executed — and the old gate
+// called that "the meteorite starts the orchestrator". The artifact records the
+// stages that ran, so this is now exactly what it looks like.
+test("D FAILs a finished proof whose stage list contains no orchestrator-live stage", () => {
   withFixture({
-    startProof: '#!/usr/bin/env bash\nset -euo pipefail\nexec "$REPO_DIR/orchestrator/launch.sh"\n',
+    artifact: {
+      stages: [{ name: "clone", verdict: "PASS" }, { name: "full-test-suite", verdict: "PASS" }],
+      liveness: { proven: false, reason: "stage-not-reached" },
+    },
   }, (repo) => {
     const measured = measure(repo);
-    expect(measured.verdicts).toMatchObject({ A: "FAIL", D: "FAIL" });
-    expect(measured.evidence("D")).toContain("accepts the launcher's exit status instead of asserting the liveness evidence");
+    expect(measured.verdicts.D).toBe("FAIL");
+    expect(measured.evidence("D")).toContain("finished without running a orchestrator-live stage at all");
+    expect(measured.evidence("D")).toContain("asserts that files copied");
+    expect(measured.verdicts.A).toBe("FAIL");
   });
 });
 
-test("a rehearsal that has to be killed is UNKNOWN, never PASS", () => {
+test("D FAILs when the live stage ran and did not pass", () => {
   withFixture({
-    startProof: '#!/usr/bin/env bash\n"$REPO_DIR/orchestrator/launch.sh"\nsleep 60\n',
+    artifact: {
+      result: "NO-GO",
+      blocker: "orchestrator did not reach a live state: singleton-owner-unverified",
+      stages: [...GREEN_STAGES.slice(0, -1), { name: "orchestrator-live", verdict: "NO-GO" }],
+      liveness: { proven: false, reason: "singleton-owner-unverified" },
+    },
   }, (repo) => {
-    const previous = process.env.CUTOVER_PROBE_TIMEOUT_MS;
-    process.env.CUTOVER_PROBE_TIMEOUT_MS = "700";
+    const measured = measure(repo);
+    expect(measured.verdicts.D).toBe("FAIL");
+    expect(measured.evidence("D")).toContain("ran orchestrator-live and it did not pass (NO-GO)");
+    expect(measured.evidence("D")).toContain("singleton-owner-unverified");
+  });
+});
+
+// A stage verdict and the liveness evidence beside it are two claims about the
+// same act. When they disagree neither can be believed, and the gate says so
+// rather than taking the greener one.
+test("D FAILs a live stage marked PASS beside liveness proven:false", () => {
+  withFixture({
+    artifact: { liveness: { proven: false, reason: "provider-session-absent" } },
+  }, (repo) => {
+    const measured = measure(repo);
+    expect(measured.verdicts.D).toBe("FAIL");
+    expect(measured.evidence("D")).toContain("the stage verdict and the liveness evidence disagree");
+  });
+});
+
+test("A's clean-clone half is UNKNOWN when the executed run recorded no clone stage", () => {
+  withFixture({
+    artifact: { stages: GREEN_STAGES.filter((stage) => stage.name !== "clone") },
+  }, (repo) => {
+    const measured = measure(repo);
+    expect(measured.verdicts.A).toBe("UNKNOWN");
+    expect(measured.evidence("A")).toContain("none of them is clone");
+    // D is about the live stage and is unaffected: one artifact, two questions.
+    expect(measured.verdicts.D).toBe("PASS");
+  });
+});
+
+test("A FAILs when the clone stage itself did not pass", () => {
+  withFixture({
+    artifact: {
+      result: "NO-GO",
+      blocker: "clone: repository not found",
+      stages: [{ name: "container-start", verdict: "PASS" }, { name: "clone", verdict: "NO-GO" }],
+    },
+  }, (repo) => {
+    const measured = measure(repo);
+    expect(measured.verdicts.A).toBe("FAIL");
+    expect(measured.evidence("A")).toContain("clone stage did not pass (NO-GO)");
+  });
+});
+
+// `finished: true` with `result: NO-GO` is a complete run that refused. Gate A
+// is about the whole rebuild, so a refusal anywhere in it is a FAIL even when
+// the orchestrator did come up.
+test("A FAILs a finished run whose own verdict is NO-GO, even with a live orchestrator", () => {
+  withFixture({
+    artifact: {
+      result: "NO-GO",
+      blocker: "unit-drift: rendered units differ from the tracked templates",
+      stages: [...GREEN_STAGES, { name: "post-check", verdict: "NO-GO" }],
+    },
+  }, (repo) => {
+    const measured = measure(repo);
+    expect(measured.verdicts.A).toBe("FAIL");
+    expect(measured.evidence("A")).toContain("the rebuild proof's own verdict is NO-GO");
+    expect(measured.evidence("A")).toContain("unit-drift");
+    expect(measured.verdicts.D).toBe("PASS");
+  });
+});
+
+test("A's clean-clone half is UNKNOWN when the tree registers no rebuild runner", () => {
+  withFixture({ registry: DEFAULTS.registry.replace("runner:meteorite\trunner\tmeteorite/run.sh\n", "") }, (repo) => {
+    const measured = measure(repo);
+    expect(measured.verdicts.A).toBe("UNKNOWN");
+    expect(measured.evidence("A")).toContain("no registered proof mechanism");
+  });
+});
+
+test("D is UNKNOWN when the tracked tree carries no meteorite at all", () => {
+  withFixture({ omit: ["meteorite/run.sh"] }, (repo) => {
+    const measured = measure(repo);
+    expect(measured.verdicts.D).toBe("UNKNOWN");
+    expect(measured.evidence("D")).toContain("absent from the tracked tree");
+  });
+});
+
+// The artifact's address is the runner's own: METEORITE_ARTIFACT first, then
+// $XDG_STATE_HOME. A reader that resolved it differently would be reading a
+// file nothing writes.
+test("the artifact is found at the address meteorite/run.sh writes it to", () => {
+  withFixture({}, (repo) => {
+    const previousState = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = `${repo}-state`;
     try {
-      const measured = measure(repo);
-      expect(measured.verdicts).toMatchObject({ A: "UNKNOWN", D: "UNKNOWN" });
-      expect(measured.evidence("D")).toContain("was killed");
-      expect(measured.exitCode).toBe(1);
+      const results = withArtifactAddress(undefined, () => checkReadiness(repo));
+      expect(results.find((entry) => entry.id === "D")!.verdict).toBe("PASS");
     } finally {
-      if (previous === undefined) delete process.env.CUTOVER_PROBE_TIMEOUT_MS;
-      else process.env.CUTOVER_PROBE_TIMEOUT_MS = previous;
+      if (previousState === undefined) delete process.env.XDG_STATE_HOME;
+      else process.env.XDG_STATE_HOME = previousState;
     }
   });
 });
 
-// --- the wiring: the meteorite, executed, must invoke the proof --------------
+// --- no sentence in the meteorite moves D or A ------------------------------
 //
-// Round 3's surviving disease was a text predicate deciding "the meteorite runs
-// it". There is no such predicate left: the meteorite is executed with its
-// container replaced by a rehearsal world, and only its own execution reaching
-// the proof's journaling sentinel counts as running it.
+// Every spelling that greened one of these gates in rounds 1-4 is here, and the
+// property under test is stronger than "it no longer greens them": the text is
+// not read at all. The same tree, with the same words, is PASS or UNKNOWN
+// depending only on whether a run happened.
 
-test("D FAILs when a working proof exists but the meteorite, executed, never invokes it", () => {
-  const idle = meteoriteWith(PREREQ_STAGE, CLONE_STAGE, '"full-test-suite|true"');
-  withFixture({ meteorite: idle }, (repo) => {
-    const measured = measure(repo);
-    expect(measured.verdicts.D).toBe("FAIL");
-    expect(measured.evidence("D")).toContain("executed to completion in the rehearsal world, never invoked meteorite/assert-orchestrator-live.sh");
-    expect(measured.verdicts.A).toBe("UNKNOWN");
-  });
-});
+const FORGERIES: Record<string, string> = {
+  "a comment naming the launcher": meteoriteWith(CLONE_STAGE, "# runs orchestrator/launch.sh and checks the lease"),
+  "an echo about the launcher": meteoriteWith(CLONE_STAGE, `"advice|echo 'now run orchestrator/launch.sh by hand'"`),
+  "a stage that deletes the liveness marker": meteoriteWith(CLONE_STAGE, `"teardown|rm -f /run/orchestrator.lease"`),
+  "a bare assignment": meteoriteWith(CLONE_STAGE, `"start|PROOF=meteorite/assert-orchestrator-live.sh"`),
+  "an env-prefix stage": meteoriteWith(CLONE_STAGE, `"start|PROOF=meteorite/assert-orchestrator-live.sh bash bootstrap/check-unit-drift.sh"`),
+  "a stage that discards the proof's verdict": meteoriteWith(CLONE_STAGE, `"cleanup|bash meteorite/assert-orchestrator-live.sh >/dev/null 2>&1 || true; echo 'we do not care whether it started'"`),
+  "a stage that runs the proof and then aborts": meteoriteWith(CLONE_STAGE, '"orchestrator-start|bash meteorite/assert-orchestrator-live.sh"', '"later|exit 3"'),
+  "the suite stage that runs the proof's own regression lock": meteoriteWith(CLONE_STAGE, '"full-test-suite|bun test"'),
+  "no stage list this parser could read at all": "#!/usr/bin/env bash\necho 'the meteorite starts the orchestrator and asserts a live state'\n",
+  "no stages at all": meteoriteWith(),
+};
 
-test("D FAILs when a stage only mentions the proof instead of running it", () => {
-  const mentioned = meteoriteWith(CLONE_STAGE, `"advice|echo 'operator: next run meteorite/assert-orchestrator-live.sh by hand'"`);
-  withFixture({ meteorite: mentioned }, (repo) => {
-    const measured = measure(repo);
-    expect(measured.verdicts.D).toBe("FAIL");
-    expect(measured.evidence("D")).toContain("never invoked meteorite/assert-orchestrator-live.sh");
-  });
-});
-
-// Round-3 finding 1, locked in the form the real meteorite writes its stages:
-// an env-var assignment in front of a command is not an invocation, and no
-// pattern decides that any more — the stage executes, and the journal stays
-// empty because nothing ran the proof.
-test("an assignment naming the proof does not green D or A — the stage runs, the journal stays empty", () => {
-  const assignments = [
-    '"orchestrator-start|ORCH_START_PROOF=meteorite/assert-orchestrator-live.sh bash bootstrap/check-unit-drift.sh"',
-    '"orchestrator-start|PROOF=meteorite/assert-orchestrator-live.sh"',
-  ];
-  for (const stage of assignments) {
-    const meteorite = meteoriteWith(CLONE_STAGE, stage);
-    withFixture({ meteorite }, (repo) => {
+test("no text in the meteorite can green D or A when no run happened", () => {
+  for (const [label, meteorite] of Object.entries(FORGERIES)) {
+    withFixture({ meteorite, artifact: null }, (repo) => {
       const measured = measure(repo);
-      expect(measured.verdicts.D).toBe("FAIL");
-      expect(measured.evidence("D")).toContain("never invoked meteorite/assert-orchestrator-live.sh");
-      expect(measured.verdicts.A).toBe("UNKNOWN");
+      expect({ label, D: measured.verdicts.D, A: measured.verdicts.A }).toEqual({ label, D: "UNKNOWN", A: "UNKNOWN" });
+      expect(measured.evidence("D")).toContain("no rehearsal artifact at this SHA");
       expect(measured.exitCode).toBe(1);
     });
   }
 });
 
-// The same stage written against container state the rehearsal world does not
-// provide: the meteorite aborts, and that is UNKNOWN with the aborting line
-// quoted — never PASS, and never a verdict parsed from the text.
-test("a stage needing container state the world lacks is UNKNOWN, never PASS", () => {
-  const meteorite = meteoriteWith(CLONE_STAGE, '"orchestrator-start|cd /work/install && ORCH_START_PROOF=meteorite/assert-orchestrator-live.sh bash bootstrap/check-unit-drift.sh"');
-  withFixture({ meteorite }, (repo) => {
-    const measured = measure(repo);
-    expect(measured.verdicts.D).toBe("UNKNOWN");
-    expect(measured.evidence("D")).toContain("aborted");
-    expect(measured.verdicts.A).toBe("UNKNOWN");
-    expect(measured.exitCode).toBe(1);
-  });
-});
-
-// The round-2 review's three PASSing reproductions, run against this revision.
-// Each is the whole stage list, so nothing else can be carrying the verdict.
-test("the round-2 reproductions no longer green D, and no longer green A", () => {
-  const reproductions = [
-    `"advice|echo 'operator: next run orchestrator/launch.sh by hand'"`,
-    '"teardown|rm -f /work/runtime/orchestrator.lease"',
-    `"notice|echo 'NOT DONE: nothing here runs orchestrator/launch.sh or checks orchestrator.lease yet'"`,
-  ];
-  for (const stage of reproductions) {
-    const meteorite = meteoriteWith(CLONE_STAGE, stage);
+test("no text in the meteorite can redden D or A when the run says otherwise", () => {
+  for (const [label, meteorite] of Object.entries(FORGERIES)) {
     withFixture({ meteorite }, (repo) => {
       const measured = measure(repo);
-      expect(measured.verdicts.D).toBe("FAIL");
-      expect(measured.verdicts.A).toBe("UNKNOWN");
-      expect(measured.exitCode).toBe(1);
+      expect({ label, D: measured.verdicts.D, A: measured.verdicts.A }).toEqual({ label, D: "PASS", A: "PASS" });
     });
   }
 });
 
-// The journal is the only thing a wiring green consumes, and printed output
-// cannot reach it: a sentinel line carries a nonce generated for this run.
-test("a stage that prints a journal-shaped line does not green the wiring", () => {
-  const meteorite = meteoriteWith(CLONE_STAGE, `"orchestrator-start|echo 'deadbeef start-proof invoked meteorite/assert-orchestrator-live.sh'"`);
-  withFixture({ meteorite }, (repo) => {
-    const measured = measure(repo);
-    expect(measured.verdicts.D).toBe("FAIL");
-    expect(measured.evidence("D")).toContain("never invoked");
-  });
-});
-
-// --- gate D: what the stage list says, on the FAIL path only ----------------
-
-test("D FAILs when the meteorite only proves that files copied", () => {
-  withFixture({ meteorite: meteoriteWith('"full-test-suite|true"') }, (repo) => {
-    const measured = measure(repo);
-    expect(measured.verdicts.D).toBe("FAIL");
-    expect(measured.evidence("D")).toContain("none starts the orchestrator and none asserts liveness");
-  });
-});
-
-test("D FAILs when a stage talks about the launcher but nothing asserts a live state", () => {
-  withFixture({ meteorite: meteoriteWith(`"start|echo 'pretending to run orchestrator/launch.sh'"`) }, (repo) => {
-    const measured = measure(repo);
-    expect(measured.verdicts.D).toBe("FAIL");
-    expect(measured.evidence("D")).toContain("no stage asserts a live state");
-  });
-});
-
-// The round-1 reviewer's repro, verbatim in shape: a meteorite that is two TODO
-// lines mentioning the launcher and the lease. It reported PASS.
-test("D is not satisfied by a file comment naming the launcher and the lease", () => {
-  withFixture({ meteorite: "# TODO: bash orchestrator/launch.sh\n# TODO: check orchestrator.lease\n" }, (repo) => {
-    const measured = measure(repo);
-    expect(measured.verdicts.D).toBe("UNKNOWN");
-    expect(measured.evidence("D")).toContain("no readable commands=(...) stage list");
-    expect(measured.verdicts.A).toBe("UNKNOWN");
-  });
-});
-
-test("D is not satisfied by a comment INSIDE the stage list", () => {
+// The mirror image, and the reason the two tests above are one property: a
+// meteorite whose text is impeccable is FAILed by its own recorded run.
+test("an impeccably worded meteorite still FAILs on the run it actually had", () => {
+  const worded = meteoriteWith(
+    CLONE_STAGE,
+    '"orchestrator-start|bash orchestrator/launch.sh start"',
+    '"liveness|bash orchestrator/status.sh"',
+  );
   withFixture({
-    meteorite: meteoriteWith('"full-test-suite|true"', "# TODO: bash orchestrator/launch.sh and then check orchestrator.lease"),
+    meteorite: worded,
+    artifact: {
+      stages: [{ name: "clone", verdict: "PASS" }, { name: "full-test-suite", verdict: "PASS" }],
+      liveness: { proven: false, reason: "stage-not-reached" },
+    },
   }, (repo) => {
     const measured = measure(repo);
     expect(measured.verdicts.D).toBe("FAIL");
-    expect(measured.evidence("D")).toContain("1 stages (full-test-suite)");
+    expect(measured.evidence("D")).toContain("finished without running a orchestrator-live stage at all");
   });
 });
 
-test("D refuses to judge a stage list it cannot parse, rather than reading raw text", () => {
-  withFixture({
-    meteorite: meteoriteWith('"orchestrator-start|bash orchestrator/launch.sh"', "$EXTRA_STAGES", '"liveness|test -s orchestrator.lease"'),
-  }, (repo) => {
-    expect(measure(repo).verdicts.D).toBe("UNKNOWN");
-  });
-});
-
-// --- gate E: absent inputs, judged on the structured outcome set -------------
+// --- gate E: absent inputs, judged in two worlds -----------------------------
 //
 // Round 2 greened this gate with the token UNKNOWN in output; round 3 greened
 // it with one UNKNOWN finding printed beside PASS findings on the same
-// inputless run. The green path is now the structured outcome channel
-// (CHECK_OUTCOMES_JSON), read whole: at least one UNKNOWN, zero PASS. Printed
-// lines are read in the FAIL direction only.
+// inputless run; round 4 observed that a checker answering UNKNOWN to
+// everything greened it while measuring nothing. The green now needs an
+// inputless world with UNKNOWN and no PASS, an exit status that moves with
+// --strict there, and a non-UNKNOWN outcome against the tracked tree.
+
+test("E PASSes on behaviour: UNKNOWN where the inputs are absent, a measurement where they are not", () => {
+  withFixture({}, (repo) => {
+    const measured = measure(repo);
+    expect(measured.verdicts.E).toBe("PASS");
+    expect(measured.evidence("E")).toContain("reports UNKNOWN and never PASS against a tree whose inputs are absent");
+    expect(measured.evidence("E")).toContain("its exit status moves with --strict (1 strict, 0 lenient)");
+    expect(measured.evidence("E")).toContain("discriminates rather than answering a constant");
+  });
+});
 
 test("E FAILs when a check with absent inputs still passes", () => {
   withFixture({ ledgerChecker: '#!/usr/bin/env bun\nconsole.log("PASS nothing to check");\n' }, (repo) => {
     const measured = measure(repo);
     expect(measured.verdicts.E).toBe("FAIL");
-    expect(measured.evidence("E")).toContain("reported success (exit 0)");
+    expect(measured.evidence("E")).toContain("emits no UNKNOWN outcome");
   });
 });
 
@@ -776,26 +939,6 @@ test("E is not satisfied by the word UNKNOWN in a comment", () => {
 test("E is not satisfied by an UNKNOWN in a string the checker never prints", () => {
   withFixture({ ledgerChecker: '#!/usr/bin/env bun\nconst unused = "UNKNOWN";\nconsole.log("PASS");\n' }, (repo) => {
     expect(measure(repo).verdicts.E).toBe("FAIL");
-  });
-});
-
-test("E PASSes on behaviour: the structured outcome set is UNKNOWN and nothing passed", () => {
-  withFixture({}, (repo) => {
-    const measured = measure(repo);
-    expect(measured.verdicts.E).toBe("PASS");
-    expect(measured.evidence("E")).toContain("reports UNKNOWN and never PASS against a tree whose inputs are absent");
-    expect(measured.evidence("E")).toContain("1 UNKNOWN, 0 PASS");
-  });
-});
-
-test("E FAILs a checker that passes an inputless tree while its summary tallies UNKNOWN", () => {
-  withFixture({
-    ledgerChecker: '#!/usr/bin/env bun\nconsole.log("summary: 0 FAIL, 0 WARN, 0 SKIP, 0 UNKNOWN, 0 PASS (0 docs)");\nprocess.exit(0);\n',
-  }, (repo) => {
-    const measured = measure(repo);
-    expect(measured.verdicts.E).toBe("FAIL");
-    expect(measured.evidence("E")).toContain("reported success (exit 0)");
-    expect(measured.exitCode).toBe(1);
   });
 });
 
@@ -821,7 +964,7 @@ test("E FAILs when the findings and the summary disagree about UNKNOWN", () => {
       "#!/usr/bin/env bun",
       'console.log("UNKNOWN instructions/ [root] directory not found");',
       'console.log("summary: 0 FAIL, 0 WARN, 0 SKIP, 0 UNKNOWN, 0 PASS (0 docs)");',
-      "process.exit(0);",
+      "process.exit(1);",
     ].join("\n"),
   }, (repo) => {
     const measured = measure(repo);
@@ -831,7 +974,7 @@ test("E FAILs when the findings and the summary disagree about UNKNOWN", () => {
 });
 
 // Round-3 finding 2, locked: one UNKNOWN finding beside PASS findings on the
-// same inputless run is the violation, not a defence. All findings are read.
+// same inputless run is the violation, not a defence. All outcomes are read.
 test("E FAILs a checker that prints PASS findings beside its one UNKNOWN", () => {
   withFixture({
     ledgerChecker: [
@@ -840,7 +983,7 @@ test("E FAILs a checker that prints PASS findings beside its one UNKNOWN", () =>
       'console.log("PASS instance/decisions [ledger] all states known");',
       'console.log("UNKNOWN tools/x.ts [experimental] not implemented");',
       'console.log("summary: 0 FAIL, 0 WARN, 0 SKIP, 1 UNKNOWN, 2 PASS (0 docs)");',
-      "process.exit(0);",
+      "process.exit(1);",
     ].join("\n"),
   }, (repo) => {
     const measured = measure(repo);
@@ -870,7 +1013,7 @@ test("E FAILs when the structured channel itself carries a PASS beside its UNKNO
 });
 
 // A channel that under-reports does not launder the printed PASS beside it:
-// printed findings are still read in the FAIL direction.
+// every channel the checker used is read, and a PASS anywhere is the violation.
 test("E FAILs when the channel says UNKNOWN-only but the checker prints a PASS finding", () => {
   withFixture({
     ledgerChecker: [
@@ -887,22 +1030,88 @@ test("E FAILs when the channel says UNKNOWN-only but the checker prints a PASS f
   });
 });
 
-// Round-3 finding 5, elevated by the recut brief: a printed line in the finding
-// grammar is forgeable by a printed line, so it can hold the gate at UNKNOWN or
-// push it to FAIL — never green it.
-test("printed UNKNOWN findings without a structured channel are UNKNOWN, never PASS", () => {
+// Round-4 finding 2: one world cannot tell a checker from a constant. This is
+// that finding's exact reproduction — a checker whose entire body reports
+// UNKNOWN — and the second world is what kills it.
+test("E FAILs a checker that answers UNKNOWN to everything, including where the inputs are there", () => {
+  withFixture({
+    ledgerChecker: [
+      "#!/usr/bin/env bun",
+      'console.log("UNKNOWN everything [always] this checker never measures anything");',
+      'console.log("summary: 0 FAIL, 1 UNKNOWN, 0 WARN, 0 SKIP, 0 PASS (0 docs)");',
+      "const channel = process.env.CHECK_OUTCOMES_JSON;",
+      'if (channel) await Bun.write(channel, JSON.stringify({ findings: [{ level: "UNKNOWN", file: "everything" }] }));',
+      'process.exit(process.argv.includes("--strict") ? 1 : 0);',
+    ].join("\n"),
+  }, (repo) => {
+    const measured = measure(repo);
+    expect(measured.verdicts.E).toBe("FAIL");
+    expect(measured.evidence("E")).toContain("answers UNKNOWN for all");
+    expect(measured.evidence("E")).toContain("a checker that never measures anything");
+    expect(measured.exitCode).toBe(1);
+  });
+});
+
+// The exit status is the part of the outcome no printed line can forge, so it
+// has to move: a checker that reports UNKNOWN and calls the run a success has
+// not made UNKNOWN an outcome.
+test("E FAILs a checker that reports UNKNOWN and still exits 0 under --strict", () => {
   withFixture({
     ledgerChecker: [
       "#!/usr/bin/env bun",
       'console.log("UNKNOWN instructions/ [root] directory not found");',
-      'console.log("summary: 0 FAIL, 0 WARN, 0 SKIP, 1 UNKNOWN, 0 PASS (0 docs)");',
+      'console.log("summary: 0 FAIL, 1 UNKNOWN, 0 WARN, 0 SKIP, 0 PASS (0 docs)");',
+      "process.exit(0);",
+    ].join("\n"),
+  }, (repo) => {
+    const measured = measure(repo);
+    expect(measured.verdicts.E).toBe("FAIL");
+    expect(measured.evidence("E")).toContain("still exits 0 under --strict");
+    expect(measured.evidence("E")).toContain("a word, not an outcome");
+  });
+});
+
+test("E is UNKNOWN when the checker blocks with and without --strict, so nothing isolates the UNKNOWN", () => {
+  withFixture({
+    ledgerChecker: [
+      "#!/usr/bin/env bun",
+      'console.log("UNKNOWN instructions/ [root] directory not found");',
+      'console.log("summary: 0 FAIL, 1 UNKNOWN, 0 WARN, 0 SKIP, 0 PASS (0 docs)");',
       "process.exit(1);",
     ].join("\n"),
   }, (repo) => {
     const measured = measure(repo);
     expect(measured.verdicts.E).toBe("UNKNOWN");
+    expect(measured.evidence("E")).toContain("blocks on the inputless tree with and without --strict");
+  });
+});
+
+test("E is UNKNOWN when a FAIL outcome sits beside the UNKNOWN on the inputless tree", () => {
+  withFixture({
+    ledgerChecker: [
+      "#!/usr/bin/env bun",
+      'console.log("UNKNOWN instructions/ [root] directory not found");',
+      'console.log("FAIL instructions/ [root] directory not found");',
+      'console.log("summary: 1 FAIL, 1 UNKNOWN, 0 WARN, 0 SKIP, 0 PASS (0 docs)");',
+      "process.exit(1);",
+    ].join("\n"),
+  }, (repo) => {
+    const measured = measure(repo);
+    expect(measured.verdicts.E).toBe("UNKNOWN");
+    expect(measured.evidence("E")).toContain("cannot show that the UNKNOWN is what blocks");
+  });
+});
+
+// The structured channel is stronger evidence and is still read whole wherever
+// it is offered — but a checker that reports honestly on stdout and blocks on
+// its own UNKNOWN has produced an outcome. tools/instructions/check.ts, which
+// landed that outcome under V3-5.44, publishes no channel.
+test("a checker with no structured channel can green the gate on its outcomes and its exit status", () => {
+  withFixture({ ledgerChecker: checkerScript({ channel: false }) }, (repo) => {
+    const measured = measure(repo);
+    expect(measured.verdicts.E).toBe("PASS");
     expect(measured.evidence("E")).toContain("no structured outcome channel");
-    expect(measured.exitCode).toBe(1);
+    expect(measured.evidence("E")).toContain("its exit-code policy carries the claim instead");
   });
 });
 
@@ -932,7 +1141,32 @@ test("a structured channel with no UNKNOWN outcome is FAIL", () => {
   }, (repo) => {
     const measured = measure(repo);
     expect(measured.verdicts.E).toBe("FAIL");
-    expect(measured.evidence("E")).toContain("carries no UNKNOWN outcome");
+    expect(measured.evidence("E")).toContain("emits no UNKNOWN outcome");
+  });
+});
+
+// The world the checker is probed in announces itself as an installation whose
+// inputs are absent — an instructions/ layer and an instance/ layer, both
+// empty. A bare empty directory would probe the one case the checker's own
+// vocabulary is entitled to call SKIP (no instance/ layer means no
+// installation), which is not the case gate E is about.
+test("the inputless world is an installation, not a repository that declares nothing", () => {
+  withFixture({
+    ledgerChecker: [
+      "#!/usr/bin/env bun",
+      'import { existsSync } from "node:fs";',
+      'import { join } from "node:path";',
+      "const argv = process.argv.slice(2);",
+      'const repo = argv[argv.indexOf("--repo") + 1] ?? ".";',
+      'const installation = existsSync(join(repo, "instance"));',
+      'const input = existsSync(join(repo, "instance/params.yaml"));',
+      'const level = input ? "PASS" : installation ? "UNKNOWN" : "SKIP";',
+      'console.log(`${level} instance/params.yaml [ledger] ${installation ? "installation" : "no instance layer"}`);',
+      "console.log(`\\nsummary: 0 FAIL, ${level === \"UNKNOWN\" ? 1 : 0} UNKNOWN, 0 WARN, 0 SKIP, 0 PASS (0 docs)`);",
+      'process.exit(level === "UNKNOWN" && argv.includes("--strict") ? 1 : 0);',
+    ].join("\n"),
+  }, (repo) => {
+    expect(measure(repo).verdicts.E).toBe("PASS");
   });
 });
 
@@ -989,7 +1223,7 @@ test("F FAILs when an enumerated item carries no verifying command", () => {
 // --- gate G: the runtime models come up, judged by execution -----------------
 
 test("G FAILs when nothing on the clean-server path even names the Whisper installer", () => {
-  withFixture({ bootstrap: "echo installing everything except whisper\n" }, (repo) => {
+  withFixture({ bootstrap: "echo installing everything except whisper\n", meteorite: meteoriteWith(CLONE_STAGE) }, (repo) => {
     const measured = measure(repo);
     expect(measured.verdicts.G).toBe("FAIL");
     expect(measured.evidence("G")).toContain("comes up without Whisper");
@@ -1046,27 +1280,41 @@ test("an assignment naming the installer does not green G", () => {
   }
 });
 
-test("an env-prefix stage naming the installer does not green G's meteorite arm", () => {
-  const meteorite = meteoriteWith(CLONE_STAGE, START_STAGE, '"whisper|WHISPER_INSTALLER=tools/whisper/install.sh bash bootstrap/check-unit-drift.sh"');
-  withFixture({ bootstrap: "echo nothing here\n", meteorite }, (repo) => {
-    const measured = measure(repo);
-    expect(measured.verdicts.G).toBe("FAIL");
-    expect(measured.evidence("G")).toContain("never ran it");
-    expect(measured.exitCode).toBe(1);
-  });
-});
-
-test("G PASSes when the meteorite, executed, runs the installer on the clean machine", () => {
-  const withWhisper = meteoriteWith(CLONE_STAGE, START_STAGE, '"whisper|bash tools/whisper/install.sh"');
-  withFixture({ bootstrap: "echo nothing here\n", meteorite: withWhisper }, (repo) => {
+test("G PASSes when the clean-server install path, executed, runs the installer", () => {
+  withFixture({}, (repo) => {
     const measured = measure(repo);
     expect(measured.verdicts.G).toBe("PASS");
     expect(measured.evidence("G")).toContain("executed in the rehearsal world, ran tools/whisper/install.sh");
   });
 });
 
+// The meteorite arm was a second rehearsal and is gone with the rest of that
+// machinery. A Whisper stage in the rebuild proof is still real evidence — it
+// is simply evidence this command cannot reach, because the rebuild artifact
+// records stage verdicts and liveness, not which installer a stage invoked.
+// UNKNOWN, never PASS, and it says which path it could have executed.
+test("a Whisper mention only in the meteorite is UNKNOWN — real evidence this command cannot measure", () => {
+  const withWhisper = meteoriteWith(CLONE_STAGE, '"whisper|bash tools/whisper/install.sh"');
+  withFixture({ bootstrap: "echo nothing here\n", meteorite: withWhisper }, (repo) => {
+    const measured = measure(repo);
+    expect(measured.verdicts.G).toBe("UNKNOWN");
+    expect(measured.evidence("G")).toContain("no longer executes meteorite/run.sh in any form");
+    expect(measured.evidence("G")).toContain("bootstrap/install.sh");
+    expect(measured.exitCode).toBe(1);
+  });
+});
+
+test("an env-prefix stage naming the installer greens nothing either", () => {
+  const meteorite = meteoriteWith(CLONE_STAGE, '"whisper|WHISPER_INSTALLER=tools/whisper/install.sh bash bootstrap/check-unit-drift.sh"');
+  withFixture({ bootstrap: "echo nothing here\n", meteorite }, (repo) => {
+    const measured = measure(repo);
+    expect(measured.verdicts.G).not.toBe("PASS");
+    expect(measured.exitCode).toBe(1);
+  });
+});
+
 test("G is not satisfied by a comment inside the meteorite's stage list", () => {
-  const commented = meteoriteWith(CLONE_STAGE, START_STAGE, "# TODO: bash tools/whisper/install.sh");
+  const commented = meteoriteWith(CLONE_STAGE, "# TODO: bash tools/whisper/install.sh");
   withFixture({ bootstrap: "echo nothing here\n", meteorite: commented }, (repo) => {
     expect(measure(repo).verdicts.G).toBe("FAIL");
   });
@@ -1108,10 +1356,22 @@ test("the checker is registered in both mechanism inventories", () => {
   }
 });
 
+// The honest baseline, and requirement 4 of the recut: the rebuild artifact
+// does not exist on main, so gate D and gate A's clean-clone half are UNKNOWN.
+// Pointed at an address that carries nothing, this is hermetic — it measures
+// the repository, not whatever this host happens to have run.
+test("with no rebuild artifact for this SHA, the real repository's gate D is UNKNOWN", () => {
+  const nowhere = join(tmpdir(), "cutover-readiness-no-artifact", "meteorite-latest.json");
+  const results = withArtifactAddress(nowhere, () => checkReadiness(REAL_REPO));
+  const gateD = results.find((entry) => entry.id === "D")!;
+  expect(gateD.verdict).toBe("UNKNOWN");
+  expect(gateD.evidence).toContain("no rehearsal artifact at this SHA");
+});
+
 test("the real repository is measured, and is not cutover-ready yet", () => {
   const results = checkReadiness(REAL_REPO);
   expect(results.map((entry) => entry.id)).toEqual(["A", "B", "C", "D", "E", "F", "G"]);
   expect(results.every((entry) => entry.evidence.trim().length > 0)).toBe(true);
-  expect(results.map((entry) => entry.verdict)).not.toContain("PASS");
+  expect(results.some((entry) => entry.verdict !== "PASS")).toBe(true);
   expect(report(results).exitCode).toBe(1);
 });

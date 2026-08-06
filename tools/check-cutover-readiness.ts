@@ -44,96 +44,140 @@
 //   Text may move a gate toward FAIL or hold it at UNKNOWN. Only an executed
 //   result moves a gate toward PASS.
 //
+// A fourth revision was rejected for the same disease one layer up. Gates D and
+// A rehearsed the meteorite HERE: a `docker` shim, a disposable copy of the
+// tracked tree, a journaling sentinel at the start proof's path -- and they
+// greened on "the sentinel was invoked at some point during that run". A
+// journal entry names no stage, carries no author, and says nothing about
+// whether the run finished or acted on what the proof returned, so a meteorite
+// whose stage list was `clone` and `full-test-suite` -- with no stage that
+// starts anything -- greened gate D, because the suite stage ran the start
+// proof's own regression lock. That is the shape the repository actually
+// writes, so the false green sat ON the path to closing the gate.
+//
+// The conclusion four rounds paid for: no simulation of a rebuild proof, run by
+// this command, can certify what the rebuild proof did. The only honest witness
+// of an executed meteorite run is that run itself. So gates D and A stopped
+// simulating and started READING -- and the rehearsal machinery they used is
+// deleted rather than sharpened, exactly as the invocation recognizer before it.
+//
 // Concretely, per gate:
 //
-//   D, and A's clean-clone half   REHEARSED, twice over. (1) The tree must
-//                                 register a start proof
-//                                 (runner:orchestrator-start-proof); that proof
-//                                 is EXECUTED against an orchestrator analog in
-//                                 three worlds -- one where the analog comes up
-//                                 live, one where its launcher succeeds but no
-//                                 live state ever appears, one where the launch
-//                                 fails. It must invoke the launcher (the
-//                                 analog's own invocation log is the evidence),
-//                                 exit 0 only in the live world, and exit
-//                                 non-zero in the other two -- so a proof that
-//                                 merely propagates the launcher's exit status,
-//                                 prints the launcher's path, or deletes the
-//                                 liveness marker cannot pass. (2) The meteorite
-//                                 itself is EXECUTED with its container replaced
-//                                 by a rehearsal world (a `docker` shim runs
-//                                 each stage command in a disposable copy of the
-//                                 tracked tree, unprivileged); the proof's place
-//                                 in that world is a journaling sentinel, and
-//                                 "the meteorite runs it" means the journal
-//                                 records the invocation. A stage that assigns
-//                                 the proof's path to a variable, echoes it, or
-//                                 talks about it leaves the journal empty. The
-//                                 meteorite's stage text is read only to word a
-//                                 FAIL.
-//   G                             EXECUTED the same way. If no executable line
-//                                 of bootstrap/install.sh or meteorite/run.sh
-//                                 even names the Whisper installer, that absence
-//                                 is FAIL (text may move a gate toward FAIL).
-//                                 If one does, the naming script is executed in
-//                                 its rehearsal world with a journaling sentinel
-//                                 at the installer's path, and only the journal
-//                                 greens the gate. A script that aborts in the
-//                                 rehearsal world before any invocation is
-//                                 UNKNOWN, with the aborting line quoted.
-//   E                             EXECUTED, and judged on a structured outcome
-//                                 set. The ledger checker is run against a
-//                                 throwaway directory whose inputs are absent,
-//                                 with CHECK_OUTCOMES_JSON naming a file where
-//                                 it may write its findings as JSON
-//                                 ({"findings":[{"level":...},...]}). PASS
-//                                 requires that channel to carry at least one
-//                                 UNKNOWN finding and zero PASS findings: on a
-//                                 tree with no inputs at all, EVERY PASS finding
-//                                 is the violation this gate exists to catch, so
-//                                 all findings are read, not the first match. A
-//                                 checker with no structured channel can still
-//                                 FAIL (printed findings and its exit status are
-//                                 read toward FAIL) but can never PASS: a
-//                                 printed line is forgeable by a printed line,
-//                                 and this gate will not green on stdout.
+//   D, and A's clean-clone half   READ from the run's own artifact.
+//                                 meteorite/run.sh writes a
+//                                 `meteorite-result/v1` JSON artifact on every
+//                                 run -- outside any checkout, replaced
+//                                 atomically, written on failure as well as
+//                                 success -- carrying the tree SHA it actually
+//                                 proved, its stage list with a verdict per
+//                                 stage, whether it FINISHED, its own verdict
+//                                 and blocker, and the orchestrator-live stage's
+//                                 liveness evidence. This command reads that
+//                                 artifact and nothing else:
+//                                   absent, unreadable, or recording a tree SHA
+//                                   that is not this tree's HEAD  -> UNKNOWN
+//                                   ("no rehearsal artifact at this SHA");
+//                                   finished:false, or the live stage failed or
+//                                   is absent from the stage list  -> FAIL, in
+//                                   the artifact's own words;
+//                                   a finished run whose live stage PASSed at
+//                                   this SHA                        -> PASS.
+//                                 No text of meteorite/run.sh is read by either
+//                                 gate: not its stage array, not its clone line,
+//                                 not a mention of anything. A stage list is a
+//                                 claim about what would run; the artifact is a
+//                                 record of what did.
+//   G                             EXECUTED. If no executable line of
+//                                 bootstrap/install.sh or meteorite/run.sh even
+//                                 names the Whisper installer, that absence is
+//                                 FAIL (text may move a gate toward FAIL). If
+//                                 bootstrap/install.sh does, it is executed in a
+//                                 rehearsal world with a journaling sentinel at
+//                                 the installer's path, and only the journal
+//                                 greens the gate. A script that aborts in that
+//                                 world before any invocation is UNKNOWN, with
+//                                 the aborting line quoted. A mention that
+//                                 appears only in meteorite/run.sh is UNKNOWN:
+//                                 this command no longer runs the meteorite in
+//                                 any form, and the rebuild artifact carries no
+//                                 Whisper evidence, so that mention is real
+//                                 evidence this command cannot measure.
+//   E                             EXECUTED, in two worlds, and judged on the
+//                                 outcomes the checker reports plus the exit
+//                                 status it moves. World one is a throwaway
+//                                 installation whose inputs are absent; world
+//                                 two is a copy of the tracked tree, where the
+//                                 same inputs are present. PASS requires all of:
+//                                 at least one UNKNOWN outcome and ZERO PASS
+//                                 outcomes in world one (on a tree with no
+//                                 inputs, EVERY PASS is the violation this gate
+//                                 exists to catch, so all outcomes are read, not
+//                                 the first match); the checker's exit status to
+//                                 MOVE with --strict there (blocking strict,
+//                                 clean lenient), which is what makes UNKNOWN an
+//                                 outcome rather than a word it printed; and at
+//                                 least one non-UNKNOWN outcome in world two, so
+//                                 a checker that answers UNKNOWN to everything
+//                                 cannot green a gate by measuring nothing. If
+//                                 the checker offers the structured outcome
+//                                 channel (CHECK_OUTCOMES_JSON, findings as
+//                                 JSON) it is read whole and held to the same
+//                                 rules; it is stronger evidence than stdout,
+//                                 but it is not required, because the exit
+//                                 status is the part no printed line can forge.
 //   B, C, F                       structure: extracted paths, a parsed call
 //                                 vocabulary, a parsed inventory.
 //
 // TRUST BOUNDARY. `--repo` is an input, and the executed judgements above run
-// code from the tree it names: the tracked ledger checker, the registered start
-// proof, and -- when they claim the wiring under measurement -- the tracked
-// meteorite runner and bootstrap installer, each in a disposable copy of the
-// tracked tree. Every rehearsal is bounded by a timeout, runs with a fresh
-// temporary directory as cwd and HOME, and never receives the measured
-// repository as a working directory; the measured tree is left byte-identical.
-// When this command runs as root, every rehearsed script (all but the ledger
-// probe, which predates this revision and runs as before) is executed as the
-// unprivileged `nobody` user via setpriv, so a rehearsed stage cannot mutate
-// the host; without setpriv, or without a world the unprivileged user can
-// read, the rehearsal refuses to run and the gate reports UNKNOWN naming what
-// is missing. A kill is UNKNOWN rather than a pass. That is containment, not a
-// sandbox -- point this command at a tree you would be willing to run. Nothing
-// is executed from a tree that registers no proof and names no wiring, which
+// code from the tree it names: the tracked ledger checker, and -- when it names
+// the wiring under measurement -- the tracked bootstrap installer, in a
+// disposable copy of the tracked tree. Every rehearsal is bounded by a timeout,
+// runs with a fresh temporary directory as cwd and HOME, and never receives the
+// measured repository as a working directory; the measured tree is left
+// byte-identical. When this command runs as root, every rehearsed script (all
+// but the ledger probe, which predates this revision and runs as before) is
+// executed as the unprivileged `nobody` user via setpriv, so a rehearsed script
+// cannot mutate the host; without setpriv, or without a world the unprivileged
+// user can read, the rehearsal refuses to run and the gate reports UNKNOWN
+// naming what is missing. A kill is UNKNOWN rather than a pass. That is
+// containment, not a sandbox -- point this command at a tree you would be
+// willing to run. Nothing is executed from a tree that names no wiring, which
 // is why measuring an unfamiliar repository stays inert unless it opted in.
 //
-// Rehearsal worlds are honest about their limits: a stage command that needs
-// container state this world does not provide (`cd /work/install`, an absolute
-// path into the container image) aborts its script, and the gate reports
-// UNKNOWN quoting the aborting line -- never a verdict parsed from the text it
-// could not run.
+// The rebuild artifact D and A read is host state by design (an artifact inside
+// the tree would make the next landing refuse a dirty worktree), and it is the
+// one input to this command that the measured tree cannot produce: nothing from
+// that tree runs, so a tree can no longer certify itself. The forgery ceiling
+// the fourth review recorded -- a rehearsed script executing the sentinel's own
+// line to write a journal entry it never earned -- is therefore discharged for
+// these two gates by construction rather than by a sharper check. What remains
+// is a different and narrower boundary, stated plainly rather than implied:
+// whoever can write the evidence path can write a green artifact, exactly as
+// whoever can write the tree can write a green checker. Both sit inside "point
+// this command at a tree, and a host, you would be willing to run"; neither is
+// reachable by drift, which is what the four rejected rounds were about. Gate
+// G's bootstrap arm still greens on a journal and still carries the original
+// ceiling, unchanged and unclosed: the cheap tell named there ($0 must be the
+// sentinel's own path) remains available and unused.
 //
-// Where a gate's real verifier already exists it is INSPECTED or EXECUTED, not
-// re-implemented (one predicate, one home) -- the meteorite runner for D and A,
-// the instruction checker for E, the unit-drift checker for B's installed-path
-// half, core/mission-cli-actions.ts for C's vocabulary.
+// The rehearsal world is honest about its limits: a script that needs state
+// this world does not provide aborts, and the gate reports UNKNOWN quoting the
+// aborting line -- never a verdict parsed from the text it could not run.
+//
+// Where a gate's real verifier already exists it is INSPECTED, EXECUTED or READ,
+// not re-implemented (one predicate, one home) -- the meteorite's own artifact
+// for D and A, the instruction checker for E, the unit-drift checker for B's
+// installed-path half, core/mission-cli-actions.ts for C's vocabulary.
 //
 // Halves that can only be settled by an act performed OUTSIDE the repository --
 // running the suite from three checkout kinds, proving nothing is stranded off
 // origin -- have no tracked verifier yet. They report UNKNOWN and name the
 // mechanism id that would settle them, so the way to green is to land that
-// mechanism and register it in instance/required-mechanisms.tsv. That is why
-// gates E and F cannot report PASS today.
+// mechanism and register it in instance/required-mechanisms.tsv. Those two
+// halves are why gates E and F cannot report PASS today, and where such a
+// mechanism IS registered and landed the evidence says exactly that much -- the
+// mechanism exists and this command did not run it -- rather than claiming the
+// act was proven.
 
 import { randomBytes } from "node:crypto";
 import {
@@ -166,11 +210,23 @@ const BOOTSTRAP = "bootstrap/install.sh";
 const REGISTRY = "instance/required-mechanisms.tsv";
 
 // Mechanism ids in REGISTRY. The first exists; the rest do not yet, and naming
-// them is how A, D, E and F say what would settle a half no tree can settle.
+// them is how A, E and F say what would settle a half no tree can settle.
 const METEORITE_MECHANISM = "runner:meteorite";
-const START_PROOF = "runner:orchestrator-start-proof";
 const CHECKOUT_PARITY = "checker:checkout-parity";
 const STRANDED_WORK = "checker:stranded-work";
+
+// The rebuild proof's machine-readable artifact: the interface meteorite/run.sh
+// documents in its own header and writes on every run. Its address is resolved
+// exactly as the runner resolves it, so this reader and that writer cannot
+// disagree about where the artifact is. There is one file, replaced atomically
+// per run, which is what makes "the newest artifact" a path rather than a
+// search: the runner never leaves an older one behind to be picked by mistake.
+const REBUILD_ARTIFACT_ENV = "METEORITE_ARTIFACT";
+const REBUILD_ARTIFACT_RELATIVE = "bpa-dev-infrastructure/evidence/meteorite-latest.json";
+const REBUILD_SCHEMA = "meteorite-result/v1";
+// Stage names from the runner's own `required_stages` contract.
+const CLONE_STAGE = "clone";
+const LIVE_STAGE = "orchestrator-live";
 
 // The environment variable through which the ledger checker may publish its
 // findings as a structured outcome set. Gate E defines this protocol and names
@@ -345,13 +401,31 @@ const MISSION_CLI_CALL = /(?:^|[\s;&|(`"'$])mission[_-]cli(?:\.ts)?\s+([A-Za-z][
 
 export type MissionCliCall = { file: string; line: number; group: string; action?: string };
 
+// A comment is not a call. `#` and `//` lines were always skipped; a `/* ... */`
+// block was not, and prose inside one is exactly where a source file explains
+// its own relationship to the mission CLI. `core/mission-cli-actions.ts` says
+// "It lives in this module and not in mission-cli.ts because mission-cli.ts
+// runs its `main` at import time", and gate C read `because` as an action and
+// FAILed the real repository on a sentence about itself. Skipping a comment can
+// only ever hide a call that was already not a call, which is the same
+// fail-closed direction executableShellLines is used in for gate B.
 function missionCalls(tree: Tree): MissionCliCall[] {
   const calls: MissionCliCall[] = [];
   for (const file of tree.sources()) {
     const text = tree.read(file);
     if (!text) continue;
+    let inBlockComment = false;
     text.split("\n").forEach((line, index) => {
-      if (/^\s*(#|\/\/)/.test(line)) return;
+      const opens = line.lastIndexOf("/*");
+      const closes = line.lastIndexOf("*/");
+      const wasInBlockComment = inBlockComment;
+      if (inBlockComment) {
+        if (closes >= 0) inBlockComment = false;
+      } else if (opens >= 0 && closes < opens) {
+        inBlockComment = true;
+      }
+      if (wasInBlockComment || inBlockComment) return;
+      if (/^\s*(#|\/\/|\*)/.test(line)) return;
       for (const match of line.matchAll(MISSION_CLI_CALL)) {
         calls.push({ file, line: index + 1, group: match[1]!, action: match[2] });
       }
@@ -365,50 +439,13 @@ export function missionCliCalls(repo: string): MissionCliCall[] {
   return tree === null ? [] : missionCalls(tree);
 }
 
-// The meteorite's executable stage list: the entries of the `commands=(...)`
-// array the runner loops over, as `"<stage>|<command>"`. Comment lines inside
-// the array are not stages, and a line inside it that is neither a comment nor a
-// well-formed entry makes the whole parse fail -- a stage list this function
-// cannot read is reported UNKNOWN, never judged from the raw file text. The
-// parse decides nothing toward PASS: it feeds gate A's clone check (a necessary
-// condition), the stage inventory a FAIL quotes, and nothing else.
-export type MeteoriteStage = { name: string; command: string; line: number };
-
-export function meteoriteStages(tree: Tree): MeteoriteStage[] | null {
-  const text = tree.read(METEORITE);
-  if (text === null) return null;
-  const lines = text.split("\n");
-  const opening = lines.findIndex((line) => /^\s*commands=\(\s*$/.test(line));
-  if (opening < 0) return null;
-  const stages: MeteoriteStage[] = [];
-  for (let index = opening + 1; index < lines.length; index += 1) {
-    const line = lines[index]!;
-    if (/^\s*\)\s*$/.test(line)) return stages;
-    if (!line.trim() || /^\s*#/.test(line)) continue;
-    const entry = line.match(/^\s*"([^|"]+)\|(.*)"\s*$/);
-    if (!entry) return null;
-    stages.push({ name: entry[1]!, command: entry[2]!, line: index + 1 });
-  }
-  return null;
-}
-
-// DIAGNOSTIC ONLY. These two say whether a stage's text NAMES a start or a
-// liveness check. That is worth reporting when gate D fails -- "its stages end
-// at install and suite" is the sentence the operator was promised -- but a
-// stage that names the launcher inside an `echo`, and a stage that names the
-// lease inside `rm -f`, both match. So a match here can only ever narrow a
-// FAIL's wording. What a gate PASSES on is executed evidence, never this.
-const MENTIONS_START = /(?:^|[\s;&|(`"'])(?:[^\s"';|&]*\/)?orchestrator\/launch\.sh|systemctl\s+(?:--\S+\s+)*(?:start|enable\s+--now|restart)\s+\S*bpa-orchestrator/;
-const MENTIONS_LIVENESS = /orchestrator\/status\.sh|orchestrator\.lease|orchestrator\.heartbeat|orchestrator\.liveness|systemctl\s+(?:--\S+\s+)*is-active\s+\S*bpa-orchestrator/;
-
-// A clone whose source is a remote: a URL, an scp-style `user@host:path`, or a
-// variable holding one. Flags between `clone` and the source are unrestricted
-// (`--depth 1`, `-b main`, `-q` and their arguments all read the same to git),
-// but the run stops at a command separator so a later command's URL cannot
-// certify an earlier local `cp`. A local path source does not match, which is
-// the fail-closed direction: a clean clone is the point of the gate. This is a
-// necessary condition for gate A, never a sufficient one.
-const CLONES_FROM_REMOTE = /\bgit\s+clone\b[^\n;&|]*?['"]?(?:(?:https?|ssh|git):\/\/|[A-Za-z0-9._-]+@[A-Za-z0-9._-]+:|\$)/;
+// The meteorite's stage list, its clone line and every other sentence in
+// meteorite/run.sh used to be parsed here, for gates D and A. All of it is
+// gone. Three rounds proved that a claim about what a script WOULD do cannot
+// certify what it DID, and the fourth proved that this command's own rehearsal
+// of the script cannot either. What those gates read now is the stage list the
+// run itself recorded, in the artifact below -- names and verdicts of stages
+// that executed, not entries of an array that might have.
 
 // ---------------------------------------------------------------------------
 // The mechanism registry
@@ -438,17 +475,28 @@ function mechanism(tree: Tree, id: string): { target: string } | { reason: strin
 }
 
 // ---------------------------------------------------------------------------
-// Rehearsal worlds
+// The rehearsal world (gate G)
 //
 // A rehearsal world is a disposable directory holding a copy of the TRACKED
 // tree (so an untracked host file can no more reach a rehearsal than it can
-// reach a clean clone), journaling sentinels in place of the files whose
+// reach a clean clone), a journaling sentinel in place of the file whose
 // invocation is under measurement, and shims for the boundary the rehearsed
 // script talks through. The rehearsed script runs unprivileged; the journal --
 // which only a sentinel process appends to, under a nonce generated per run --
-// is the only thing a gate greens on. Printed output cannot forge it.
-
-type Sentinel = { path: string; marker: string };
+// is the only thing gate G greens on. Printed output cannot forge it.
+//
+// The CEILING, stated where it applies rather than where it does not: a
+// rehearsed script CAN forge a journal entry, by reading the sentinel's own
+// text and executing the line that writes it. The fourth review found that and
+// recorded it as a ceiling rather than a defect, because it is deliberate
+// forgery by a script inside the trust boundary rather than the drift the
+// earlier rounds were about; the cheap tell it named -- the journal records
+// $0, so requiring $0 to be the sentinel's own path costs one comparison --
+// remains available and unused. What changed since is the ceiling's REACH: it
+// used to cover gates D and A too, whose meteorite rehearsal lived here. Those
+// gates now read the artifact of a real run, nothing from the measured tree
+// executes for them, and so the tree they measure can no longer forge their
+// verdict at all. Only gate G's bootstrap arm still stands on a journal.
 
 type WorldRun =
   | { built: false; reason: string }
@@ -550,104 +598,6 @@ function worldResult(
   return { built: true, outcome: run.exitCode === 0 ? "completed" : "aborted", exitCode: run.exitCode, signal: null, firstError, invoked };
 }
 
-// The sentinels a meteorite rehearsal plants are decided by the tree, not the
-// caller, so gates D, A and G share one executed run per measurement.
-function meteoriteSentinels(tree: Tree): Sentinel[] {
-  const sentinels: Sentinel[] = [];
-  const registered = mechanism(tree, START_PROOF);
-  if ("target" in registered) sentinels.push({ path: registered.target, marker: "start-proof" });
-  if (tree.has(WHISPER_INSTALLER) && !sentinels.some((sentinel) => sentinel.path === WHISPER_INSTALLER)) {
-    sentinels.push({ path: WHISPER_INSTALLER, marker: "whisper" });
-  }
-  return sentinels;
-}
-
-// The meteorite talks to its container exclusively through `docker`, so that
-// boundary is where the rehearsal world stands in: `docker run` answers with an
-// analog container id, and `docker exec` runs the stage command in the world's
-// copy of the tracked tree, unprivileged, with an inner PATH whose `git`
-// answers `rev-parse` with this run's candidate SHA and whose package/network
-// tools are inert. The meteorite's own loop, validation and recording execute
-// for real; a stage command that needs state this world does not provide fails
-// its stage, and the gate says so as UNKNOWN rather than guessing.
-function dockerShim(worldTree: string, innerBin: string): string {
-  return [
-    "#!/bin/bash",
-    'subcommand="${1:-}"',
-    "shift || true",
-    'case "$subcommand" in',
-    "  run) printf 'rehearsal-cid\\n' ;;",
-    "  exec)",
-    '    while (($#)) && [ "$1" != rehearsal-cid ]; do shift; done',
-    "    if (($#)); then shift; fi",
-    "    if (($# == 0)); then exit 0; fi",
-    `    cd ${shellQuote(worldTree)} || exit 125`,
-    `    PATH=${shellQuote(innerBin)}:"$PATH" exec "$@"`,
-    "    ;;",
-    "  *) exit 0 ;;",
-    "esac",
-    "",
-  ].join("\n");
-}
-
-function meteoriteRehearsal(tree: Tree): WorldRun {
-  return once(tree, "meteorite-rehearsal", (): WorldRun => {
-    const grant = unprivileged();
-    if ("reason" in grant) return { built: false, reason: grant.reason };
-    const root = worldRoot("cutover-meteorite-", grant);
-    if (root === null) return { built: false, reason: "no temp directory the unprivileged rehearsal user can read" };
-    try {
-      const worldTree = join(root, "tree");
-      materializeTrackedTree(tree, worldTree);
-      const journal = join(root, "journal");
-      writeFileSync(journal, "");
-      chmodSync(journal, 0o666);
-      const nonce = randomBytes(16).toString("hex");
-      for (const sentinel of meteoriteSentinels(tree)) {
-        const at = join(worldTree, sentinel.path);
-        mkdirSync(dirname(at), { recursive: true });
-        writeExecutable(at, sentinelScript(journal, nonce, sentinel.marker));
-      }
-      const candidateSha = randomBytes(20).toString("hex");
-      const innerBin = join(root, "inner");
-      mkdirSync(innerBin);
-      writeExecutable(
-        join(innerBin, "git"),
-        `#!/bin/bash\nfor argument in "$@"; do\n  if [ "$argument" = rev-parse ]; then printf '%s\\n' ${shellQuote(candidateSha)}; exit 0; fi\ndone\nexit 0\n`,
-      );
-      for (const name of NOOP_SHIMS) writeExecutable(join(innerBin, name), "#!/bin/bash\nexit 0\n");
-      const bin = join(root, "bin");
-      mkdirSync(bin);
-      writeExecutable(join(bin, "docker"), dockerShim(worldTree, innerBin));
-      // `docker exec ... bash -lc` starts a login shell, and /etc/profile may
-      // reset PATH; the rehearsal HOME's profile puts the inner shims back.
-      writeFileSync(join(root, ".bash_profile"), `export PATH=${shellQuote(innerBin)}:"$PATH"\n`);
-      for (const scratch of ["tmp", "state"]) mkdirSync(join(root, scratch));
-      surrender(root);
-      const run = Bun.spawnSync([...grant.prefix, "bash", join(worldTree, METEORITE), "--ref", candidateSha], {
-        cwd: worldTree,
-        env: {
-          PATH: `${bin}:${process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin"}`,
-          HOME: root,
-          TMPDIR: join(root, "tmp"),
-          XDG_STATE_HOME: join(root, "state"),
-          METEORITE_REPORT: join(root, "state", "meteorite-report.md"),
-          METEORITE_REPO_URL: "https://rehearsal.invalid/candidate.git",
-          METEORITE_DONOR_SHA: candidateSha,
-          METEORITE_DONOR_REF: `refs/meteorite-candidates/1-1-${candidateSha}/v2-deprecated`,
-          METEORITE_KEEP: "0",
-        },
-        timeout: probeTimeoutMs(),
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      return worldResult(run, journal, nonce);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-}
-
 // Bootstrap's boundary is its environment: every destination it writes is an
 // override, so the world hands it a disposable install root, env file, runtime
 // directory, unit directory, crontab command and bun -- and a clone-able twin
@@ -712,191 +662,191 @@ function bootstrapRehearsal(tree: Tree): WorldRun {
 }
 
 // ---------------------------------------------------------------------------
-// The start-proof rehearsal: gate D's evidence, and gate A's clean-clone half
+// The rebuild proof's artifact: gate D's evidence, and gate A's clean-clone half
 //
-// The thing under test is a tracked script the tree registers as
-// runner:orchestrator-start-proof. Its contract, of which this rehearsal is the
-// executable statement:
+// meteorite/run.sh is the rebuild proof. It installs prerequisites in a fresh
+// container, clones the candidate from a remote without touching a host file,
+// runs bootstrap, runs the suite, and -- since the orchestrator-live stage
+// landed -- starts the orchestrator inside that container and asserts it
+// reaches a live state. It writes what it did to a `meteorite-result/v1` JSON
+// artifact: the interface documented in its own header, written outside any
+// checkout, replaced atomically, written on failure as well as success.
 //
-//   Given $REPO_DIR (a repository to start from) and $RUNTIME_DIR (where the
-//   orchestrator's liveness state lives), it starts the orchestrator by running
-//   $REPO_DIR/orchestrator/launch.sh, and exits 0 ONLY IF the orchestrator
-//   reached a live state.
+// This command reads that artifact. It does not run the meteorite, simulate it,
+// shim its container, or parse a word of it. The reason is the whole history of
+// this file: a text scan cannot tell doing from describing; an invocation
+// recognizer cannot either; and a rehearsal of the runner, which was the third
+// answer, greens on "the path executed" while knowing nothing about who called
+// it, whether the run survived, or whether its verdict mattered. A run's own
+// record is the only witness that carries all three, because the runner is the
+// only party present when the run happens.
 //
-// It is rehearsed against an ANALOG rather than the real orchestrator, so the
-// judgement is hermetic, needs no container, and can be run in every direction.
-// The analog appends a line to a log every time it is invoked -- that log, not
-// the proof's text, is what "it starts the orchestrator" means here -- and the
-// three worlds differ only in what the launch produces:
+// What that buys, and what it costs, both stated plainly:
 //
-//   live     the analog's launcher writes a lease and exits 0. A working proof
-//            exits 0.
-//   zombie   the launcher exits 0 but writes NO lease: the launch "succeeded"
-//            and nothing is alive. A proof that merely propagates the
-//            launcher's exit status exits 0 here, and that is exactly the proof
-//            gate D's definition rejects -- it must assert the liveness
-//            evidence itself, and exit non-zero.
-//   dead     the launcher fails outright. The proof must exit non-zero.
-//
-// Nothing about this can be satisfied by writing words: a proof that prints the
-// launcher's path leaves the analog's log empty, a proof that deletes the lease
-// exits 0 in the zombie world, and a proof that trusts the launcher's status
-// exits 0 there too.
+//   + the evidence is a real container, a real clone, a real launcher, and a
+//     real liveness assertion -- not an analog of any of them;
+//   + the artifact names the tree SHA it proved, so it cannot vouch for a tree
+//     it never saw. A stale artifact is UNKNOWN, exactly like no artifact;
+//   + nothing from the measured tree runs for these gates, so that tree cannot
+//     forge its own verdict;
+//   - the artifact is host state, so these two gates are the only ones whose
+//     evidence a clean clone does not carry. That is inherent: "a clean clone
+//     starts the orchestrator" is a claim about an act performed somewhere, and
+//     no file in the tree can be that act. UNKNOWN until someone runs it is the
+//     honest state, and it is what this repository reports today.
 
-const LEASE = "orchestrator.lease";
+type RebuildStage = { name: string; verdict: string };
 
-type World = "live" | "zombie" | "dead";
-type Rehearsal = { launched: boolean; exitCode: number | null; signal: string | null; firstLine: string };
+type RebuildArtifact = {
+  path: string;
+  finished: boolean;
+  result: string;
+  blocker: string;
+  treeSha: string;
+  requestedSha: string;
+  stages: RebuildStage[];
+  livenessProven: boolean;
+  livenessDetail: string;
+  finishedAt: string;
+};
 
-function writeAnalog(repoDir: string, runtimeDir: string, log: string, world: World): void {
-  mkdirSync(join(repoDir, "orchestrator"), { recursive: true });
-  const record = `printf '%s %s\\n' "$0" "$*" >> ${shellQuote(log)}`;
-  const lease = shellQuote(join(runtimeDir, LEASE));
-  const launcher =
-    world === "live"
-      ? `#!/usr/bin/env bash\n${record}\nprintf 'analog-orchestrator pid=%s\\n' "$$" > ${lease}\nexit 0\n`
-      : world === "zombie"
-        ? `#!/usr/bin/env bash\n${record}\nexit 0\n`
-        : `#!/usr/bin/env bash\n${record}\nprintf 'analog-orchestrator: did not come up\\n' >&2\nexit 1\n`;
-  writeExecutable(join(repoDir, "orchestrator/launch.sh"), launcher);
-  writeExecutable(join(repoDir, "orchestrator/status.sh"), `#!/usr/bin/env bash\n${record}\ntest -s ${lease}\n`);
-}
+type Rebuild = { kind: "unread"; evidence: string } | { kind: "read"; artifact: RebuildArtifact };
 
-// `unproven` — nothing in the tree even claims to do it (gate D's definition is
-// about the meteorite, so that is a FAIL there; gate A's clause is about a
-// clean clone, which someone could still start by hand, so it is UNKNOWN
-// there). `refuted` — the proof ran and does not do what it claims. `unwired` —
-// the proof works, but the meteorite, executed, never invoked it. `unmeasured`
-// — a rehearsal could not finish, and a kill is not a pass.
-type Proof = { kind: "proven" | "unproven" | "refuted" | "unwired" | "unmeasured"; evidence: string };
-
-function rehearseProof(tree: Tree, target: string): Proof {
-  const grant = unprivileged();
-  if ("reason" in grant) return { kind: "unmeasured", evidence: `the start-proof rehearsal could not run: ${grant.reason}` };
-  const source = tree.read(target);
-  if (source === null) return { kind: "unmeasured", evidence: `${target} could not be read from the tracked tree` };
-  const root = worldRoot("cutover-proof-", grant);
-  if (root === null) return { kind: "unmeasured", evidence: "no temp directory the unprivileged rehearsal user can read" };
-  try {
-    const proofPath = join(root, target.endsWith(".ts") ? "proof.ts" : "proof.sh");
-    writeExecutable(proofPath, source);
-    let runner = ["bash", proofPath];
-    if (target.endsWith(".ts")) {
-      const bunCopy = join(root, "bun");
-      copyFileSync(process.execPath, bunCopy);
-      chmodSync(bunCopy, 0o755);
-      runner = [bunCopy, proofPath];
-    }
-    const worlds: World[] = ["live", "zombie", "dead"];
-    for (const world of worlds) {
-      const repoDir = join(root, world, "repo");
-      const runtimeDir = join(root, world, "runtime");
-      mkdirSync(runtimeDir, { recursive: true });
-      writeAnalog(repoDir, runtimeDir, join(root, world, "analog.log"), world);
-    }
-    mkdirSync(join(root, "tmp"));
-    surrender(root);
-    const outcomes = {} as Record<World, Rehearsal>;
-    for (const world of worlds) {
-      const run = Bun.spawnSync([...grant.prefix, ...runner], {
-        cwd: join(root, world),
-        env: {
-          PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
-          HOME: root,
-          TMPDIR: join(root, "tmp"),
-          REPO_DIR: join(root, world, "repo"),
-          RUNTIME_DIR: join(root, world, "runtime"),
-        },
-        timeout: probeTimeoutMs(),
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      let launched = false;
-      try { launched = readFileSync(join(root, world, "analog.log"), "utf8").includes("orchestrator/launch.sh"); } catch { launched = false; }
-      const output = `${run.stdout?.toString() ?? ""}${run.stderr?.toString() ?? ""}`;
-      outcomes[world] = {
-        launched,
-        exitCode: run.signalCode ? null : run.exitCode,
-        signal: run.signalCode ?? null,
-        firstLine: output.split("\n").map((line) => line.trim()).find((line) => line.length > 0)?.slice(0, 120) ?? "no output",
-      };
-      if (outcomes[world].signal !== null || outcomes[world].exitCode === null) {
-        return {
-          kind: "unmeasured",
-          evidence: `the rehearsal of ${target} was killed (${outcomes[world].signal ?? "no exit status"}) in the ${world} analog world, so it measured nothing`,
-        };
-      }
-    }
-    const { live, zombie, dead } = outcomes;
-    if (live.exitCode !== 0) {
-      return {
-        kind: "refuted",
-        evidence: `${target} exited ${live.exitCode} rehearsed against an orchestrator analog that came up — the start it is supposed to prove does not work: ${live.firstLine}`,
-      };
-    }
-    if (!live.launched) {
-      return {
-        kind: "refuted",
-        evidence: `${target} exited 0 without ever invoking $REPO_DIR/orchestrator/launch.sh — the analog recorded no launch, so it describes a start rather than performing one`,
-      };
-    }
-    if (zombie.exitCode === 0) {
-      return {
-        kind: "refuted",
-        evidence: `${target} exits 0 against an orchestrator analog whose launcher succeeded without ever producing a live state — it accepts the launcher's exit status instead of asserting the liveness evidence, so it asserts no live state of its own`,
-      };
-    }
-    if (dead.exitCode === 0) {
-      return {
-        kind: "refuted",
-        evidence: `${target} exits 0 whether or not the orchestrator comes up — rehearsed against an analog that never started, it still succeeded, so it asserts no live state`,
-      };
-    }
-    return {
-      kind: "proven",
-      evidence: `rehearsed against an orchestrator analog in three worlds, it starts the analog and exits 0 only when a live state exists (live exit 0, launcher-success-without-liveness exit ${zombie.exitCode}, dead exit ${dead.exitCode})`,
-    };
-  } finally {
-    rmSync(root, { recursive: true, force: true });
+// Resolved exactly as meteorite/run.sh resolves it, so the reader and the
+// writer cannot end up looking at different files: the METEORITE_ARTIFACT
+// override first, then $XDG_STATE_HOME, then $HOME/.local/state.
+function rebuildArtifactPath(): { path: string } | { reason: string } {
+  const override = process.env[REBUILD_ARTIFACT_ENV];
+  if (override) return { path: override };
+  const state = process.env.XDG_STATE_HOME || (process.env.HOME ? join(process.env.HOME, ".local/state") : "");
+  if (!state) {
+    return { reason: `neither ${REBUILD_ARTIFACT_ENV}, XDG_STATE_HOME nor HOME is set, so the rebuild proof's artifact has no address on this host` };
   }
+  return { path: join(state, REBUILD_ARTIFACT_RELATIVE) };
 }
 
-function startProof(tree: Tree, stages: MeteoriteStage[]): Proof {
-  return once(tree, "start-proof", (): Proof => {
-    const registered = mechanism(tree, START_PROOF);
-    if ("reason" in registered) {
-      return { kind: "unproven", evidence: `no rehearsable start proof (${START_PROOF}): ${registered.reason}` };
-    }
-    const target = registered.target;
-    const quality = rehearseProof(tree, target);
-    if (quality.kind !== "proven") return quality;
-    const wiring = meteoriteRehearsal(tree);
-    if (!wiring.built) {
-      return { kind: "unmeasured", evidence: `the ${METEORITE} rehearsal could not run: ${wiring.reason}` };
-    }
-    if (wiring.invoked.has("start-proof")) {
+// The SHA the artifact must be about: this tree's HEAD. A tracked file that
+// differs from HEAD makes the pair meaningless -- the artifact would certify a
+// commit, and the gates would report it about a tree that is not that commit --
+// so an uncommitted change is unmeasured rather than covered. Untracked files
+// are invisible here as everywhere else in this command.
+function measuredSha(tree: Tree): { sha: string } | { reason: string } {
+  const head = Bun.spawnSync(["git", "-C", tree.repo, "rev-parse", "HEAD"], { timeout: GIT_TIMEOUT_MS });
+  if (head.exitCode !== 0) return { reason: `${tree.repo} has no HEAD commit to compare a rebuild artifact against` };
+  const sha = head.stdout.toString().trim();
+  if (!/^[0-9a-f]{40}$/.test(sha)) return { reason: `${tree.repo} reports no readable HEAD SHA` };
+  const status = Bun.spawnSync(["git", "-C", tree.repo, "status", "--porcelain"], { timeout: GIT_TIMEOUT_MS });
+  if (status.exitCode !== 0) return { reason: `the working tree state of ${tree.repo} is unreadable` };
+  const dirty = status.stdout.toString().split("\n").filter((line) => line.trim() && !line.startsWith("??"));
+  if (dirty.length) {
+    return { reason: `${dirty.length} tracked file(s) differ from HEAD (${dirty[0]!.trim()}), so no artifact can be about this tree` };
+  }
+  return { sha };
+}
+
+function readRebuildArtifact(path: string): RebuildArtifact | { error: string } {
+  if (!existsSync(path)) return { error: "does not exist" };
+  let parsed: unknown;
+  try { parsed = JSON.parse(readFileSync(path, "utf8")); } catch { return { error: "is not readable JSON" }; }
+  if (typeof parsed !== "object" || parsed === null) return { error: "is not a JSON object" };
+  const record = parsed as Record<string, unknown>;
+  if (record.schema !== REBUILD_SCHEMA) return { error: `carries schema ${JSON.stringify(record.schema) ?? "none"}, not ${REBUILD_SCHEMA}` };
+  if (typeof record.finished !== "boolean") return { error: "carries no boolean finished field" };
+  if (typeof record.tree_sha !== "string") return { error: "carries no tree_sha" };
+  if (!Array.isArray(record.stages)) return { error: "carries no stages array" };
+  const stages: RebuildStage[] = [];
+  for (const entry of record.stages) {
+    if (typeof entry !== "object" || entry === null) return { error: "carries a stage that is not an object" };
+    const { name, verdict } = entry as { name?: unknown; verdict?: unknown };
+    if (typeof name !== "string" || typeof verdict !== "string") return { error: "carries a stage without a name and a verdict" };
+    stages.push({ name, verdict });
+  }
+  const liveness = typeof record.liveness === "object" && record.liveness !== null ? (record.liveness as Record<string, unknown>) : {};
+  const detail = Object.entries(liveness)
+    .filter(([key]) => key !== "proven")
+    .map(([key, value]) => `${key}=${String(value)}`)
+    .join(" ");
+  return {
+    path,
+    finished: record.finished,
+    result: typeof record.result === "string" ? record.result : "unstated",
+    blocker: typeof record.blocker === "string" ? record.blocker : "none stated",
+    treeSha: record.tree_sha,
+    requestedSha: typeof record.requested_sha === "string" ? record.requested_sha : "UNMEASURED",
+    stages,
+    livenessProven: liveness.proven === true,
+    livenessDetail: detail.slice(0, 240) || "no liveness fields",
+    finishedAt: typeof record.finished_at === "string" ? record.finished_at : "an unstated time",
+  };
+}
+
+// One read per measurement, shared by D and A's clean-clone half. Every path
+// out of it that is not `read` is UNKNOWN: an absent, unreadable or stale
+// artifact is the absence of evidence, and this gate has never been allowed to
+// spend that as evidence of absence.
+function rebuildProof(tree: Tree): Rebuild {
+  return once(tree, "rebuild-artifact", (): Rebuild => {
+    const measured = measuredSha(tree);
+    if ("reason" in measured) return { kind: "unread", evidence: `no rehearsal artifact at this SHA: ${measured.reason}` };
+    const address = rebuildArtifactPath();
+    if ("reason" in address) return { kind: "unread", evidence: `no rehearsal artifact at this SHA: ${address.reason}` };
+    const artifact = readRebuildArtifact(address.path);
+    if ("error" in artifact) {
       return {
-        kind: "proven",
-        evidence: `${METEORITE}, executed with its container replaced by a rehearsal world, invoked ${target}; ${quality.evidence}`,
+        kind: "unread",
+        evidence: `no rehearsal artifact at this SHA: ${address.path} ${artifact.error} — nothing has run ${METEORITE} against ${measured.sha.slice(0, 12)} on this host`,
       };
     }
-    if (wiring.outcome === "killed") {
+    if (artifact.treeSha !== measured.sha) {
       return {
-        kind: "unmeasured",
-        evidence: `the ${METEORITE} rehearsal was killed (${wiring.signal ?? "no exit status"}) before any invocation of ${target}, so the wiring is unmeasured`,
+        kind: "unread",
+        evidence: `no rehearsal artifact at this SHA: ${address.path} records tree_sha ${artifact.treeSha.slice(0, 12)} (finished_at ${artifact.finishedAt}) and HEAD is ${measured.sha.slice(0, 12)} — a rebuild proof vouches for the tree it measured and no other`,
       };
     }
-    if (wiring.outcome === "aborted") {
-      return {
-        kind: "unmeasured",
-        evidence: `${METEORITE}, executed in the rehearsal world, aborted (exit ${wiring.exitCode}: ${wiring.firstError}) before invoking ${target} — whether the meteorite runs the proof is unmeasured`,
-      };
-    }
-    return {
-      kind: "unwired",
-      evidence: `${METEORITE}, executed to completion in the rehearsal world, never invoked ${target} — ${stageDiagnosis(stages)}`,
-    };
+    return { kind: "read", artifact };
   });
+}
+
+// What the artifact says about the orchestrator-live stage: the executed answer
+// to gate D's sentence, and the second half of gate A's. `false` is a FAIL in
+// the artifact's own words -- the blocker the run recorded, or the stage list
+// it recorded instead of a live one.
+type LiveVerdict = { proven: boolean; evidence: string };
+
+function liveStageVerdict(artifact: RebuildArtifact): LiveVerdict {
+  const where = `${artifact.path} (tree_sha ${artifact.treeSha.slice(0, 12)}, finished_at ${artifact.finishedAt})`;
+  const inventory = artifact.stages.length
+    ? `${artifact.stages.length} executed stage(s): ${artifact.stages.map((stage) => `${stage.name} ${stage.verdict}`).join(", ")}`
+    : "no executed stages at all";
+  if (!artifact.finished) {
+    return {
+      proven: false,
+      evidence: `${METEORITE} did not finish its rebuild proof — ${where} records finished:false, result ${artifact.result}, blocker: ${artifact.blocker}; ${inventory}`,
+    };
+  }
+  const live = artifact.stages.find((stage) => stage.name === LIVE_STAGE);
+  if (!live) {
+    return {
+      proven: false,
+      evidence: `${METEORITE} finished without running a ${LIVE_STAGE} stage at all — ${where} records ${inventory}, so the proof asserts that files copied and never that the orchestrator started`,
+    };
+  }
+  if (live.verdict !== "PASS") {
+    return {
+      proven: false,
+      evidence: `${METEORITE} ran ${LIVE_STAGE} and it did not pass (${live.verdict}) — ${where}, blocker: ${artifact.blocker}, liveness: ${artifact.livenessDetail}`,
+    };
+  }
+  if (!artifact.livenessProven) {
+    return {
+      proven: false,
+      evidence: `${METEORITE} records ${LIVE_STAGE} PASS beside liveness proven:false (${artifact.livenessDetail}) — ${where}; the stage verdict and the liveness evidence disagree, so neither can be believed`,
+    };
+  }
+  return {
+    proven: true,
+    evidence: `${METEORITE}, executed against this SHA, ran ${LIVE_STAGE} to PASS with liveness proven — ${where}, ${inventory}; declared boundaries: ${artifact.livenessDetail}`,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -908,27 +858,35 @@ function result(id: string, verdict: Verdict, evidence: string): GateResult {
   return { id, verdict, evidence };
 }
 
-// Whether a tracked mechanism proves that a clean clone -- fetched from a
-// remote, carrying no file from this host -- starts the orchestrator. That is
-// the meteorite's job, judged on the executed rehearsal, not on its prose.
+// Whether a clean clone -- fetched from a remote, carrying no file from this
+// host -- starts the orchestrator. That is the meteorite's job, and the answer
+// is the artifact of a run that did it: the clone stage the run executed, and
+// the live stage it reached afterwards. The registry row is the tree's opt-in,
+// naming the runner whose artifact is being believed.
 function cleanCloneStart(tree: Tree): GateResult {
   const registered = mechanism(tree, METEORITE_MECHANISM);
   if ("reason" in registered) {
     return result("A", "UNKNOWN", `starting a clean clone has no registered proof mechanism: ${registered.reason}`);
   }
-  const stages = meteoriteStages(tree);
-  if (stages === null) {
-    return result("A", "UNKNOWN", `${registered.target} carries no readable stage list, so the clean-clone start is unproven`);
+  const proof = rebuildProof(tree);
+  if (proof.kind === "unread") {
+    return result("A", "UNKNOWN", `${registered.target} is registered as the clean-clone proof, but ${proof.evidence}`);
   }
-  const clone = stages.find((stage) => CLONES_FROM_REMOTE.test(stage.command));
+  const artifact = proof.artifact;
+  const clone = artifact.stages.find((stage) => stage.name === CLONE_STAGE);
   if (!clone) {
-    return result("A", "UNKNOWN", `${registered.target} runs ${stages.length} stage(s) but none that clones the candidate from a remote, so a clean clone starting is unproven`);
+    return result("A", "UNKNOWN", `${registered.target} ran ${artifact.stages.length} stage(s) at this SHA and none of them is ${CLONE_STAGE}, so whether the proof started from a clean clone rather than a copy of this host is unmeasured (${artifact.path})`);
   }
-  const proof = startProof(tree, stages);
-  const clones = `${registered.target} clones the candidate from a remote (stage ${clone.name})`;
-  if (proof.kind === "proven") return result("A", "PASS", `${clones}; ${proof.evidence}`);
-  if (proof.kind === "refuted") return result("A", "FAIL", `${clones}, but ${proof.evidence}`);
-  return result("A", "UNKNOWN", `${clones}, but a clean clone starting is unproven: ${proof.evidence}`);
+  if (clone.verdict !== "PASS") {
+    return result("A", "FAIL", `${registered.target}'s ${CLONE_STAGE} stage did not pass (${clone.verdict}) — ${artifact.path}, blocker: ${artifact.blocker}`);
+  }
+  const clones = `${registered.target}, executed at this SHA, cloned the candidate (stage ${CLONE_STAGE} PASS)`;
+  const live = liveStageVerdict(artifact);
+  if (!live.proven) return result("A", "FAIL", `${clones}, but ${live.evidence}`);
+  if (artifact.result !== "clean") {
+    return result("A", "FAIL", `${clones} and reached a live orchestrator, but the rebuild proof's own verdict is ${artifact.result} — blocker: ${artifact.blocker} (${artifact.path})`);
+  }
+  return result("A", "PASS", `${clones}; ${live.evidence}`);
 }
 
 function judgeA(tree: Tree): GateResult {
@@ -982,33 +940,17 @@ function judgeC(tree: Tree): GateResult {
   return result("C", "PASS", `${calls.length} mission-cli call(s) all in core/mission-cli-actions.ts`);
 }
 
-// What the stage list SAYS, used only to make a FAIL legible. Naming the
-// launcher is not starting it, so this sentence never decides a verdict; it
-// tells the operator which of "the meteorite has no such stage" and "the
-// meteorite has a stage that talks about it" they are looking at.
-function stageDiagnosis(stages: MeteoriteStage[]): string {
-  const start = stages.find((stage) => MENTIONS_START.test(stage.command));
-  const liveness = stages.find((stage) => MENTIONS_LIVENESS.test(stage.command));
-  if (!start && !liveness) return "none starts the orchestrator and none asserts liveness — its stages end at install and suite";
-  if (!start) return `stage ${liveness!.name} names a liveness marker but no stage starts the orchestrator`;
-  if (!liveness) return `stage ${start.name} names the launcher but no stage asserts a live state`;
-  return `stages ${start.name} and ${liveness.name} name the launcher and a liveness marker, but naming is not doing`;
-}
-
+// Gate D is one sentence -- "the meteorite STARTS the orchestrator in the
+// container and asserts it reaches a live state, rather than asserting that
+// files copied" -- and the artifact answers exactly it. The tracked runner must
+// be in the tree (a proof no clone would carry proves nothing about a clone),
+// and the rest is the record of what that runner did.
 function judgeD(tree: Tree): GateResult {
   if (!tree.has(METEORITE)) return result("D", "UNKNOWN", `${METEORITE} is absent from the tracked tree`);
-  const stages = meteoriteStages(tree);
-  if (stages === null) return result("D", "UNKNOWN", `${METEORITE} carries no readable commands=(...) stage list — refusing to judge its stages from raw file text`);
-  if (stages.length === 0) return result("D", "FAIL", `${METEORITE} runs no stages at all`);
-  const inventory = `${METEORITE} runs ${stages.length} stages (${stages.map((stage) => stage.name).join(", ")})`;
-  const proof = startProof(tree, stages);
-  switch (proof.kind) {
-    case "proven": return result("D", "PASS", proof.evidence);
-    case "unmeasured": return result("D", "UNKNOWN", `${inventory}; ${proof.evidence}`);
-    case "refuted": return result("D", "FAIL", `${inventory}, but ${proof.evidence}`);
-    case "unwired": return result("D", "FAIL", `${inventory}, but ${proof.evidence}`);
-    default: return result("D", "FAIL", `${inventory}; ${stageDiagnosis(stages)}; ${proof.evidence}`);
-  }
+  const proof = rebuildProof(tree);
+  if (proof.kind === "unread") return result("D", "UNKNOWN", proof.evidence);
+  const live = liveStageVerdict(proof.artifact);
+  return result("D", live.proven ? "PASS" : "FAIL", live.evidence);
 }
 
 // The ledger checker's printed finding grammar -- one line per finding,
@@ -1062,66 +1004,145 @@ function readOutcomeChannel(path: string): OutcomeChannel {
   return { findings };
 }
 
-// Gate E's first half, measured by BEHAVIOUR: run the tracked ledger checker
-// against a throwaway directory in which its inputs do not exist, and judge its
-// structured outcome set. On that tree EVERY input is absent, so any PASS
-// finding anywhere in the run is the violation the gate names, and one UNKNOWN
-// finding is not a defence against it.
+// One execution of the tracked ledger checker against a given tree. The script
+// comes from the measured repository (absolute, because the probe runs with the
+// sandbox as its cwd and a relative path would make the checker unfindable
+// rather than unproven); the tree it reports on is the sandbox world.
+type ProbeRun =
+  | { ran: false; reason: string }
+  | {
+      ran: true;
+      exitCode: number;
+      printed: { level: string; file: string }[];
+      summary: string | null;
+      countedUnknown: number | null;
+      channel: OutcomeChannel;
+      outcomes: { level: string; subject: string }[];
+    };
+
+function runLedgerChecker(tree: Tree, world: string, strict: boolean, channelPath: string): ProbeRun {
+  const argv = [process.execPath, resolve(tree.repo, LEDGER_CHECKER), "--repo", world];
+  if (strict) argv.push("--strict");
+  const probe = Bun.spawnSync(argv, {
+    cwd: world,
+    env: { ...process.env, [OUTCOME_CHANNEL_ENV]: channelPath },
+    timeout: probeTimeoutMs(),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const label = strict ? "--strict" : "lenient";
+  // A kill is not a pass: an unfinished probe measured nothing.
+  if (probe.exitCode === null || probe.signalCode) {
+    return { ran: false, reason: `${LEDGER_CHECKER} was killed (${probe.signalCode ?? "no exit status"}) during its ${label} run, so it reported nothing` };
+  }
+  if (probe.exitCode === 2) {
+    return { ran: false, reason: `${LEDGER_CHECKER} rejected the ${label} probe as a usage error, so its outcome is unmeasured` };
+  }
+  const output = `${probe.stdout?.toString() ?? ""}${probe.stderr?.toString() ?? ""}`;
+  const { findings, summary, countedUnknown } = probeOutcome(output);
+  const channel = readOutcomeChannel(channelPath);
+  const channelFindings = channel !== null && "findings" in channel ? channel.findings : [];
+  return {
+    ran: true,
+    exitCode: probe.exitCode,
+    printed: findings,
+    summary,
+    countedUnknown,
+    channel,
+    // The outcome set, read whole and from every channel the checker used: a
+    // PASS is a PASS whether it arrived on stdout or in the JSON, and the first
+    // match settles nothing.
+    outcomes: [
+      ...channelFindings.map((finding) => ({ level: finding.level, subject: finding.subject })),
+      ...findings.map((finding) => ({ level: finding.level, subject: finding.file })),
+    ],
+  };
+}
+
+function countLevel(run: Extract<ProbeRun, { ran: true }>, level: string): { level: string; subject: string }[] {
+  return run.outcomes.filter((outcome) => outcome.level === level);
+}
+
+// Gate E's first half, measured by BEHAVIOUR in two worlds.
+//
+// World one is an installation whose inputs are ABSENT: an `instructions/`
+// directory and an `instance/` directory, both empty. That shape is not
+// incidental. The checker's own vocabulary (tools/instructions/outcome.ts)
+// makes the absence of the whole instance/ layer a licensed SKIP -- an L2 or L3
+// repository is born without one -- and every absent input INSIDE an existing
+// layer an UNKNOWN. A bare empty directory would therefore probe the one case
+// the checker is entitled to shrug at; this world probes the case gate E is
+// about: a repository that declares itself an installation and cannot read a
+// single one of its own inputs.
+//
+// World two is a copy of the TRACKED tree, where those inputs are present. It
+// exists because one world cannot tell a checker from a constant: a checker
+// that answers UNKNOWN to everything satisfies "reports UNKNOWN, never PASS"
+// while measuring nothing at all. Requiring a non-UNKNOWN outcome where the
+// inputs are there is what makes the first world's UNKNOWN a discrimination
+// rather than a reflex.
+//
+// The green needs three things, and the middle one is the one no printed line
+// can forge: no PASS and at least one UNKNOWN in world one; an exit status that
+// MOVES with --strict there (blocking under it, clean without it), which is the
+// checker's own exit-code policy saying that the UNKNOWN is what blocks; and at
+// least one non-UNKNOWN outcome in world two. The structured outcome channel is
+// read whenever it is offered and held to the same rules, but it is no longer
+// required: a checker that reports honestly on stdout and blocks on its own
+// UNKNOWN has produced an outcome, not a sentence.
 function probeAbsentInputs(tree: Tree): GateResult {
   if (!tree.has(LEDGER_CHECKER)) return result("E", "UNKNOWN", `${LEDGER_CHECKER} is absent from the tracked tree`);
   const sandbox = mkdtempSync(join(tmpdir(), "cutover-readiness-probe-"));
   try {
-    const inputless = join(sandbox, "tree");
-    mkdirSync(inputless);
-    const channelPath = join(sandbox, "outcomes.json");
-    // Absolute, because the probe runs with the sandbox as its cwd and a
-    // relative --repo would make the checker unfindable rather than unproven.
-    const probe = Bun.spawnSync([process.execPath, resolve(tree.repo, LEDGER_CHECKER), "--repo", inputless, "--strict"], {
-      cwd: inputless,
-      env: { ...process.env, [OUTCOME_CHANNEL_ENV]: channelPath },
-      timeout: probeTimeoutMs(),
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const output = `${probe.stdout?.toString() ?? ""}${probe.stderr?.toString() ?? ""}`;
-    // A kill is not a pass: an unfinished probe measured nothing.
-    if (probe.exitCode === null || probe.signalCode) {
-      return result("E", "UNKNOWN", `${LEDGER_CHECKER} was killed (${probe.signalCode ?? "no exit status"}) before it could report on absent inputs`);
-    }
-    if (probe.exitCode === 2) {
-      return result("E", "UNKNOWN", `${LEDGER_CHECKER} rejected the absent-input probe as a usage error, so its outcome for absent inputs is unmeasured`);
-    }
-    const { findings, summary, countedUnknown } = probeOutcome(output);
-    const channel = readOutcomeChannel(channelPath);
-    const channelFindings = channel !== null && "findings" in channel ? channel.findings : [];
-    const passes = [
-      ...channelFindings.filter((finding) => finding.level === "PASS").map((finding) => finding.subject),
-      ...findings.filter((finding) => finding.level === "PASS").map((finding) => finding.file),
-    ];
+    const inputless = join(sandbox, "inputless");
+    for (const layer of ["instructions", "instance"]) mkdirSync(join(inputless, layer), { recursive: true });
+    const strict = runLedgerChecker(tree, inputless, true, join(sandbox, "outcomes-strict.json"));
+    if (!strict.ran) return result("E", "UNKNOWN", strict.reason);
+
+    const passes = countLevel(strict, "PASS");
     if (passes.length) {
-      return result("E", "FAIL", `${LEDGER_CHECKER} reports PASS against a tree whose inputs are absent — ${passes.length} PASS finding(s), first ${passes[0]}; a check with nothing to check must report UNKNOWN, never PASS (probe exit ${probe.exitCode})`);
+      return result("E", "FAIL", `${LEDGER_CHECKER} reports PASS against a tree whose inputs are absent — ${passes.length} PASS outcome(s), first ${passes[0]!.subject}; a check with nothing to check must report UNKNOWN, never PASS (probe exit ${strict.exitCode})`);
     }
-    const printedUnknown = findings.filter((finding) => finding.level === "UNKNOWN");
-    if (printedUnknown.length > 0 && countedUnknown === 0) {
-      return result("E", "FAIL", `${LEDGER_CHECKER} printed ${printedUnknown.length} UNKNOWN finding(s) its own summary counts as zero — the outcome and the tally disagree, so neither can be believed (${summary})`);
+    const printedUnknown = strict.printed.filter((finding) => finding.level === "UNKNOWN");
+    if (printedUnknown.length > 0 && strict.countedUnknown === 0) {
+      return result("E", "FAIL", `${LEDGER_CHECKER} printed ${printedUnknown.length} UNKNOWN finding(s) its own summary counts as zero — the outcome and the tally disagree, so neither can be believed (${strict.summary})`);
     }
-    if (channel === null) {
-      if (probe.exitCode === 0) {
-        return result("E", "FAIL", `${LEDGER_CHECKER} reported success (exit 0) against a tree whose inputs are absent, and offers no structured outcome channel (${OUTCOME_CHANNEL_ENV}) — ${summary ?? "no summary line"}`);
-      }
-      if (printedUnknown.length > 0) {
-        return result("E", "UNKNOWN", `${LEDGER_CHECKER} prints UNKNOWN findings against an inputless tree but offers no structured outcome channel (${OUTCOME_CHANNEL_ENV}) — a printed line is not an outcome this gate will green on, so its behaviour is unmeasured`);
-      }
-      return result("E", "FAIL", `${LEDGER_CHECKER} emits no UNKNOWN outcome when its inputs are absent — probe exit ${probe.exitCode}, ${findings.length} finding(s) (${findings.map((finding) => finding.level).join(", ") || "none"}), ${summary ?? "no summary line"}, no structured outcome channel (${OUTCOME_CHANNEL_ENV})`);
+    if (strict.channel !== null && "error" in strict.channel) {
+      return result("E", "UNKNOWN", `${LEDGER_CHECKER} wrote a structured outcome channel this gate cannot read (${strict.channel.error}), so its outcome for absent inputs is unmeasured`);
     }
-    if ("error" in channel) {
-      return result("E", "UNKNOWN", `${LEDGER_CHECKER} wrote a structured outcome channel this gate cannot read (${channel.error}), so its outcome for absent inputs is unmeasured`);
+    const unknowns = countLevel(strict, "UNKNOWN");
+    if (unknowns.length === 0) {
+      return result("E", "FAIL", `${LEDGER_CHECKER} emits no UNKNOWN outcome when its inputs are absent — probe exit ${strict.exitCode}, ${strict.outcomes.length} outcome(s) (${strict.outcomes.map((outcome) => outcome.level).join(", ") || "none"}), ${strict.summary ?? "no summary line"}`);
     }
-    const channelUnknown = channelFindings.filter((finding) => finding.level === "UNKNOWN");
-    if (channelUnknown.length === 0) {
-      return result("E", "FAIL", `${LEDGER_CHECKER}'s structured outcome channel carries no UNKNOWN outcome against a tree whose inputs are absent — ${channelFindings.length} finding(s) (${channelFindings.map((finding) => finding.level).join(", ") || "none"}), probe exit ${probe.exitCode}`);
+    // The exit status can only speak for the UNKNOWN outcome when nothing else
+    // in the run is blocking. A FAIL beside it makes the two runs' statuses
+    // uninformative rather than wrong, so this is unmeasured, not a violation.
+    const fails = countLevel(strict, "FAIL");
+    if (fails.length) {
+      return result("E", "UNKNOWN", `${LEDGER_CHECKER} reports ${fails.length} FAIL outcome(s) beside its UNKNOWN against an inputless tree (first ${fails[0]!.subject}), so its exit status cannot show that the UNKNOWN is what blocks — unmeasured, not passed`);
     }
-    return result("E", "PASS", `${LEDGER_CHECKER} reports UNKNOWN and never PASS against a tree whose inputs are absent — structured outcome channel: ${channelUnknown.length} UNKNOWN, 0 PASS of ${channelFindings.length} finding(s), first ${channelUnknown[0]!.subject} (probe exit ${probe.exitCode})`);
+    if (strict.exitCode === 0) {
+      return result("E", "FAIL", `${LEDGER_CHECKER} reports ${unknowns.length} UNKNOWN outcome(s) against a tree whose inputs are absent and still exits 0 under --strict — an outcome that blocks nothing is a word, not an outcome (${strict.summary ?? "no summary line"})`);
+    }
+    const lenient = runLedgerChecker(tree, inputless, false, join(sandbox, "outcomes-lenient.json"));
+    if (!lenient.ran) return result("E", "UNKNOWN", lenient.reason);
+    if (lenient.exitCode !== 0) {
+      return result("E", "UNKNOWN", `${LEDGER_CHECKER} blocks on the inputless tree with and without --strict (exit ${strict.exitCode} and ${lenient.exitCode}) though it reports no FAIL outcome, so what blocks it is not its UNKNOWN — unmeasured, not passed`);
+    }
+
+    const populated = join(sandbox, "populated");
+    materializeTrackedTree(tree, populated);
+    const present = runLedgerChecker(tree, populated, true, join(sandbox, "outcomes-populated.json"));
+    if (!present.ran) return result("E", "UNKNOWN", `${present.reason} — measured against the tracked tree, where its inputs are present`);
+    const measured = present.outcomes.filter((outcome) => outcome.level !== "UNKNOWN");
+    if (present.outcomes.length === 0) {
+      return result("E", "UNKNOWN", `${LEDGER_CHECKER} reports no outcome at all against the tracked tree (exit ${present.exitCode}), so whether its UNKNOWN on an inputless tree is a measurement or a constant is unmeasured`);
+    }
+    if (measured.length === 0) {
+      return result("E", "FAIL", `${LEDGER_CHECKER} answers UNKNOWN for all ${present.outcomes.length} of its outcomes against the tracked tree, where those inputs are present — a checker that never measures anything reports UNKNOWN honestly and checks nothing`);
+    }
+    const channelNote = strict.channel !== null ? `structured outcome channel offered (${OUTCOME_CHANNEL_ENV})` : `no structured outcome channel (${OUTCOME_CHANNEL_ENV}); its exit-code policy carries the claim instead`;
+    return result("E", "PASS", `${LEDGER_CHECKER} reports UNKNOWN and never PASS against a tree whose inputs are absent — ${unknowns.length} UNKNOWN and 0 PASS across ${strict.outcomes.length} outcome record(s), stdout and the structured channel read together, first ${unknowns[0]!.subject}; its exit status moves with --strict (${strict.exitCode} strict, ${lenient.exitCode} lenient), so the UNKNOWN is what blocks; and against the tracked tree it still measures ${measured.length} non-UNKNOWN outcome(s), so it discriminates rather than answering a constant — ${channelNote}`);
   } finally {
     rmSync(sandbox, { recursive: true, force: true });
   }
@@ -1130,8 +1151,13 @@ function probeAbsentInputs(tree: Tree): GateResult {
 function judgeE(tree: Tree): GateResult {
   const absentInputs = probeAbsentInputs(tree);
   const registered = mechanism(tree, CHECKOUT_PARITY);
+  // "proven by" was an overclaim and the fourth review was right about it: this
+  // half is settled by an act performed outside the repository -- the same
+  // verdict from three real checkouts -- and this command does not perform it.
+  // What it can see is that a mechanism claiming to is registered and landed,
+  // and that is exactly what it now says.
   const identical: GateResult = "target" in registered
-    ? result("E", "PASS", `identical verdict across checkout kinds proven by ${registered.target} (${CHECKOUT_PARITY})`)
+    ? result("E", "PASS", `identical verdict across checkout kinds: ${CHECKOUT_PARITY} is registered and ${registered.target} is landed — this command does not execute it, so what holds here is that the mechanism exists, not that the three verdicts matched`)
     : result("E", "UNKNOWN", `identical verdict from primary repo, lane worktree and land-main is unproven: ${registered.reason}`);
   const verdict = worst([absentInputs.verdict, identical.verdict]);
   const evidence = verdict === "PASS"
@@ -1149,7 +1175,8 @@ function judgeF(tree: Tree): GateResult {
     // Arity and non-emptiness only: whether the third column is a command that
     // actually verifies the item is beyond a read-only tool, and executing an
     // arbitrary tracked string is not something this command will do. Reviewed
-    // twice and accepted as the ceiling, in the round-2 reviewer's words:
+    // three times and accepted as the ceiling each time (rounds 2, 3 and 4), in
+    // the round-2 reviewer's words:
     // "deciding whether the column is a command that verifies the item means
     // executing an arbitrary tracked string, which a read-only measurement
     // command should not do". The executed judgements this command DOES make
@@ -1164,8 +1191,11 @@ function judgeF(tree: Tree): GateResult {
         : result("F", "PASS", `${HOST_STATE} enumerates ${rows.length} item(s), each with a verifying command`);
   }
   const registered = mechanism(tree, STRANDED_WORK);
+  // Same correction as gate E's sibling half: nothing here runs the mechanism,
+  // so the evidence says what was observed -- a registered, landed mechanism --
+  // and not that the act it claims was proven.
   const stranded: GateResult = "target" in registered
-    ? result("F", "PASS", `no ACCEPTed work stranded off origin, proven by ${registered.target} (${STRANDED_WORK})`)
+    ? result("F", "PASS", `nothing ACCEPTed stranded off origin: ${STRANDED_WORK} is registered and ${registered.target} is landed — this command does not execute it, so what holds here is that the mechanism exists, not that the scan came back empty`)
     : result("F", "UNKNOWN", `whether ACCEPTed work exists only on this host is unproven: ${registered.reason}`);
   const verdict = worst([enumerated.verdict, stranded.verdict]);
   const evidence = verdict === "PASS"
@@ -1208,7 +1238,15 @@ function judgeG(tree: Tree): GateResult {
   }
   const arms: GateResult[] = [];
   if (bootstrapMention) arms.push(whisperArm(bootstrapRehearsal(tree), BOOTSTRAP, bootstrapMention.line));
-  if (meteoriteMention) arms.push(whisperArm(meteoriteRehearsal(tree), METEORITE, meteoriteMention.line));
+  // The meteorite arm used to be a second rehearsal here. It is gone with the
+  // rest of that machinery, and this gate does not pretend the mention is
+  // therefore worthless: a Whisper stage in the rebuild proof is real evidence
+  // that a clean server comes up able to transcribe. It is simply evidence this
+  // command cannot reach, because the rebuild artifact records stage verdicts
+  // and liveness, not which installer a stage invoked. UNKNOWN, and it says so.
+  if (meteoriteMention) {
+    arms.push(result("G", "UNKNOWN", `${METEORITE}:${meteoriteMention.line} names ${WHISPER_INSTALLER}, but this command no longer executes ${METEORITE} in any form and its rebuild artifact carries no Whisper evidence — that mention is unmeasured here; the clean-server install path this gate can execute is ${BOOTSTRAP}`));
+  }
   const pass = arms.find((arm) => arm.verdict === "PASS");
   if (pass) return pass;
   if (arms.some((arm) => arm.verdict === "UNKNOWN")) {

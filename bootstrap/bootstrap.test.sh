@@ -136,8 +136,8 @@ echo 'PASS static shape (INSTALL_ROOT default present, out-of-scope surface abse
 
 # ── --dry-run / --help / argument validation ─────────────────────────────
 dry_run="$($INSTALLER --dry-run)"
-for expected in 'PLAN apt' 'PLAN bun' 'PLAN repository' 'PLAN environment' 'PLAN state-db' \
-  'PLAN hygiene' 'PLAN test-gate' 'PLAN units'; do
+for expected in 'PLAN apt' 'PLAN bun' 'PLAN repository' 'PLAN whisper' 'PLAN environment' \
+  'PLAN state-db' 'PLAN hygiene' 'PLAN test-gate' 'PLAN units'; do
   grep -Fq "$expected" <<<"$dry_run"
 done
 # Trimmed-scope proof: the donor's later-stage plan rows must NOT appear.
@@ -607,6 +607,97 @@ printf '%s\n' 'FAIL-BEFORE initialize_state_db: no such function exists before t
 echo 'PASS initialize_state_db: second (idempotent) call preserves prior real state, does not wipe the database'
 
 # ══════════════════════════════════════════════════════════════════════════
+# install_whisper (V3-5.40) -- the local speech-to-text stack.
+#
+# The real tools/whisper/install.sh builds whisper.cpp and downloads ~1.5 GB
+# of model weights, so it is never run here: what this section proves is the
+# boundary bootstrap owns -- that the tracked installer is located inside
+# INSTALL_ROOT, actually executed, and that BOTH of its failure modes are
+# named refusals rather than a warning bootstrap continues over. The
+# installer's own fail-closed behavior (moved release tag, checksum mismatch,
+# broken binary, silent smoke transcription) is locked once, in
+# tools/whisper/install.test.ts, and is deliberately not re-proven here.
+# ══════════════════════════════════════════════════════════════════════════
+whisper_fixture="$FIXTURE_ROOT/whisper"
+install -d -m 700 "$whisper_fixture/root/tools/whisper"
+whisper_calls="$whisper_fixture/whisper.calls"
+
+# (a) happy path: the tracked path inside INSTALL_ROOT is the file that runs.
+cat > "$whisper_fixture/root/tools/whisper/install.sh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$0" >> "$whisper_calls"
+exit 0
+EOF
+chmod 700 "$whisper_fixture/root/tools/whisper/install.sh"
+BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$whisper_fixture/root" INSTALLER_PATH="$INSTALLER" \
+  "$BASH_BIN" -c 'source "$INSTALLER_PATH"; install_whisper'
+grep -Fxq "$whisper_fixture/root/tools/whisper/install.sh" "$whisper_calls"
+echo 'PASS install_whisper: runs the tracked installer from INSTALL_ROOT'
+
+# (b) the installer failed: a named refusal, non-zero, and it must name the
+# file so a failed rebuild says WHICH mechanism broke.
+printf '%s\n' '#!/usr/bin/env bash' 'echo "[whisper-install] FAIL: model sha256 mismatch" >&2' 'exit 1' \
+  > "$whisper_fixture/root/tools/whisper/install.sh"
+chmod 700 "$whisper_fixture/root/tools/whisper/install.sh"
+set +e
+whisper_failed_output="$(BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$whisper_fixture/root" \
+  INSTALLER_PATH="$INSTALLER" "$BASH_BIN" -c 'source "$INSTALLER_PATH"; install_whisper' 2>&1)"
+whisper_failed_rc=$?
+set -e
+if [[ "$whisper_failed_rc" -eq 0 ]]; then
+  echo 'ERROR: install_whisper reported success over a failed whisper installation' >&2
+  exit 1
+fi
+grep -Fq 'ERROR: whisper installation failed' <<<"$whisper_failed_output"
+grep -Fq "$whisper_fixture/root/tools/whisper/install.sh" <<<"$whisper_failed_output"
+# The installer's own named reason must survive to the operator, not be
+# swallowed and replaced by a generic bootstrap message.
+grep -Fq 'model sha256 mismatch' <<<"$whisper_failed_output"
+echo 'PASS install_whisper: a failed installation is a named refusal that keeps the installer'"'"'s own reason'
+
+# (c) the installer never arrived (a truncated clone, a deleted mechanism).
+# A DIFFERENT named blocker: nothing was attempted, so "installation failed"
+# would be a false description of what happened.
+rm "$whisper_fixture/root/tools/whisper/install.sh"
+set +e
+whisper_absent_output="$(BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$whisper_fixture/root" \
+  INSTALLER_PATH="$INSTALLER" "$BASH_BIN" -c 'source "$INSTALLER_PATH"; install_whisper' 2>&1)"
+whisper_absent_rc=$?
+set -e
+if [[ "$whisper_absent_rc" -eq 0 ]]; then
+  echo 'ERROR: install_whisper reported success with no installer present' >&2
+  exit 1
+fi
+grep -Fq 'ERROR: whisper installer is missing or unreadable' <<<"$whisper_absent_output"
+grep -Fq "$whisper_fixture/root/tools/whisper/install.sh" <<<"$whisper_absent_output"
+if grep -Fq 'ERROR: whisper installation failed' <<<"$whisper_absent_output"; then
+  echo 'ERROR: an absent installer was reported as a failed installation' >&2
+  exit 1
+fi
+echo 'PASS install_whisper: an absent installer is a distinct named blocker, never attempted-and-failed'
+
+# (d) unreadable is not runnable. Skipped as root, where mode 000 is still
+# readable -- an honest SKIP, not a silently-passing assertion.
+if [[ "$(id -u)" -ne 0 ]]; then
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$whisper_fixture/root/tools/whisper/install.sh"
+  chmod 000 "$whisper_fixture/root/tools/whisper/install.sh"
+  set +e
+  whisper_unreadable_output="$(BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$whisper_fixture/root" \
+    INSTALLER_PATH="$INSTALLER" "$BASH_BIN" -c 'source "$INSTALLER_PATH"; install_whisper' 2>&1)"
+  whisper_unreadable_rc=$?
+  set -e
+  chmod 700 "$whisper_fixture/root/tools/whisper/install.sh"
+  if [[ "$whisper_unreadable_rc" -eq 0 ]]; then
+    echo 'ERROR: install_whisper reported success over an unreadable installer' >&2
+    exit 1
+  fi
+  grep -Fq 'ERROR: whisper installer is missing or unreadable' <<<"$whisper_unreadable_output"
+  echo 'PASS install_whisper: an unreadable installer is refused, not executed'
+else
+  echo 'SKIP install_whisper unreadable-installer case: running as root, where mode 000 is still readable'
+fi
+
+# ══════════════════════════════════════════════════════════════════════════
 # stage 2: hygiene cron, repository gate, and manifest-driven unit rendering
 # ══════════════════════════════════════════════════════════════════════════
 stage2_fixture="$FIXTURE_ROOT/stage2"
@@ -969,7 +1060,9 @@ echo 'PASS render_units rollback-failed lock: incomplete restoration is explicit
 # ══════════════════════════════════════════════════════════════════════════
 verify_fixture="$FIXTURE_ROOT/verify"
 install -d -m 700 "$verify_fixture/root/.git" "$verify_fixture/root/core" \
-  "$verify_fixture/root/bootstrap" "$verify_fixture/bin" "$verify_fixture/systemd"
+  "$verify_fixture/root/bootstrap" "$verify_fixture/root/tools/whisper" \
+  "$verify_fixture/bin" "$verify_fixture/systemd"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/root/tools/whisper/install.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/bin/bun"
 printf '%s\n' '#!/usr/bin/env bash' \
   'if [[ "${1:-}" == -l ]]; then echo "# BEGIN bpa-dev-infrastructure hygiene"; fi' \
@@ -988,10 +1081,30 @@ good_output="$(PATH="$verify_fixture/bin:$CORE_PATH" INSTALL_ROOT="$verify_fixtu
   "$INSTALLER" --verify-source)"
 for expected in 'PASS git' 'PASS curl' 'PASS tmux' 'PASS flock' 'PASS findmnt' 'PASS bun' \
   'PASS repository' 'PASS environment file' 'PASS environment permissions' 'PASS state-db' \
-  'PASS hygiene-cron' 'PASS rendered units'; do
+  'PASS whisper installer' 'PASS hygiene-cron' 'PASS rendered units'; do
   grep -Fq "$expected" <<<"$good_output"
 done
 echo 'PASS --verify-source: every stage-2 boundary PASSes against a satisfied fixture'
+
+# The Whisper row is source-provable and must behave like every other row:
+# absence FAILs it by name and flips the exit code. A rebuilt host whose
+# checkout lost the installer has lost transcription, so this may not be a
+# line of output that nobody's exit status depends on.
+mv "$verify_fixture/root/tools/whisper/install.sh" "$verify_fixture/root/tools/whisper/install.sh.away"
+if PATH="$verify_fixture/bin:$CORE_PATH" INSTALL_ROOT="$verify_fixture/root" \
+  ENV_FILE="$verify_fixture/root/.env" BUN_BIN="$verify_fixture/bin/bun" \
+  CRONTAB_CMD="$verify_fixture/bin/crontab" SYSTEMD_SYSTEM_DIR="$verify_fixture/systemd" \
+  "$INSTALLER" --verify-source >/dev/null 2>&1; then
+  echo 'ERROR: --verify-source exited 0 with the whisper installer absent from INSTALL_ROOT' >&2
+  exit 1
+fi
+missing_whisper_output="$(PATH="$verify_fixture/bin:$CORE_PATH" INSTALL_ROOT="$verify_fixture/root" \
+  ENV_FILE="$verify_fixture/root/.env" BUN_BIN="$verify_fixture/bin/bun" \
+  CRONTAB_CMD="$verify_fixture/bin/crontab" SYSTEMD_SYSTEM_DIR="$verify_fixture/systemd" \
+  "$INSTALLER" --verify-source 2>&1 || true)"
+grep -Fq 'FAIL whisper installer' <<<"$missing_whisper_output"
+mv "$verify_fixture/root/tools/whisper/install.sh.away" "$verify_fixture/root/tools/whisper/install.sh"
+echo 'PASS --verify-source: an absent whisper installer FAILs its row and flips the overall exit code'
 
 # Fail-closed proof: a single broken boundary (wrong .env mode) must flip the
 # overall exit code, not just print one FAIL line lost among PASSes.
@@ -1064,4 +1177,4 @@ else
   echo 'SKIP shellcheck: not present on this host'
 fi
 
-echo 'PASS bootstrap stage 2: dry-run, all eight in-scope functions, failure locks, --verify-source, secret scan'
+echo 'PASS bootstrap stage 2: dry-run, all nine in-scope functions, failure locks, --verify-source, secret scan'

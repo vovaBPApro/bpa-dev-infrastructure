@@ -238,8 +238,14 @@ make_source tracking-donor real with-donor
 make_bare_clone tracking-donor
 assert git -C "$clone" rev-parse --verify --quiet refs/remotes/origin/v2-deprecated >/dev/null
 tracking_out="$fixture_root/tracking-donor-preflight.out"
+# Status is captured rather than left to `set -e`: an exit trap kills the run
+# with no message, so a regression here would be red without naming its case.
+set +e
 bare_host bash "$clone/meteorite/prove-candidate.sh" --preflight >"$tracking_out" 2>&1
+tracking_status=$?
+set -e
 assert_has "$tracking_out" 'resolved-from=refs/remotes/origin/v2-deprecated'
+assert test "$tracking_status" -eq 0
 donor_sha=$(git -C "$clone" rev-parse refs/remotes/origin/v2-deprecated)
 assert_has "$tracking_out" "sha=$donor_sha"
 
@@ -251,8 +257,12 @@ make_source fetched-donor real with-donor
 make_bare_clone fetched-donor --single-branch --branch main
 assert_not git -C "$clone" rev-parse --verify --quiet refs/remotes/origin/v2-deprecated >/dev/null
 fetched_out="$fixture_root/fetched-donor-preflight.out"
+set +e
 bare_host bash "$clone/meteorite/prove-candidate.sh" --preflight >"$fetched_out" 2>&1
+fetched_status=$?
+set -e
 assert_has "$fetched_out" 'resolved-from=refs/remotes/origin/v2-deprecated (materialized by fetch)'
+assert test "$fetched_status" -eq 0
 assert git -C "$clone" rev-parse --verify --quiet refs/remotes/origin/v2-deprecated >/dev/null
 
 echo "== case 6: the prover refuses a donor that exists nowhere tracked =="

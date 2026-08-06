@@ -53,24 +53,39 @@ vm:
 
 fleet:
   # ACTIVE. The lane number here is the operator's cap of 2026-08-05:
-  # instance/decisions/HR-2456.md — «Дозволяю підняти ліміт лейнів до 5».
-  # It amends instance/decisions/HR-2342.md («Давай там до трьох», 2026-08-04)
-  # in the NUMBER ONLY, and leaves instance/decisions/HR-2398.md's per-repository
-  # scope and its «не швидкість а надійний і впевнений рух» framing intact. All
-  # three declare `lane_cap:` as a machine-readable field; the two superseded
-  # numbers carry `lane_cap_superseded_by: HR-2456`, and tools/check-fleet-cap.ts
-  # refuses any value here that disagrees with the live one.
+  # instance/decisions/HR-2538.md — «слідував правилу три, максимум у виключних
+  # кейсах п'ять лейнів в паралель на один репозиторій».
   #
-  # FIVE IS THE EDGE, NOT HEADROOM. Workboard row V3-0.34 measured this host
-  # saturating at exactly five concurrent lanes: 12 cores, load average 16.46,
-  # with the suite stretching under load (98s idle -> 112.87s at six workers ->
-  # 115.19s at twelve, where the deadline then killed a passing run). So the cap
-  # now sits ON the measured saturation point rather than below it. He authorised
-  # running there and that is his call; the obligation it creates is to watch the
-  # suite's runtime at five and report degradation rather than absorb it, because
-  # the suite is this system's measurement instrument — above capacity the fleet
-  # gets faster and its evidence gets less trustworthy at the same moment. The
-  # derived budget is still V3-0.34 and still open; this is a ruling, not a
+  # HISTORY, all superseded, none of it current: HR-2456.md raised the cap to
+  # five («Дозволяю підняти ліміт лейнів до 5») earlier the SAME DAY, amending
+  # HR-2342.md («Давай там до трьох», 2026-08-04) in the number only; HR-2538
+  # then lowered it again that evening. HR-2398.md's per-repository scope and its
+  # «не швидкість а надійний і впевнений рух» framing survive all three untouched.
+  # Each declares `lane_cap:` as a machine-readable field, the superseded numbers
+  # carry `lane_cap_superseded_by:` forward to the live one, and
+  # tools/check-fleet-cap.ts refuses any value here that disagrees with it — and,
+  # since the V3-5.10 review, refuses this prose too when it OPENS on a
+  # superseded ruling. It did: this block introduced HR-2456's five as the
+  # operator's cap for a day after HR-2538 replaced it, under a `cap: 3` and a
+  # `declared_by: HR-2538` that were both already correct. session-load.ts pushes
+  # this file into every new session's standing context verbatim, so that
+  # paragraph was handing each new orchestrator a superseded number as the
+  # current one — the same failure shape as the `floor: 10` note below, which is
+  # why the check is now on the prose and not only on the fields.
+  #
+  # THREE IS BELOW THE EDGE, DELIBERATELY. Workboard row V3-0.34 measured this
+  # host saturating at exactly five concurrent lanes: 12 cores, load average
+  # 16.46, with the suite stretching under load (98s idle -> 112.87s at six
+  # workers -> 115.19s at twelve, where the deadline then killed a passing run).
+  # HR-2456 put the cap ON that saturation point; HR-2538 took it back off, and
+  # NOT for a capacity reason — his reason is contention on one integration
+  # branch (see the note under `cap:`). So the measurement still bounds the
+  # exception at five rather than setting the default, and the obligation it
+  # created stands: watch the suite's runtime whenever the exception is used and
+  # report degradation rather than absorb it, because the suite is this system's
+  # measurement instrument — above capacity the fleet gets faster and its
+  # evidence gets less trustworthy at the same moment. The derived budget is
+  # still V3-0.34 and still open; every number above is a ruling, not a
   # derivation.
   #
   # SUPERSEDES the `floor: 10` / `ceiling: 15` pair this block carried from

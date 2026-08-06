@@ -9,6 +9,7 @@ import {
   executableShellLines,
   invocationsOf,
   missionCliCalls,
+  probeOutcome,
   report,
   requiredLauncherPaths,
 } from "./check-cutover-readiness";
@@ -27,6 +28,7 @@ type Options = {
   synthesis?: string;
   launcher?: string;
   meteorite?: string;
+  startProof?: string;
   ledgerChecker?: string;
   hostState?: string;
   bootstrap?: string;
@@ -53,14 +55,26 @@ const DEFAULTS = {
     '  "prerequisites|apt-get update && apt-get install -y git"',
     "  # a comment inside the array is not a stage",
     `  "clone|git clone --no-checkout 'https://example.invalid/repo.git' /work/source"`,
-    '  "orchestrator-start|cd /work/install && bash orchestrator/launch.sh --detach"',
-    '  "orchestrator-liveness|test -s /work/runtime/orchestrator.lease"',
+    '  "orchestrator-start|cd /work/install && bash meteorite/assert-orchestrator-live.sh"',
     ")",
   ].join("\n"),
-  // Gate E executes this, so what it PRINTS is what is measured.
+  // Gates D and A rehearse this, so what it DOES is what is measured. It is run
+  // twice against an orchestrator analog -- once where the analog comes up and
+  // once where it does not -- and only a script that launches the analog and
+  // then answers differently in the two worlds is a proof.
+  startProof: [
+    "#!/usr/bin/env bash",
+    "set -euo pipefail",
+    '"$REPO_DIR/orchestrator/launch.sh" --detach',
+    '"$REPO_DIR/orchestrator/status.sh"',
+    "",
+  ].join("\n"),
+  // Gate E executes this, so what it PRINTS is what is measured -- and it is
+  // read as the checker's own finding grammar, `LEVEL file [check] detail`.
   ledgerChecker: [
     "#!/usr/bin/env bun",
-    'console.log("UNKNOWN instructions/ [root] inputs absent");',
+    'console.log("UNKNOWN instructions/ [root] directory not found");',
+    'console.log("\\nsummary: 0 FAIL, 0 WARN, 0 SKIP, 1 UNKNOWN, 0 PASS (0 docs)");',
     "process.exit(1);",
     "",
   ].join("\n"),
@@ -69,6 +83,7 @@ const DEFAULTS = {
   registry: [
     "# id\tkind\ttracked target",
     "runner:meteorite\trunner\tmeteorite/run.sh",
+    "runner:orchestrator-start-proof\trunner\tmeteorite/assert-orchestrator-live.sh",
     "checker:checkout-parity\tchecker\tgate/checkout-parity.sh",
     "checker:stranded-work\tchecker\thygiene/check-stranded-work.sh",
     "",
@@ -108,6 +123,7 @@ function fixture(options: Options = {}): string {
     "bootstrap/install.sh": options.bootstrap ?? DEFAULTS.bootstrap,
     "tools/whisper/install.sh": "# whisper\n",
     "meteorite/run.sh": options.meteorite ?? DEFAULTS.meteorite,
+    "meteorite/assert-orchestrator-live.sh": options.startProof ?? DEFAULTS.startProof,
     "tools/instructions/check.ts": options.ledgerChecker ?? DEFAULTS.ledgerChecker,
     "instance/host-state.tsv": options.hostState ?? DEFAULTS.hostState,
     "instance/required-mechanisms.tsv": options.registry ?? DEFAULTS.registry,
@@ -201,6 +217,7 @@ test("cutover-ready=yes is reachable from a clean, fully committed tree", () => 
 test("no untracked file can move any gate toward PASS", () => {
   const inputs: Record<string, string> = {
     "meteorite/run.sh": DEFAULTS.meteorite,
+    "meteorite/assert-orchestrator-live.sh": DEFAULTS.startProof,
     "instance/host-state.tsv": DEFAULTS.hostState,
     "tools/whisper/install.sh": "# whisper\n",
     "bootstrap/install.sh": DEFAULTS.bootstrap,
@@ -325,6 +342,62 @@ test("A's clean-clone half is UNKNOWN when no stage clones from a remote", () =>
   });
 });
 
+// An honest rewrite of the clone stage must not pin gate A at UNKNOWN forever.
+// The previous pattern accepted only long flags, so `--depth 1`, `-b main` and
+// `-q` all read as "the meteorite does not clone".
+test("A recognises the ordinary spellings of a clone from a remote", () => {
+  const spellings = [
+    "git clone --depth 1 https://example.invalid/repo.git /work/source",
+    "git clone -b main https://example.invalid/repo.git /work/source",
+    "git clone -q --no-checkout '$repo_url' /work/source",
+    "git clone --depth 1 git@github.invalid:owner/repo.git /work/source",
+    'git clone -b "$ref" ssh://git@example.invalid/repo /work/source',
+  ];
+  for (const spelling of spellings) {
+    const meteorite = DEFAULTS.meteorite.replace(/"clone\|[^"]*"/, `"clone|${spelling}"`);
+    withFixture({ meteorite }, (repo) => {
+      expect({ spelling, A: verdicts(repo).A }).toEqual({ spelling, A: "PASS" });
+    });
+  }
+});
+
+// ...and a local source still must not: a copy from this host is the opposite
+// of the clean clone gate A is about.
+test("A does not read a local-path clone as a clone from a remote", () => {
+  const meteorite = DEFAULTS.meteorite.replace(/"clone\|[^"]*"/, '"clone|git clone --depth 1 /root/bpa-dev-infrastructure /work/source"');
+  withFixture({ meteorite }, (repo) => {
+    expect(verdicts(repo).A).toBe("UNKNOWN");
+  });
+});
+
+test("A does not let a later command's URL certify an earlier local clone", () => {
+  const meteorite = DEFAULTS.meteorite.replace(/"clone\|[^"]*"/, '"clone|git clone /work/donor /work/source && curl -sS https://example.invalid/manifest"');
+  withFixture({ meteorite }, (repo) => {
+    expect(verdicts(repo).A).toBe("UNKNOWN");
+  });
+});
+
+// Gate A's definition includes "with `orchestrator/runtime.env` renamed away".
+// The clause is about what a clean clone carries, and the tracked set decides
+// that: today the file is gitignored, and this is what ties the clause to that
+// fact rather than leaving it resting on a line in another file.
+test("A FAILs when runtime.env is tracked, because every clean clone would carry it", () => {
+  withFixture({}, (repo) => {
+    expect(verdicts(repo).A).toBe("PASS");
+  });
+  const repo = fixture({});
+  try {
+    write(repo, "orchestrator/runtime.env", "ORCH_TOKEN_FILE=/root/.config/bpa/orchestrator.env\n");
+    git(repo, "add", "-A");
+    git(repo, "commit", "-qm", "track runtime.env");
+    expect(verdicts(repo).A).toBe("FAIL");
+    expect(evidence(repo, "A")).toContain("renamed away");
+    expect(report(checkReadiness(repo)).exitCode).toBe(1);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 // --- gate B: launcher paths -------------------------------------------------
 
 test("B extracts the launcher's executable paths and ignores runtime artifacts", () => {
@@ -386,7 +459,138 @@ test("C is UNKNOWN when nothing calls the mission CLI at all", () => {
   });
 });
 
-// --- gate D: the meteorite asserts liveness ---------------------------------
+// --- gate D and gate A's start half: an EXECUTED rehearsal ------------------
+//
+// Two revisions of this gate were greened by text saying the work was not done:
+// first a comment naming the launcher, then a stage command that mentioned it.
+// The evidence a green consumes here is therefore not text at all. The proof
+// the tree registers is RUN, twice, against an orchestrator analog that records
+// being invoked -- once in a world where the analog comes up and once where it
+// refuses. The three directions the brief names are locked below: it runs and
+// the analog lives (PASS); it runs and the launch fails, or nothing asserts
+// liveness (FAIL); it only talks about launching (FAIL).
+
+test("D PASSes only on a rehearsal in which the proof really starts the analog", () => {
+  withFixture({}, (repo) => {
+    expect(verdicts(repo)).toMatchObject({ A: "PASS", D: "PASS" });
+    expect(evidence(repo, "D")).toContain("rehearsed, it starts the orchestrator analog and exits 0 only when that analog is live");
+    expect(evidence(repo, "D")).toContain("live exit 0, dead exit 1");
+  });
+});
+
+// The round-2 reviewer's sharpest reproduction, in its own shape: a proof whose
+// text names the launcher and the lease, and whose behaviour is an echo. Under
+// the previous revision the equivalent stage reported PASS.
+test("D FAILs a proof that only TALKS about launching — the analog records no launch", () => {
+  withFixture({
+    startProof: '#!/usr/bin/env bash\necho "NOT DONE: nothing here runs $REPO_DIR/orchestrator/launch.sh or checks orchestrator.lease yet"\n',
+  }, (repo) => {
+    expect(verdicts(repo)).toMatchObject({ A: "FAIL", D: "FAIL" });
+    expect(evidence(repo, "D")).toContain("without ever invoking $REPO_DIR/orchestrator/launch.sh");
+    expect(evidence(repo, "D")).toContain("describes a start rather than performing one");
+    expect(report(checkReadiness(repo)).exitCode).toBe(1);
+  });
+});
+
+test("D FAILs when the proof runs but the start it proves does not work", () => {
+  withFixture({
+    startProof: [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      '"$REPO_DIR/orchestrator/launch.sh" --detach',
+      '# the orchestrator is up, but this proof requires a pid file nothing writes',
+      'test -s "$RUNTIME_DIR/orchestrator.pid"',
+      "",
+    ].join("\n"),
+  }, (repo) => {
+    expect(verdicts(repo)).toMatchObject({ A: "FAIL", D: "FAIL" });
+    expect(evidence(repo, "D")).toContain("rehearsed against an orchestrator analog that came up");
+  });
+});
+
+test("D FAILs a proof that launches but asserts no live state — it exits 0 in both worlds", () => {
+  withFixture({
+    startProof: '#!/usr/bin/env bash\n"$REPO_DIR/orchestrator/launch.sh" --detach || true\nexit 0\n',
+  }, (repo) => {
+    expect(verdicts(repo)).toMatchObject({ A: "FAIL", D: "FAIL" });
+    expect(evidence(repo, "D")).toContain("exits 0 whether or not the orchestrator comes up");
+    expect(evidence(repo, "D")).toContain("asserts no live state");
+  });
+});
+
+// The same trap one level up: a proof that deletes the thing it is supposed to
+// check still exits 0 in both worlds. `rm -f` on the lease was the drift the
+// round-2 review predicted would be written next.
+test("D FAILs a proof that removes the liveness marker instead of asserting it", () => {
+  withFixture({
+    startProof: '#!/usr/bin/env bash\n"$REPO_DIR/orchestrator/launch.sh" --detach || true\nrm -f "$RUNTIME_DIR/orchestrator.lease"\n',
+  }, (repo) => {
+    expect(verdicts(repo).D).toBe("FAIL");
+    expect(evidence(repo, "D")).toContain("asserts no live state");
+  });
+});
+
+test("a rehearsal that has to be killed is UNKNOWN, never PASS", () => {
+  withFixture({
+    startProof: '#!/usr/bin/env bash\n"$REPO_DIR/orchestrator/launch.sh"\nsleep 60\n',
+  }, (repo) => {
+    const previous = process.env.CUTOVER_PROBE_TIMEOUT_MS;
+    process.env.CUTOVER_PROBE_TIMEOUT_MS = "700";
+    try {
+      expect(verdicts(repo)).toMatchObject({ A: "UNKNOWN", D: "UNKNOWN" });
+      expect(evidence(repo, "D")).toContain("was killed");
+      expect(report(checkReadiness(repo)).exitCode).toBe(1);
+    } finally {
+      if (previous === undefined) delete process.env.CUTOVER_PROBE_TIMEOUT_MS;
+      else process.env.CUTOVER_PROBE_TIMEOUT_MS = previous;
+    }
+  });
+});
+
+test("D FAILs when a working proof exists but no meteorite stage runs it", () => {
+  const idle = DEFAULTS.meteorite.replace(/"orchestrator-start\|[^"]*"/, '"full-test-suite|cd /work/install && bun test"');
+  withFixture({ meteorite: idle }, (repo) => {
+    expect(verdicts(repo).D).toBe("FAIL");
+    expect(evidence(repo, "D")).toContain("no meteorite/run.sh stage runs it");
+    expect(verdicts(repo).A).toBe("UNKNOWN");
+  });
+});
+
+test("D FAILs when a stage only mentions the proof instead of running it", () => {
+  const mentioned = DEFAULTS.meteorite.replace(
+    /"orchestrator-start\|[^"]*"/,
+    `"advice|echo 'operator: next run meteorite/assert-orchestrator-live.sh by hand'"`,
+  );
+  withFixture({ meteorite: mentioned }, (repo) => {
+    expect(verdicts(repo).D).toBe("FAIL");
+    expect(evidence(repo, "D")).toContain("no meteorite/run.sh stage runs it");
+  });
+});
+
+// The round-2 review's three PASSing reproductions, run against this revision.
+// Each is the whole stage list, so nothing else can be carrying the verdict.
+test("the round-2 reproductions no longer green D, and no longer green A", () => {
+  const reproductions = [
+    `"advice|echo 'operator: next run orchestrator/launch.sh by hand'"`,
+    '"teardown|rm -f /work/runtime/orchestrator.lease"',
+    `"notice|echo 'NOT DONE: nothing here runs orchestrator/launch.sh or checks orchestrator.lease yet'"`,
+  ];
+  for (const stage of reproductions) {
+    const meteorite = [
+      "commands=(",
+      `  "clone|git clone --no-checkout 'https://example.invalid/repo.git' /work/source"`,
+      `  ${stage}`,
+      ")",
+    ].join("\n");
+    withFixture({ meteorite }, (repo) => {
+      expect(verdicts(repo).D).toBe("FAIL");
+      expect(verdicts(repo).A).toBe("UNKNOWN");
+      expect(report(checkReadiness(repo)).exitCode).toBe(1);
+    });
+  }
+});
+
+// --- gate D: what the stage list says, on the FAIL path only ----------------
 
 test("D FAILs when the meteorite only proves that files copied", () => {
   withFixture({ meteorite: 'commands=(\n  "full-test-suite|cd /work/install && bun test"\n)\n' }, (repo) => {
@@ -462,7 +666,82 @@ test("E PASSes on behaviour: the checker reports UNKNOWN when its inputs are abs
   withFixture({}, (repo) => {
     expect(verdicts(repo).E).toBe("PASS");
     expect(evidence(repo, "E")).toContain("reports UNKNOWN when run against a tree whose inputs are absent");
+    expect(evidence(repo, "E")).toContain("1 UNKNOWN finding(s)");
   });
+});
+
+// --- gate E: an UNKNOWN OUTCOME, not the token UNKNOWN in the output --------
+//
+// The round-2 review greened this gate three ways with a checker that reported
+// total success against a tree with no inputs at all. The gate now reads the
+// checker's own finding grammar -- the LEVEL column of a finding line -- so a
+// tally, a legend and a warning are prose about outcomes rather than outcomes.
+
+test("E FAILs a checker that passes an inputless tree while its summary tallies UNKNOWN", () => {
+  withFixture({
+    ledgerChecker: '#!/usr/bin/env bun\nconsole.log("summary: 0 FAIL, 0 WARN, 0 SKIP, 0 UNKNOWN, 0 PASS (0 docs)");\nprocess.exit(0);\n',
+  }, (repo) => {
+    expect(verdicts(repo).E).toBe("FAIL");
+    expect(evidence(repo, "E")).toContain("emits no UNKNOWN outcome");
+    expect(report(checkReadiness(repo)).exitCode).toBe(1);
+  });
+});
+
+test("E FAILs a checker whose only UNKNOWN is a legend line", () => {
+  withFixture({
+    ledgerChecker: '#!/usr/bin/env bun\nconsole.log("legend: PASS | FAIL | UNKNOWN");\nconsole.log("summary: 0 FAIL");\nprocess.exit(0);\n',
+  }, (repo) => {
+    expect(verdicts(repo).E).toBe("FAIL");
+    expect(evidence(repo, "E")).toContain("emits no UNKNOWN outcome");
+  });
+});
+
+test("E FAILs a checker whose only UNKNOWN is a warning on stderr", () => {
+  withFixture({
+    ledgerChecker: '#!/usr/bin/env bun\nconsole.error("warn: UNKNOWN option ignored");\nprocess.exit(0);\n',
+  }, (repo) => {
+    expect(verdicts(repo).E).toBe("FAIL");
+    expect(evidence(repo, "E")).toContain("emits no UNKNOWN outcome");
+  });
+});
+
+test("E FAILs when the findings and the summary disagree about UNKNOWN", () => {
+  withFixture({
+    ledgerChecker: [
+      "#!/usr/bin/env bun",
+      'console.log("UNKNOWN instructions/ [root] directory not found");',
+      'console.log("summary: 0 FAIL, 0 WARN, 0 SKIP, 0 UNKNOWN, 0 PASS (0 docs)");',
+      "process.exit(0);",
+    ].join("\n"),
+  }, (repo) => {
+    expect(verdicts(repo).E).toBe("FAIL");
+    expect(evidence(repo, "E")).toContain("its own summary counts as zero");
+  });
+});
+
+// The other direction of the same lock: a level column that is not a finding's,
+// and a finding whose level is not UNKNOWN, are both still FAIL.
+test("E FAILs when the checker reports findings but none of them is UNKNOWN", () => {
+  withFixture({
+    ledgerChecker: [
+      "#!/usr/bin/env bun",
+      'console.log("SKIP instructions/ [root] nothing to do");',
+      'console.log("summary: 0 FAIL, 0 WARN, 1 SKIP, 0 PASS (0 docs)");',
+      "process.exit(0);",
+    ].join("\n"),
+  }, (repo) => {
+    expect(verdicts(repo).E).toBe("FAIL");
+    expect(evidence(repo, "E")).toContain("1 finding(s) (SKIP)");
+  });
+});
+
+test("the finding grammar reads the level column, not the line", () => {
+  expect(probeOutcome("UNKNOWN instructions/ [root] directory not found").findings).toEqual([{ level: "UNKNOWN", file: "instructions/" }]);
+  expect(probeOutcome("legend: PASS | FAIL | UNKNOWN").findings).toEqual([]);
+  expect(probeOutcome("warn: UNKNOWN option ignored").findings).toEqual([]);
+  expect(probeOutcome("  UNKNOWN indented [check] detail").findings).toEqual([]);
+  expect(probeOutcome("summary: 0 FAIL, 3 UNKNOWN, 0 PASS").countedUnknown).toBe(3);
+  expect(probeOutcome("summary: 0 FAIL, 0 PASS").countedUnknown).toBe(null);
 });
 
 test("a probe that has to be killed is UNKNOWN, never PASS — a kill is not a pass", () => {

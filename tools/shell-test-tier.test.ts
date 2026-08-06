@@ -69,6 +69,12 @@ const runnableShellTests = [
   // capability-gated on systemd transient units and reports a named EXCLUDED
   // line where they are unavailable, so it stays runnable in the container.
   "orchestrator/tmux-isolation.test.sh",
+  // V3-5.38. The singleton guard's observation boundary: /proc/locks attributes
+  // an exited lock-setter only in the initial pid namespace, so the launcher is
+  // blind to its own subject inside any container. Runs the same scenario in
+  // both worlds; each half reports a named EXCLUDED line where its kernel
+  // capability is absent, so it stays runnable in the container too.
+  "orchestrator/singleton-namespace-boundary.test.sh",
 ] as const;
 
 const excludedShellTests = {} as const;

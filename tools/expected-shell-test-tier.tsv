@@ -28,6 +28,7 @@ orchestrator/heartbeat-writer.test.sh
 orchestrator/launch-handshake-bounded.test.sh
 orchestrator/session-hook-wiring.test.sh
 orchestrator/singleton-failclosed.test.sh
+orchestrator/singleton-namespace-boundary.test.sh
 orchestrator/tmux-isolation.test.sh
 orchestrator/watchdog-supervision.test.sh
 orchestrator/watchdog.test.sh

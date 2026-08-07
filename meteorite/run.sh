@@ -105,6 +105,11 @@ required_stages=(
   bootstrap-dry-run
   bootstrap-install
   bootstrap-verify-source
+  # Landed on main as V3-5.40 while this contract was in flight. Listed here for
+  # the same reason as every other line: a stage that exists in `commands` but
+  # not in the contract is a stage whose deletion would still report `clean`,
+  # and voice on a rebuilt host is cutover gate G.
+  whisper
   test-prerequisites
   full-test-suite
   unit-drift

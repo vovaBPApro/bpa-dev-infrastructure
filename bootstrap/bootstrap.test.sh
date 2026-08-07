@@ -136,8 +136,8 @@ echo 'PASS static shape (INSTALL_ROOT default present, out-of-scope surface abse
 
 # ── --dry-run / --help / argument validation ─────────────────────────────
 dry_run="$($INSTALLER --dry-run)"
-for expected in 'PLAN apt' 'PLAN bun' 'PLAN repository' 'PLAN whisper' 'PLAN environment' \
-  'PLAN state-db' 'PLAN hygiene' 'PLAN test-gate' 'PLAN units'; do
+for expected in 'PLAN apt' 'PLAN bun' 'PLAN repository' 'PLAN dependencies' 'PLAN whisper' \
+  'PLAN environment' 'PLAN state-db' 'PLAN hygiene' 'PLAN test-gate' 'PLAN units'; do
   grep -Fq "$expected" <<<"$dry_run"
 done
 # Trimmed-scope proof: the donor's later-stage plan rows must NOT appear.
@@ -607,6 +607,216 @@ printf '%s\n' 'FAIL-BEFORE initialize_state_db: no such function exists before t
 echo 'PASS initialize_state_db: second (idempotent) call preserves prior real state, does not wipe the database'
 
 # ══════════════════════════════════════════════════════════════════════════
+# materialize_dependencies (V3-5.25 r6) -- the step that keeps a rebuilt host
+# from coming up with a daemon whose imports do not resolve.
+#
+# THE DEFECT THIS LOCKS, measured rather than imagined. The landing gate had
+# land_materialize_dependencies(); bootstrap did not. node_modules is
+# git-ignored host state, so the meteorite's fresh clone had none, and the
+# rebuild died inside the container on the repository's own honest lock:
+#
+#   daemon/server.ts -> @modelcontextprotocol/sdk/server/index.js: unresolved
+#     (... from '/work/install/daemon')
+#
+# WHAT IS ASSERTED, and why each part is needed:
+#
+#   1. the step is wired into the install sequence, after the repository sync
+#      and before anything that runs repository code -- a step defined and
+#      never called is exactly the state Whisper was found in (gate G);
+#   2. it is not a SECOND implementation: install.sh must contain no install
+#      of its own, or the gate and the host can derive different trees;
+#   3. behavior, end to end, on a real repository fixture: a specifier that is
+#      unresolvable BEFORE (the container's evidence shape, reproduced here)
+#      and resolves from inside the checkout AFTER;
+#   4. both refusal paths stay named and distinguishable -- an absent or
+#      renamed mechanism is not the same blocker as a materialization that was
+#      attempted and failed.
+#
+# HERMETIC BY CONSTRUCTION: the fixture's only dependency is a `file:` package
+# inside the fixture itself, and HOME points into the fixture, so the install
+# under test needs no network and neither reads nor writes the host bun cache.
+# ══════════════════════════════════════════════════════════════════════════
+# (1) Wiring: read install.sh's own executed sequence -- comments stripped, so
+# a call that exists only in prose does not count -- and check the ORDER. A
+# materialization that runs after the code it exists to feed is decoration.
+deps_sequence="$(sed -n '/^if \[\[ "\${BOOTSTRAP_LIB_ONLY/,/^fi$/p' "$INSTALLER" \
+  | grep -vE '^[[:space:]]*#' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+deps_step_index() { grep -nFx "$1" <<<"$deps_sequence" | head -1 | cut -d: -f1; }
+# Presence first, at top level, so a missing step reports WHICH step is missing
+# instead of failing later on an empty comparand. `exit` from inside a command
+# substitution would only leave the subshell, which is why this is not folded
+# into the helper above.
+for deps_step in sync_repository materialize_dependencies initialize_state_db \
+  run_install_test_gate; do
+  if [[ -z "$(deps_step_index "$deps_step")" ]]; then
+    echo "ERROR: install.sh never calls $deps_step" >&2
+    exit 1
+  fi
+done
+grep -Fq 'materialize_dependencies() {' "$INSTALLER"
+[[ "$(grep -cFx 'materialize_dependencies' <<<"$deps_sequence")" -eq 1 ]]
+deps_call="$(deps_step_index materialize_dependencies)"
+[[ "$deps_call" -gt "$(deps_step_index sync_repository)" ]]
+[[ "$deps_call" -lt "$(deps_step_index initialize_state_db)" ]]
+[[ "$deps_call" -lt "$(deps_step_index run_install_test_gate)" ]]
+echo 'PASS materialize_dependencies: called once, after the repository sync and before any step that runs repository code'
+
+# (2) One implementation. The installer must reach the shared function, never
+# carry an install of its own -- two mechanisms deriving the same tree is
+# V3-2.12 with a new subject, and it ends with the gate green and the rebuilt
+# host broken. Comments are stripped first: this file's own prose, and
+# install.sh's, discuss `bun install` on purpose.
+deps_installer_code_only="$(grep -v '^[[:space:]]*#' "$INSTALLER")"
+if grep -Eq '(bun|BUN_BIN"?) install' <<<"$deps_installer_code_only"; then
+  echo 'ERROR: install.sh carries its own dependency install; the one home is gate/land-lib.sh' >&2
+  exit 1
+fi
+grep -Fq 'land_materialize_dependencies' "$INSTALLER"
+echo 'PASS materialize_dependencies: reaches the shared gate/land-lib.sh function, carries no install of its own'
+
+# (3) Behavior, against a real repository fixture.
+deps_fixture="$FIXTURE_ROOT/deps"
+deps_root="$deps_fixture/root"
+install -d -m 700 "$deps_root/daemon" "$deps_root/gate" \
+  "$deps_root/vendor/lock-fixture-pkg" "$deps_fixture/home"
+# The REAL tracked library, copied in the way a clone would carry it: this
+# fixture must exercise the shipped function, not a stand-in for it.
+cp "$REPO_ROOT/gate/land-lib.sh" "$deps_root/gate/land-lib.sh"
+cat > "$deps_root/vendor/lock-fixture-pkg/package.json" <<'EOF'
+{ "name": "lock-fixture-pkg", "version": "1.0.0", "main": "index.js" }
+EOF
+printf '%s\n' 'module.exports = 1;' > "$deps_root/vendor/lock-fixture-pkg/index.js"
+cat > "$deps_root/daemon/package.json" <<'EOF'
+{
+  "name": "fixture-daemon",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": { "lock-fixture-pkg": "file:../vendor/lock-fixture-pkg" }
+}
+EOF
+printf '%s\n' 'import pkg from "lock-fixture-pkg";' 'export default pkg;' \
+  > "$deps_root/daemon/server.ts"
+# Fixture BUILD, not the thing under test: bun writes the lockfile once, and
+# the materialized tree is then removed so the step below has to re-derive it
+# from the tracked lockfile alone -- which is the whole claim.
+if ! deps_lockfile_output="$( (cd "$deps_root/daemon" && \
+  HOME="$deps_fixture/home" "$REAL_BUN_BIN" install --ignore-scripts) 2>&1 )"; then
+  echo 'ERROR: could not build the dependency fixture lockfile' >&2
+  echo "$deps_lockfile_output" >&2
+  exit 1
+fi
+rm -rf "$deps_root/daemon/node_modules"
+test -f "$deps_root/daemon/bun.lock"
+git -C "$deps_root" init -q
+git -C "$deps_root" add -A
+
+# The probe asks bun to resolve the specifier the fixture source imports, from
+# the workspace that imports it, and requires the answer to come from INSIDE
+# the checkout -- the same two questions, in the same order, that
+# gate/dependency-materialization.test.ts asks of the real tree. Its failure
+# line is written in the container's evidence shape on purpose.
+deps_probe() {
+  HOME="$deps_fixture/home" "$REAL_BUN_BIN" -e '
+    const [specifier, dir, root] = process.argv.slice(1);
+    const { realpathSync } = require("node:fs");
+    let resolved;
+    try {
+      resolved = realpathSync(Bun.resolveSync(specifier, dir));
+    } catch (error) {
+      console.error(`daemon/server.ts -> ${specifier}: unresolved (${error})`);
+      process.exit(1);
+    }
+    if (!resolved.startsWith(root + "/")) {
+      console.error(`daemon/server.ts -> ${specifier}: resolved outside the checkout at ${resolved}`);
+      process.exit(1);
+    }
+    console.log(resolved);
+  ' lock-fixture-pkg "$deps_root/daemon" "$deps_root"
+}
+
+# RED BEFORE: exactly the state bootstrap left behind until this row -- a
+# synced checkout whose daemon imports do not resolve.
+set +e
+deps_before_output="$(deps_probe 2>&1)"
+deps_before_rc=$?
+set -e
+if [[ "$deps_before_rc" -eq 0 ]]; then
+  echo 'ERROR: the fixture resolved its dependency with nothing materialized; the red arm proves nothing' >&2
+  exit 1
+fi
+grep -Fq 'unresolved' <<<"$deps_before_output"
+printf '%s\n' "FAIL-BEFORE materialize_dependencies: $deps_before_output"
+
+deps_run_output="$(BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$deps_root" BUN_BIN="$REAL_BUN_BIN" \
+  HOME="$deps_fixture/home" INSTALLER_PATH="$INSTALLER" \
+  "$BASH_BIN" -c 'source "$INSTALLER_PATH"; materialize_dependencies' 2>&1)"
+# The shared function's own output, under bootstrap's prefix: proof that the
+# step ran and that it was gate/land-lib.sh that did the work.
+grep -Fq 'BOOTSTRAP deps=install status=pass workspace=daemon' <<<"$deps_run_output"
+
+# GREEN AFTER: same probe, same fixture, one step later.
+deps_after_output="$(deps_probe)"
+grep -Fq "$deps_root/" <<<"$deps_after_output"
+echo 'PASS materialize_dependencies: an unresolvable checkout resolves from inside itself after the step runs'
+
+# (4a) The library's own named failure must reach the operator and must stop
+# the install. Untracking the lockfile leaves a workspace that declares
+# dependencies with nothing reproducible to derive them from.
+git -C "$deps_root" rm --cached -q daemon/bun.lock
+set +e
+deps_unlocked_output="$(BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$deps_root" BUN_BIN="$REAL_BUN_BIN" \
+  HOME="$deps_fixture/home" INSTALLER_PATH="$INSTALLER" \
+  "$BASH_BIN" -c 'source "$INSTALLER_PATH"; materialize_dependencies' 2>&1)"
+deps_unlocked_rc=$?
+set -e
+if [[ "$deps_unlocked_rc" -eq 0 ]]; then
+  echo 'ERROR: materialize_dependencies reported success over an underivable workspace' >&2
+  exit 1
+fi
+grep -Fq 'detail=lockfile-not-tracked' <<<"$deps_unlocked_output"
+grep -Fq 'ERROR: dependency materialization failed' <<<"$deps_unlocked_output"
+git -C "$deps_root" add daemon/bun.lock
+echo 'PASS materialize_dependencies: an underivable workspace is a named refusal that keeps the library'"'"'s own reason'
+
+# (4b) The mechanism never arrived (a truncated clone, a deleted library). A
+# DIFFERENT named blocker: nothing was attempted, so "materialization failed"
+# would be a false description of what happened.
+mv "$deps_root/gate/land-lib.sh" "$deps_root/gate/land-lib.sh.away"
+set +e
+deps_absent_output="$(BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$deps_root" BUN_BIN="$REAL_BUN_BIN" \
+  HOME="$deps_fixture/home" INSTALLER_PATH="$INSTALLER" \
+  "$BASH_BIN" -c 'source "$INSTALLER_PATH"; materialize_dependencies' 2>&1)"
+deps_absent_rc=$?
+set -e
+if [[ "$deps_absent_rc" -eq 0 ]]; then
+  echo 'ERROR: materialize_dependencies reported success with no materializer present' >&2
+  exit 1
+fi
+grep -Fq 'ERROR: dependency materializer is missing' <<<"$deps_absent_output"
+if grep -Fq 'ERROR: dependency materialization failed' <<<"$deps_absent_output"; then
+  echo 'ERROR: an absent materializer was reported as a failed materialization' >&2
+  exit 1
+fi
+
+# (4c) The file arrived but no longer defines the function -- the half of the
+# boundary a plain `test -f` cannot see, and the shape a rename would take.
+sed 's/^land_materialize_dependencies() {/land_materialise_dependencies() {/' \
+  "$deps_root/gate/land-lib.sh.away" > "$deps_root/gate/land-lib.sh"
+set +e
+deps_renamed_output="$(BOOTSTRAP_LIB_ONLY=true INSTALL_ROOT="$deps_root" BUN_BIN="$REAL_BUN_BIN" \
+  HOME="$deps_fixture/home" INSTALLER_PATH="$INSTALLER" \
+  "$BASH_BIN" -c 'source "$INSTALLER_PATH"; materialize_dependencies' 2>&1)"
+deps_renamed_rc=$?
+set -e
+if [[ "$deps_renamed_rc" -eq 0 ]]; then
+  echo 'ERROR: materialize_dependencies reported success against a library missing its function' >&2
+  exit 1
+fi
+grep -Fq 'no longer defines land_materialize_dependencies' <<<"$deps_renamed_output"
+mv -f "$deps_root/gate/land-lib.sh.away" "$deps_root/gate/land-lib.sh"
+echo 'PASS materialize_dependencies: an absent or renamed materializer is a distinct named blocker, never attempted-and-failed'
+
+# ══════════════════════════════════════════════════════════════════════════
 # install_whisper (V3-5.40) -- the local speech-to-text stack.
 #
 # The real tools/whisper/install.sh builds whisper.cpp and downloads ~1.5 GB
@@ -1061,8 +1271,13 @@ echo 'PASS render_units rollback-failed lock: incomplete restoration is explicit
 verify_fixture="$FIXTURE_ROOT/verify"
 install -d -m 700 "$verify_fixture/root/.git" "$verify_fixture/root/core" \
   "$verify_fixture/root/bootstrap" "$verify_fixture/root/tools/whisper" \
-  "$verify_fixture/bin" "$verify_fixture/systemd"
+  "$verify_fixture/root/gate" "$verify_fixture/bin" "$verify_fixture/systemd"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/root/tools/whisper/install.sh"
+# The materializer row is source-provable in the same sense as the whisper row:
+# it asks whether the MECHANISM reached the installed checkout. The fixture
+# therefore carries a file that defines the function, not the whole library.
+printf '%s\n' '#!/usr/bin/env bash' 'land_materialize_dependencies() {' '  return 0' '}' \
+  > "$verify_fixture/root/gate/land-lib.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$verify_fixture/bin/bun"
 printf '%s\n' '#!/usr/bin/env bash' \
   'if [[ "${1:-}" == -l ]]; then echo "# BEGIN bpa-dev-infrastructure hygiene"; fi' \
@@ -1081,10 +1296,31 @@ good_output="$(PATH="$verify_fixture/bin:$CORE_PATH" INSTALL_ROOT="$verify_fixtu
   "$INSTALLER" --verify-source)"
 for expected in 'PASS git' 'PASS curl' 'PASS tmux' 'PASS flock' 'PASS findmnt' 'PASS bun' \
   'PASS repository' 'PASS environment file' 'PASS environment permissions' 'PASS state-db' \
-  'PASS whisper installer' 'PASS hygiene-cron' 'PASS rendered units'; do
+  'PASS whisper installer' 'PASS dependency materializer' 'PASS hygiene-cron' \
+  'PASS rendered units'; do
   grep -Fq "$expected" <<<"$good_output"
 done
 echo 'PASS --verify-source: every stage-2 boundary PASSes against a satisfied fixture'
+
+# The materializer row must behave like every other row: absence FAILs it by
+# name and flips the exit code. A rebuilt host whose checkout lost the shared
+# function has lost the only mechanism that makes its own imports resolvable,
+# so this may not be a line of output nobody's exit status depends on.
+mv "$verify_fixture/root/gate/land-lib.sh" "$verify_fixture/root/gate/land-lib.sh.away"
+if PATH="$verify_fixture/bin:$CORE_PATH" INSTALL_ROOT="$verify_fixture/root" \
+  ENV_FILE="$verify_fixture/root/.env" BUN_BIN="$verify_fixture/bin/bun" \
+  CRONTAB_CMD="$verify_fixture/bin/crontab" SYSTEMD_SYSTEM_DIR="$verify_fixture/systemd" \
+  "$INSTALLER" --verify-source >/dev/null 2>&1; then
+  echo 'ERROR: --verify-source exited 0 with the dependency materializer absent from INSTALL_ROOT' >&2
+  exit 1
+fi
+missing_materializer_output="$(PATH="$verify_fixture/bin:$CORE_PATH" INSTALL_ROOT="$verify_fixture/root" \
+  ENV_FILE="$verify_fixture/root/.env" BUN_BIN="$verify_fixture/bin/bun" \
+  CRONTAB_CMD="$verify_fixture/bin/crontab" SYSTEMD_SYSTEM_DIR="$verify_fixture/systemd" \
+  "$INSTALLER" --verify-source 2>&1 || true)"
+grep -Fq 'FAIL dependency materializer' <<<"$missing_materializer_output"
+mv "$verify_fixture/root/gate/land-lib.sh.away" "$verify_fixture/root/gate/land-lib.sh"
+echo 'PASS --verify-source: an absent dependency materializer FAILs its row and flips the overall exit code'
 
 # The Whisper row is source-provable and must behave like every other row:
 # absence FAILs it by name and flips the exit code. A rebuilt host whose
@@ -1177,4 +1413,4 @@ else
   echo 'SKIP shellcheck: not present on this host'
 fi
 
-echo 'PASS bootstrap stage 2: dry-run, all nine in-scope functions, failure locks, --verify-source, secret scan'
+echo 'PASS bootstrap stage 2: dry-run, all ten in-scope functions, failure locks, --verify-source, secret scan'

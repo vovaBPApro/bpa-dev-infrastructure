@@ -161,14 +161,150 @@ land_resolve_bun() {
   export LAND_CHECK_PATH
 }
 
+# Materialize the dependency tree the tracked lockfiles ALREADY declare, for
+# every tracked manifest that declares one. Called first from
+# land_run_declared_checks, so all three of its call sites -- BASELINE,
+# post-merge, and the REVIEWED replay in its own detached worktree -- get the
+# same tree.
+#
+# WHY THIS IS NOT "CHANGING DEPENDENCY STATE" (V3-5.25)
+# The doctrine below used to end "The gate never installs dependencies: changing
+# dependency state is outside landing authority, and a non-reproducible checkout
+# must be refused." The second half stands and is what this function enforces.
+# The first half was refusing the wrong thing. `bun install --frozen-lockfile`
+# cannot resolve, add, update or remove a single package: it refuses outright
+# when the manifest and the lockfile disagree, and otherwise materializes the
+# package set the tracked lockfile already names. Deciding dependency state is
+# what is outside landing authority; deriving it from what the repository
+# already says is what makes the checkout reproducible at all.
+# `--ignore-scripts` completes that: no lifecycle script runs, so materializing
+# a candidate's tree never executes the candidate's install-time code as the
+# gate.
+#
+# THE BOUNDARY THAT ACTUALLY HOLDS, stated exactly (V3-5.25 review, F1)
+# An earlier draft of this comment called the result "a pure function of tracked
+# files". It is not, and the overstatement mattered because this paragraph is the
+# only tracked home of the rule that licenses the gate to run an installer.
+#
+# What holds: the SET of packages, their names and their versions are decided by
+# the tracked lockfile alone, and a lockfile/manifest disagreement is refused.
+# What does NOT hold: the CONTENT is supplied by the host's bun install cache
+# (`~/.bun/install/cache`), which is git-ignored host state, and bun does not
+# re-verify already-cached content against the lockfile's recorded `sha512`. It
+# hardlinks out of that cache, so a package file in the checkout and its cache
+# entry are the same inode. Tamper with the cached content and this step reports
+# `deps=install status=pass` over a checkout that does not match its own
+# lockfile.
+#
+# So the derivation is a function of the tracked lockfile PLUS the host install
+# cache, and where those two disagree the cache wins, silently. Two consequences
+# follow: writing into a materialized `node_modules` file writes THROUGH to the
+# cache and every later clone on this host inherits it; and the gate's verdict
+# still rests on ambient host state, narrower than before (keyed by name and
+# version, and a clean clone now works) but not eliminated.
+#
+# Verifying the digests locally is not available as a cheap repair, which is why
+# this is recorded rather than closed: the lockfile's `sha512` entries are npm
+# TARBALL digests, and the cache retains only extracted files -- no tarball is
+# kept on this host to hash. Checking them would mean re-fetching every tarball
+# from the registry on every landing, which replaces a host-state dependency
+# with a hard network dependency and makes landings fail when the registry is
+# unreachable. Installing into a gate-controlled cache costs the same, for the
+# same reason. Closing this properly is its own row, not a clause here.
+#
+# It exists because the gate's inventory includes integration tests that spawn
+# daemon/server.ts, whose imports resolve only against daemon/node_modules --
+# git-ignored HOST state. The canonical checkout has it; a fresh clone of the
+# same SHA does not. So the same baseline answered "pass" here and
+# `framework-check=test status=fail` in a clone, and a check whose verdict
+# depends on ambient state is not a check. The alternative -- refusing a
+# checkout with no node_modules -- refuses EVERY clean clone, which fails the
+# meteorite test rather than passing it.
+#
+# WHAT IT NEEDS, stated because it is a real dependency of the gate: the
+# packages must be reachable, from a populated bun install cache under $HOME or
+# from the registry over the network. Where neither is available it fails closed
+# with a named `deps=install status=fail`, never a skip.
+land_materialize_dependencies() {
+  local dep_repo="$1" dep_prefix="$2" manifest_rel workspace_rel lock_rel install_log declares_status inventory
+  local -a manifests=()
+  # Fail-closed like every other read in this function: a failed inventory read
+  # left `manifests` empty, so the loop never ran and the function returned 0
+  # having materialized nothing -- a failure readable as an absence, which is
+  # exactly what the manifest read below goes out of its way to prevent. The
+  # status is captured from `git` itself, not from a process substitution whose
+  # exit nobody sees, and the list goes through a file because command
+  # substitution discards the NUL bytes `-z` depends on.
+  inventory=$(mktemp "${TMPDIR:-/tmp}/bpa-land-inventory.XXXXXX") || return 1
+  if ! git -C "$dep_repo" ls-files -z -- 'package.json' '*/package.json' >"$inventory" 2>/dev/null; then
+    rm -f "$inventory"
+    echo "$dep_prefix deps=install status=fail detail=inventory-unreadable repo=$dep_repo" >&2
+    return 1
+  fi
+  mapfile -d '' -t manifests <"$inventory"
+  rm -f "$inventory"
+  for manifest_rel in "${manifests[@]}"; do
+    # 0 declares dependencies, 1 declares none, 2 unreadable or malformed. A
+    # thrown parse must not be readable as "declares none", so the read is
+    # guarded and reports 2 itself.
+    "$BUN_BIN" -e '
+      let manifest;
+      try { manifest = await Bun.file(process.argv[1]).json(); } catch { process.exit(2); }
+      if (manifest === null || typeof manifest !== "object" || Array.isArray(manifest)) process.exit(2);
+      let declares = false;
+      for (const field of ["dependencies", "devDependencies", "optionalDependencies"]) {
+        const value = manifest[field];
+        if (value === undefined) continue;
+        if (value === null || typeof value !== "object" || Array.isArray(value)) process.exit(2);
+        if (Object.keys(value).length > 0) declares = true;
+      }
+      process.exit(declares ? 0 : 1);
+    ' "$dep_repo/$manifest_rel" </dev/null >/dev/null 2>&1
+    declares_status=$?
+    if [ "$declares_status" -eq 1 ]; then continue; fi
+    if [ "$declares_status" -ne 0 ]; then
+      echo "$dep_prefix deps=install status=fail manifest=$manifest_rel detail=manifest-unreadable" >&2
+      return 1
+    fi
+
+    workspace_rel=$(dirname -- "$manifest_rel")
+    if [ "$workspace_rel" = "." ]; then lock_rel="bun.lock"; else lock_rel="$workspace_rel/bun.lock"; fi
+    # No tracked lockfile means there is nothing to derive the tree FROM, so
+    # installing would be exactly the resolution this function is licensed not
+    # to do. Refuse instead.
+    if ! git -C "$dep_repo" ls-files --error-unmatch -z -- "$lock_rel" >/dev/null 2>&1; then
+      echo "$dep_prefix deps=install status=fail workspace=$workspace_rel detail=lockfile-not-tracked lockfile=$lock_rel" >&2
+      return 1
+    fi
+
+    install_log=$(mktemp "${TMPDIR:-/tmp}/bpa-land-install.XXXXXX") || return 1
+    echo "$dep_prefix deps=install status=running workspace=$workspace_rel"
+    if ! (cd "$dep_repo/$workspace_rel" && "$BUN_BIN" install --frozen-lockfile --ignore-scripts) >"$install_log" 2>&1; then
+      cat "$install_log"
+      rm -f "$install_log"
+      echo "$dep_prefix deps=install status=fail workspace=$workspace_rel detail=frozen-lockfile-install-failed" >&2
+      return 1
+    fi
+    rm -f "$install_log"
+    echo "$dep_prefix deps=install status=pass workspace=$workspace_rel"
+  done
+  return 0
+}
+
 # Run every root quality script whose declaration makes it part of the landing
 # contract. A missing package.json means there are no root package checks; an
 # unreadable/malformed manifest or a declared script that cannot run is a hard
-# failure. The gate never installs dependencies: changing dependency state is
-# outside landing authority, and a non-reproducible checkout must be refused.
+# failure. A non-reproducible checkout must be refused -- and dependency state
+# derived frozen from a tracked lockfile is what makes the checkout
+# reproducible, not a departure from it (see land_materialize_dependencies).
 land_run_declared_checks() {
-  local repo="$1" prefix="$2" minimum_test_count="${3:-0}" manifest="$repo/package.json" scripts_file script parse_dir bun_config test_output test_count pass_count
+  local repo="$1" prefix="$2" minimum_test_count="${3:-0}" manifest="$1/package.json" scripts_file script parse_dir bun_config test_output test_count pass_count
   local -a source_files=() test_files=()
+  # First, because everything below reads the checkout this produces. Fail-closed:
+  # its own non-zero is the function's non-zero, and the caller's step fails.
+  if ! land_materialize_dependencies "$repo" "$prefix"; then
+    return 1
+  fi
   parse_dir=$(mktemp -d "${TMPDIR:-/tmp}/bpa-land-parse.XXXXXX") || return 1
   echo "$prefix declared-check=parse status=running"
   mapfile -d '' -t source_files < <(git -C "$repo" ls-files -z -- '*.js' '*.jsx' '*.mjs' '*.cjs' '*.ts' '*.tsx')

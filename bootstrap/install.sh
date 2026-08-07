@@ -20,6 +20,14 @@
 # required). There is no --verify yet -- the donor's --verify checks systemd
 # unit state and Docker/codex/claude tooling this stage does not touch.
 #
+# Workspace dependencies ARE materialized here (V3-5.25 r6), from the tracked
+# lockfiles, by the same function the landing gate uses. Without it a host
+# rebuilt from git comes up with a daemon whose imports do not resolve --
+# `daemon/server.ts -> @modelcontextprotocol/sdk/...: unresolved` -- because
+# node_modules is git-ignored host state and a clone has none. The meteorite
+# proved it: the gate had the step, bootstrap did not, and the rebuild failed
+# inside the container on the branch's own honest lock.
+#
 # The Whisper speech-to-text stack IS installed here (V3-5.40): it is on the
 # operator's daily path, so a rebuilt host without it is a broken rebuild.
 # --verify-source proves only what a source tree can prove -- that the tracked
@@ -54,15 +62,32 @@ EXPECTED_UNITS_FILE="${EXPECTED_UNITS_FILE:-$INSTALL_ROOT/instance/expected-unit
 # "two lists that drift apart" is V3-2.12. Deliberately NOT env-overridable:
 # which file bootstrap trusts to install host speech-to-text is not a knob.
 WHISPER_INSTALLER="$INSTALL_ROOT/tools/whisper/install.sh"
+# One home for the SHARED dependency materializer, inside the installed
+# checkout. There is exactly one implementation of "derive the dependency tree
+# the tracked lockfiles already declare" in this repository --
+# land_materialize_dependencies() in gate/land-lib.sh -- and both the landing
+# gate and this installer call THAT one. A second copy here would be the
+# V3-2.12 disease again: two mechanisms deriving the same tree, free to drift,
+# with the gate green and the rebuilt host broken.
+#
+# It is read from INSTALL_ROOT, not from this script's own source tree, for the
+# same reason the whisper installer is: the tree being materialized must be
+# materialized by its own tracked code, and --verify-source can then prove the
+# mechanism actually arrived in the installed checkout. Deliberately NOT
+# env-overridable.
+DEPENDENCY_MATERIALIZER="$INSTALL_ROOT/gate/land-lib.sh"
+# The function that file must define. Named once, used by both the presence
+# check and the invocation below.
+DEPENDENCY_MATERIALIZER_FUNCTION='land_materialize_dependencies'
 
 usage() {
   cat <<'EOF'
 Usage: bootstrap/install.sh [--dry-run | --verify-source]
 
-Stage 2: prerequisites, Bun, repository sync, the Whisper speech-to-text
-stack, environment, state database, hygiene cron, repository test gate, and
-systemd unit rendering. This stage does not enable, start, restart, or reload
-units.
+Stage 2: prerequisites, Bun, repository sync, workspace dependencies, the
+Whisper speech-to-text stack, environment, state database, hygiene cron,
+repository test gate, and systemd unit rendering. This stage does not enable,
+start, restart, or reload units.
 
 Environment overrides: INSTALL_ROOT, REPO_URL, REPO_BRANCH (default: main),
 BUN_VERSION, ENV_FILE, BUN_BIN, BASH_BIN, RUNTIME_DIR, INFRA_STATE_DB,
@@ -107,6 +132,10 @@ print_plan() {
   plan "apt" "check git, curl, tmux, flock, findmnt, and unzip; install any missing packages"
   plan "bun" "install Bun ${BUN_VERSION} if $BUN_BIN is absent"
   plan "repository" "clone \$INSTALL_ROOT from REPO_URL on REPO_BRANCH, or fast-forward it -- refusing if it is checked out on any other branch"
+  # Honest about WHAT it does and WHOSE code does it: the tree is derived
+  # frozen from the tracked lockfiles, no resolution and no lifecycle scripts,
+  # by the landing gate's own function.
+  plan "dependencies" "materialize every tracked workspace's dependencies in $INSTALL_ROOT frozen from its tracked lockfile, via $DEPENDENCY_MATERIALIZER_FUNCTION in gate/land-lib.sh"
   # Deliberately describes the installer instead of spelling its path: the
   # first executable line naming that path should be the line that RUNS it,
   # so a reader (and gate G's evidence string) is pointed at the invocation
@@ -136,6 +165,17 @@ state_db_status() {
 
 hygiene_cron_status() {
   "$CRONTAB_CMD" -l 2>/dev/null | grep -Fxq '# BEGIN bpa-dev-infrastructure hygiene'
+}
+
+# The shared materializer arrived in the installed checkout AND still defines
+# the function this installer calls. Both halves matter: a file that exists but
+# no longer carries the function is a rebuild that fails later, at the first
+# thing that imports a package. One predicate, two callers -- the --verify-source
+# row below and materialize_dependencies -- so the boundary they judge cannot
+# drift apart.
+dependency_materializer_status() {
+  [[ -f "$DEPENDENCY_MATERIALIZER" && -r "$DEPENDENCY_MATERIALIZER" ]] &&
+    grep -Fq "$DEPENDENCY_MATERIALIZER_FUNCTION() {" "$DEPENDENCY_MATERIALIZER"
 }
 
 rendered_units_status() {
@@ -182,6 +222,14 @@ verify() {
   # tree that has not yet been installed onto a host, which is exactly the
   # class of check that gets deleted rather than fixed.
   check "whisper installer" test -f "$WHISPER_INSTALLER"
+  # Source-provable only, and deliberately the same boundary as the whisper row
+  # above: that the MECHANISM reached INSTALL_ROOT. Whether a materialized
+  # node_modules exists is live evidence of an install having run -- asserting
+  # it here would fail on every tree that has only been cloned, which is the
+  # class of check that gets deleted rather than fixed. The materialized result
+  # is proven where it belongs: by the repository suite this installer runs
+  # (gate/dependency-materialization.test.ts) on the rebuilt host itself.
+  check "dependency materializer" dependency_materializer_status
   check "hygiene-cron" hygiene_cron_status
   check "rendered units" rendered_units_status
   return "$result"
@@ -282,15 +330,63 @@ sync_repository() {
   fi
 }
 
+# Materialize the dependency tree the tracked lockfiles ALREADY declare, in the
+# installed checkout, before anything in that checkout is executed (V3-5.25 r6).
+#
+# WHY BOOTSTRAP NEEDS THIS AT ALL. node_modules is git-ignored host state, so a
+# clone of any SHA has none. Every later step here runs repository TypeScript --
+# initialize_state_db spawns core/mission-cli.ts, run_install_test_gate runs the
+# whole suite, and the suite spawns daemon/server.ts, which imports
+# @modelcontextprotocol/sdk, grammy and zod. Without this step the rebuild the
+# meteorite performs reaches its own test gate and dies there, which is exactly
+# what it did.
+#
+# WHOSE CODE RUNS, and why it is not copied. land_materialize_dependencies() in
+# gate/land-lib.sh is the one implementation; the landing gate calls it and so
+# does this. It reads the tracked manifests, refuses a workspace that declares
+# dependencies with no tracked lockfile, and installs with --frozen-lockfile
+# --ignore-scripts -- so it cannot resolve, add, update or remove a package, and
+# runs no install-time code. Its own boundaries and residual host-cache
+# dependency are documented there, in one place, and are not restated here.
+#
+# WHY A CHILD SHELL rather than sourcing the library into this one. That library
+# is written for a shell WITHOUT errexit -- it captures `$?` on the line after a
+# command that is expected to fail (`declares_status=$?`), which is only correct
+# there. This script runs under `set -euo pipefail`. A child shell gives the
+# function the exact shell it was written for instead of resting on bash's
+# errexit-suspension rules, and keeps this installer's namespace clean.
+#
+# BUN_BIN is passed explicitly. The library's own land_resolve_bun() REFUSES a
+# caller-supplied BUN_BIN by design -- a landing does not let its caller choose
+# which bun runs it -- so it is deliberately NOT called here: bootstrap resolves
+# and verifies its own bun in install_bun, and the meteorite supplies one.
+#
+# Fail-closed with two distinguishable named errors, as install_whisper does: a
+# mechanism that never arrived is a different blocker from a materialization
+# that was attempted and failed. Neither is a warning; the library's own
+# `deps=install status=fail detail=...` line reaches the operator on stderr and
+# this function refuses to continue over it.
+materialize_dependencies() {
+  if ! dependency_materializer_status; then
+    echo "ERROR: dependency materializer is missing, unreadable, or no longer defines $DEPENDENCY_MATERIALIZER_FUNCTION: $DEPENDENCY_MATERIALIZER; a rebuilt host cannot resolve its own imports" >&2
+    return 1
+  fi
+  if ! BUN_BIN="$BUN_BIN" bash -c '. "$1" && "$3" "$2" BOOTSTRAP' \
+    bash "$DEPENDENCY_MATERIALIZER" "$INSTALL_ROOT" "$DEPENDENCY_MATERIALIZER_FUNCTION"; then
+    echo "ERROR: dependency materialization failed for $INSTALL_ROOT; refusing to continue with a checkout whose imports cannot resolve" >&2
+    return 1
+  fi
+}
+
 # Local speech-to-text, installed from the repository onto the host.
 #
 # Why it is a first-class bootstrap step (V3-5.40): the operator's voice
 # messages are transcribed locally by whisper.cpp every day, so «сервак буде
 # чистий і пустий. мені треба, щоб все працювало як слід» (Telegram 1760) is
-# not satisfied by a rebuilt host that comes up mute. It is placed here, right
-# after the repository sync, for the same reason install_bun is placed early:
-# it installs host tooling, and it can only run once the tree that carries the
-# installer exists.
+# not satisfied by a rebuilt host that comes up mute. It is placed early, right
+# after the repository sync and the dependency materialization that sync makes
+# possible, for the same reason install_bun is placed early: it installs host
+# tooling, and it can only run once the tree that carries the installer exists.
 #
 # The tracked installer is the ONLY mechanism, and nothing here duplicates its
 # checks. It is idempotent and self-verifying by construction -- pinned source
@@ -566,12 +662,16 @@ if [[ "${BOOTSTRAP_LIB_ONLY:-false}" != true ]]; then
   ensure_prerequisites
   install_bun
   sync_repository
+  # Before install_whisper, and before every step that runs repository code:
+  # a dependency failure must surface in seconds, not after a whisper.cpp build
+  # and a 1.5 GB model download have already succeeded.
+  materialize_dependencies
   install_whisper
   render_environment
   initialize_state_db
   install_hygiene_cron
   run_install_test_gate
   render_units
-  echo "Bootstrap stage 2 completed: prerequisites, Bun, repository, Whisper, environment, state database, hygiene cron, test gate, and unit rendering."
+  echo "Bootstrap stage 2 completed: prerequisites, Bun, repository, dependencies, Whisper, environment, state database, hygiene cron, test gate, and unit rendering."
   echo "Remaining before a full install: unit activation and the watchdog arm/disarm pair (later rows)."
 fi

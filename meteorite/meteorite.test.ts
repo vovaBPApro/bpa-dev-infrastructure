@@ -47,10 +47,24 @@ afterEach(async () => {
 // stage's exit status, so the fixture must be able to vary it independently of
 // success — which is exactly what the red cases below do.
 const LIVENESS_LINE =
-  "METEORITE-LIVENESS proven=yes session=meteorite-orchestrator provider=claude" +
-  " provider_pid=4242 pulse_interval=5 pulse_first=1786000000 pulse_last=1786000005" +
+  "METEORITE-LIVENESS proven=yes liveness_boundary=full session=meteorite-orchestrator provider=claude" +
+  " credential_world=present provider_pid=4242 pulse_interval=5 pulse_first=1786000000 pulse_last=1786000005" +
   " startup_handshake=yes torn_down=yes substitutions=provider" +
   " unproven=cgroup-isolation,provider-session,telegram-transport,watchdog-supervision\n";
+
+// The other boundary, and the one a rebuilt host actually reaches: no
+// subscription credential store exists in a credential-free container and none
+// can, so the launch path is proven up to and including the auth gate and stops
+// there. The runner must accept this as a PASS and must carry WHICH boundary
+// applied into the artifact, because the reader of that artifact — not the
+// runner — is the thing entitled to decide whether this boundary is enough.
+const AUTH_BOUNDARY_LINE =
+  "METEORITE-LIVENESS proven=yes liveness_boundary=auth-preflight-refusal" +
+  " session=meteorite-orchestrator provider=claude credential_world=absent" +
+  " refused_at=auth-preflight refusal_class=subscription-store-missing" +
+  " startup_handshake=no torn_down=not-started substitutions=provider" +
+  " unproven=cgroup-isolation,provider-session,telegram-transport,watchdog-supervision," +
+  "launch-start,startup-handshake,provider-supervision,liveness-pulse,teardown\n";
 
 // The fixture is a REAL repository with a REAL (local, bare) origin, because a
 // run now ends by publishing its proof anchor there. A fixture without one would
@@ -365,6 +379,82 @@ describe("meteorite orchestrator-live stage", () => {
     expect(report).toContain("blocker: the orchestrator did not reach a live state: liveness-stamp-not-advancing");
     const result = await readArtifact(f.artifact);
     expect(result.liveness).toEqual({ proven: false, reason: "liveness-stamp-not-advancing" });
+  });
+
+  // ── The credential boundary, at the runner ───────────────────────────────
+  //
+  // A rebuilt host has no subscription credential store and structurally cannot
+  // have one, so the launch path stops at the auth gate there. The stage may
+  // declare that as its boundary; the runner's job is to accept it as a PASS,
+  // to refuse a PASS that declares no boundary at all, and to refuse a boundary
+  // it does not know — a stage that could mint its own boundary token could
+  // green any rebuild by inventing a shallow enough one.
+  test("a rebuild that proves the launch path up to its auth gate is a pass, and says which boundary it stopped at", async () => {
+    const f = await fixture("", "", AUTH_BOUNDARY_LINE);
+    const run = Bun.spawnSync(["bash", f.runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    expect(run.exitCode).toBe(0);
+    const report = await readFile(f.report, "utf8");
+    expect(report).toContain("result: clean");
+    expect(report).toContain("orchestrator-live: PASS");
+    const result = await readArtifact(f.artifact);
+    expect(result.result).toBe("clean");
+    expect(result.finished).toBe(true);
+    expect(result.liveness.proven).toBe(true);
+    // The whole point of the field: a reader can tell this apart from a run
+    // that started an orchestrator, without parsing prose.
+    expect(result.liveness.liveness_boundary).toBe("auth-preflight-refusal");
+    expect(result.liveness.credential_world).toBe("absent");
+    expect(result.liveness.refusal_class).toBe("subscription-store-missing");
+    expect(result.liveness.unproven).toContain("launch-start");
+    expect(result.liveness.unproven).toContain("teardown");
+  });
+
+  test("a pass that declares no boundary is refused, because how much was proven would be unstated", async () => {
+    const f = await fixture("", "", LIVENESS_LINE.replace("liveness_boundary=full ", ""));
+    const run = Bun.spawnSync(["bash", f.runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    expect(run.exitCode).not.toBe(0);
+    const report = await readFile(f.report, "utf8");
+    expect(report).toContain("result: NO-GO");
+    expect(report).toContain("declaring a liveness_boundary");
+    const result = await readArtifact(f.artifact);
+    expect(result.liveness).toEqual({ proven: false, reason: "liveness-boundary-undeclared" });
+  });
+
+  test("a stage cannot mint its own boundary: an unknown one is refused by name", async () => {
+    const f = await fixture("", "", LIVENESS_LINE.replace("liveness_boundary=full", "liveness_boundary=good-enough"));
+    const run = Bun.spawnSync(["bash", f.runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    expect(run.exitCode).not.toBe(0);
+    const report = await readFile(f.report, "utf8");
+    expect(report).toContain("unknown liveness boundary: good-enough");
+    const result = await readArtifact(f.artifact);
+    expect(result.liveness).toEqual({ proven: false, reason: "unknown-liveness-boundary" });
+  });
+
+  // The contract compared in the other direction. The locks above catch a stage
+  // deleted from `commands`; nothing caught a stage that was never added to
+  // `required_stages`, and that is precisely a stage whose later deletion would
+  // still report `clean`. `whisper` arrived exactly that way.
+  test("a stage executed but absent from the contract fails closed, before any stage runs", async () => {
+    const f = await fixture();
+    const mutant = join(f.checkout, "meteorite", "run-with-uncontracted-stage.sh");
+    const source = await readFile(runner, "utf8");
+    const withExtra = source.replace(
+      '  "prerequisites|',
+      '  "newly-added-stage|true"\n  "prerequisites|',
+    );
+    expect(withExtra).not.toBe(source);
+    await writeFile(mutant, withExtra);
+
+    const run = Bun.spawnSync(["bash", mutant, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    expect(run.exitCode).not.toBe(0);
+    const report = await readFile(f.report, "utf8");
+    expect(report).toContain("result: NO-GO");
+    expect(report).toContain("blocker: stage(s) executed but absent from required_stages: newly-added-stage");
+    expect(report).not.toContain("result: clean");
+    // Refused on the file's own shape, so nothing was executed for it: the run
+    // must not have spent fifteen container-minutes to report a typo.
+    const trace = await readFile(f.trace, "utf8");
+    expect(trace).not.toContain("newly-added-stage");
   });
 
   test("a launcher mechanism replaced by a stand-in cannot produce a clean rebuild", async () => {

@@ -31,12 +31,56 @@
 # Exit:  0 subscription auth affirmatively proven
 #        1 refused: a metered-billing signal was found, or subscription auth
 #          could not be proven (missing/unreadable/unknown-schema credentials,
-#          no trusted parser)
+#          expired login, no trusted parser)
 #        2 unsupported provider argument
+#
+# ── THE REFUSAL CONTRACT ────────────────────────────────────────────────────
+# Every refusal names ITSELF, on its own stable line, before its prose:
+#
+#   AUTH-PREFLIGHT refused=<class>
+#
+# with `class` drawn from a closed set:
+#
+#   metered-billing-signal   a provider key or a cloud-routing flag is present
+#   subscription-store-missing  there is NO credential store at all
+#   subscription-unproven    a store exists and does not prove subscription auth
+#                            (unreadable, malformed, unknown schema, logged out,
+#                            or no trusted parser to read it with)
+#   subscription-expired     a complete login record whose refresh credential
+#                            has also expired
+#   unsupported-provider     the argument names no provider this gate knows
+#
+# `subscription-store-missing` is deliberately its own class rather than a shade
+# of `subscription-unproven`, and the difference is not cosmetic: the first is
+# the permanent, structural condition of every freshly rebuilt host, and the
+# second is a machine whose credential store is BROKEN. A reader that conflates
+# them treats a corrupt credential file as if it were a clean rebuild.
+#
+# The prose that follows is for a human reading a launch log. The token is for a
+# machine that has to decide WHICH refusal happened, and the two are not
+# interchangeable: a metered-billing signal and an absent credential store both
+# exit 1, so the exit status cannot tell them apart, and any reader that tells
+# them apart by matching the prose has made a second copy of these sentences
+# somewhere else — which is how the landing gate's stage list came to disagree
+# with the runner's. The token has exactly one home and this is it.
+#
+# The first such reader is the meteorite's `orchestrator-live` stage. A rebuilt,
+# credential-free host CANNOT cross this gate — the credential store is written
+# by a human answering /login, so Hard Floor 5 deliberately keeps it out of git
+# — and the difference between "no credential store here" (a boundary a rebuild
+# proof may declare and stop at) and "a metered-billing signal is set" (a
+# misconfiguration that must fail the proof) is exactly the distinction this
+# token carries.
+#
+# Nothing in the token is derived from credential material: it names a class of
+# refusal and nothing else, which is the same rule the prose already follows.
 set -euo pipefail
 
-fail() { printf 'refusing API-key auth: %s\n' "$*" >&2; exit 1; }
-refuse() { printf 'refusing unproven subscription auth: %s\n' "$*" >&2; exit 1; }
+refused() { printf 'AUTH-PREFLIGHT refused=%s\n' "$1" >&2; }
+fail() { refused metered-billing-signal; printf 'refusing API-key auth: %s\n' "$*" >&2; exit 1; }
+refuse() { refused subscription-unproven; printf 'refusing unproven subscription auth: %s\n' "$*" >&2; exit 1; }
+# Same refusal, same prose, distinct class: there is no credential store here.
+refuse_missing() { refused subscription-store-missing; printf 'refusing unproven subscription auth: %s\n' "$*" >&2; exit 1; }
 
 # ── 1. Banned environment ───────────────────────────────────────────────────
 # Two distinct hazards, both metered:
@@ -79,7 +123,7 @@ fi
 
 case "${1:-}" in
   claude|codex) PROVIDER="$1" ;;
-  *) printf 'unsupported provider\n' >&2; exit 2 ;;
+  *) refused unsupported-provider; printf 'unsupported provider\n' >&2; exit 2 ;;
 esac
 
 # ── 2. Trusted parser ───────────────────────────────────────────────────────
@@ -108,7 +152,7 @@ fi
 if [[ "$PROVIDER" == codex ]]; then
   CODEX_AUTH_FILE="${ORCH_CODEX_AUTH_FILE:-$HOME/.codex/auth.json}"
   [[ -f "$CODEX_AUTH_FILE" ]] ||
-    refuse "$CODEX_AUTH_FILE is missing; run 'codex login' and choose ChatGPT (subscription) login"
+    refuse_missing "$CODEX_AUTH_FILE is missing; run 'codex login' and choose ChatGPT (subscription) login"
   verdict=0
   "$bun_bin" -e '
 const path = process.argv[1];
@@ -143,7 +187,7 @@ fi
 if [[ "$PROVIDER" == claude ]]; then
   CLAUDE_CRED_FILE="${ORCH_CLAUDE_CRED_FILE:-$HOME/.claude/.credentials.json}"
   [[ -f "$CLAUDE_CRED_FILE" ]] ||
-    refuse "$CLAUDE_CRED_FILE is missing; run claude once and /login with the subscription account"
+    refuse_missing "$CLAUDE_CRED_FILE is missing; run claude once and /login with the subscription account"
   verdict=0
   "$bun_bin" -e '
 const path = process.argv[1];
@@ -185,6 +229,7 @@ process.exit(oauth.refreshTokenExpiresAt > Date.now() ? 0 : 4);
     2) refuse "$CLAUDE_CRED_FILE is unreadable or not valid JSON, so subscription auth cannot be proven" ;;
     3) refuse "$CLAUDE_CRED_FILE carries no complete subscription OAuth record (unknown schema or logged out); run claude /login" ;;
     4)
+      refused subscription-expired
       printf "ERROR claude-auth-expired credential=%s; launch aborted before tmux; run 'claude' interactively and re-authenticate\n" \
         "$CLAUDE_CRED_FILE" >&2
       exit 1

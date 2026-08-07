@@ -423,22 +423,42 @@ land_meteorite_required() {
   return 1
 }
 
+# THE stage list has one home: `required_stages` in meteorite/run.sh, the
+# contract the runner enforces on itself. This backstop used to keep a second
+# copy of it, and by 2026-08-07 that copy had drifted exactly as a second copy
+# does: it named neither `whisper` nor `orchestrator-live`, so it would have
+# ACCEPTED a report missing both -- a hole precisely where the newest gate is,
+# in the one check whose entire job is to catch a prover that exits 0 over a
+# short report. Read the list out of the trusted prover tree instead. One
+# implementation, not two matching ones (`review-policy`).
+#
+# A prover tree whose runner declares no contract is not a prover, and this
+# fails closed on it rather than falling back to a list typed here.
+land_meteorite_required_stages() {
+  local runner="$1"
+  [ -r "$runner" ] || return 1
+  awk '
+    /^required_stages=\(/ { collecting = 1; next }
+    collecting && /^\)/ { exit }
+    collecting {
+      line = $0
+      sub(/#.*/, "", line)
+      gsub(/[[:space:]]+/, " ", line)
+      gsub(/^ | $/, "", line)
+      if (line ~ /^[a-z0-9-]+$/) print line
+    }
+  ' "$runner"
+}
+
 land_validate_meteorite_report() {
-  local report="$1" sha="$2"
+  local report="$1" sha="$2" required_stages="${3:-}"
   [ -s "$report" ] || return 1
-  awk -v expected_sha="${sha,,}" '
+  [ -n "$required_stages" ] || return 1
+  awk -v expected_sha="${sha,,}" -v required_list="$required_stages" '
     BEGIN {
-      required["container-start"] = 1
-      required["prerequisites"] = 1
-      required["clone"] = 1
-      required["sha-verification"] = 1
-      required["bootstrap-test-prerequisites"] = 1
-      required["bootstrap-dry-run"] = 1
-      required["bootstrap-install"] = 1
-      required["bootstrap-verify-source"] = 1
-      required["test-prerequisites"] = 1
-      required["full-test-suite"] = 1
-      required["unit-drift"] = 1
+      count = split(required_list, names, " ")
+      if (count == 0) exit 1
+      for (i = 1; i <= count; i++) required[names[i]] = 1
     }
     /^- requested SHA: `/ {
       requested_count++
@@ -471,7 +491,7 @@ land_validate_meteorite_report() {
 }
 
 land_run_meteorite() {
-  local repo="$1" sha="$2" trusted_sha="${3:-}" report docker_bin timeout_seconds prover_status trusted_tree
+  local repo="$1" sha="$2" trusted_sha="${3:-}" report docker_bin timeout_seconds prover_status trusted_tree required_stages
   docker_bin=$(command -v docker 2>/dev/null || true)
   if [ -z "$docker_bin" ]; then
     echo "LAND meteorite blocker=docker-binary-unavailable" >&2
@@ -490,7 +510,19 @@ land_run_meteorite() {
     echo "LAND meteorite blocker=report-allocation-failed" >&2
     return 1
   }
-  timeout_seconds="${LAND_METEORITE_TIMEOUT_SECONDS:-900}"
+  # MEASURED, not guessed. A full prove-candidate run at 8a591b8 on this host
+  # took 882s -- and it ABORTED seconds into the orchestrator-live stage. The
+  # old 900s default therefore left an 18-second margin for a success path that
+  # additionally carries the launch itself, a liveness observation window and a
+  # teardown; most of the 882s is apt, bun install and the container's own full
+  # suite, none of which is getting shorter. A bound that kills the success path
+  # does not make the gate stricter, it makes it blind: `rebuild-proof-timeout`
+  # and a genuine refusal are indistinguishable to the caller, and the run that
+  # would have proven the difference is exactly what the kill removed
+  # (`verification-and-locks`, "a kill is not a pass"). Doubled to 1800s, which
+  # is a real bound with a real margin; the timeout remains a distinct, named
+  # outcome and is never laundered into a pass.
+  timeout_seconds="${LAND_METEORITE_TIMEOUT_SECONDS:-1800}"
   if [[ ! "$timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
     rm -f "$report"
     echo "LAND meteorite blocker=invalid-timeout" >&2
@@ -510,6 +542,17 @@ land_run_meteorite() {
     echo "LAND meteorite blocker=trusted-prover-unavailable" >&2
     return 1
   fi
+  # Read the contract out of the trusted tree BEFORE it is removed, and from the
+  # same tree the prover itself is run from -- so the list the report is judged
+  # against is the list the runner enforced, not a copy of it kept here.
+  required_stages=$(land_meteorite_required_stages "$trusted_tree/meteorite/run.sh" | tr '\n' ' ')
+  if [ -z "${required_stages// /}" ]; then
+    git -C "$repo" worktree remove --force "$trusted_tree" >/dev/null 2>&1 || true
+    rm -rf "$trusted_tree"
+    rm -f "$report"
+    echo "LAND meteorite blocker=trusted-prover-contract-unreadable" >&2
+    return 1
+  fi
   prover_status=0
   METEORITE_REPORT="$report" timeout --foreground --kill-after=10 "$timeout_seconds" \
     bash "$trusted_tree/meteorite/prove-candidate.sh" --ref "$sha" || prover_status=$?
@@ -525,7 +568,7 @@ land_run_meteorite() {
     echo "LAND meteorite blocker=rebuild-proof-failed" >&2
     return 1
   fi
-  if ! land_validate_meteorite_report "$report" "$sha"; then
+  if ! land_validate_meteorite_report "$report" "$sha" "$required_stages"; then
     rm -f "$report"
     echo "LAND meteorite blocker=rebuild-proof-evidence-invalid" >&2
     return 1

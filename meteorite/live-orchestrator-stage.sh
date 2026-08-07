@@ -23,21 +23,72 @@
 # refuses a PASS for any evidence line whose substitution set is larger, so a
 # fixture cannot quietly stub the launcher's mechanisms into a green rebuild.
 #
+# THE CREDENTIAL BOUNDARY, which is where that sentence had to be finished.
+# The paragraph above stops one gate too early. A rebuilt host has no
+# subscription credentials and, structurally, cannot have any: the credential
+# store is written by a human running the provider CLI once and answering
+# /login, so Hard Floor 5 deliberately keeps it OUT of git. The tracked launch
+# path therefore refuses at `orchestrator/preflight-cli-auth.sh` on every
+# rebuilt host, forever, and that refusal is the auth gate doing its job rather
+# than a defect of the rebuild.
+#
+# So this stage has TWO pass boundaries and decides which one applies by
+# measuring the world, never by being told:
+#
+#   liveness_boundary=full
+#     Credentials are present (a real host, or a harness fixture that supplies
+#     a credential store). The boundary does not apply: the launcher must
+#     start, the startup handshake must land, the pulse must renew and the
+#     session must tear down. Stopping at the auth gate with credentials
+#     present is a FAIL -- that is the launch path being broken somewhere this
+#     boundary was never meant to excuse.
+#
+#   liveness_boundary=auth-preflight-refusal
+#     Credentials are absent. The pass condition is that the launch path
+#     executed TRUTHFULLY up to and including the auth preflight and refused
+#     there for exactly the preflight's own named reason. That is not a small
+#     claim: launch.sh reaches its auth gate only through the singleton lock
+#     handoff, `mission_cli reap`, `mission_cli status` and the lease-held
+#     check, so a refusal AT the gate is positive evidence that all of them
+#     ran. Everything past the gate travels in `unproven=`.
+#
+# Any failure BEFORE the boundary still fails the stage and the run. The world
+# is classified by RUNNING the tracked preflight -- the same file resolved the
+# same way launch.sh resolves it, in the same environment the launch will get --
+# and reading the refusal class it names itself with
+# (`AUTH-PREFLIGHT refused=<class>`, whose one home is that script). A boundary
+# pass additionally requires the launch log to reproduce the probe's own refusal
+# line verbatim, so "the launcher stopped at the auth gate" is checked against
+# what the auth gate actually said rather than against any exit status: an
+# exit 2 is what launch.sh returns for a missing session hook, an unbuildable
+# command and an absent provider binary too.
+#
 # The assertion half is reachable on its own (`--assert-liveness`), so a host
 # test can drive it against a fabricated runtime directory without a container.
 #
-# MEASURED 2026-08-06, and the reason this stage currently reports NO-GO: the
-# launcher refuses to start inside a container at all. `launch.sh` verifies its
-# singleton owner by finding the lock in `/proc/locks`
-# (singleton_kernel_owner_pid), and that file is namespace-filtered — inside a
-# container it reads EMPTY while a flock is held (measured: 11 FLOCK rows on the
-# host, 0 in the container, same probe), so the launcher fails closed with
-# `ERROR orchestrator-singleton-owner-unverified`. That refusal token now travels
-# in this stage's reason, because a bare `launch-refused` sends the reader to a
-# container log by hand. It is a real finding about a control-plane check being
-# unmeasurable in the rebuild environment, not a defect of this stage, and it is
-# NOT worked around here: weakening a fail-closed singleton check is Tier-A
-# review work and belongs to its own row.
+# WHAT THE CONTAINER ACTUALLY DID, measured rather than expected, because this
+# stage's history is a sequence of blockers each of which was invisible until
+# the one in front of it cleared:
+#
+#   2026-08-06 (1e19580)  `ERROR orchestrator-unknown-action` -- core/mission-cli.ts
+#                         implemented neither `reap` nor `lease`. Cleared by V3-5.37.
+#   2026-08-06            `ERROR orchestrator-singleton-owner-unverified` --
+#                         launch.sh locates its singleton owner in /proc/locks,
+#                         which is namespace-filtered and reads EMPTY inside a
+#                         container while a flock is held (measured: 11 FLOCK
+#                         rows on the host, 0 in the container, same probe).
+#                         Cleared by V3-5.38's named degradation.
+#   2026-08-07 (8a591b8)  `refusing unproven subscription auth` -- the auth
+#                         preflight, reached for the first time because the two
+#                         above were gone. Structural, permanent, and NOT a
+#                         defect: it is the credential boundary above, and it is
+#                         declared here rather than worked around. Weakening a
+#                         fail-closed auth gate to green a rebuild proof would
+#                         invert the entire point of the proof.
+#
+# Each of the first two travels in this stage's reason as the launcher's own
+# refusal token, because a bare `launch-refused` sends the reader to a container
+# log by hand.
 #
 # Usage:
 #   meteorite/live-orchestrator-stage.sh
@@ -50,6 +101,11 @@
 #   METEORITE_LIVE_PROVIDER       provider branch to launch     (claude)
 #   METEORITE_LIVE_SESSION        tmux session name             (meteorite-orchestrator)
 #   METEORITE_LIVE_PULSE_INTERVAL liveness pulse seconds        (5, the knob floor)
+#
+# Evidence line (stdout, exactly one, judged by meteorite/run.sh):
+#   METEORITE-LIVENESS proven=yes liveness_boundary=<full|auth-preflight-refusal> ... \
+#     substitutions=<set> unproven=<set>
+#   METEORITE-LIVENESS proven=no reason=<token>
 set -euo pipefail
 
 install_root="${METEORITE_LIVE_INSTALL_ROOT:-/work/install}"
@@ -60,6 +116,12 @@ provider="${METEORITE_LIVE_PROVIDER:-claude}"
 session="${METEORITE_LIVE_SESSION:-meteorite-orchestrator}"
 pulse_interval="${METEORITE_LIVE_PULSE_INTERVAL:-5}"
 start_timeout="${METEORITE_LIVE_START_TIMEOUT:-180}"
+
+# Resolved exactly as launch.sh resolves it (launch.sh:27), so the world probe
+# below and the launch it predicts consult the same file. A caller that
+# overrides it has substituted a launcher mechanism, and `guarded_knobs` already
+# records ORCH_AUTH_PREFLIGHT as such -- meteorite/run.sh then refuses the run.
+auth_preflight="${ORCH_AUTH_PREFLIGHT:-$install_root/orchestrator/preflight-cli-auth.sh}"
 
 # Every mechanism the launcher would refuse to start without. A knob that
 # arrives already set REPLACES one of them, so it is recorded as a substitution
@@ -88,6 +150,13 @@ guarded_knobs=(
 # is ever taken. `telegram-transport`: no token, no daemon, no authenticated
 # channel. `watchdog-supervision`: nothing arms the watchdog timer here.
 unproven="cgroup-isolation,provider-session,telegram-transport,watchdog-supervision"
+
+# What is additionally unproven when the run stops at the credential boundary.
+# Everything past the auth gate is untouched there, so it is named rather than
+# left to be inferred from the boundary token: a reader deciding policy on this
+# artifact must be able to see WHAT was not crossed without knowing what
+# launch.sh does after its auth gate.
+unproven_beyond_auth="launch-start,startup-handshake,provider-supervision,liveness-pulse,teardown"
 
 fail() {
   printf 'METEORITE-LIVENESS proven=no reason=%s\n' "$1"
@@ -216,7 +285,7 @@ teardown_state="not-attempted"
 # scope needs systemd, which no container payload has. It disables the placement
 # check, so `cgroup-isolation` is declared unproven here and is proven instead by
 # the live daemon-restart rehearsal in orchestrator/tmux-isolation.test.sh.
-run_launcher() {
+launch_env() {
   env PATH="$scratch/bin:$PATH" \
     TELEGRAM_BOUND_CHAT_ID= \
     TELEGRAM_CHAT_ID= \
@@ -227,7 +296,20 @@ run_launcher() {
     ORCH_STATE_DB="$state_db" \
     ORCH_LIVENESS_PULSE_INTERVAL="$pulse_interval" \
     ORCH_TMUX_ISOLATION=none \
-    timeout "$start_timeout" bash "$launcher" "$@"
+    "$@"
+}
+
+run_launcher() {
+  launch_env timeout "$start_timeout" bash "$launcher" "$@"
+}
+
+# The world probe. It runs the SAME auth gate the launch is about to run, under
+# the SAME environment, so its verdict is about the world rather than about the
+# difference between two environments -- the preflight refuses on a banned
+# variable, and this stage's own wrapper is the thing that decides which
+# variables the launch will see.
+run_auth_preflight() {
+  launch_env "$auth_preflight" "$provider"
 }
 
 cleanup() {
@@ -255,6 +337,66 @@ exec sleep 3600
 STANDIN
 chmod +x "$scratch/bin/$provider"
 
+# ── Classify the world before touching the launcher ────────────────────────
+#
+# Which boundary applies is decided HERE, by executing the tracked auth gate,
+# and it is decided before anything is started so the decision cannot be
+# rationalized from whatever the launch happened to do. Three outcomes, and the
+# third one is a refusal rather than a default:
+#
+#   exit 0                          credentials present -> boundary `full`
+#   refused=subscription-unproven   no credential store -> boundary
+#                                   `auth-preflight-refusal`
+#   anything else                   the world is UNDETERMINED. A metered-billing
+#                                   signal, an expired login, an unsupported
+#                                   provider, a missing Bun, an unreadable
+#                                   credential file: each is a real problem with
+#                                   this environment and none of them is the
+#                                   boundary. Refuse rather than pick a boundary
+#                                   that happens to make the run pass.
+#
+# An install with NO auth gate at its default path is a fourth case and it is
+# deliberately not decided here: launch.sh refuses on exactly that, in its own
+# words, and that refusal is the more precise report of a rebuild that failed to
+# install its auth gate. Such a run gets the STRICT boundary, so if it somehow
+# starts anyway it must still reach full liveness.
+credential_world="indeterminate"
+auth_refusal_class=""
+auth_refusal_line=""
+auth_probe_status=0
+auth_probe_output=""
+if [[ ! -x "$auth_preflight" ]]; then
+  credential_world="no-auth-gate"
+else
+  auth_probe_output="$(run_auth_preflight 2>&1)" || auth_probe_status=$?
+  if ((auth_probe_status == 0)); then
+    credential_world="present"
+  else
+    auth_refusal_class="$(printf '%s\n' "$auth_probe_output" |
+      sed -n 's/^AUTH-PREFLIGHT refused=\([a-z0-9-]\{1,\}\)$/\1/p' | head -n 1)"
+    # The exact sentence the gate printed, kept so the launch log can be checked
+    # against what the gate ACTUALLY said rather than against a copy of it living
+    # here. `warning:` lines are advisory (GOOGLE_CLOUD_PROJECT) and the token
+    # line is matched separately.
+    auth_refusal_line="$(printf '%s\n' "$auth_probe_output" |
+      grep -v -e '^AUTH-PREFLIGHT ' -e '^warning: ' -e '^$' | tail -n 1)"
+    # ONE class qualifies, and it is the narrow one. `subscription-unproven`
+    # means a credential store EXISTS here and does not prove anything --
+    # corrupt, logged out, unknown schema, or no parser to read it with. That is
+    # a broken machine, not a rebuilt one, and a rebuild proof that passed on it
+    # would be reporting a defect as a structural boundary.
+    if [[ "$auth_refusal_class" == "subscription-store-missing" && -n "$auth_refusal_line" ]]; then
+      credential_world="absent"
+    fi
+  fi
+fi
+if [[ "$credential_world" == "indeterminate" ]]; then
+  fail "auth-preflight-indeterminate${auth_refusal_class:+:$auth_refusal_class}" \
+    "the tracked auth preflight neither proved subscription auth (exit 0) nor refused for an absent credential store (exit $auth_probe_status); no liveness boundary applies to this environment"
+fi
+printf '[live-orchestrator] credential world: %s (auth preflight exit %s)\n' \
+  "$credential_world" "$auth_probe_status" >&2
+
 printf '[live-orchestrator] starting %s in session %s (install=%s)\n' \
   "$provider" "$session" "$install_root" >&2
 
@@ -271,6 +413,51 @@ if ((start_status != 0)); then
   if ((start_status == 124)); then
     fail launch-timeout "launch.sh start did not return within ${start_timeout}s"
   fi
+
+  # ── The credential boundary, applied ─────────────────────────────────────
+  #
+  # A PASS here needs three things to hold at once, and each one closes a way of
+  # forging it:
+  #
+  #   1. the world was classified `absent` BEFORE the launch, by running the
+  #      tracked gate -- so the boundary cannot be chosen after seeing how the
+  #      launch went;
+  #   2. the launch log carries the gate's own refusal CLASS, so any other
+  #      refusal class (a metered key, an expired login) is not this boundary;
+  #   3. the launch log reproduces the gate's own refusal SENTENCE verbatim, as
+  #      the probe measured it moments earlier -- so a launcher that stopped
+  #      anywhere else, for any other reason, cannot be read as having stopped
+  #      here. Nothing in this file restates that sentence, so nothing here can
+  #      drift away from it.
+  #
+  # A failure BEFORE the gate fails the stage, which is the whole point: the
+  # launcher reaches its auth preflight only through the singleton lock handoff,
+  # `mission_cli reap`, `mission_cli status` and the lease-held check, so a
+  # refusal at the gate is positive evidence that every one of those ran. Both
+  # of the earlier container blockers -- `orchestrator-unknown-action` and
+  # `orchestrator-singleton-owner-unverified` -- stop short of it and therefore
+  # still fail, exactly as they did before this boundary existed.
+  launch_refusal_class="$(sed -n 's/^AUTH-PREFLIGHT refused=\([a-z0-9-]\{1,\}\)$/\1/p' "$launch_log" | head -n 1)"
+  if [[ "$credential_world" == "absent" ]] &&
+     [[ "$launch_refusal_class" == "$auth_refusal_class" ]] &&
+     grep -Fqx -- "$auth_refusal_line" "$launch_log"; then
+    printf '[live-orchestrator] boundary: auth-preflight-refusal (%s)\n' "$auth_refusal_class" >&2
+    printf 'METEORITE-LIVENESS proven=yes liveness_boundary=auth-preflight-refusal session=%s provider=%s credential_world=%s refused_at=auth-preflight refusal_class=%s startup_handshake=no torn_down=not-started substitutions=%s unproven=%s\n' \
+      "$session" "$provider" "$credential_world" "$auth_refusal_class" \
+      "$(IFS=,; printf '%s' "${substitutions[*]}")" "$unproven,$unproven_beyond_auth"
+    exit 0
+  fi
+
+  # Credentials were PROVEN moments ago and the launch still stopped at the auth
+  # gate. The boundary does not apply and must not be reachable by accident:
+  # this is the launch path failing somewhere the boundary was never meant to
+  # excuse, and calling it a boundary would turn a real regression green on
+  # every host that IS logged in -- including the one this control plane runs on.
+  if [[ "$credential_world" != "absent" && -n "$launch_refusal_class" ]]; then
+    fail "auth-refused-with-credentials-present:$launch_refusal_class" \
+      "the auth preflight proved subscription auth moments before the launch and then refused it (world=$credential_world); no liveness boundary excuses this"
+  fi
+
   refusal="$(sed -n 's/.*ERROR \(orchestrator-[a-z-]*\).*/\1/p' "$launch_log" | head -n 1)"
   if [[ -z "$refusal" ]]; then
     # Not every launcher refusal carries an `ERROR orchestrator-*` token: the
@@ -285,6 +472,16 @@ if ((start_status != 0)); then
   fail "launch-refused${refusal:+:$refusal}" "launch.sh start exited $start_status"
 fi
 started=1
+
+# The gate refused this environment moments ago and the launcher started a
+# session regardless: the auth preflight is not on the launch path it claims to
+# be on. Set `started` first so the trap tears the session down -- a stage that
+# fails without stopping what it started leaves a live orchestrator behind on
+# the machine it was judging.
+if [[ "$credential_world" == "absent" ]]; then
+  fail auth-preflight-not-enforced \
+    "the tracked auth preflight refuses in this environment, yet launch.sh started a session anyway"
+fi
 
 if ! run_launcher status >&2; then
   fail session-not-running "launch.sh status does not report a running session"
@@ -314,6 +511,6 @@ else
 fi
 [[ "$teardown_state" == yes ]] || fail "teardown-$teardown_state" "teardown: $teardown_state"
 
-printf 'METEORITE-LIVENESS proven=yes session=%s provider=%s provider_pid=%s pulse_interval=%s pulse_first=%s pulse_last=%s startup_handshake=yes torn_down=%s substitutions=%s unproven=%s\n' \
-  "$session" "$provider" "$liveness_pid" "$pulse_interval" "$liveness_first" "$liveness_last" \
+printf 'METEORITE-LIVENESS proven=yes liveness_boundary=full session=%s provider=%s credential_world=%s provider_pid=%s pulse_interval=%s pulse_first=%s pulse_last=%s startup_handshake=yes torn_down=%s substitutions=%s unproven=%s\n' \
+  "$session" "$provider" "$credential_world" "$liveness_pid" "$pulse_interval" "$liveness_first" "$liveness_last" \
   "$teardown_state" "$(IFS=,; printf '%s' "${substitutions[*]}")" "$unproven"

@@ -17,7 +17,7 @@
 // substitution set is larger than `provider`, so this rehearsal is by
 // construction incapable of producing a green rebuild proof.
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -227,6 +227,261 @@ describe("live-orchestrator stage refusals", () => {
   });
 });
 
+// ── The credential boundary ────────────────────────────────────────────────
+//
+// A rebuilt host has no subscription credential store and cannot have one: the
+// store is written by a human answering /login, so Hard Floor 5 deliberately
+// keeps it out of git. The launch path therefore refuses at the auth gate on
+// every rebuilt host, forever. The stage's answer is to define its pass
+// boundary honestly per world and to say which boundary applied — and both
+// halves need locking in both directions, because a boundary that can be
+// claimed in the wrong world is just a way of greening a broken launcher.
+//
+// Every case below drives the REAL orchestrator/preflight-cli-auth.sh, at the
+// path the stage resolves by default, so the refusal contract under test is the
+// tracked one rather than a retelling of it. What varies is the launcher.
+
+/** The banned-and-guarded environment, removed so a case measures its fixture. */
+function cleanEnv(extra: Record<string, string>) {
+  const env: Record<string, string> = { ...process.env } as Record<string, string>;
+  for (const name of Object.keys(env)) {
+    // Guarded knobs would be reported as substitutions and change the evidence
+    // line; a banned key would make the preflight refuse for the wrong reason
+    // and put the world in `indeterminate` on a host that happens to export one.
+    if (name.startsWith("ORCH_") || name.startsWith("ANTHROPIC_") || name.startsWith("OPENAI_") ||
+        name.startsWith("GEMINI_") || name.startsWith("GOOGLE_") || name.startsWith("AWS_") ||
+        name.startsWith("CLAUDE_CODE_") || name.startsWith("TELEGRAM_")) {
+      delete env[name];
+    }
+  }
+  return { ...env, ...extra };
+}
+
+/**
+ * An install root carrying the TRACKED auth preflight at its default path plus
+ * a fixture launcher whose body the case supplies.
+ */
+async function boundaryFixture(launcher: string) {
+  const root = await scratch("live-stage-boundary-");
+  const install = join(root, "install");
+  await mkdir(join(install, "orchestrator"), { recursive: true });
+  await copyFile(
+    join(repoRoot, "orchestrator", "preflight-cli-auth.sh"),
+    join(install, "orchestrator", "preflight-cli-auth.sh"),
+  );
+  await chmod(join(install, "orchestrator", "preflight-cli-auth.sh"), 0o755);
+  await writeFile(join(install, "orchestrator", "launch.sh"), launcher);
+  await writeFile(join(root, "state.db"), "");
+  return { root, install };
+}
+
+/** A launcher that consults the tracked gate in launch.sh's own order. */
+const LAUNCHER_THAT_REACHES_THE_GATE = `#!/usr/bin/env bash
+# Fixture launcher. Reproduces the ORDER launch.sh uses: everything that must
+# happen before the auth gate, then the gate, then (never, when it refuses) a
+# session. Only the gate is real, and that is the mechanism under test here.
+set -u
+printf 'REAP leases-reaped=0 leases-live=0 leases-expired=0\\n'
+"$(dirname "$0")/preflight-cli-auth.sh" "\${ORCH_PROVIDER:-claude}" || exit 2
+printf 'fixture launcher: started a session\\n'
+exit 0
+`;
+
+/** A credential store the tracked gate accepts. Contains no secret. */
+const SUBSCRIPTION_FIXTURE = JSON.stringify({
+  claudeAiOauth: {
+    accessToken: "fixture-not-a-secret",
+    expiresAt: 4102444800000,
+    refreshToken: "fixture-not-a-secret",
+    refreshTokenExpiresAt: 4102444800000,
+  },
+});
+
+function runStage(install: string, root: string, extra: Record<string, string> = {}) {
+  return Bun.spawnSync(["bash", stage], {
+    env: cleanEnv({
+      METEORITE_LIVE_INSTALL_ROOT: install,
+      METEORITE_LIVE_STATE_DB: join(root, "state.db"),
+      METEORITE_LIVE_RUNTIME_DIR: join(root, "runtime"),
+      METEORITE_LIVE_SESSION: "meteorite-boundary-fixture",
+      ...extra,
+    }),
+    stderr: "pipe",
+  });
+}
+
+function evidenceOf(run: { stdout: Buffer }) {
+  return run.stdout.toString().split("\n").find((line) => line.startsWith("METEORITE-LIVENESS "));
+}
+
+describe("live-orchestrator credential boundary — a world with NO credentials", () => {
+  test("the launch path proven up to and including its auth gate is a PASS, and names the boundary", async () => {
+    // The measured shape of a real rebuild: singleton, reap and lease all ran —
+    // launch.sh reaches its auth gate only through them — and the gate then
+    // refused for the one reason a rebuilt host always refuses for.
+    const f = await boundaryFixture(LAUNCHER_THAT_REACHES_THE_GATE);
+    const run = runStage(f.install, f.root, {
+      ORCH_CLAUDE_CRED_FILE: join(f.root, "no-such-credentials.json"),
+    });
+    const evidence = evidenceOf(run);
+    expect(evidence, `no evidence line\nstderr:\n${run.stderr.toString()}`).toBeDefined();
+    expect(evidence).toContain("proven=yes");
+    expect(evidence).toContain("liveness_boundary=auth-preflight-refusal");
+    expect(evidence).toContain("credential_world=absent");
+    expect(evidence).toContain("refusal_class=subscription-store-missing");
+    // The boundary is a PASS, not a green light: everything past the gate is
+    // declared unproven on the same line that claims the pass.
+    expect(evidence).toContain("unproven=");
+    for (const boundary of ["launch-start", "startup-handshake", "liveness-pulse", "teardown"]) {
+      expect(evidence).toContain(boundary);
+    }
+    // meteorite/run.sh refuses any substitution set larger than `provider`, so
+    // this must be a line a real rebuild proof could carry.
+    expect(evidence).toContain("substitutions=provider ");
+    expect(run.exitCode).toBe(0);
+  });
+
+  test("a failure BEFORE the gate still fails, even though the world qualifies for the boundary", async () => {
+    // Both container blockers that preceded this one — unknown-action and
+    // singleton-owner-unverified — stop short of the auth gate. The boundary
+    // must not swallow them, or it becomes a way to pass a launcher that never
+    // starts for reasons that have nothing to do with credentials.
+    const f = await boundaryFixture(`#!/usr/bin/env bash
+printf 'ERROR orchestrator-singleton-owner-unverified provider_pid=1\\n' >&2
+exit 1
+`);
+    const run = runStage(f.install, f.root, {
+      ORCH_CLAUDE_CRED_FILE: join(f.root, "no-such-credentials.json"),
+    });
+    expect(run.exitCode).toBe(1);
+    expect(run.stdout.toString()).toContain(
+      "METEORITE-LIVENESS proven=no reason=launch-refused:orchestrator-singleton-owner-unverified",
+    );
+  });
+
+  test("the gate's refusal class alone does not buy the boundary; its own sentence must be there too", async () => {
+    // A launcher that prints the token and stops somewhere else entirely. The
+    // stage compares the launch log against what the gate ACTUALLY said when
+    // the stage ran it moments earlier, so a token echoed by anything other
+    // than the gate proves nothing.
+    const f = await boundaryFixture(`#!/usr/bin/env bash
+printf 'AUTH-PREFLIGHT refused=subscription-unproven\\n' >&2
+printf 'provider not found: claude\\n' >&2
+exit 2
+`);
+    const run = runStage(f.install, f.root, {
+      ORCH_CLAUDE_CRED_FILE: join(f.root, "no-such-credentials.json"),
+    });
+    expect(run.exitCode).toBe(1);
+    const evidence = evidenceOf(run);
+    expect(evidence).toContain("proven=no");
+    expect(evidence).not.toContain("auth-preflight-refusal");
+  });
+
+  test("the gate's sentence without its class does not buy the boundary either", async () => {
+    const f = await boundaryFixture(`#!/usr/bin/env bash
+printf 'refusing unproven subscription auth: %s is missing; run claude once and /login with the subscription account\\n' "$ORCH_CLAUDE_CRED_FILE" >&2
+exit 2
+`);
+    const run = runStage(f.install, f.root, {
+      ORCH_CLAUDE_CRED_FILE: join(f.root, "no-such-credentials.json"),
+    });
+    expect(run.exitCode).toBe(1);
+    const evidence = evidenceOf(run);
+    expect(evidence).toContain("proven=no");
+    expect(evidence).not.toContain("auth-preflight-refusal");
+  });
+
+  test("a launcher that starts anyway, in a world the gate refuses, fails as an unenforced gate", async () => {
+    // The auth preflight is not on the launch path it claims to be on. That is
+    // a hole in the launcher, and it is the one thing a boundary defined by
+    // "the gate refused" would otherwise report as a pass.
+    const f = await boundaryFixture(`#!/usr/bin/env bash
+printf 'fixture launcher: started without consulting the gate\\n'
+exit 0
+`);
+    const run = runStage(f.install, f.root, {
+      ORCH_CLAUDE_CRED_FILE: join(f.root, "no-such-credentials.json"),
+    });
+    expect(run.exitCode).toBe(1);
+    expect(run.stdout.toString()).toContain(
+      "METEORITE-LIVENESS proven=no reason=auth-preflight-not-enforced",
+    );
+  });
+});
+
+describe("live-orchestrator credential boundary — worlds the boundary does not cover", () => {
+  test("a metered-billing signal is not a credential-free world; no boundary applies", async () => {
+    // The gate refuses here too, and for a reason that is a real problem with
+    // this environment rather than a property of a rebuilt host. Reading it as
+    // the boundary would let a misconfigured machine produce a green proof.
+    const f = await boundaryFixture(LAUNCHER_THAT_REACHES_THE_GATE);
+    const run = runStage(f.install, f.root, {
+      ORCH_CLAUDE_CRED_FILE: join(f.root, "no-such-credentials.json"),
+      ANTHROPIC_API_KEY: "fixture-not-a-secret",
+    });
+    expect(run.exitCode).toBe(1);
+    expect(run.stdout.toString()).toContain(
+      "METEORITE-LIVENESS proven=no reason=auth-preflight-indeterminate:metered-billing-signal",
+    );
+  });
+
+  test("an unreadable credential store is not an absent one", async () => {
+    const f = await boundaryFixture(LAUNCHER_THAT_REACHES_THE_GATE);
+    const credentials = join(f.root, "corrupt-credentials.json");
+    await writeFile(credentials, "{ this is not json");
+    const run = runStage(f.install, f.root, { ORCH_CLAUDE_CRED_FILE: credentials });
+    expect(run.exitCode).toBe(1);
+    const evidence = evidenceOf(run);
+    expect(evidence).toContain("proven=no");
+    expect(evidence).toContain("auth-preflight-indeterminate");
+    expect(evidence).not.toContain("auth-preflight-refusal");
+  });
+
+  test("WITH credentials, stopping at the auth gate is a FAIL and says so", async () => {
+    // The locked direction. On a host that IS logged in, a launcher that
+    // refuses at its auth gate is a regression, and the boundary must never
+    // reach far enough to excuse it — that host is the one this control plane
+    // actually runs on.
+    const f = await boundaryFixture(`#!/usr/bin/env bash
+printf 'AUTH-PREFLIGHT refused=subscription-unproven\\n' >&2
+printf 'refusing unproven subscription auth: something regressed\\n' >&2
+exit 2
+`);
+    const credentials = join(f.root, "credentials.json");
+    await writeFile(credentials, SUBSCRIPTION_FIXTURE);
+    const run = runStage(f.install, f.root, { ORCH_CLAUDE_CRED_FILE: credentials });
+    expect(run.exitCode).toBe(1);
+    expect(run.stdout.toString()).toContain(
+      "METEORITE-LIVENESS proven=no reason=auth-refused-with-credentials-present:subscription-unproven",
+    );
+  });
+
+  test("WITH credentials, a launcher that starts is held to full liveness, not to the boundary", async () => {
+    // It starts, so the gate is not the stopping point; the stage must go on to
+    // demand a startup handshake it will not get from this fixture. The failure
+    // being asserted is the LIVENESS one — proof that the run did not stop at
+    // the boundary and call it a day.
+    const f = await boundaryFixture(`#!/usr/bin/env bash
+case "\${1:-}" in
+  status) exit 0 ;;
+  stop) exit 0 ;;
+esac
+"$(dirname "$0")/preflight-cli-auth.sh" "\${ORCH_PROVIDER:-claude}" || exit 2
+printf 'fixture launcher: started a session\\n'
+exit 0
+`);
+    const credentials = join(f.root, "credentials.json");
+    await writeFile(credentials, SUBSCRIPTION_FIXTURE);
+    const run = runStage(f.install, f.root, { ORCH_CLAUDE_CRED_FILE: credentials });
+    expect(run.exitCode).toBe(1);
+    const evidence = evidenceOf(run);
+    expect(evidence).toContain("proven=no");
+    expect(evidence).toContain("reason=startup-handshake-missing");
+    expect(evidence).not.toContain("auth-preflight-refusal");
+  });
+});
+
 // ── The live rehearsal ─────────────────────────────────────────────────────
 //
 // Capability-gated, and the gate is measured rather than assumed. `launch.sh`
@@ -332,6 +587,10 @@ process.exit(0);
     expect(evidence).toContain("provider=codex");
     expect(evidence).toContain("startup_handshake=yes");
     expect(evidence).toContain("torn_down=yes");
+    // The stub preflight exits 0, so this rehearsal is the credentialed world:
+    // the boundary does not apply and the FULL path had to be walked.
+    expect(evidence).toContain("liveness_boundary=full");
+    expect(evidence).toContain("credential_world=present");
     expect(run.exitCode).toBe(0);
 
     // Derived from the environment, never self-declared: this is the guard that

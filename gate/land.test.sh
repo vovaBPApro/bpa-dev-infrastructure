@@ -110,7 +110,31 @@ REPORT
 # END TRUSTED TEST PROVER
 EOF
   chmod +x "$repo/meteorite/prove-candidate.sh"
-  git -C "$repo" add base.txt base.test.ts hygiene/check-retained-branches.ts instance meteorite/prove-candidate.sh
+  cat > "$repo/meteorite/run.sh" <<'EOF'
+# BEGIN TRUSTED TEST RUNNER CONTRACT
+#!/usr/bin/env bash
+# Fixture runner. The landing gate reads exactly one thing out of it: the
+# `required_stages` contract the real runner enforces on itself. That list is
+# THE list a meteorite report is judged against -- the gate keeps no second copy
+# of it, because the copy it used to keep had drifted to name neither `whisper`
+# nor `orchestrator-live`. So this block must name exactly the stages the
+# trusted test prover above reports; the two are a matched pair on purpose.
+required_stages=(
+  container-start
+  prerequisites
+  clone
+  sha-verification
+  bootstrap-test-prerequisites
+  bootstrap-dry-run
+  bootstrap-install
+  bootstrap-verify-source
+  test-prerequisites
+  full-test-suite
+  unit-drift
+)
+# END TRUSTED TEST RUNNER CONTRACT
+EOF
+  git -C "$repo" add base.txt base.test.ts hygiene/check-retained-branches.ts instance meteorite/prove-candidate.sh meteorite/run.sh
   git -C "$repo" commit -m base >/dev/null
   git -C "$repo" push -u origin main >/dev/null
   printf 'ref: refs/heads/main\n' > "$bare/HEAD"

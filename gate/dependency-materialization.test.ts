@@ -139,37 +139,283 @@ test("every tracked workspace that declares dependencies has a tracked lockfile"
 // exact specifier the aborted landing named.
 //
 // THE READER: Bun.Transpiler.scanImports, behind a shebang guard, UNIONED with
-// a regex.
+// a small lexical scanner over the same source.
 //
-// An earlier draft used the regex alone and justified it by claiming
-// scanImports "terminates the process with status 0 and no output" on this
-// repository's largest tracked source. That is false in every particular and
-// the V3-5.25 review disproved it (F2). What actually happens: scanImports
-// throws an ordinary catchable BuildMessage, `Unexpected #!/usr/bin/env bun`,
-// on any source whose first line is a shebang -- 22 of this repository's 133
-// tracked sources have one, and a 40-byte file reproduces it. It has nothing to
-// do with file size and it is not a silent kill. Strip the shebang and the
-// transpiler reads all 133.
+// An earlier draft used a REGEX alone and justified it by claiming scanImports
+// "terminates the process with status 0 and no output" on this repository's
+// largest tracked source. That is false in every particular and the V3-5.25
+// review disproved it (F2). What actually happens: scanImports throws an
+// ordinary catchable BuildMessage, `Unexpected #!/usr/bin/env bun`, on any
+// source whose first line is a shebang -- 22 of this repository's 133 tracked
+// sources have one, and a 40-byte file reproduces it. It has nothing to do with
+// file size and it is not a silent kill. Strip the shebang and the transpiler
+// reads all 133.
 //
 // Recording a fictional failure mode as the reason a future maintainer must
 // avoid the exact reader is worse than the weaker reader itself, so the exact
-// reader is now used. It is also strictly better on the one form the regex
-// provably misses: a bare side-effect `import "pkg";` (F3), which the runtime
-// performs and the regex, requiring `from` / `import(` / `require(`, does not
-// match.
+// reader is used. It is also strictly better on the one form a `from`-matching
+// regex provably misses: a bare side-effect `import "pkg";` (F3), which the
+// runtime performs.
 //
-// The regex STAYS as a union partner rather than being deleted, because it is a
-// superset in the other direction: it also matches type-only imports that the
-// transpiler correctly elides (`daemon/server.ts -> grammy/types`) and package
-// names in comments. Requiring those to resolve too is the safe direction for a
-// lock. Union means each reader's blind spot is covered by the other.
+// A UNION PARTNER IS STILL REQUIRED, and exactly one form needs it: a TS
+// type-only import. `import type { A } from "pkg"` and `export type { T } from
+// "pkg"` are erased by the transpiler, so scanImports reports nothing for them
+// -- measurably, and `daemon/server.ts -> grammy/types` is a live instance in
+// this tree. A specifier a tracked source names must resolve whether or not the
+// emitted JS keeps it, so the union stays.
+//
+// WHAT THE PARTNER IS NOT ANYMORE, and why (V3-5.25 r5). It used to be the bare
+// regex `/(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*)(["'])([^"'\n]+)\1/`,
+// matching a `from "<name>"` substring ANYWHERE in the file -- inside a string,
+// a comment, a template literal. The file's own comment called that
+// "deliberately over-broad" and argued the over-breadth was the safe direction
+// for a lock. It is not, and main proved it: `hygiene/reap.test.ts:824` asserts
+// on the PROSE `"remote inventory: UNAVAILABLE from 'origin'"`, landed in
+// d622131, and the reader collected `origin` as an import of that file and then
+// demanded it resolve as a package. A lock that reds on an English sentence
+// does not fail closed; it fails at random, teaches that its red means nothing,
+// and blocks a landing that has no defect in it.
+//
+// So the partner now recognizes import SYNTAX rather than a substring: the
+// source is lexically masked (comments blanked, string and template interiors
+// replaced by a filler, offsets preserved), tokenized, and only these forms are
+// collected --
+//
+//   * `import ... from "spec"` / `export ... from "spec"` at STATEMENT position
+//     (start of file, or after `;`, `{`, `}`, or a line break -- so ASI-style
+//     sources are covered too), with the specifier a plain quoted literal, as
+//     the grammar requires;
+//   * a bare side-effect `import "spec"` at statement position;
+//   * `import("spec")` and `require("spec")` at any position, since a dynamic
+//     import is an expression.
+//
+// The masking is what makes prose invisible: a literal is one opaque token, so
+// nothing inside it can be read as syntax, and a comment is blank before the
+// tokenizer ever sees it.
 //
 // What neither reader sees, stated because a lock's value is exactly its blind
 // spots: computed dynamic specifiers (`import(someVariable)`), which no static
-// reader can resolve, and specifiers assembled from concatenated fragments.
-const IMPORT_FORM = /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*)(["'])([^"'\n]+)\1/g;
+// reader can resolve; specifiers assembled from concatenated fragments; and
+// anything inside a template literal's `${...}`, which the mask treats as part
+// of the literal (the transpiler half still reads those, so only a type-only
+// import written inside an interpolation would be missed by both).
 const PACKAGE_SPECIFIER = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)*$/i;
 const LEADING_SHEBANG = /^#![^\n]*/;
+// A filler that is not a quote, not whitespace, and not an identifier
+// character, so a masked literal's interior can never be read as syntax. It
+// replaces the interior one character for one character: the mask is
+// index-for-index aligned with the source, and a substitution that changed a
+// length would silently move every offset after it.
+const LITERAL_FILL = String.fromCharCode(1);
+
+// A `/` opens a regex literal only where a value may begin. Tracked here so a
+// regex containing an odd quote -- `/don't/` -- cannot desync the mask and
+// blank real code after it. Judged on the previous significant character, plus
+// the keywords after which an expression starts.
+const VALUE_POSITION_PUNCTUATION = new Set("=(,:[!&|?{};+-*%^~<>".split(""));
+const VALUE_POSITION_KEYWORDS = new Set([
+  "return", "typeof", "instanceof", "in", "of", "new", "delete", "void",
+  "case", "do", "else", "yield", "await",
+]);
+
+type Literal = { start: number; end: number; quote: string; value: string };
+type MaskedSource = { masked: string; literals: Map<number, Literal> };
+type Token = { kind: "word" | "punct" | "literal"; text: string; index: number; quote?: string };
+
+// Blanks comments and literal INTERIORS while preserving every offset and every
+// newline, so the masked string and the source stay index-for-index aligned and
+// the tokenizer below can be a plain forward scan.
+export function maskLiterals(source: string): MaskedSource {
+  const out = source.split("");
+  const literals = new Map<number, Literal>();
+  const blank = (from: number, to: number, fill: string) => {
+    for (let k = from; k < to && k < source.length; k++) {
+      out[k] = source[k] === "\n" ? "\n" : fill;
+    }
+  };
+
+  let i = 0;
+  let previousChar = "";
+  let previousWord = "";
+  while (i < source.length) {
+    const ch = source[i]!;
+    const pair = source.slice(i, i + 2);
+
+    if (pair === "//") {
+      const newline = source.indexOf("\n", i);
+      const stop = newline === -1 ? source.length : newline;
+      blank(i, stop, " ");
+      i = stop;
+      continue;
+    }
+    if (pair === "/*") {
+      const close = source.indexOf("*/", i + 2);
+      const stop = close === -1 ? source.length : close + 2;
+      blank(i, stop, " ");
+      i = stop;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      let j = i + 1;
+      let terminated = false;
+      while (j < source.length) {
+        const c = source[j]!;
+        if (c === "\\") { j += 2; continue; }
+        if (c === ch) { terminated = true; break; }
+        // An unterminated single-quoted string ends at the newline rather than
+        // swallowing the rest of the file.
+        if (ch !== "`" && c === "\n") break;
+        j++;
+      }
+      const end = Math.min(j, source.length);
+      literals.set(i, { start: i, end, quote: ch, value: source.slice(i + 1, end) });
+      blank(i + 1, end, LITERAL_FILL);
+      i = terminated ? end + 1 : end;
+      previousChar = ch;
+      previousWord = "";
+      continue;
+    }
+    if (
+      ch === "/" &&
+      (previousChar === "" ||
+        VALUE_POSITION_PUNCTUATION.has(previousChar) ||
+        VALUE_POSITION_KEYWORDS.has(previousWord))
+    ) {
+      let j = i + 1;
+      let inClass = false;
+      let terminated = false;
+      while (j < source.length) {
+        const c = source[j]!;
+        if (c === "\\") { j += 2; continue; }
+        if (c === "\n") break;
+        if (c === "[") inClass = true;
+        else if (c === "]") inClass = false;
+        else if (c === "/" && !inClass) { terminated = true; break; }
+        j++;
+      }
+      // Only a CLOSED regex literal is masked; an unterminated one was a
+      // division after all, and falls through as an ordinary character.
+      if (terminated) {
+        blank(i + 1, j, " ");
+        i = j + 1;
+        previousChar = "/";
+        previousWord = "";
+        continue;
+      }
+    }
+    if (/[A-Za-z_$]/.test(ch)) {
+      let j = i;
+      while (j < source.length && /[A-Za-z0-9_$]/.test(source[j]!)) j++;
+      previousWord = source.slice(i, j);
+      previousChar = source[j - 1]!;
+      i = j;
+      continue;
+    }
+    if (!/\s/.test(ch)) {
+      previousChar = ch;
+      previousWord = "";
+    }
+    i++;
+  }
+
+  return { masked: out.join(""), literals };
+}
+
+function tokenize({ masked, literals }: MaskedSource): Token[] {
+  const tokens: Token[] = [];
+  let i = 0;
+  while (i < masked.length) {
+    const literal = literals.get(i);
+    if (literal) {
+      tokens.push({ kind: "literal", text: literal.value, index: i, quote: literal.quote });
+      i = literal.end + 1;
+      continue;
+    }
+    const ch = masked[i]!;
+    if (/\s/.test(ch)) { i++; continue; }
+    if (/[A-Za-z_$]/.test(ch)) {
+      let j = i;
+      while (j < masked.length && /[A-Za-z0-9_$]/.test(masked[j]!)) j++;
+      tokens.push({ kind: "word", text: masked.slice(i, j), index: i });
+      i = j;
+      continue;
+    }
+    tokens.push({ kind: "punct", text: ch, index: i });
+    i++;
+  }
+  return tokens;
+}
+
+// Start of file, after a statement terminator or a brace, or after a line break
+// (ASI). Deliberately does NOT include arbitrary expression context: that is
+// the whole difference between reading syntax and grepping for `from`.
+function atStatementPosition(tokens: Token[], index: number, masked: string): boolean {
+  const previous = tokens[index - 1];
+  if (!previous) return true;
+  if (previous.kind === "punct" && (previous.text === ";" || previous.text === "{" || previous.text === "}")) {
+    return true;
+  }
+  const between = masked.slice(previous.index + previous.text.length, tokens[index]!.index);
+  return between.includes("\n");
+}
+
+// The specifier of an import/export declaration is a plain string literal by
+// grammar -- `import x from \`y\`` is a syntax error -- so requiring a non-
+// backtick quote here costs nothing and drops tagged templates like
+// ``query.from`select ...` ``. A dynamic import DOES accept a template, and is
+// read separately below.
+function declarationSpecifier(token: Token | undefined): string | undefined {
+  if (!token || token.kind !== "literal" || token.quote === "`") return undefined;
+  return token.text;
+}
+
+export function importSyntaxSpecifiers(source: string): string[] {
+  const maskedSource = maskLiterals(source);
+  const tokens = tokenize(maskedSource);
+  const found: string[] = [];
+
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]!;
+    if (token.kind !== "word") continue;
+
+    // `import("spec")` / `require("spec")` -- expression position, any depth.
+    if (
+      (token.text === "import" || token.text === "require") &&
+      tokens[i + 1]?.kind === "punct" &&
+      tokens[i + 1]!.text === "(" &&
+      tokens[i + 2]?.kind === "literal"
+    ) {
+      found.push(tokens[i + 2]!.text);
+      continue;
+    }
+
+    if (token.text !== "import" && token.text !== "export") continue;
+    if (!atStatementPosition(tokens, i, maskedSource.masked)) continue;
+
+    // Bare side-effect `import "spec";`.
+    const sideEffect = token.text === "import" ? declarationSpecifier(tokens[i + 1]) : undefined;
+    if (sideEffect !== undefined) {
+      found.push(sideEffect);
+      continue;
+    }
+
+    // `import ... from "spec"` / `export ... from "spec"`, bounded by the
+    // declaration's own terminator so a later statement's tokens cannot be
+    // read as part of this clause.
+    for (let j = i + 1; j < tokens.length; j++) {
+      const clause = tokens[j]!;
+      if (clause.kind === "punct" && clause.text === ";") break;
+      if (clause.kind === "word" && (clause.text === "import" || clause.text === "export")) break;
+      if (clause.kind === "word" && clause.text === "from") {
+        const specifier = declarationSpecifier(tokens[j + 1]);
+        if (specifier !== undefined) found.push(specifier);
+        break;
+      }
+    }
+  }
+
+  return found;
+}
 
 function loaderFor(file: string): "ts" | "tsx" | "js" | "jsx" {
   if (file.endsWith(".tsx")) return "tsx";
@@ -178,9 +424,10 @@ function loaderFor(file: string): "ts" | "tsx" | "js" | "jsx" {
   return "js";
 }
 
-// Exported for the reader's own locks below: the two repaired properties are
+// Exported for the reader's own locks below: the repaired properties are
 // asserted against this function directly, on inputs the tracked tree does not
-// currently contain, so they stay red if the reader regresses to regex-only.
+// currently contain, so they stay red if the reader regresses in either
+// direction.
 export function readSpecifiers(source: string, file: string): string[] {
   const specifiers = new Set<string>();
 
@@ -198,12 +445,13 @@ export function readSpecifiers(source: string, file: string): string[] {
     throw new Error(`scanImports failed on ${file}: ${error}`);
   }
 
-  // The regex's extra reach. Its shape filter applies only here: the regex
-  // matches arbitrary quoted strings, so it needs one, while a transpiler
+  // The union partner's extra reach: type-only declarations the transpiler
+  // erases. Its shape filter applies only here, because it reads syntax the
+  // transpiler declined to emit rather than a compiled result -- a transpiler
   // result is already exactly what the code asked for and must not be dropped
   // by a shape guess.
-  for (const match of source.matchAll(IMPORT_FORM)) {
-    if (PACKAGE_SPECIFIER.test(match[2])) specifiers.add(match[2]);
+  for (const specifier of importSyntaxSpecifiers(source)) {
+    if (PACKAGE_SPECIFIER.test(specifier)) specifiers.add(specifier);
   }
 
   return [...specifiers];
@@ -234,40 +482,115 @@ function externalImports(): { file: string; specifier: string }[] {
   return found;
 }
 
-// The fixture specifiers below are assembled rather than written literally, and
-// that is load-bearing rather than fussy: this file is itself a tracked source
-// that the scan above reads, and the regex half of the reader is deliberately
-// over-broad enough to match a package name inside an ordinary string literal.
-// A fixture written as a contiguous import clause with its specifier quoted
-// inline would therefore be collected as a real import of this file and then
-// required to resolve from gate/, where it does not exist -- the lock would
-// fail on its own examples. (It did, while this was being written, and the
-// offender it named was a package name appearing in this very comment.)
-// Splitting the quote from the name is exactly the concatenated-fragment blind
-// spot named above, used here on purpose.
-const Q = '"';
+// The fixtures below are written LITERALLY: a real import clause with its
+// specifier quoted inline, sitting in an ordinary string of this file. Until
+// V3-5.25 r5 they could not be, and the reason is the whole point of that
+// round. The predecessor reader matched `from "<name>"` anywhere in a file, so
+// a literal fixture was collected as a real import OF THIS FILE and then
+// required to resolve from gate/, where no such package exists -- the lock
+// failed on its own examples, and the specifiers had to be assembled from
+// fragments to hide them from it.
+//
+// A reader that its own test file has to hide from is a reader that any tracked
+// source can trip by accident, and one did: `hygiene/reap.test.ts:824`, below.
+// So the hiding is removed on purpose, and this file is now its own in-tree
+// fixture for the repaired direction: if the reader ever regresses to matching
+// inside strings and comments, the whole-tree lock further down reds with
+// `gate/dependency-materialization.test.ts -> lock-fixture-package: unresolved`
+// -- red-before, in the tree, without a synthetic file.
 const FIXTURE = "lock-fixture-package";
+
+// Verbatim from hygiene/reap.test.ts:824, landed in d622131 (V3-5.13). Prose
+// inside an assertion string, containing no import and naming no dependency --
+// and the exact line on which the predecessor reader demanded that a package
+// called `origin` resolve, blocking a landing that had no defect in it.
+const PROSE_OFFENDER =
+  `expect(out.stdout).toContain("remote inventory: UNAVAILABLE from 'origin'");`;
 
 test("the import reader survives a shebang, sees bare side-effect imports, and never swallows a throw", () => {
   // F2: the whole tracked justification for avoiding the exact reader was that
   // it dies on a large source. It dies on a SHEBANG, at 40 bytes, catchably.
   // Red against an unguarded scanImports, which throws on this input.
-  expect(readSpecifiers(`#!/usr/bin/env bun\nimport z from ${Q}${FIXTURE}${Q};\n`, "x.ts"))
+  expect(readSpecifiers(`#!/usr/bin/env bun\nimport z from "lock-fixture-package";\n`, "x.ts"))
     .toContain(FIXTURE);
 
-  // F3: a bare side-effect import is a form the runtime performs and the regex
-  // cannot match -- it requires `from`, `import(` or `require(`. Nothing in the
-  // tracked tree uses this form today, so only a synthetic input keeps it red
-  // against a regex-only reader.
-  expect(readSpecifiers(`import ${Q}${FIXTURE}${Q};\n`, "x.ts")).toContain(FIXTURE);
+  // F3: a bare side-effect import is a form the runtime performs and a
+  // `from`-matching reader cannot see. Nothing in the tracked tree uses this
+  // form today, so only a synthetic input keeps it red.
+  expect(readSpecifiers(`import "lock-fixture-package";\n`, "x.ts")).toContain(FIXTURE);
 
-  // The regex's own reach, kept: a type-only import the transpiler correctly
-  // elides still has to resolve. Union, not replacement.
-  expect(readSpecifiers(`import type { A } from ${Q}${FIXTURE}-types${Q};\n`, "x.ts"))
-    .toContain(`${FIXTURE}-types`);
+  // The union partner's own reach, kept: a type-only declaration the transpiler
+  // ERASES still names a specifier that has to resolve. Union, not replacement.
+  // Red against a transpiler-only reader; `daemon/server.ts -> grammy/types` is
+  // the live instance this protects.
+  expect(readSpecifiers(`import type { A } from "lock-fixture-package-types";\n`, "x.ts"))
+    .toContain("lock-fixture-package-types");
+  expect(readSpecifiers(`export type { T } from "lock-fixture-package-exported";\n`, "x.ts"))
+    .toContain("lock-fixture-package-exported");
 
   // Fail-closed: an unreadable source must not read as "imports nothing".
   expect(() => readSpecifiers("import { from '", "x.ts")).toThrow(/scanImports failed on x\.ts/);
+});
+
+// Direction 1 of the r5 repair, at reader level: narrowing the reader to import
+// SYNTAX must not cost it a single real import form. Each case is a form the
+// runtime or the type-checker actually resolves, and the whole-tree lock below
+// is only as good as this list.
+test("the import reader still collects every real import form", () => {
+  const collected = (source: string) => readSpecifiers(source, "x.ts");
+
+  expect(collected(`import a from "lock-fixture-value";`)).toContain("lock-fixture-value");
+  expect(collected(`export { a } from "lock-fixture-reexport";`)).toContain("lock-fixture-reexport");
+  expect(collected(`export * from "lock-fixture-star";`)).toContain("lock-fixture-star");
+  expect(collected(`const m = await import("lock-fixture-dynamic");`))
+    .toContain("lock-fixture-dynamic");
+  expect(collected(`const m = require("lock-fixture-required");`))
+    .toContain("lock-fixture-required");
+
+  // A multi-line clause: the specifier is many tokens and one newline away from
+  // the `import` keyword that authorizes it. This is the shape daemon/server.ts
+  // uses, and a statement-anchored reader that gave up at the line end would
+  // silently drop it.
+  expect(collected(`import {\n  type A,\n  b,\n} from "lock-fixture-multiline";\n`))
+    .toContain("lock-fixture-multiline");
+
+  // No semicolons (ASI): the statement boundary is a line break and nothing
+  // else. Both imports must survive, including the type-only one that only the
+  // union partner can see.
+  expect(collected(`const x = 1\nimport type { A } from "lock-fixture-asi"\nconst y = 2\n`))
+    .toContain("lock-fixture-asi");
+
+  // A regex literal containing an unbalanced quote earlier in the file must not
+  // desync the mask and swallow the import that follows it.
+  expect(collected(`const re = /don't/;\nimport type { A } from "lock-fixture-after-regex";\n`))
+    .toContain("lock-fixture-after-regex");
+});
+
+// Direction 2 of the r5 repair: the defect itself. Every case here is prose,
+// and every one of them was collected as an import by the predecessor reader.
+test("the import reader does not collect prose that resembles an import", () => {
+  const collected = (source: string) => readSpecifiers(source, "x.ts");
+
+  // The tracked line that proved the defect. It names `origin`; the reader must
+  // report nothing at all for it.
+  expect(collected(PROSE_OFFENDER)).toEqual([]);
+
+  // A string, a template literal, a line comment and a block comment, each
+  // carrying a complete import clause.
+  expect(collected(`const message = "see: import x from 'pkg-in-a-string'";`)).toEqual([]);
+  expect(collected("const t = `see: import x from 'pkg-in-a-template'`;")).toEqual([]);
+  expect(collected(`// import x from "pkg-in-a-line-comment";\n`)).toEqual([]);
+  expect(collected(`/*\n  import x from "pkg-in-a-block-comment";\n*/\n`)).toEqual([]);
+
+  // `from` as an ordinary call or property, which is only prose to a reader
+  // that greps for the word.
+  expect(collected(`const rows = db.from("pkg-in-a-query");`)).toEqual([]);
+  expect(collected(`const q = sql.from\`pkg-in-a-tagged-template\`;`)).toEqual([]);
+
+  // Both directions in ONE source, which is the property that actually matters:
+  // the prose is ignored and the real import beside it is still collected.
+  const mixed = `import type { A } from "lock-fixture-real";\n${PROSE_OFFENDER}\n`;
+  expect(collected(mixed)).toEqual(["lock-fixture-real"]);
 });
 
 test("every external import in a tracked source resolves from inside the checkout", () => {

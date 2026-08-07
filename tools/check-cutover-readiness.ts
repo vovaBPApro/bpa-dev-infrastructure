@@ -704,7 +704,26 @@ function bootstrapRehearsal(tree: Tree): WorldRun {
       }
       const bin = join(root, "bin");
       mkdirSync(bin);
-      writeExecutable(join(bin, "bun"), `#!/bin/bash\nif [ "\${1:-}" = --version ]; then printf '1.0.0-rehearsal\\n'; fi\nexit 0\n`);
+      // bun is not only a boundary bootstrap writes THROUGH. Since the shared
+      // dependency materializer landed (a3731a8), bootstrap also uses it as the
+      // interpreter whose EXIT CODE answers a question about the tracked tree:
+      // `bun -e <program> <manifest>` returns 0 "declares dependencies", 1
+      // "declares none", 2 "unreadable". A blanket `exit 0` shim answers YES to
+      // every question asked, so the world claimed the root package.json --
+      // which declares no dependencies at all -- declares them, and the
+      // materializer then correctly refused a workspace with no tracked
+      // lockfile. The world lied; the materializer was right.
+      //
+      // So evaluation gets a real bun and only the side-effecting subcommands
+      // stay no-ops: `bun install` must not reach a network or a cache, and
+      // nothing here may install anything. The binary is COPIED into the world
+      // because the host's bun lives under root's HOME, which the unprivileged
+      // rehearsal user cannot traverse; `surrender` hands the copy over with the
+      // rest of the world.
+      const worldBun = join(bin, "bun-real");
+      copyFileSync(Bun.which("bun") ?? process.execPath, worldBun);
+      chmodSync(worldBun, 0o755);
+      writeExecutable(join(bin, "bun"), `#!/bin/bash\ncase "\${1:-}" in\n  -e|--eval|--version) exec ${shellQuote(worldBun)} "$@" ;;\nesac\nexit 0\n`);
       for (const name of NOOP_SHIMS) writeExecutable(join(bin, name), "#!/bin/bash\nexit 0\n");
       for (const scratch of ["tmp", "config", "runtime", "units"]) mkdirSync(join(root, scratch));
       surrender(root);

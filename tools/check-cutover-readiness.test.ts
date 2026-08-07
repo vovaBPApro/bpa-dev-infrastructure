@@ -46,6 +46,10 @@ type Options = {
   bootstrap?: string;
   registry?: string;
   omit?: string[];
+  // Extra files committed with the fixture. `untracked` proves an untracked
+  // file moves nothing; this is for inputs the gates must actually SEE —
+  // package manifests, and the real materializer the rehearsal runs.
+  tracked?: Record<string, string>;
   untracked?: Record<string, string>;
   // Overrides merged into the green `meteorite-result/v1` artifact; `null`
   // writes no artifact at all, which is this repository's state today.
@@ -293,6 +297,7 @@ function fixture(options: Options = {}): string {
     "hygiene/check-stranded-work.sh": "# nothing ACCEPTed lives only here\n",
   };
   for (const [path, content] of Object.entries(files)) if (!omit.has(path)) write(repo, path, content);
+  for (const [path, content] of Object.entries(options.tracked ?? {})) write(repo, path, content);
   git(repo, "init", "-q");
   git(repo, "add", "-A");
   git(repo, "commit", "-qm", "fixture");
@@ -1927,6 +1932,167 @@ test("a bootstrap that aborts before any Whisper invocation is UNKNOWN, never PA
 test("G is UNKNOWN when the clean-server install path cannot be read", () => {
   withFixture({ omit: ["bootstrap/install.sh"] }, (repo) => {
     expect(measure(repo).verdicts.G).toBe("UNKNOWN");
+  });
+});
+
+// --- the rehearsal world's bun is a shim, not an oracle ----------------------
+//
+// The world shims the boundary the rehearsed script talks THROUGH. That was the
+// whole of bun's role until the shared dependency materializer landed
+// (a3731a8); since then bootstrap also uses bun as the INTERPRETER whose exit
+// code answers a question about the tracked tree -- `bun -e <program>
+// <manifest>`: 0 declares dependencies, 1 declares none, 2 unreadable. The
+// world's old blanket `exit 0` answered YES to every question asked, so it
+// claimed the root package.json declares dependencies when it declares none,
+// and the materializer correctly refused a declaring workspace with no tracked
+// lockfile. Gate G then reported UNKNOWN about a repository that was fine.
+//
+// Each case below is UNKNOWN with the blanket shim and PASS without it, except
+// the last two, which are the protections that must survive the repair.
+
+// The narrowest statement of the property, with no materializer in the way: an
+// exit code the world's bun reports is the program's own. A blanket `exit 0`
+// collapses all three answers of the contract into "yes".
+test("an exit code the world's bun reports is the program's own, not a blanket zero", () => {
+  const bootstrap = [
+    "#!/usr/bin/env bash",
+    "for code in 0 1 2; do",
+    '  bun -e "process.exit($code)"',
+    '  [ "$?" = "$code" ] || exit 70',
+    "done",
+    'bash "$(dirname "$0")/../tools/whisper/install.sh"',
+    "",
+  ].join("\n");
+  withFixture({ bootstrap }, (repo) => {
+    const measured = measure(repo);
+    expect(measured.verdicts.G).toBe("PASS");
+    expect(measured.evidence("G")).toContain("ran tools/whisper/install.sh");
+  });
+});
+
+// The real materializer, sourced from this repository rather than restated, so
+// these cases measure the boundary bootstrap actually crosses instead of a
+// retelling of it. It needs only $BUN_BIN, git and mktemp, and `command -v bun`
+// inside the world resolves to the shim under test.
+function materializingBootstrap(): string {
+  return [
+    "#!/usr/bin/env bash",
+    "set -uo pipefail",
+    'source "$(dirname "$0")/../gate/land-lib.sh"',
+    'BUN_BIN="$(command -v bun)"',
+    'land_materialize_dependencies "${INSTALL_ROOT:-$(dirname "$0")/..}" BOOTSTRAP || exit 1',
+    'bash "$(dirname "$0")/../tools/whisper/install.sh"',
+    "",
+  ].join("\n");
+}
+
+function withLandLib(tracked: Record<string, string>): Record<string, string> {
+  return { "gate/land-lib.sh": readFileSync(join(REAL_REPO, "gate/land-lib.sh"), "utf8"), ...tracked };
+}
+
+// The reported failure, reproduced in miniature and then repaired. A root
+// manifest that declares NO dependencies, and no root lockfile -- which is this
+// repository's own shape, where the only tracked lockfile is daemon/bun.lock.
+// With a blanket-oracle world this aborts `workspace=. detail=lockfile-not-tracked
+// lockfile=bun.lock` and gate G is UNKNOWN; with a bun that answers the question
+// it was asked, the root workspace is skipped and the rehearsal reaches the
+// Whisper question gate G exists to ask.
+test("a root manifest declaring no dependencies does not need a lockfile the tree never had", () => {
+  withFixture({
+    bootstrap: materializingBootstrap(),
+    tracked: withLandLib({ "package.json": `${JSON.stringify({ name: "fixture" }, null, 2)}\n` }),
+  }, (repo) => {
+    const measured = measure(repo);
+    expect(measured.verdicts.G).toBe("PASS");
+    expect(measured.evidence("G")).toContain("ran tools/whisper/install.sh");
+    // The diagnosis in one assertion: with a truthful bun there is no
+    // `workspace=.` line at all, because the root workspace is never a
+    // candidate for installation.
+    expect(measured.evidence("G")).not.toContain("lockfile-not-tracked");
+    expect(measured.evidence("G")).not.toContain("workspace=.");
+  });
+});
+
+// An empty dependency object is a declaration of nothing, and the contract says
+// so by counting keys. Locked because "has the key" is the obvious wrong
+// reading, and it would re-create the same false abort.
+test("empty dependency objects still declare nothing", () => {
+  const manifest = { name: "fixture", dependencies: {}, devDependencies: {}, optionalDependencies: {} };
+  withFixture({
+    bootstrap: materializingBootstrap(),
+    tracked: withLandLib({ "package.json": `${JSON.stringify(manifest, null, 2)}\n` }),
+  }, (repo) => {
+    expect(measure(repo).verdicts.G).toBe("PASS");
+  });
+});
+
+// --- what the repair must NOT weaken ----------------------------------------
+
+// The materializer's actual protection, exercised through the repaired shim: a
+// workspace that genuinely declares dependencies and has no tracked lockfile is
+// still refused, and still named. If the shim ever answers this question
+// dishonestly in the other direction, this is the test that goes red.
+test("a workspace that really declares dependencies with no tracked lockfile still reds", () => {
+  const manifest = { name: "fixture-ws", dependencies: { zod: "^3.0.0" } };
+  withFixture({
+    bootstrap: materializingBootstrap(),
+    tracked: withLandLib({
+      "package.json": `${JSON.stringify({ name: "fixture" }, null, 2)}\n`,
+      "fixture-ws/package.json": `${JSON.stringify(manifest, null, 2)}\n`,
+    }),
+  }, (repo) => {
+    const measured = measure(repo);
+    expect(measured.verdicts.G).toBe("UNKNOWN");
+    expect(measured.evidence("G")).toContain("workspace=fixture-ws");
+    expect(measured.evidence("G")).toContain("detail=lockfile-not-tracked");
+    expect(measured.evidence("G")).toContain("lockfile=fixture-ws/bun.lock");
+    expect(measured.exitCode).toBe(1);
+  });
+});
+
+// A malformed manifest must reach the materializer as 2 (unreadable), not as
+// either of the two answers about dependencies. Under the blanket shim every
+// malformed manifest read as "declares"; under a shim that swallowed the exit
+// code the other way it would read as "declares none" and the workspace would
+// be silently skipped, which is the fail-open version of the same bug.
+test("an unreadable manifest is named as unreadable, not silently skipped", () => {
+  withFixture({
+    bootstrap: materializingBootstrap(),
+    tracked: withLandLib({ "package.json": "{ this is not json\n" }),
+  }, (repo) => {
+    const measured = measure(repo);
+    expect(measured.verdicts.G).toBe("UNKNOWN");
+    expect(measured.evidence("G")).toContain("detail=manifest-unreadable");
+  });
+});
+
+// Hermeticity, which is the reason the world had a shim in the first place.
+// Only evaluation delegates to the real binary; every side-effecting subcommand
+// stays a no-op, so the rehearsal reaches no network and no install cache and
+// installs nothing. A shim that delegated everything would green the tests
+// above and quietly turn gate G into a package installer.
+test("only evaluation reaches the real bun — install, run, test and scripts stay no-ops", () => {
+  const bootstrap = [
+    "#!/usr/bin/env bash",
+    'cd "$(dirname "$0")/.." || exit 60',
+    // A script whose only purpose is to prove it did not run.
+    "printf 'require(\"node:fs\").writeFileSync(\"side-effect\", \"x\");\\n' > side-effect.js",
+    "bun side-effect.js || exit 71",
+    "bun run side-effect.js || exit 72",
+    "bun test || exit 73",
+    "bun install --frozen-lockfile || exit 74",
+    "bun add zod || exit 75",
+    "[ -e side-effect ] && exit 76",
+    "[ -e node_modules ] && exit 77",
+    // ...while `-e` in the same world does reach a real interpreter.
+    "bun -e 'process.exit(3)'; [ \"$?\" = 3 ] || exit 78",
+    'bash tools/whisper/install.sh',
+    "",
+  ].join("\n");
+  withFixture({ bootstrap }, (repo) => {
+    const measured = measure(repo);
+    expect(measured.verdicts.G).toBe("PASS");
+    expect(measured.evidence("G")).toContain("ran tools/whisper/install.sh");
   });
 });
 

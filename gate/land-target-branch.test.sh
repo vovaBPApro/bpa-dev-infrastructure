@@ -65,7 +65,11 @@ make_fixture() {
   mkdir -p "$repo/meteorite"
   sed -n '/^# BEGIN TRUSTED TEST PROVER$/,/^# END TRUSTED TEST PROVER$/p' "$root/gate/land.test.sh" | sed '1d;$d' > "$repo/meteorite/prove-candidate.sh"
   chmod +x "$repo/meteorite/prove-candidate.sh"
-  git -C "$repo" add base.txt base.test.ts hygiene/check-retained-branches.ts instance meteorite/prove-candidate.sh
+  # The gate reads the stage contract out of the trusted prover tree, so the
+  # fixture supplies one -- extracted from the same file as the prover, so the
+  # report and the list it is judged against cannot drift apart here.
+  sed -n '/^# BEGIN TRUSTED TEST RUNNER CONTRACT$/,/^# END TRUSTED TEST RUNNER CONTRACT$/p' "$root/gate/land.test.sh" | sed '1d;$d' > "$repo/meteorite/run.sh"
+  git -C "$repo" add base.txt base.test.ts hygiene/check-retained-branches.ts instance meteorite/prove-candidate.sh meteorite/run.sh
   git -C "$repo" commit -m base >/dev/null
   git -C "$repo" push -u origin main >/dev/null
   printf 'ref: refs/heads/main\n' > "$bare/HEAD"

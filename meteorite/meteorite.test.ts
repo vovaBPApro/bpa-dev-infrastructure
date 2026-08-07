@@ -318,6 +318,32 @@ describe("meteorite orchestrator-live stage", () => {
     expect(result.liveness.proven).toBe(false);
   });
 
+  // The same lock for the stage this branch met on main rather than wrote. The
+  // contract array gained `whisper` when V3-5.40's stage was rebased under it,
+  // and a contract line nobody has ever seen refuse is not a contract line —
+  // it is a comment that happens to be inside an array.
+  test("a stage list without the whisper stage fails closed instead of reporting clean", async () => {
+    const f = await fixture();
+    const stripped = join(f.checkout, "meteorite", "run-without-whisper-stage.sh");
+    const source = await readFile(runner, "utf8");
+    const withoutStage = source
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith('"whisper|'))
+      .join("\n");
+    expect(withoutStage).not.toBe(source);
+    await writeFile(stripped, withoutStage);
+
+    const run = Bun.spawnSync(["bash", stripped, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });
+    expect(run.exitCode).not.toBe(0);
+    const report = await readFile(f.report, "utf8");
+    expect(report).toContain("result: NO-GO");
+    expect(report).toContain("stage-contract: NO-GO");
+    expect(report).toContain("blocker: required stage(s) not executed: whisper");
+    expect(report).not.toContain("result: clean");
+    const result = await readArtifact(f.artifact);
+    expect(result.finished).toBe(false);
+  });
+
   test("a liveness assertion that produces no evidence fails the stage", async () => {
     const f = await fixture("", "", "");
     const run = Bun.spawnSync(["bash", f.runner, "--ref", f.sha, "--repo-url", "https://example.invalid/infra.git"], { env: f.env });

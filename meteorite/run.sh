@@ -42,6 +42,13 @@
 #                  including the substitutions in force and the boundaries a
 #                  container structurally cannot cross. {proven:false,
 #                  reason:"stage-not-reached"} when the run died earlier.
+#                  `liveness_boundary` says HOW MUCH a `proven:true` proved:
+#                  `full` (started, handshook, pulsed, tore down) or
+#                  `auth-preflight-refusal` (no credential store exists in this
+#                  world, so the launch path was proven up to and including the
+#                  auth gate and refused there). A reader that treats the two
+#                  alike is reading a rebuilt host as a logged-in one; that
+#                  choice is the reader's, which is why the field exists.
 #   finished_at    UTC ISO-8601 second precision.
 #
 # ── THE PROOF ANCHOR ───────────────────────────────────────────────────────
@@ -90,6 +97,17 @@ finished=0
 live_stage="orchestrator-live"
 liveness_line=""
 liveness_reason="stage-not-reached"
+# The closed set of boundaries the orchestrator-live stage may pass at. Defined
+# in meteorite/live-orchestrator-stage.sh; enumerated here because this runner is
+# the thing that decides whether a claimed pass counts.
+#   full                    the launcher started, handshook, pulsed, tore down.
+#   auth-preflight-refusal  no subscription credential store exists in this
+#                           world -- and none can exist on a rebuilt host, since
+#                           the store is written by a human answering /login --
+#                           so the launch path was proven up to and including the
+#                           auth gate, which refused there for its own named
+#                           reason. Everything past it travels in `unproven=`.
+allowed_liveness_boundaries="full auth-preflight-refusal"
 
 # The stage list this runner is CONTRACTUALLY required to have executed, held
 # separately from the commands that execute them. A rebuild proof that silently
@@ -435,6 +453,28 @@ validate_liveness_evidence() {
     fail "$live_stage" "the live-orchestrator stage ran with substituted launcher mechanisms: $(printf '%s' "$line" | sed -n 's/.*\(substitutions=[^ ]*\).*/\1/p')"
     return 1
   fi
+  # WHICH boundary the stage passed at is part of the evidence, not a footnote.
+  # A credential-free rebuild cannot cross its own auth gate, so `proven=yes`
+  # alone no longer says how much was proven -- and a reader deciding policy on
+  # this artifact (gate D) must be able to tell the two apart without parsing
+  # prose. The vocabulary is closed here so that inventing a third boundary is a
+  # change to this file, reviewed, rather than a string a stage can mint for
+  # itself; an undeclared boundary is refused for the same reason.
+  local boundary
+  boundary="$(printf '%s' "$line" | sed -n 's/.* liveness_boundary=\([^ ]*\).*/\1/p')"
+  if [[ -z "$boundary" ]]; then
+    liveness_reason="liveness-boundary-undeclared"
+    fail "$live_stage" "the live-orchestrator stage passed without declaring a liveness_boundary; a PASS whose boundary is unstated cannot be read"
+    return 1
+  fi
+  case " $allowed_liveness_boundaries " in
+    *" $boundary "*) ;;
+    *)
+      liveness_reason="unknown-liveness-boundary"
+      fail "$live_stage" "the live-orchestrator stage declared an unknown liveness boundary: $boundary (known: $allowed_liveness_boundaries)"
+      return 1
+      ;;
+  esac
   liveness_line="$line"
   liveness_reason=""
   return 0
@@ -526,6 +566,31 @@ commands=(
   "unit-drift|install -d /work/rendered-units && for template in /work/install/bootstrap/units/*.in /work/install/instance/units/*.in; do test -f \"\$template\" || continue; INSTALL_ROOT=/root/bpa-dev-infrastructure ENV_FILE=/root/.config/bpa/orchestrator.env BUN_BIN=/usr/local/bin/bun BASH_BIN=/usr/bin/bash FULL_SUITE_ON_CALENDAR='*-*-* 03:30:00' ORCH_WATCHDOG_INTERVAL=60 envsubst < \"\$template\" > \"/work/rendered-units/\$(basename \"\${template%.in}\")\"; done && cd /work/install && SYSTEMD_SYSTEM_DIR=/work/rendered-units bash bootstrap/check-unit-drift.sh"
   "orchestrator-live|cd /work/install && PATH=/root/.bun/bin:\$PATH METEORITE_LIVE_INSTALL_ROOT=/work/install METEORITE_LIVE_RUNTIME_DIR=/work/runtime/orchestrator METEORITE_LIVE_STATE_DB=/work/runtime/state.db bash meteorite/live-orchestrator-stage.sh"
 )
+
+# The contract is compared in BOTH directions, and this is the direction that
+# was missing. The loop further down catches a stage DELETED from `commands`.
+# Nothing caught a stage that was never ADDED to `required_stages` -- and that is
+# precisely a stage whose later deletion would still report `clean`, which is the
+# one failure the contract exists to prevent. It is not hypothetical: `whisper`
+# arrived exactly that way and it took human attention during a rebase to
+# notice. A contract that only refuses what someone remembered to add to it is a
+# comment that happens to be inside an array.
+#
+# Checked before any stage runs, because it is a property of this file and
+# waiting fifteen minutes to be told about a typo helps nobody.
+uncontracted_stages=()
+for entry in "${commands[@]}"; do
+  stage="${entry%%|*}"
+  contracted=0
+  for required in "${required_stages[@]}"; do
+    [[ "$required" == "$stage" ]] && contracted=1 && break
+  done
+  ((contracted)) || uncontracted_stages+=("$stage")
+done
+if ((${#uncontracted_stages[@]})); then
+  fail "stage-contract" "stage(s) executed but absent from required_stages: $(IFS=,; printf '%s' "${uncontracted_stages[*]}")" || true
+  exit 1
+fi
 
 for entry in "${commands[@]}"; do
   stage="${entry%%|*}"

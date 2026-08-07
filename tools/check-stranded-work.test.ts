@@ -290,6 +290,28 @@ test("an ACCEPT whose sha this host no longer holds is UNKNOWN, never counted as
   });
 });
 
+test("an exemption written against an UNKNOWN is refused for what it is, and states nothing false about the evidence", () => {
+  // Executed against the previous behaviour this read: `FAIL orphan exemption:
+  // ag-pruned.review.md carries no ACCEPT attesting sha=000...` -- while the
+  // artifact carried exactly that ACCEPT attesting exactly that sha. The verdict
+  // direction was safe and the sentence was false, and a false sentence about
+  // evidence sends the repair at the evidence.
+  withFixture((fx) => {
+    const pruned = "0".repeat(40);
+    review(fx, "ag-pruned", acceptArtifact(pruned));
+    writeFileSync(fx.exemptions, `ag-pruned.review.md\t${pruned}\tsuperseded round, not coming back\n`);
+    const result = run(fx);
+    expect(result.verdict).toBe("FAIL");
+    const findings = result.findings.join("\n");
+    expect(findings).toContain("UNKNOWN review-artifact ag-pruned.review.md: attested sha");
+    expect(findings).toContain("FAIL inapplicable exemption: ag-pruned.review.md");
+    expect(findings).toContain("an UNKNOWN is not exemptible");
+    // The false sentence, named so it cannot come back under the same words.
+    expect(findings).not.toContain("carries no ACCEPT attesting");
+    expect(findings).not.toContain("orphan exemption");
+  });
+});
+
 test("an unreadable lanes directory is UNKNOWN", () => {
   withFixture((fx) => {
     const result = run(fx, { lanesDir: join(fx.repo, "no-such-lanes") });

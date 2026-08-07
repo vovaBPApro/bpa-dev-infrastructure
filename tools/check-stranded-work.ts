@@ -311,6 +311,21 @@ export function checkStrandedWork(options: { repo: string; lanesDir: string; rem
     if (verdict.state === "unknown") {
       unmeasured = true;
       findings.push(`UNKNOWN ${attestation.arm} ${attestation.artifact}: ${verdict.detail}`);
+      // An exemption written against an UNKNOWN is consumed HERE, before the
+      // orphan sweep below, and refused for what it actually is. Falling
+      // through instead told an operator that their artifact carries no ACCEPT
+      // attesting that sha, while the artifact plainly does -- a true verdict
+      // direction reached by a false statement about the evidence, pointing the
+      // repair at deleting the review record. The row is still an error, because
+      // an unmeasured attestation is not exemptible: nothing was measured for an
+      // exemption to overrule.
+      if (exempted.has(key)) {
+        usedExemptions.add(key);
+        stranded += 1;
+        findings.push(
+          `FAIL inapplicable exemption: ${attestation.artifact} sha=${attestation.sha} exempts an attestation this sweep could not measure, and an UNKNOWN is not exemptible — resolve the UNKNOWN above, do not exempt it`,
+        );
+      }
       continue;
     }
     if (exempted.has(key)) {

@@ -152,6 +152,27 @@ test(
       .map((line) => line.split("\t"))
       .map(([file, caseName, capability]) => `${file}\t${caseName}\t${capability}`)
       .sort();
+    const declaredSystemdTransient = runnableShellTests
+      .flatMap((file) =>
+        [...readFileSync(join(repoRoot, file), "utf8").matchAll(
+          /EXCLUDED case=([^ '\"\n]+) capability=([^ '\"\n]+)/g,
+        )]
+          .filter((match) => match[2] === "systemd-transient-unit")
+          .map((match) => `${file}\t${match[1]}\t${match[2]}`),
+      )
+      .sort();
+    const expectedSystemdTransient = inventory.filter((row) =>
+      row.endsWith("\tsystemd-transient-unit"),
+    );
+
+    // Do not derive the set of files to force only from the expected inventory.
+    // That made a test absent from the TSV invisible to this decider: its
+    // EXCLUDED records were never emitted, observed stayed empty, and the empty
+    // expectation agreed vacuously. Literal systemd-transient-unit
+    // announcements in runnable tests are the independent source inventory for
+    // this capability; removal or mismatch on either side must fail before the
+    // runtime comparison.
+    expect(declaredSystemdTransient).toEqual(expectedSystemdTransient);
     const byFile = new Map<string, string[]>();
     for (const row of inventory) {
       const [file] = row.split("\t");

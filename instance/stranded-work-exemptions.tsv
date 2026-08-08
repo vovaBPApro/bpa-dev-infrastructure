@@ -1,0 +1,19 @@
+# artifact<TAB>sha<TAB>reason. Deliberate exemptions for tools/check-stranded-work.ts:
+# an ACCEPT this host holds whose work is knowingly not on origin and is not going
+# to be. The commonest legitimate case is a superseded review round -- r1 ACCEPTed,
+# r2 replaced it, and r1's branch was never pushed because nobody wants it back.
+#
+# THE SHA IS A COLUMN, not a comment. An exemption blesses one attestation, not a
+# file: a new ACCEPT appearing in an already-blessed artifact must fail rather than
+# inherit a ruling written about different work.
+#
+# Both directions are errors, the same way instance/expected-mechanism-exclusions.tsv
+# treats its own: a STALE exemption (the work has an origin counterpart now) and an
+# ORPHAN exemption (no ACCEPT here attests that sha) both fail. An exemption is a
+# claim about current state and is re-verified on every run.
+#
+# An UNKNOWN is deliberately NOT exemptible. Unreadable evidence and a sha this host
+# no longer holds are unmeasured, and a file that could turn "unmeasured" into
+# "fine" is the fail-open shape this checker exists to remove.
+#
+# Empty as of 2026-08-07: the live sweep found no stranded ACCEPT to exempt.

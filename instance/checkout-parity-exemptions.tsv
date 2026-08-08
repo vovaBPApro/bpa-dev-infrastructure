@@ -1,0 +1,35 @@
+# check<TAB>record<TAB>reason. Deliberate, documented asymmetries for
+# tools/check-checkout-parity.ts: an outcome record that is INTENDED to differ
+# between a primary repository, a lane worktree and land-main.
+#
+# `check` is a declared member id from DECLARED_CHECKS. `record` is the outcome
+# key exactly as the finding prints it inside record="..." -- for the ledger
+# member that is `<file> [<check>]`, e.g. `instance/decisions/inbox.jsonl [ledger]`.
+#
+# Both directions are errors, the same way instance/expected-mechanism-exclusions.tsv
+# treats its own: a STALE exemption (the record no longer diverges) and an ORPHAN
+# exemption (no declared check by that id) both fail. An exemption is a claim
+# about current state and is re-verified on every run.
+#
+# An exemption whose check this run could not compare in two worlds is reported
+# UNVERIFIED and makes the run UNKNOWN. It is not called stale: a run that did
+# not measure the check did not measure whether the exemption is still needed,
+# and saying otherwise would be a statement about evidence that does not exist.
+#
+# EMPTY ON PURPOSE as of 2026-08-07, and the empty state is the finding.
+#
+# The live divergence on this host is the consilium's own: `instance/decisions/
+# inbox.jsonl` is deliberately untracked (instructions/repository-hygiene.md), so
+# the ledger aging check RUNS in the primary repository and SKIPs in a lane
+# worktree and in land-main -- the two places the landing gate actually runs it.
+# It is tempting to write that row here, because the file's untrackedness IS
+# deliberate. That would be the wrong reading of the word. What is deliberate is
+# where the file lives; what is NOT deliberate is that the check measuring the
+# ledger silently does not happen where landings are decided. That second thing
+# is the defect the consilium found, and an exemption for it would restore
+# exactly the blindness this checker was rejected once for having.
+#
+# So this file stays empty, tools/check-checkout-parity.ts reports FAIL on this
+# host, and that FAIL is a true statement about a live, open defect rather than a
+# green nobody should have believed. Closing it means making the ledger check
+# measure the same thing in all three checkout kinds -- not writing a row here.

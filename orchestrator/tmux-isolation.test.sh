@@ -215,26 +215,10 @@ check "the off-switch scan found the fixtures that do select it" $? \
 [[ -x "$CHECK" ]]
 check "the drift check is executable" $? "$CHECK"
 
-bash "$CHECK" --pid 4194304 >/dev/null 2>&1
-[[ $? -eq 2 ]]
-check "the drift check exits 2 on an unmeasurable subject" $?
-
-ORCH_TMUX_SOCKET="no-such-socket-$$" bash "$CHECK" --session "no-such-session-$$" >/dev/null 2>&1
-[[ $? -eq 3 ]]
-check "the drift check exits 3 when there is no session, distinct from clean" $?
-
-# This test process itself is in SOME foreign cgroup (a lane unit, a container
-# scope, or none at all) -- never the orchestrator's scope or service. That makes
-# it a free, always-available NOT-ISOLATED subject.
-bash "$CHECK" --pid "$$" >/dev/null 2>&1
-[[ $? -eq 1 ]]
-check "the drift check exits 1 for a process in a foreign cgroup" $?
-
-# ───────────────────────────────────────────────────────────────────────────
-# 7. LIVE REHEARSAL: the property itself.
-#
-# Everything above inspects. This runs the failure.
-# ───────────────────────────────────────────────────────────────────────────
+# Both the owned foreign-process fixture below and the lifecycle rehearsal use
+# transient units. Probe that capability once, and make absence an explicit
+# exclusion rather than silently falling back to the ambient test runner (which
+# may correctly live in the allowlisted orchestrator service).
 systemd_usable=true
 capability_probe="$(probe_unit_name isolation-capability "$$")" || systemd_usable=false
 if capability_forced_missing systemd-transient-unit; then
@@ -247,6 +231,54 @@ elif ! timeout 60 systemd-run --collect --wait --quiet --unit "$capability_probe
 fi
 systemctl reset-failed "$capability_probe" >/dev/null 2>&1 || true
 
+bash "$CHECK" --pid 4194304 >/dev/null 2>&1
+[[ $? -eq 2 ]]
+check "the drift check exits 2 on an unmeasurable subject" $?
+
+ORCH_TMUX_SOCKET="no-such-socket-$$" bash "$CHECK" --session "no-such-session-$$" >/dev/null 2>&1
+[[ $? -eq 3 ]]
+check "the drift check exits 3 when there is no session, distinct from clean" $?
+
+# Own the subject and prove its placement before testing the checker. The test
+# runner is deliberately unsuitable: when this suite is launched by the
+# correctly deployed bpa-orchestrator.service, $$ is allowlisted and exit 0 is
+# the honest production verdict.
+if ! "$systemd_usable"; then
+  printf '%s\n' 'tmux-isolation: EXCLUDED case=foreign-cgroup-verdict capability=systemd-transient-unit'
+else
+  foreign_unit="$(probe_unit_name drift-foreign "$$")" || foreign_unit=''
+  foreign_pid=''
+  foreign_cgroup=''
+  if [[ -n "$foreign_unit" ]]; then
+    PROBE_UNITS+=("$foreign_unit.service")
+    systemctl reset-failed "$foreign_unit.service" >/dev/null 2>&1 || true
+    timeout 60 systemd-run --collect --quiet --unit "$foreign_unit" \
+      /bin/sleep 300 >/dev/null 2>&1 || foreign_unit=''
+  fi
+  if [[ -n "$foreign_unit" ]]; then
+    deadline=$((SECONDS + 20))
+    until [[ "$foreign_pid" =~ ^[1-9][0-9]*$ ]]; do
+      (( SECONDS < deadline )) || break
+      foreign_pid="$(systemctl show --property MainPID --value "$foreign_unit.service" 2>/dev/null)"
+      [[ "$foreign_pid" =~ ^[1-9][0-9]*$ ]] || sleep 0.2
+    done
+  fi
+  if [[ "$foreign_pid" =~ ^[1-9][0-9]*$ ]]; then
+    foreign_cgroup="$(sed -n 's|^0::||p' "/proc/$foreign_pid/cgroup" 2>/dev/null | head -n 1)"
+  fi
+  [[ -n "$foreign_unit" && "$(unit_of "$foreign_cgroup")" == "$foreign_unit.service" ]]
+  check "the foreign-process fixture owns and proves its cgroup" $? \
+    "unit=${foreign_unit:-<missing>} pid=${foreign_pid:-<missing>} cgroup=${foreign_cgroup:-<unread>}"
+  bash "$CHECK" --pid "$foreign_pid" >/dev/null 2>&1
+  [[ $? -eq 1 ]]
+  check "the drift check exits 1 for the owned foreign-cgroup process" $?
+fi
+
+# ───────────────────────────────────────────────────────────────────────────
+# 7. LIVE REHEARSAL: the property itself.
+#
+# Everything above inspects. This runs the failure.
+# ───────────────────────────────────────────────────────────────────────────
 if ! "$systemd_usable"; then
   printf '%s\n' 'tmux-isolation: EXCLUDED case=daemon-restart-rehearsal capability=systemd-transient-unit'
 else

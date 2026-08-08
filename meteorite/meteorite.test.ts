@@ -55,8 +55,10 @@ describe("meteorite runner", () => {
     const stateHome = join(root, "state");
     await Bun.$`mkdir -p ${join(checkout, "meteorite")}`;
     await cp(runner, join(checkout, "meteorite", "run.sh"));
+    await cp(resolve(import.meta.dir, "budget.sh"), join(checkout, "meteorite", "budget.sh"));
+    await cp(resolve(import.meta.dir, "stage-budgets.tsv"), join(checkout, "meteorite", "stage-budgets.tsv"));
     await Bun.$`git -C ${checkout} init -q`;
-    await Bun.$`git -C ${checkout} add meteorite/run.sh`;
+    await Bun.$`git -C ${checkout} add meteorite`;
     await Bun.$`git -C ${checkout} -c user.name=test -c user.email=test@example.invalid commit -qm baseline`;
 
     const f = await fixture();
@@ -149,7 +151,7 @@ describe("meteorite runner", () => {
     expect(report).toContain("watchdog arm —");
     expect(report).toContain("Telegram transport —");
     expect(await readFile(f.trace, "utf8")).toContain("stop -t 5 container-id");
-    expect(await readFile(f.trace, "utf8")).toContain("run -d --rm --network bridge ubuntu:24.04 sleep infinity");
+    expect(await readFile(f.trace, "utf8")).toContain("run -d --rm --network bridge --label io.bpa.meteorite.run=manual-");
   });
 
   test("pins the donor before bootstrap executes its embedded full suite", async () => {

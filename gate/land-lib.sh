@@ -436,6 +436,7 @@ land_validate_meteorite_report() {
       required["bootstrap-dry-run"] = 1
       required["bootstrap-install"] = 1
       required["bootstrap-verify-source"] = 1
+      required["whisper"] = 1
       required["test-prerequisites"] = 1
       required["full-test-suite"] = 1
       required["unit-drift"] = 1
@@ -471,7 +472,9 @@ land_validate_meteorite_report() {
 }
 
 land_run_meteorite() {
-  local repo="$1" sha="$2" trusted_sha="${3:-}" report docker_bin timeout_seconds prover_status trusted_tree
+  local repo="$1" sha="$2" trusted_sha="${3:-}" report docker_bin timeout_seconds tracked_timeout_seconds
+  local prover_status trusted_tree run_id kill_after_seconds cleanup_status container_output container_id
+  local -a meteorite_container_ids=()
   docker_bin=$(command -v docker 2>/dev/null || true)
   if [ -z "$docker_bin" ]; then
     echo "LAND meteorite blocker=docker-binary-unavailable" >&2
@@ -490,13 +493,6 @@ land_run_meteorite() {
     echo "LAND meteorite blocker=report-allocation-failed" >&2
     return 1
   }
-  timeout_seconds="${LAND_METEORITE_TIMEOUT_SECONDS:-900}"
-  if [[ ! "$timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
-    rm -f "$report"
-    echo "LAND meteorite blocker=invalid-timeout" >&2
-    return 1
-  fi
-  echo "LAND meteorite status=running sha=$sha"
   trusted_tree=$(mktemp -d "${TMPDIR:-/tmp}/bpa-land-meteorite-trusted.XXXXXX") || {
     rm -f "$report"
     echo "LAND meteorite blocker=trusted-prover-allocation-failed" >&2
@@ -510,11 +506,72 @@ land_run_meteorite() {
     echo "LAND meteorite blocker=trusted-prover-unavailable" >&2
     return 1
   fi
+  if [ ! -r "$trusted_tree/meteorite/budget.sh" ] ||
+     [ ! -r "$trusted_tree/meteorite/stage-budgets.tsv" ]; then
+    git -C "$repo" worktree remove --force "$trusted_tree" >/dev/null 2>&1 || true
+    rm -rf "$trusted_tree"
+    rm -f "$report"
+    echo "LAND meteorite blocker=trusted-budget-unavailable" >&2
+    return 1
+  fi
+  if ! tracked_timeout_seconds=$(bash "$trusted_tree/meteorite/budget.sh" --total \
+      "$trusted_tree/meteorite/stage-budgets.tsv"); then
+    git -C "$repo" worktree remove --force "$trusted_tree" >/dev/null 2>&1 || true
+    rm -rf "$trusted_tree"
+    rm -f "$report"
+    echo "LAND meteorite blocker=tracked-budget-invalid" >&2
+    return 1
+  fi
+  timeout_seconds="${LAND_METEORITE_TIMEOUT_SECONDS:-$tracked_timeout_seconds}"
+  kill_after_seconds="${LAND_METEORITE_KILL_AFTER_SECONDS:-10}"
+  if [[ ! "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] ||
+     [[ ! "$kill_after_seconds" =~ ^[1-9][0-9]*$ ]]; then
+    git -C "$repo" worktree remove --force "$trusted_tree" >/dev/null 2>&1 || true
+    rm -rf "$trusted_tree"
+    rm -f "$report"
+    echo "LAND meteorite blocker=invalid-timeout" >&2
+    return 1
+  fi
+  if [[ -n "${LAND_METEORITE_TIMEOUT_SECONDS:-}" ]]; then
+    echo "LAND meteorite budget=${timeout_seconds}s source=override env=LAND_METEORITE_TIMEOUT_SECONDS tracked=${tracked_timeout_seconds}s"
+  else
+    echo "LAND meteorite budget=${timeout_seconds}s source=tracked config=meteorite/stage-budgets.tsv"
+  fi
+  if [[ -n "${LAND_METEORITE_KILL_AFTER_SECONDS:-}" ]]; then
+    echo "LAND meteorite kill-after=${kill_after_seconds}s source=override env=LAND_METEORITE_KILL_AFTER_SECONDS"
+  else
+    echo "LAND meteorite kill-after=${kill_after_seconds}s source=default"
+  fi
+  echo "LAND meteorite status=running sha=$sha"
+  run_id="land-${sha:0:12}-$$-$(date +%s)"
   prover_status=0
-  METEORITE_REPORT="$report" timeout --foreground --kill-after=10 "$timeout_seconds" \
-    bash "$trusted_tree/meteorite/prove-candidate.sh" --ref "$sha" || prover_status=$?
+  METEORITE_REPORT="$report" METEORITE_KEEP=0 METEORITE_RUN_ID="$run_id" \
+    timeout --kill-after="$kill_after_seconds" "$timeout_seconds" \
+      bash "$trusted_tree/meteorite/prove-candidate.sh" --ref "$sha" || prover_status=$?
+  cleanup_status=0
+  container_output=$("$docker_bin" ps -aq --filter "label=io.bpa.meteorite.run=$run_id") || cleanup_status=$?
+  if [ "$cleanup_status" -eq 0 ] && [ -n "$container_output" ]; then
+    mapfile -t meteorite_container_ids <<<"$container_output"
+    for container_id in "${meteorite_container_ids[@]}"; do
+      if [[ ! "$container_id" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
+        cleanup_status=1
+      fi
+    done
+  fi
+  if [ "$cleanup_status" -eq 0 ] && ((${#meteorite_container_ids[@]})); then
+    "$docker_bin" rm -f "${meteorite_container_ids[@]}" >/dev/null 2>&1 || cleanup_status=$?
+  fi
+  if [ "$cleanup_status" -eq 0 ] &&
+     [ -n "$("$docker_bin" ps -aq --filter "label=io.bpa.meteorite.run=$run_id" 2>/dev/null)" ]; then
+    cleanup_status=1
+  fi
   git -C "$repo" worktree remove --force "$trusted_tree" >/dev/null 2>&1 || true
   rm -rf "$trusted_tree"
+  if [ "$cleanup_status" -ne 0 ]; then
+    rm -f "$report"
+    echo "LAND meteorite blocker=container-cleanup-failed run=$run_id" >&2
+    return 1
+  fi
   if [ "$prover_status" -eq 124 ] || [ "$prover_status" -eq 137 ]; then
     rm -f "$report"
     echo "LAND meteorite blocker=rebuild-proof-timeout" >&2

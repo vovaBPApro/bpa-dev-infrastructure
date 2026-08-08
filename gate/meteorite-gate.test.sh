@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+unset BUN_BIN
 
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 # shellcheck source=gate/land-lib.sh
@@ -10,7 +11,9 @@ trap 'rm -rf "$fixture"' EXIT
 git init --initial-branch=main "$fixture/repo" >/dev/null
 git -C "$fixture/repo" config user.email meteorite@example.test
 git -C "$fixture/repo" config user.name Meteorite
-mkdir -p "$fixture/repo/bootstrap" "$fixture/repo/instructions" "$fixture/repo/runtime"
+mkdir -p "$fixture/repo/bootstrap" "$fixture/repo/instructions" "$fixture/repo/runtime" "$fixture/repo/meteorite"
+cp "$root/meteorite/budget.sh" "$fixture/repo/meteorite/budget.sh"
+cp "$root/meteorite/stage-budgets.tsv" "$fixture/repo/meteorite/stage-budgets.tsv"
 printf 'good\n' >"$fixture/repo/bootstrap/install.sh"
 printf 'docs\n' >"$fixture/repo/instructions/readme.md"
 printf 'behavior\n' >"$fixture/repo/runtime/behavior.sh"
@@ -57,10 +60,15 @@ grep -Fq 'LAND meteorite blocker=docker-binary-unavailable' "$fixture/unavailabl
 # Deliberately broken rebuild fixture: Docker is available, but the candidate's
 # own prover rejects the bootstrap change. The gate helper must propagate that
 # refusal instead of treating prover availability as proof.
-mkdir -p "$fixture/fake-bin" "$fixture/repo/meteorite"
+mkdir -p "$fixture/fake-bin"
 cat >"$fixture/fake-bin/docker" <<'EOF'
 #!/usr/bin/env bash
-test "${1:-}" = info && test "${FAKE_DOCKER_DAEMON:-up}" = up
+case "${1:-}" in
+  info) test "${FAKE_DOCKER_DAEMON:-up}" = up ;;
+  ps) [[ -n "${FAKE_DOCKER_STATE:-}" && -f "$FAKE_DOCKER_STATE" ]] && printf 'orphan-container\n' || true ;;
+  rm) [[ -n "${FAKE_DOCKER_STATE:-}" ]] && rm -f "$FAKE_DOCKER_STATE" ;;
+  *) exit 1 ;;
+esac
 EOF
 chmod +x "$fixture/fake-bin/docker"
 candidate_sha="$(git -C "$fixture/repo" rev-parse ag-broken)"
@@ -100,6 +108,34 @@ fi
 grep -Fq 'deliberately broken bootstrap fixture' "$fixture/broken.out"
 grep -Fq 'LAND meteorite blocker=rebuild-proof-failed' "$fixture/broken.out"
 
+# Trust boundary: enforcement introduced by a candidate is deliberately not
+# active at its own landing; gate/land.sh has already sourced the pre-merge
+# library. Once this gate is trusted, it may only use a budget present in that
+# same independently trusted pre-merge tree. It must never fall back to the
+# next candidate checkout (or to the gate caller's working tree).
+git -C "$fixture/repo" rm meteorite/budget.sh meteorite/stage-budgets.tsv >/dev/null
+cat >"$fixture/repo/meteorite/prove-candidate.sh" <<'EOF'
+#!/usr/bin/env bash
+touch "$UNTRUSTED_PROVER_MARKER"
+exit 0
+EOF
+git -C "$fixture/repo" add meteorite/prove-candidate.sh
+git -C "$fixture/repo" commit -m trusted-tree-without-budget-policy >/dev/null
+legacy_trusted_sha="$(git -C "$fixture/repo" rev-parse HEAD)"
+if UNTRUSTED_PROVER_MARKER="$fixture/legacy-prover-ran" PATH="$fixture/fake-bin:/usr/bin:/bin" \
+    land_run_meteorite "$fixture/repo" "$candidate_sha" "$legacy_trusted_sha" \
+      >"$fixture/legacy-trusted.out" 2>&1; then
+  echo 'trusted tree without budget policy unexpectedly passed meteorite gate' >&2; exit 1
+fi
+grep -Fq 'LAND meteorite blocker=trusted-budget-unavailable' "$fixture/legacy-trusted.out"
+test ! -e "$fixture/legacy-prover-ran" || {
+  echo 'prover ran before its trusted budget policy was available' >&2; exit 1;
+}
+cp "$root/meteorite/budget.sh" "$fixture/repo/meteorite/budget.sh"
+cp "$root/meteorite/stage-budgets.tsv" "$fixture/repo/meteorite/stage-budgets.tsv"
+git -C "$fixture/repo" add meteorite
+git -C "$fixture/repo" commit -m restore-trusted-budget-policy >/dev/null
+
 write_clean_report_prover() {
   local requested_sha="$1" tested_sha="$2"
   cat >"$fixture/repo/meteorite/prove-candidate.sh" <<EOF
@@ -118,6 +154,7 @@ cat >"\$METEORITE_REPORT" <<'REPORT'
 - bootstrap-dry-run: PASS
 - bootstrap-install: PASS
 - bootstrap-verify-source: PASS
+- whisper: PASS
 - test-prerequisites: PASS
 - full-test-suite: PASS
 - unit-drift: PASS
@@ -154,17 +191,41 @@ if PATH="$fixture/fake-bin:/usr/bin:/bin" land_run_meteorite "$fixture/repo" "$c
 fi
 grep -Fq 'LAND meteorite blocker=rebuild-proof-evidence-invalid' "$fixture/truncated.out"
 
-printf '#!/usr/bin/env bash\nsleep 2\n' >"$fixture/repo/meteorite/prove-candidate.sh"
+cat >"$fixture/repo/meteorite/prove-candidate.sh" <<'EOF'
+#!/usr/bin/env bash
+trap '' TERM
+(trap '' TERM; while :; do sleep 1; done) &
+printf '%s\n' "$!" >"$SURVIVOR_PID_FILE"
+touch "$FAKE_DOCKER_STATE"
+wait
+EOF
 chmod +x "$fixture/repo/meteorite/prove-candidate.sh"
 git -C "$fixture/repo" add meteorite/prove-candidate.sh
 git -C "$fixture/repo" commit -m trusted-sleeping-prover >/dev/null
 trusted_prover_sha="$(git -C "$fixture/repo" rev-parse HEAD)"
-if LAND_METEORITE_TIMEOUT_SECONDS=1 PATH="$fixture/fake-bin:/usr/bin:/bin" land_run_meteorite "$fixture/repo" "$candidate_sha" "$trusted_prover_sha" >"$fixture/timeout.out" 2>&1; then
+if SURVIVOR_PID_FILE="$fixture/survivor.pid" FAKE_DOCKER_STATE="$fixture/container.state" \
+    LAND_METEORITE_TIMEOUT_SECONDS=1 LAND_METEORITE_KILL_AFTER_SECONDS=1 \
+    PATH="$fixture/fake-bin:/usr/bin:/bin" land_run_meteorite "$fixture/repo" "$candidate_sha" \
+      "$trusted_prover_sha" >"$fixture/timeout.out" 2>&1; then
   echo 'hung prover unexpectedly passed' >&2; exit 1
 fi
 grep -Fq 'LAND meteorite blocker=rebuild-proof-timeout' "$fixture/timeout.out"
+grep -Fq 'LAND meteorite budget=1s source=override env=LAND_METEORITE_TIMEOUT_SECONDS tracked=1590s' "$fixture/timeout.out"
+grep -Fq 'LAND meteorite kill-after=1s source=override env=LAND_METEORITE_KILL_AFTER_SECONDS' "$fixture/timeout.out"
+test ! -e "$fixture/container.state" || { echo 'timed-out meteorite container survived cleanup' >&2; exit 1; }
+survivor_pid=$(cat "$fixture/survivor.pid")
+for _ in 1 2 3 4 5; do
+  kill -0 "$survivor_pid" 2>/dev/null || break
+  sleep 0.1
+done
+if kill -0 "$survivor_pid" 2>/dev/null; then
+  echo "timed-out prover child survived process-group kill: $survivor_pid" >&2
+  exit 1
+fi
 
 write_clean_report_prover "$candidate_sha" "$candidate_sha"
 PATH="$fixture/fake-bin:/usr/bin:/bin" land_run_meteorite "$fixture/repo" "$candidate_sha" "$trusted_prover_sha" >"$fixture/clean.out" 2>&1
+grep -Fq 'LAND meteorite budget=1590s source=tracked config=meteorite/stage-budgets.tsv' "$fixture/clean.out"
+grep -Fq 'LAND meteorite kill-after=10s source=default' "$fixture/clean.out"
 grep -Fq "LAND meteorite status=pass sha=$candidate_sha" "$fixture/clean.out"
 printf 'meteorite gate regression: PASS\n'

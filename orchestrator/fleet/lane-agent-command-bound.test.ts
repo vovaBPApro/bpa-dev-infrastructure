@@ -127,10 +127,17 @@ test("the declared bound clears the longest bound a lane's own gate enforces", (
   // never fires. gate/land-lib.sh runs the meteorite prover under its own
   // timeout; raising THAT without raising this one re-opens the defect, and
   // this assertion is what makes the two files fail together instead.
-  const landLib = readFileSync(join(repoRoot, "gate", "land-lib.sh"), "utf8");
-  const meteorite = landLib.match(/LAND_METEORITE_TIMEOUT_SECONDS:-([0-9]+)/);
-  expect(meteorite, "gate/land-lib.sh no longer declares a meteorite timeout").not.toBeNull();
-  const meteoriteMs = Number(meteorite![1]) * 1000;
+  const budgetRows = readFileSync(join(repoRoot, "meteorite", "stage-budgets.tsv"), "utf8")
+    .split("\n")
+    .filter((line) => line && !line.startsWith("#"));
+  expect(budgetRows.length, "meteorite/stage-budgets.tsv has no stage budgets").toBeGreaterThan(0);
+  const meteoriteMs = budgetRows.reduce((total, row) => {
+    const [stage, seconds, extra] = row.split("\t");
+    expect(extra, `malformed meteorite budget row: ${row}`).toBeUndefined();
+    expect(stage, `missing meteorite stage in row: ${row}`).not.toBe("");
+    expect(seconds, `non-integer meteorite budget in row: ${row}`).toMatch(/^[1-9][0-9]*$/);
+    return total + Number(seconds) * 1000;
+  }, 0);
 
   const audits = auditConfDir(instanceDir).filter((audit) =>
     BOUNDED_AGENTS.includes(audit.agent as (typeof BOUNDED_AGENTS)[number]),

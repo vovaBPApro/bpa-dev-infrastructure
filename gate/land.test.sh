@@ -7,7 +7,7 @@ land="${LAND_UNDER_TEST:-$root/gate/land.sh}"
 fixture_root=$(mktemp -d)
 trap 'rm -rf "$fixture_root"' EXIT
 mkdir -p "$fixture_root/fake-bin"
-printf '#!/usr/bin/env bash\ntest "$1" = info\n' > "$fixture_root/fake-bin/docker"
+printf '#!/usr/bin/env bash\ncase "$1" in info|ps) exit 0;; *) exit 1;; esac\n' > "$fixture_root/fake-bin/docker"
 chmod +x "$fixture_root/fake-bin/docker"
 export PATH="$fixture_root/fake-bin:$PATH"
 
@@ -85,6 +85,8 @@ make_fixture() {
   printf 'main\n' > "$repo/instance/hygiene-protected-branches.txt"
   printf '| row | active |\n' > "$repo/instance/workboard.md"
   mkdir -p "$repo/meteorite"
+  cp "$root/meteorite/budget.sh" "$repo/meteorite/budget.sh"
+  cp "$root/meteorite/stage-budgets.tsv" "$repo/meteorite/stage-budgets.tsv"
   cat > "$repo/meteorite/prove-candidate.sh" <<'EOF'
 # BEGIN TRUSTED TEST PROVER
 #!/usr/bin/env bash
@@ -103,6 +105,7 @@ cat > "$METEORITE_REPORT" <<REPORT
 - bootstrap-dry-run: PASS
 - bootstrap-install: PASS
 - bootstrap-verify-source: PASS
+- whisper: PASS
 - test-prerequisites: PASS
 - full-test-suite: PASS
 - unit-drift: PASS
@@ -110,7 +113,7 @@ REPORT
 # END TRUSTED TEST PROVER
 EOF
   chmod +x "$repo/meteorite/prove-candidate.sh"
-  git -C "$repo" add base.txt base.test.ts hygiene/check-retained-branches.ts instance meteorite/prove-candidate.sh
+  git -C "$repo" add base.txt base.test.ts hygiene/check-retained-branches.ts instance meteorite
   git -C "$repo" commit -m base >/dev/null
   git -C "$repo" push -u origin main >/dev/null
   printf 'ref: refs/heads/main\n' > "$bare/HEAD"
@@ -1726,7 +1729,7 @@ git -C "$fixture_root/meteorite-refusal-repo" push origin main >/dev/null
 meteorite_before=$(git -C "$fixture_root/meteorite-refusal-repo" rev-parse main)
 meteorite_sha=$(make_lane "$fixture_root/meteorite-refusal-repo" ag-meteorite-refusal)
 report "$fixture_root/meteorite-refusal-report.md" "$meteorite_sha"
-printf '#!/usr/bin/env bash\ntest "$1" = info\n' > "$fixture_root/meteorite-fake-bin/docker"
+printf '#!/usr/bin/env bash\ncase "$1" in info|ps) exit 0;; *) exit 1;; esac\n' > "$fixture_root/meteorite-fake-bin/docker"
 chmod +x "$fixture_root/meteorite-fake-bin/docker"
 meteorite_output="$fixture_root/meteorite-refusal-output.txt"
 if PATH="$fixture_root/meteorite-fake-bin:$PATH" "$land" --branch ag-meteorite-refusal --item-id ag-meteorite-refusal \

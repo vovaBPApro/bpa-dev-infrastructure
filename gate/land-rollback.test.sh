@@ -45,7 +45,7 @@ land="$root/gate/land.sh"
 # whole traversal precondition instead of being defeated by an ancestor.
 fixture_root=$(env -u TMPDIR -u TMP -u TEMP mktemp -d)
 mkdir -p "$fixture_root/fake-bin"
-printf '#!/usr/bin/env bash\ntest "$1" = info\n' > "$fixture_root/fake-bin/docker"
+printf '#!/usr/bin/env bash\ncase "$1" in info|ps) exit 0;; *) exit 1;; esac\n' > "$fixture_root/fake-bin/docker"
 chmod +x "$fixture_root/fake-bin/docker"
 export PATH="$fixture_root/fake-bin:$PATH"
 cleanup() {
@@ -97,9 +97,11 @@ make_fixture() {
   printf 'main\n' > "$repo/instance/hygiene-protected-branches.txt"
   printf '| row | active |\n' > "$repo/instance/workboard.md"
   mkdir -p "$repo/meteorite"
+  cp "$root/meteorite/budget.sh" "$repo/meteorite/budget.sh"
+  cp "$root/meteorite/stage-budgets.tsv" "$repo/meteorite/stage-budgets.tsv"
   sed -n '/^# BEGIN TRUSTED TEST PROVER$/,/^# END TRUSTED TEST PROVER$/p' "$root/gate/land.test.sh" | sed '1d;$d' > "$repo/meteorite/prove-candidate.sh"
   chmod +x "$repo/meteorite/prove-candidate.sh"
-  git -C "$repo" add base.txt base.test.ts hygiene/check-retained-branches.ts instance meteorite/prove-candidate.sh
+  git -C "$repo" add base.txt base.test.ts hygiene/check-retained-branches.ts instance meteorite
   git -C "$repo" commit -m base >/dev/null
   git -C "$repo" push -u origin main >/dev/null
   printf 'ref: refs/heads/main\n' > "$bare/HEAD"

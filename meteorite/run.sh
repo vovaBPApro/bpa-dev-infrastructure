@@ -22,6 +22,7 @@ repo_url="${METEORITE_REPO_URL:-}"
 source_mechanism="${METEORITE_SOURCE_MECHANISM:-tracked-remote}"
 donor_sha="${METEORITE_DONOR_SHA:-}"
 donor_ref="${METEORITE_DONOR_REF:-}"
+run_id="${METEORITE_RUN_ID:-manual-$$-$(date +%s)}"
 cid=""
 tested_sha="UNMEASURED"
 result="NO-GO"
@@ -37,7 +38,7 @@ The default URL is the tracked origin remote; public GitHub SSH syntax is
 converted to its credential-free HTTPS equivalent. The requested commit must
 be fetchable from that source. A local-only commit therefore fails closed; it
 is not remote-clone evidence. Environment: METEORITE_REPORT, METEORITE_IMAGE,
-METEORITE_REPO_URL, METEORITE_KEEP.
+METEORITE_REPO_URL, METEORITE_KEEP, METEORITE_RUN_ID.
 EOF
 }
 
@@ -149,6 +150,10 @@ if [[ ! "$ref" =~ ^[0-9a-fA-F]{40}$ ]]; then
   fail "ref-validation" "ref must be a 40-character commit SHA" || true
   exit 2
 fi
+if [[ ! "$run_id" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  fail "input-validation" "METEORITE_RUN_ID contains unsupported label characters" || true
+  exit 2
+fi
 require_publisher_input "METEORITE_DONOR_SHA" "$donor_sha"
 require_publisher_input "METEORITE_DONOR_REF" "$donor_ref"
 if [[ ! "$donor_sha" =~ ^[0-9a-fA-F]{40}$ ]]; then
@@ -192,7 +197,7 @@ run_exec_stage() {
   fail "$stage" "$stage command failed"
 }
 
-if ! cid="$(docker run -d --rm --network bridge "$image" sleep infinity)"; then
+if ! cid="$(docker run -d --rm --network bridge --label "io.bpa.meteorite.run=$run_id" "$image" sleep infinity)"; then
   fail "container-start" "docker could not start $image" || true
   exit 1
 fi
@@ -231,6 +236,16 @@ commands=(
   "full-test-suite|cd /work/install && PATH=/root/.bun/bin:\$PATH /root/.bun/bin/bun test"
   "unit-drift|install -d /work/rendered-units && for template in /work/install/bootstrap/units/*.in /work/install/instance/units/*.in; do test -f \"\$template\" || continue; INSTALL_ROOT=/root/bpa-dev-infrastructure ENV_FILE=/root/.config/bpa/orchestrator.env BUN_BIN=/usr/local/bin/bun BASH_BIN=/usr/bin/bash FULL_SUITE_ON_CALENDAR='*-*-* 03:30:00' ORCH_WATCHDOG_INTERVAL=60 envsubst < \"\$template\" > \"/work/rendered-units/\$(basename \"\${template%.in}\")\"; done && cd /work/install && SYSTEMD_SYSTEM_DIR=/work/rendered-units bash bootstrap/check-unit-drift.sh"
 )
+
+budget_stages=(container-start sha-verification)
+for entry in "${commands[@]}"; do
+  budget_stages+=("${entry%%|*}")
+done
+if ! bash "$repo_root/meteorite/budget.sh" --total "$repo_root/meteorite/stage-budgets.tsv" \
+    --require-exact "${budget_stages[@]}" >/dev/null; then
+  fail "budget-validation" "tracked stage budgets do not exactly match the runner stage list" || true
+  exit 1
+fi
 
 for entry in "${commands[@]}"; do
   stage="${entry%%|*}"

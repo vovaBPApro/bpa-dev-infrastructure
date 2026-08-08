@@ -1,0 +1,20 @@
+# stage	seconds
+#
+# The landing timeout is the sum of these tracked stage allocations. The two test
+# bearing stages are based on the 2026-08-08 clean-container measurement: the
+# bootstrap suite took 354.97s, and full-test-suite deliberately runs the same
+# complete suite again. bootstrap-install also owns the clean install and
+# Whisper build/model acquisition around its first suite.
+_overhead	60
+container-start	30
+prerequisites	180
+clone	45
+sha-verification	15
+bootstrap-test-prerequisites	30
+bootstrap-dry-run	30
+bootstrap-install	600
+bootstrap-verify-source	30
+whisper	30
+test-prerequisites	15
+full-test-suite	480
+unit-drift	45

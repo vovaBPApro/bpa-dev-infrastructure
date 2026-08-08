@@ -65,8 +65,22 @@ cat >"$fixture/fake-bin/docker" <<'EOF'
 #!/usr/bin/env bash
 case "${1:-}" in
   info) test "${FAKE_DOCKER_DAEMON:-up}" = up ;;
-  ps) [[ -n "${FAKE_DOCKER_STATE:-}" && -f "$FAKE_DOCKER_STATE" ]] && printf 'orphan-container\n' || true ;;
-  rm) [[ -n "${FAKE_DOCKER_STATE:-}" ]] && rm -f "$FAKE_DOCKER_STATE" ;;
+  ps)
+    count=1
+    if [[ -n "${FAKE_DOCKER_PS_COUNT_FILE:-}" ]]; then
+      [[ ! -f "$FAKE_DOCKER_PS_COUNT_FILE" ]] || count=$(( $(cat "$FAKE_DOCKER_PS_COUNT_FILE") + 1 ))
+      printf '%s\n' "$count" >"$FAKE_DOCKER_PS_COUNT_FILE"
+    fi
+    [[ "${FAKE_DOCKER_MODE:-}" != first-ps-fail || "$count" -ne 1 ]] || exit 42
+    [[ "${FAKE_DOCKER_MODE:-}" != final-ps-fail || "$count" -ne 2 ]] || exit 42
+    [[ -n "${FAKE_DOCKER_STATE:-}" && -f "$FAKE_DOCKER_STATE" ]] && printf 'orphan-container\n' || true
+    ;;
+  rm)
+    [[ "${FAKE_DOCKER_MODE:-}" != rm-fail ]] || exit 42
+    if [[ "${FAKE_DOCKER_MODE:-}" != remaining-container && -n "${FAKE_DOCKER_STATE:-}" ]]; then
+      rm -f "$FAKE_DOCKER_STATE"
+    fi
+    ;;
   *) exit 1 ;;
 esac
 EOF
@@ -224,6 +238,34 @@ if kill -0 "$survivor_pid" 2>/dev/null; then
 fi
 
 write_clean_report_prover "$candidate_sha" "$candidate_sha"
+
+assert_cleanup_blocked() {
+  local mode="$1" state count output
+  state="$fixture/$mode.container"
+  count="$fixture/$mode.ps-count"
+  output="$fixture/$mode.out"
+  rm -f "$state" "$count"
+  if [[ "$mode" == rm-fail || "$mode" == remaining-container ]]; then
+    touch "$state"
+  fi
+  if FAKE_DOCKER_MODE="$mode" FAKE_DOCKER_STATE="$state" FAKE_DOCKER_PS_COUNT_FILE="$count" \
+      PATH="$fixture/fake-bin:/usr/bin:/bin" land_run_meteorite "$fixture/repo" \
+        "$candidate_sha" "$trusted_prover_sha" >"$output" 2>&1; then
+    echo "$mode unexpectedly passed meteorite container cleanup" >&2
+    exit 1
+  fi
+  grep -Fq 'LAND meteorite blocker=container-cleanup-failed' "$output"
+}
+
+# Every observation and mutation in the cleanup sequence is fail-closed. The
+# final-ps-fail control is the rejected r1 shape: no output, exit 42, after the
+# first enumeration succeeded. Testing only `-n "$(docker ps ...)"` discarded
+# that exit status and produced a false green.
+assert_cleanup_blocked first-ps-fail
+assert_cleanup_blocked rm-fail
+assert_cleanup_blocked remaining-container
+assert_cleanup_blocked final-ps-fail
+
 PATH="$fixture/fake-bin:/usr/bin:/bin" land_run_meteorite "$fixture/repo" "$candidate_sha" "$trusted_prover_sha" >"$fixture/clean.out" 2>&1
 grep -Fq 'LAND meteorite budget=1590s source=tracked config=meteorite/stage-budgets.tsv' "$fixture/clean.out"
 grep -Fq 'LAND meteorite kill-after=10s source=default' "$fixture/clean.out"

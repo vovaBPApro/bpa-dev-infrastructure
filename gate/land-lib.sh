@@ -561,9 +561,11 @@ land_run_meteorite() {
   if [ "$cleanup_status" -eq 0 ] && ((${#meteorite_container_ids[@]})); then
     "$docker_bin" rm -f "${meteorite_container_ids[@]}" >/dev/null 2>&1 || cleanup_status=$?
   fi
-  if [ "$cleanup_status" -eq 0 ] &&
-     [ -n "$("$docker_bin" ps -aq --filter "label=io.bpa.meteorite.run=$run_id" 2>/dev/null)" ]; then
-    cleanup_status=1
+  if [ "$cleanup_status" -eq 0 ]; then
+    container_output=$("$docker_bin" ps -aq --filter "label=io.bpa.meteorite.run=$run_id") || cleanup_status=$?
+    if [ "$cleanup_status" -eq 0 ] && [ -n "$container_output" ]; then
+      cleanup_status=1
+    fi
   fi
   git -C "$repo" worktree remove --force "$trusted_tree" >/dev/null 2>&1 || true
   rm -rf "$trusted_tree"

@@ -415,6 +415,86 @@ exit 2
     expect(run.stderr.toString()).toContain("provider not found: claude");
   });
 
+  test("a replayed real refusal cannot launder the intervening provider failure", async () => {
+    // Tier-A R5-1 red-before. Both pairs come from the real tracked gate and
+    // the final pair is a byte-perfect suffix, but BOTH gate failures were
+    // ignored and status 2 is unconditional. A boundary needs one uniquely
+    // propagated terminal refusal, not replayable log bytes plus a familiar
+    // status.
+    const f = await boundaryFixture(`#!/usr/bin/env bash
+"$(dirname "$0")/preflight-cli-auth.sh" "\${ORCH_PROVIDER:-claude}" || true
+printf 'provider not found: claude\n' >&2
+"$(dirname "$0")/preflight-cli-auth.sh" "\${ORCH_PROVIDER:-claude}" || true
+exit 2
+`);
+    const run = runStage(f.install, f.root, {
+      ORCH_CLAUDE_CRED_FILE: join(f.root, "no-such-credentials.json"),
+    });
+    expect(run.exitCode).toBe(1);
+    const evidence = evidenceOf(run);
+    expect(evidence).toContain("proven=no");
+    expect(evidence).not.toContain("auth-preflight-refusal");
+    expect(run.stderr.toString().match(/AUTH-PREFLIGHT refused=subscription-store-missing/g)?.length).toBe(2);
+    expect(run.stderr.toString()).toContain("provider not found: claude");
+  });
+
+  test("a unique genuine refusal returned with the wrong launcher status is not the boundary", async () => {
+    const f = await boundaryFixture(`#!/usr/bin/env bash
+"$(dirname "$0")/preflight-cli-auth.sh" "\${ORCH_PROVIDER:-claude}" || exit 1
+exit 0
+`);
+    const run = runStage(f.install, f.root, {
+      ORCH_CLAUDE_CRED_FILE: join(f.root, "no-such-credentials.json"),
+    });
+    expect(run.exitCode).toBe(1);
+    expect(evidenceOf(run)).toContain("proven=no");
+    expect(evidenceOf(run)).not.toContain("auth-preflight-refusal");
+  });
+
+  test("a non-empty suffix after a genuine refusal proves it was not terminal", async () => {
+    const f = await boundaryFixture(`#!/usr/bin/env bash
+"$(dirname "$0")/preflight-cli-auth.sh" "\${ORCH_PROVIDER:-claude}" || true
+printf 'launcher continued after auth refusal\n' >&2
+exit 2
+`);
+    const run = runStage(f.install, f.root, {
+      ORCH_CLAUDE_CRED_FILE: join(f.root, "no-such-credentials.json"),
+    });
+    expect(run.exitCode).toBe(1);
+    expect(evidenceOf(run)).toContain("proven=no");
+    expect(evidenceOf(run)).not.toContain("auth-preflight-refusal");
+  });
+
+  test("whitespace-only trailing lines are empty under the stated terminal contract", async () => {
+    const f = await boundaryFixture(`#!/usr/bin/env bash
+"$(dirname "$0")/preflight-cli-auth.sh" "\${ORCH_PROVIDER:-claude}" || {
+  printf '   \n\t\n' >&2
+  exit 2
+}
+exit 0
+`);
+    const run = runStage(f.install, f.root, {
+      ORCH_CLAUDE_CRED_FILE: join(f.root, "no-such-credentials.json"),
+    });
+    expect(run.exitCode).toBe(0);
+    expect(evidenceOf(run)).toContain("proven=yes");
+    expect(evidenceOf(run)).toContain("auth-preflight-refusal");
+  });
+
+  test("leading whitespace makes refusal lines non-verbatim and cannot buy the boundary", async () => {
+    const f = await boundaryFixture(`#!/usr/bin/env bash
+set -o pipefail
+"$(dirname "$0")/preflight-cli-auth.sh" "\${ORCH_PROVIDER:-claude}" 2>&1 | sed 's/^/ /' || exit 2
+exit 0
+`);
+    const run = runStage(f.install, f.root, {
+      ORCH_CLAUDE_CRED_FILE: join(f.root, "no-such-credentials.json"),
+    });
+    expect(run.exitCode).toBe(1);
+    expect(evidenceOf(run)).toContain("proven=no");
+    expect(evidenceOf(run)).not.toContain("auth-preflight-refusal");
+  });
+
   test("a launcher that starts anyway, in a world the gate refuses, fails as an unenforced gate", async () => {
     // The auth preflight is not on the launch path it claims to be on. That is
     // a hole in the launcher, and it is the one thing a boundary defined by

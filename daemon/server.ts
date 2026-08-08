@@ -64,6 +64,7 @@ import {
   decideRelay,
   detectCodexPasteDeliveryState,
   evaluateStall,
+  fenceAcceptedTerminalPending,
   buildProgressSignature,
   getWatchdogTimeoutConfig,
   isMcpChannelDetached,
@@ -76,6 +77,12 @@ import {
   parseAssistantChunkAfterTelegramMessage,
   sanitizeChatRegion,
 } from './reliability';
+import {
+  CodexMidTurnRelay,
+  codexFinalEditTarget,
+  runCodexMidTurnLoop,
+  startCodexRelayAfterPaste,
+} from './codex-midturn-relay';
 import { readActiveMission, resolveStateDbPath } from './mission-source';
 import { drainOutbox, resolveOrchestratorLauncher } from './control';
 import {
@@ -1732,58 +1739,43 @@ async function sendCodexRelay(
   chatId: string,
   messageId: number | undefined,
   body: string,
-): Promise<number | undefined> {
+): Promise<number> {
   const sent = await bot.api.sendMessage(chatId, body, {
     disable_notification: true,
     ...(messageId ? { reply_parameters: { message_id: messageId } } : {}),
   });
-  return sent?.message_id;
+  if (sent?.message_id == null) {
+    throw new Error('Telegram send returned no message_id');
+  }
+  return sent.message_id;
 }
 
+const codexMidTurnRelay = new CodexMidTurnRelay({
+  getPending: (chatId) => pendingReplies.get(chatId),
+  extract: (pending) => extractLastAssistantChunk(pending.messageId),
+  send: (pending, body) =>
+    sendCodexRelay(pending.chatId, pending.messageId, body),
+  now: () => Date.now(),
+  failure: (message) => {
+    lastRelayResult = 'codex:midturn:failed';
+    process.stderr.write(`${LOG_PREFIX} ${message}\n`);
+  },
+});
+
 async function startCodexFastRelay(chatId: string): Promise<void> {
-  const pending = pendingReplies.get(chatId);
-  if (!pending || pending.fast_relay_started) return;
-  pending.fast_relay_started = true;
-
-  for (let attempt = 0; attempt < 24; attempt++) {
-    await new Promise((resolve) =>
-      setTimeout(resolve, attempt === 0 ? 800 : 1000),
-    );
-    const current = pendingReplies.get(chatId);
-    if (!current || current.pending_request_id !== pending.pending_request_id) {
-      return;
-    }
-    if (current.replied_at != null || current.fallback_sent) return;
-
-    if (await maybeSendTmuxApproval(chatId)) return;
-    if (await maybeSendTmuxDecision(chatId)) return;
-
-    const chunk = await extractLastAssistantChunk(current.messageId);
-    if (!chunk) continue;
-    if (chunk === current.baseline_assistant_chunk) continue;
-    if (chunk === current.last_relayed_chunk) continue;
-
-    const body =
-      chunk.length > AUTO_RELAY_MAX_BODY
-        ? chunk.slice(0, AUTO_RELAY_MAX_BODY) + '\n…'
-        : chunk;
-    try {
-      const sentId = await sendCodexRelay(chatId, current.messageId, body);
-      current.fallback_sent = true;
-      current.reply_source = 'auto_relay';
-      current.last_relayed_chunk = chunk;
-      current.relay_message_id = sentId;
-      process.stderr.write(
-        `${LOG_PREFIX} codex fast-relay to chat=${chatId} (${chunk.length} chars)\n`,
-      );
-      return;
-    } catch (err) {
-      process.stderr.write(
-        `${LOG_PREFIX} codex fast-relay to ${chatId} FAILED: ${err}\n`,
-      );
-      return;
-    }
-  }
+  const delay = (delayMs: number) =>
+    new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+  await runCodexMidTurnLoop(chatId, {
+    getPending: (id) => pendingReplies.get(id),
+    sleep: delay,
+    tick: (id, requestId) => codexMidTurnRelay.tick(id, requestId),
+    maybeApproval: maybeSendTmuxApproval,
+    maybeDecision: maybeSendTmuxDecision,
+    failure: (message) => {
+      lastRelayResult = 'codex:midturn:owner-failed';
+      process.stderr.write(`${LOG_PREFIX} ${message}\n`);
+    },
+  });
 }
 
 function tmuxApprovalKey(prompt: { reason?: string; command: string }): string {
@@ -1932,10 +1924,13 @@ async function watchdogTick(): Promise<void> {
     if (binding.provider === 'codex' && (await maybeSendTmuxDecision(chatId))) {
       continue;
     }
-    // For codex this is the SAFETY NET only: notify turn-end is the normal path
-    // and sets replied_at (so we skipped above). Reaching here means notify
-    // missed for CODEX_FALLBACK_TIMEOUT_MS — scrape the pane so the reply is not
-    // lost. fast-relay stays disabled, so no dup in the normal case.
+    // The Codex mid-turn relay owns progress, coalescing, retries and the
+    // no-chunk heartbeat for this request. Letting the generic watchdog race it
+    // recreates the duplicate preview/final path this ownership removes.
+    if (binding.provider === 'codex' && p.fast_relay_started) continue;
+    // For Codex this is now only the safety net for a legacy/unowned pending
+    // entry: request-keyed mid-turn entries continued above. Reaching here means
+    // no owner was started and notify missed for CODEX_FALLBACK_TIMEOUT_MS.
 
     const chunk = await extractLastAssistantChunk(p.messageId);
     const current = pendingReplies.get(chatId);
@@ -2261,7 +2256,12 @@ async function flushBufferedMessagesToTmux(): Promise<number> {
     const ok = await tmuxPasteText(
       wrappedTelegramPrompt(msg.content, msg.meta),
     );
-    // No codex fast-relay: notify turn-end is the single delivery path (avoids dups).
+    startCodexRelayAfterPaste(
+      currentBinding()?.provider,
+      ok,
+      msg.meta.chat_id,
+      (id) => void startCodexFastRelay(id),
+    );
     if (!ok) {
       msgBuffer.unshift(...toFlush.slice(i));
       while (msgBuffer.length > MAX_BUFFER) msgBuffer.shift();
@@ -2735,10 +2735,13 @@ async function ingestTurnEndRelay(payload: TurnEndPayload): Promise<{
 }> {
   const binding = maybePromoteBindingSession(payload);
   const key = turnKey(payload);
+  const decisionPending = binding
+    ? pendingReplies.get(binding.bound_chat_id)
+    : undefined;
   const decision = decideRelay({
     binding,
     configuredBoundChatId: CONFIGURED_BOUND_CHAT_ID,
-    pending: binding ? pendingReplies.get(binding.bound_chat_id) : undefined,
+    pending: decisionPending,
     payload,
     started_at: Date.now(),
     existingDelivery: turnDeliveries.get(key),
@@ -2756,6 +2759,12 @@ async function ingestTurnEndRelay(payload: TurnEndPayload): Promise<{
     return { status: 200, body: decision.outcome };
   }
   if (decision.action === 'suppress') {
+    fenceAcceptedTerminalPending({
+      decision,
+      expected: decisionPending,
+      current: pendingReplies.get(decision.chat_id),
+      now: Date.now(),
+    });
     turnDeliveries.set(key, {
       chat_id: decision.chat_id,
       outcome: decision.outcome,
@@ -2772,12 +2781,7 @@ async function ingestTurnEndRelay(payload: TurnEndPayload): Promise<{
   // that message to the authoritative final text instead of sending a second
   // message (the "short message then long duplicate" bug).
   const deliverPending = pendingReplies.get(decision.chat_id);
-  const editTargetId =
-    deliverPending &&
-    deliverPending.reply_source === 'auto_relay' &&
-    deliverPending.relay_message_id != null
-      ? deliverPending.relay_message_id
-      : undefined;
+  const editTargetId = codexFinalEditTarget(deliverPending);
   let edited = false;
   if (editTargetId != null) {
     try {
@@ -2829,11 +2833,12 @@ async function ingestTurnEndRelay(payload: TurnEndPayload): Promise<{
     first_seen_at: Date.now(),
   });
   persistTurnDeliveries();
-  const pending = pendingReplies.get(decision.chat_id);
-  if (pending && decision.classification === 'solicited') {
-    pending.replied_at = Date.now();
-    pending.reply_source = 'layer1';
-  }
+  fenceAcceptedTerminalPending({
+    decision,
+    expected: decisionPending,
+    current: pendingReplies.get(decision.chat_id),
+    now: Date.now(),
+  });
   lastRelayResult = `${payload.source}:deliver:${decision.outcome}`;
   return { status: 200, body: decision.outcome };
 }
@@ -3977,10 +3982,16 @@ async function handleInbound(
 
     const ok = await tmuxPasteText(wrapped);
     if (ok) {
-      // No fast-relay for codex: its notify turn-end relay is the single
-      // authoritative delivery path. Running both produced duplicate messages
-      // (fast-relay preview + notify final) that edit-in-place could not always
-      // merge when rapid inbounds rotated the pending entry.
+      startCodexRelayAfterPaste(
+        currentBinding()?.provider,
+        ok,
+        chat_id,
+        (id) => void startCodexFastRelay(id),
+      );
+      // Codex commentary is visible only in the TUI; the notify hook fires at
+      // turn end. Start one request-keyed relay: its first preview remains
+      // eligible for final edit-in-place, while later cadence updates are new
+      // messages and force notify to send the final as a fresh message.
       // Silent ack via reaction so user knows it landed — and whether codex is
       // busy (✍️ = queued, will answer when free) or idle (👀 = answering now).
       // (⏳ is not in Telegram's allowed reaction set; ✍️ is.)

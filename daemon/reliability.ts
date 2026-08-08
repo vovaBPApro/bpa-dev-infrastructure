@@ -42,6 +42,8 @@ export type PendingReply = {
   baseline_assistant_chunk?: string;
   last_relayed_chunk?: string;
   fast_relay_started?: boolean;
+  midturn_last_sent_at?: number;
+  midturn_message_count?: number;
   // Telegram message_id of the fast-relay preview, so the authoritative final
   // turn-end relay can EDIT it in place instead of sending a duplicate.
   relay_message_id?: number;
@@ -153,6 +155,27 @@ export type RelayDecision =
         | 'suppressed_by_prior_delivery';
       chat_id: string;
     };
+
+export function fenceAcceptedTerminalPending(params: {
+  decision: RelayDecision;
+  expected: PendingReply | undefined;
+  current: PendingReply | undefined;
+  now: number;
+}): boolean {
+  const { decision, expected, current, now } = params;
+  if (
+    (decision.action !== 'deliver' && decision.action !== 'suppress') ||
+    decision.classification !== 'solicited' ||
+    !expected ||
+    current !== expected ||
+    current.pending_request_id !== expected.pending_request_id
+  ) {
+    return false;
+  }
+  current.replied_at = now;
+  current.reply_source = 'layer1';
+  return true;
+}
 
 export type ClaudeStopHookPayload = {
   session_id?: string;
@@ -728,7 +751,11 @@ export function decideRelay(params: {
       pending.reply_source === 'auto_placeholder')
   ) {
     const relayed = pending.last_relayed_chunk?.trim();
-    if (pending.reply_source === 'auto_relay' && relayed === assistant) {
+    if (
+      pending.reply_source === 'auto_relay' &&
+      (pending.midturn_message_count ?? 1) === 1 &&
+      relayed === assistant
+    ) {
       return {
         action: 'suppress',
         classification: 'solicited',

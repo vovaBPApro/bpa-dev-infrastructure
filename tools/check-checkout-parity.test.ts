@@ -183,6 +183,60 @@ const INBOX_SHAPED_CHECK = [
 
 const INBOX_FIXTURE = { tracked: { "check.sh": INBOX_SHAPED_CHECK }, untracked: { "inbox.jsonl": "{}\n" } };
 
+const SPACED_LEDGER_LINE = "FAIL inbox.jsonl:msg 2721 [ledger]  untriaged inbound >24h with no HR-2721.md and no triage verdict";
+
+/** The exact single-token subject parser rejected in r2, retained only as red evidence. */
+function rejectedSingleTokenLedgerOutcomes(run: { stdout: string; stderr: string; status: number }): OutcomeSet {
+  const text = `${run.stdout}\n${run.stderr}`;
+  const finding = text.split("\n").map((line) => line.match(/^(FAIL|UNKNOWN|WARN|SKIP|PASS) +(\S+) +\[([^\]]+)\]/)).find(Boolean);
+  const summary = text.match(/^summary: (\d+) FAIL, (\d+) UNKNOWN, (\d+) WARN, (\d+) SKIP, (\d+) PASS \((\d+) docs\)$/m);
+  if (!summary || Number(summary[1]) !== (finding?.[1] === "FAIL" ? 1 : 0)) {
+    return { unmeasured: "the ledger outcome set was not parsed faithfully" };
+  }
+  return {
+    records: [
+      { key: `${finding![2]} [${finding![3]}]`, value: finding![1]! },
+      { key: "docs", value: summary[6]! },
+      { key: "exit-status", value: String(run.status) },
+    ],
+  };
+}
+
+const SPACED_LEDGER_CHECK = [
+  "#!/bin/bash",
+  'world="$1"',
+  'if [ -f "$world/inbox.jsonl" ]; then',
+  `  echo "${SPACED_LEDGER_LINE}"`,
+  "else",
+  '  echo "FAIL instance [ledger]  comparison fixture"',
+  "fi",
+  'echo ""',
+  'echo "summary: 1 FAIL, 0 UNKNOWN, 0 WARN, 0 SKIP, 0 PASS (32 docs)"',
+  "exit 1",
+  "",
+].join("\n");
+
+const SPACED_LEDGER_FIXTURE = { tracked: { "check.sh": SPACED_LEDGER_CHECK }, untracked: { "inbox.jsonl": "{}\n" } };
+
+test("RED BEFORE: the rejected single-token ledger parser makes the exact real spaced subject UNKNOWN", () => {
+  withRepo(SPACED_LEDGER_FIXTURE, (repo) => {
+    const result = checkParity({ repo, checks: [scriptCheck("ledger", "check.sh", rejectedSingleTokenLedgerOutcomes)] });
+    expect(result.verdict).toBe("UNKNOWN");
+    expect(result.findings.join("\n")).toContain("world=primary UNKNOWN: the ledger outcome set was not parsed faithfully");
+  });
+});
+
+test("GREEN AFTER: the exact real spaced ledger subject is preserved and measured as a divergence", () => {
+  withRepo(SPACED_LEDGER_FIXTURE, (repo) => {
+    const result = checkParity({ repo, checks: [scriptCheck("ledger", "check.sh", ledgerOutcomes)] });
+    expect(result.verdict).toBe("FAIL");
+    expect(result.findings.join("\n")).toContain(
+      'check=ledger DIVERGED outcome record="inbox.jsonl:msg 2721 [ledger]": primary=FAIL lane-worktree=absent land-main=absent',
+    );
+    expect(result.findings.join("\n")).not.toContain("UNKNOWN");
+  });
+});
+
 test("RED BEFORE: comparing exit status alone reports parity on the consilium's own divergence", () => {
   // The blind extractor IS the rejected comparison, kept nameable so the defect
   // can be executed rather than described. This must pass, and its passing is

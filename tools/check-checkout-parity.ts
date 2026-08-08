@@ -181,13 +181,15 @@ export function normalizeWorldPaths(text: string, world: string): string {
 }
 
 const LEDGER_LEVEL = "(?:FAIL|UNKNOWN|WARN|SKIP|PASS)";
-const LEDGER_FINDING = new RegExp(`^(${LEDGER_LEVEL}) +(\\S+) +\\[([^\\]]+)\\]`);
+const LEDGER_FINDING = new RegExp(`^(${LEDGER_LEVEL}) +(.+?) +\\[([^\\]]+)\\]`);
 const LEDGER_SUMMARY = /^summary: (\d+) FAIL, (\d+) UNKNOWN, (\d+) WARN, (\d+) SKIP, (\d+) PASS \((\d+) docs\)$/;
 
 /**
  * tools/instructions/check.ts prints one line per judgement -- `LEVEL file
  * [check]  detail` -- and closes with a `summary:` line tallying the levels.
- * Both are read.
+ * Both are read. The judged subject is the complete text between the level and
+ * the checker-id delimiter; it can contain spaces (for example
+ * `inbox.jsonl:msg 2721 [ledger]`).
  *
  * DELIBERATELY DROPPED: the trailing `detail` text. It carries absolute paths
  * and row counts that legitimately differ between worlds; the level, the file

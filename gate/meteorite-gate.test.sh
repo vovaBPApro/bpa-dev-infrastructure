@@ -208,8 +208,19 @@ grep -Fq 'LAND meteorite blocker=rebuild-proof-evidence-invalid' "$fixture/trunc
 cat >"$fixture/repo/meteorite/prove-candidate.sh" <<'EOF'
 #!/usr/bin/env bash
 trap '' TERM
-(trap '' TERM; while :; do sleep 1; done) &
+(
+  trap '' TERM
+  exec 9>"$SURVIVOR_LOCK_FILE"
+  flock -x 9
+  touch "$SURVIVOR_READY_FILE"
+  while :; do sleep 1; done
+) &
 printf '%s\n' "$!" >"$SURVIVOR_PID_FILE"
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [[ ! -e "$SURVIVOR_READY_FILE" ]] || break
+  sleep 0.01
+done
+[[ -e "$SURVIVOR_READY_FILE" ]] || exit 98
 touch "$FAKE_DOCKER_STATE"
 wait
 EOF
@@ -217,7 +228,8 @@ chmod +x "$fixture/repo/meteorite/prove-candidate.sh"
 git -C "$fixture/repo" add meteorite/prove-candidate.sh
 git -C "$fixture/repo" commit -m trusted-sleeping-prover >/dev/null
 trusted_prover_sha="$(git -C "$fixture/repo" rev-parse HEAD)"
-if SURVIVOR_PID_FILE="$fixture/survivor.pid" FAKE_DOCKER_STATE="$fixture/container.state" \
+if SURVIVOR_PID_FILE="$fixture/survivor.pid" SURVIVOR_LOCK_FILE="$fixture/survivor.lock" \
+    SURVIVOR_READY_FILE="$fixture/survivor.ready" FAKE_DOCKER_STATE="$fixture/container.state" \
     LAND_METEORITE_TIMEOUT_SECONDS=1 LAND_METEORITE_KILL_AFTER_SECONDS=1 \
     PATH="$fixture/fake-bin:/usr/bin:/bin" land_run_meteorite "$fixture/repo" "$candidate_sha" \
       "$trusted_prover_sha" >"$fixture/timeout.out" 2>&1; then
@@ -227,14 +239,22 @@ grep -Fq 'LAND meteorite blocker=rebuild-proof-timeout' "$fixture/timeout.out"
 grep -Fq 'LAND meteorite budget=1s source=override env=LAND_METEORITE_TIMEOUT_SECONDS tracked=1590s' "$fixture/timeout.out"
 grep -Fq 'LAND meteorite kill-after=1s source=override env=LAND_METEORITE_KILL_AFTER_SECONDS' "$fixture/timeout.out"
 test ! -e "$fixture/container.state" || { echo 'timed-out meteorite container survived cleanup' >&2; exit 1; }
-survivor_pid=$(cat "$fixture/survivor.pid")
-for _ in 1 2 3 4 5; do
-  kill -0 "$survivor_pid" 2>/dev/null || break
-  sleep 0.1
-done
-if kill -0 "$survivor_pid" 2>/dev/null; then
-  echo "timed-out prover child survived process-group kill: $survivor_pid" >&2
+test -e "$fixture/survivor.ready" || { echo 'survivor rehearsal never held its lock' >&2; exit 1; }
+if ! flock -n "$fixture/survivor.lock" true; then
+  echo 'timed-out prover child still holds a kernel lock after process-group kill' >&2
   exit 1
+fi
+survivor_pid=$(cat "$fixture/survivor.pid")
+if kill -0 "$survivor_pid" 2>/dev/null; then
+  # A container whose PID 1 does not reap orphans retains a dead child as Z.
+  # kill -0 answers true for that PID even though the process has no code or
+  # file descriptors and cannot hold the lock above. Only a non-zombie is a
+  # survivor; unreadable process state fails this rehearsal closed under -e.
+  survivor_state=$(awk '{ print $3 }' "/proc/$survivor_pid/stat")
+  if [[ "$survivor_state" != Z ]]; then
+    echo "timed-out prover child survived process-group kill: $survivor_pid state=$survivor_state" >&2
+    exit 1
+  fi
 fi
 
 write_clean_report_prover "$candidate_sha" "$candidate_sha"

@@ -42,6 +42,8 @@ export type PendingReply = {
   baseline_assistant_chunk?: string;
   last_relayed_chunk?: string;
   fast_relay_started?: boolean;
+  midturn_last_sent_at?: number;
+  midturn_message_count?: number;
   // Telegram message_id of the fast-relay preview, so the authoritative final
   // turn-end relay can EDIT it in place instead of sending a duplicate.
   relay_message_id?: number;
@@ -728,7 +730,11 @@ export function decideRelay(params: {
       pending.reply_source === 'auto_placeholder')
   ) {
     const relayed = pending.last_relayed_chunk?.trim();
-    if (pending.reply_source === 'auto_relay' && relayed === assistant) {
+    if (
+      pending.reply_source === 'auto_relay' &&
+      (pending.midturn_message_count ?? 1) === 1 &&
+      relayed === assistant
+    ) {
       return {
         action: 'suppress',
         classification: 'solicited',

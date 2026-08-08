@@ -48,3 +48,17 @@ test('pending registration cannot claim delivery and watchdog skips only a live 
     "if (binding.provider === 'codex' && p.fast_relay_started) continue;",
   );
 });
+
+test('turn-end ingestion fences both accepted suppress and deliver outcomes', () => {
+  const ingest = between(
+    'async function ingestTurnEndRelay(',
+    'function deliverOrBuffer(',
+  );
+  expect(ingest.match(/fenceAcceptedTerminalPending\s*\(/g) ?? []).toHaveLength(2);
+  expect(ingest).toMatch(
+    /if \(decision\.action === 'suppress'\) \{\s*fenceAcceptedTerminalPending\(/,
+  );
+  expect(ingest).toMatch(
+    /persistTurnDeliveries\(\);\s*fenceAcceptedTerminalPending\(/,
+  );
+});

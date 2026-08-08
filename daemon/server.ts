@@ -64,6 +64,7 @@ import {
   decideRelay,
   detectCodexPasteDeliveryState,
   evaluateStall,
+  fenceAcceptedTerminalPending,
   buildProgressSignature,
   getWatchdogTimeoutConfig,
   isMcpChannelDetached,
@@ -1762,9 +1763,11 @@ const codexMidTurnRelay = new CodexMidTurnRelay({
 });
 
 async function startCodexFastRelay(chatId: string): Promise<void> {
+  const delay = (delayMs: number) =>
+    new Promise<void>((resolve) => setTimeout(resolve, delayMs));
   await runCodexMidTurnLoop(chatId, {
     getPending: (id) => pendingReplies.get(id),
-    sleep: (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
+    sleep: delay,
     tick: (id, requestId) => codexMidTurnRelay.tick(id, requestId),
     maybeApproval: maybeSendTmuxApproval,
     maybeDecision: maybeSendTmuxDecision,
@@ -2732,10 +2735,13 @@ async function ingestTurnEndRelay(payload: TurnEndPayload): Promise<{
 }> {
   const binding = maybePromoteBindingSession(payload);
   const key = turnKey(payload);
+  const decisionPending = binding
+    ? pendingReplies.get(binding.bound_chat_id)
+    : undefined;
   const decision = decideRelay({
     binding,
     configuredBoundChatId: CONFIGURED_BOUND_CHAT_ID,
-    pending: binding ? pendingReplies.get(binding.bound_chat_id) : undefined,
+    pending: decisionPending,
     payload,
     started_at: Date.now(),
     existingDelivery: turnDeliveries.get(key),
@@ -2753,6 +2759,12 @@ async function ingestTurnEndRelay(payload: TurnEndPayload): Promise<{
     return { status: 200, body: decision.outcome };
   }
   if (decision.action === 'suppress') {
+    fenceAcceptedTerminalPending({
+      decision,
+      expected: decisionPending,
+      current: pendingReplies.get(decision.chat_id),
+      now: Date.now(),
+    });
     turnDeliveries.set(key, {
       chat_id: decision.chat_id,
       outcome: decision.outcome,
@@ -2821,11 +2833,12 @@ async function ingestTurnEndRelay(payload: TurnEndPayload): Promise<{
     first_seen_at: Date.now(),
   });
   persistTurnDeliveries();
-  const pending = pendingReplies.get(decision.chat_id);
-  if (pending && decision.classification === 'solicited') {
-    pending.replied_at = Date.now();
-    pending.reply_source = 'layer1';
-  }
+  fenceAcceptedTerminalPending({
+    decision,
+    expected: decisionPending,
+    current: pendingReplies.get(decision.chat_id),
+    now: Date.now(),
+  });
   lastRelayResult = `${payload.source}:deliver:${decision.outcome}`;
   return { status: 200, body: decision.outcome };
 }

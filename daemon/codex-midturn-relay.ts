@@ -54,6 +54,7 @@ export type CodexMidTurnDeps = {
 export type CodexMidTurnLoopDeps = {
   getPending(chatId: string): PendingReply | undefined;
   sleep(delayMs: number): Promise<void>;
+  failureDelayMs?: number;
   tick(chatId: string, requestId: string): Promise<CodexMidTurnResult>;
   maybeApproval(chatId: string): Promise<boolean>;
   maybeDecision(chatId: string): Promise<boolean>;
@@ -70,11 +71,11 @@ export async function runCodexMidTurnLoop(
   const requestId = pending.pending_request_id;
   try {
     for (let attempt = 0; ; attempt++) {
-      await deps.sleep(attempt === 0 ? 800 : CODEX_MIDTURN_POLL_MS);
-      const current = deps.getPending(chatId);
-      if (!current || current.pending_request_id !== requestId) return;
-      if (current.replied_at != null) return;
       try {
+        await deps.sleep(attempt === 0 ? 800 : CODEX_MIDTURN_POLL_MS);
+        const current = deps.getPending(chatId);
+        if (!current || current.pending_request_id !== requestId) return;
+        if (current.replied_at != null) return;
         if (await deps.maybeApproval(chatId)) continue;
         if (await deps.maybeDecision(chatId)) continue;
         await deps.tick(chatId, requestId);
@@ -84,21 +85,14 @@ export async function runCodexMidTurnLoop(
             error instanceof Error ? error.message : String(error)
           }`,
         );
+        await new Promise((resolve) =>
+          setTimeout(resolve, deps.failureDelayMs ?? CODEX_MIDTURN_POLL_MS),
+        );
       }
     }
-  } catch (error) {
-    deps.failure(
-      `codex mid-turn owner stopped chat=${chatId} request=${requestId}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
   } finally {
     const current = deps.getPending(chatId);
-    if (
-      current === pending &&
-      current.pending_request_id === requestId &&
-      current.replied_at == null
-    ) {
+    if (current === pending && current.pending_request_id === requestId) {
       current.fast_relay_started = false;
     }
   }

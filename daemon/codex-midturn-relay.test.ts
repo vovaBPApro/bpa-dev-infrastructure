@@ -11,6 +11,7 @@ import {
 } from './codex-midturn-relay';
 import {
   decideRelay,
+  fenceAcceptedTerminalPending,
   type PendingReply,
   type PersistedBinding,
 } from './reliability';
@@ -280,7 +281,7 @@ test('a newer inbound cannot inherit an older in-flight relay', async () => {
   expect(current.relay_message_id).toBeUndefined();
 });
 
-test('approval failure retries and owner release re-enables the watchdog fallback', async () => {
+test('approval failure retries before the terminal owner release', async () => {
   const entry = pending();
   let sleeps = 0;
   let approvals = 0;
@@ -290,10 +291,11 @@ test('approval failure retries and owner release re-enables the watchdog fallbac
     getPending: () => entry,
     sleep: async () => {
       sleeps++;
-      if (sleeps === 3) throw new Error('stop fixture');
     },
+    failureDelayMs: 0,
     tick: async () => {
       ticks++;
+      entry.replied_at = 9_000;
       return 'idle';
     },
     maybeApproval: async () => {
@@ -310,7 +312,7 @@ test('approval failure retries and owner release re-enables the watchdog fallbac
   expect(entry.fast_relay_started).toBe(false);
 });
 
-test('decision failure retries and owner release re-enables the watchdog fallback', async () => {
+test('decision failure retries before the terminal owner release', async () => {
   const entry = pending();
   let sleeps = 0;
   let decisions = 0;
@@ -320,10 +322,11 @@ test('decision failure retries and owner release re-enables the watchdog fallbac
     getPending: () => entry,
     sleep: async () => {
       sleeps++;
-      if (sleeps === 3) throw new Error('stop fixture');
     },
+    failureDelayMs: 0,
     tick: async () => {
       ticks++;
+      entry.replied_at = 9_000;
       return 'idle';
     },
     maybeApproval: async () => false,
@@ -338,6 +341,100 @@ test('decision failure retries and owner release re-enables the watchdog fallbac
   expect(ticks).toBe(1);
   expect(failures.some((message) => message.includes('decision capture failed'))).toBe(true);
   expect(entry.fast_relay_started).toBe(false);
+});
+
+test('a thrown owner sleep after preview is retried and a later heartbeat still sends', async () => {
+  const entry = pending();
+  entry.relay_message_id = 77;
+  entry.reply_source = 'auto_relay';
+  entry.last_relayed_chunk = 'preview';
+  entry.midturn_last_sent_at = 1_000;
+  entry.midturn_message_count = 1;
+  entry.fallback_sent = true;
+  const sent: string[] = [];
+  const failures: string[] = [];
+  let sleeps = 0;
+  const relay = new CodexMidTurnRelay({
+    getPending: () => entry,
+    extract: async () => 'preview',
+    send: async (_pending, body) => {
+      sent.push(body);
+      return 78;
+    },
+    now: () => 1_000 + CODEX_HEARTBEAT_AFTER_MS,
+    failure: (message) => failures.push(message),
+  });
+  await runCodexMidTurnLoop('chat-1', {
+    getPending: () => entry,
+    sleep: async () => {
+      sleeps++;
+      if (sleeps === 1) throw new Error('owner sleep died');
+      if (sleeps === 3) entry.replied_at = 10_000;
+    },
+    failureDelayMs: 0,
+    tick: (chatId, requestId) => relay.tick(chatId, requestId),
+    maybeApproval: async () => false,
+    maybeDecision: async () => false,
+    failure: (message) => failures.push(message),
+  });
+  expect(failures.some((message) => message.includes('owner sleep died'))).toBe(true);
+  expect(sent).toEqual([CODEX_STILL_WORKING]);
+  expect(entry.midturn_message_count).toBe(2);
+  expect(entry.fast_relay_started).toBe(false);
+});
+
+test('identical accepted final fences its exact owner and never a newer inbound', async () => {
+  const f = fixture();
+  f.chunk = 'final text';
+  expect(await f.relay.tick('chat-1', 'request-1')).toBe('sent');
+  const binding: PersistedBinding = {
+    provider: 'codex',
+    session_id: 'session-1',
+    bound_chat_id: 'chat-1',
+    tmux_session: 'orchestrator',
+    bound_at: '2026-08-08T00:00:00Z',
+    updated_at: '2026-08-08T00:00:00Z',
+    state_version: 1,
+  };
+  const decision = decideRelay({
+    binding,
+    configuredBoundChatId: 'chat-1',
+    pending: f.current,
+    payload: {
+      provider: 'codex',
+      session_id: 'session-1',
+      turn_id: 'turn-identical',
+      assistant_text: 'final text',
+      cwd: '/repo',
+      source: 'codex_notify',
+    },
+    started_at: 2_000,
+  });
+  expect(decision.action).toBe('suppress');
+  const exact = f.current;
+  expect(
+    fenceAcceptedTerminalPending({
+      decision,
+      expected: exact,
+      current: f.current,
+      now: 2_001,
+    }),
+  ).toBe(true);
+  f.now = 1_000 + CODEX_HEARTBEAT_AFTER_MS;
+  expect(await f.relay.tick('chat-1', 'request-1')).toBe('inactive');
+  expect(f.sent).toEqual(['final text']);
+
+  const newer = pending('request-2');
+  f.current = newer;
+  expect(
+    fenceAcceptedTerminalPending({
+      decision,
+      expected: exact,
+      current: newer,
+      now: 2_002,
+    }),
+  ).toBe(false);
+  expect(newer.replied_at).toBeUndefined();
 });
 
 test('authoritative final is fresh and deliver-once after multiple mid-turn messages', async () => {

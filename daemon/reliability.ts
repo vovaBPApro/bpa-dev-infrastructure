@@ -156,6 +156,27 @@ export type RelayDecision =
       chat_id: string;
     };
 
+export function fenceAcceptedTerminalPending(params: {
+  decision: RelayDecision;
+  expected: PendingReply | undefined;
+  current: PendingReply | undefined;
+  now: number;
+}): boolean {
+  const { decision, expected, current, now } = params;
+  if (
+    (decision.action !== 'deliver' && decision.action !== 'suppress') ||
+    decision.classification !== 'solicited' ||
+    !expected ||
+    current !== expected ||
+    current.pending_request_id !== expected.pending_request_id
+  ) {
+    return false;
+  }
+  current.replied_at = now;
+  current.reply_source = 'layer1';
+  return true;
+}
+
 export type ClaudeStopHookPayload = {
   session_id?: string;
   turn_id?: string;

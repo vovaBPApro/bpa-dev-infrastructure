@@ -392,6 +392,29 @@ exit 2
     expect(evidence).not.toContain("auth-preflight-refusal");
   });
 
+  test("real auth refusal text cannot launder a later provider failure", async () => {
+    // Tier-A R4-1 red-before construction. The launcher really invokes the
+    // tracked preflight, so BOTH exact refusal lines appear in its log. It then
+    // ignores that refusal and fails later at provider lookup. Presence of the
+    // auth text proves the gate ran; it does not prove the gate caused the
+    // launcher's terminal result.
+    const f = await boundaryFixture(`#!/usr/bin/env bash
+"$(dirname "$0")/preflight-cli-auth.sh" "\${ORCH_PROVIDER:-claude}" || true
+printf 'provider not found: claude\n' >&2
+exit 2
+`);
+    const run = runStage(f.install, f.root, {
+      ORCH_CLAUDE_CRED_FILE: join(f.root, "no-such-credentials.json"),
+    });
+    expect(run.exitCode).toBe(1);
+    const evidence = evidenceOf(run);
+    expect(evidence).toContain("proven=no");
+    expect(evidence).toContain("reason=launch-refused:provider-not-found");
+    expect(evidence).not.toContain("auth-preflight-refusal");
+    expect(run.stderr.toString()).toContain("AUTH-PREFLIGHT refused=subscription-store-missing");
+    expect(run.stderr.toString()).toContain("provider not found: claude");
+  });
+
   test("a launcher that starts anyway, in a world the gate refuses, fails as an unenforced gate", async () => {
     // The auth preflight is not on the launch path it claims to be on. That is
     // a hole in the launcher, and it is the one thing a boundary defined by

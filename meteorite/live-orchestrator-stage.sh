@@ -57,11 +57,13 @@
 # same way launch.sh resolves it, in the same environment the launch will get --
 # and reading the refusal class it names itself with
 # (`AUTH-PREFLIGHT refused=<class>`, whose one home is that script). A boundary
-# pass additionally requires the launch log to reproduce the probe's own refusal
-# line verbatim, so "the launcher stopped at the auth gate" is checked against
-# what the auth gate actually said rather than against any exit status: an
-# exit 2 is what launch.sh returns for a missing session hook, an unbuildable
-# command and an absent provider binary too.
+# pass additionally requires the launch log to END with the probe's own refusal
+# class and line, verbatim, and the launcher to return the auth-boundary status.
+# That terminal suffix matters: the same lines earlier in a log prove only that
+# the gate ran, not that its refusal caused the launch to stop. An exit 2 is what
+# launch.sh returns for a missing session hook, an unbuildable command and an
+# absent provider binary too, so neither text presence nor status is enough by
+# itself.
 #
 # The assertion half is reachable on its own (`--assert-liveness`), so a host
 # test can drive it against a fabricated runtime directory without a container.
@@ -312,6 +314,25 @@ run_auth_preflight() {
   launch_env "$auth_preflight" "$provider"
 }
 
+# True only when the auth preflight's measured refusal is the launcher's
+# terminal result. Merely finding both genuine lines anywhere is insufficient:
+# a launcher can invoke the real gate, ignore its refusal, fail later, and still
+# exit 2. The tracked launcher returns 2 immediately from the auth gate and the
+# gate's class+sentence are therefore its final two non-empty log lines. Holding
+# both that status and that exact terminal suffix is the observable boundary.
+auth_refusal_is_terminal() {
+  local log="$1" status="$2" refusal_class="$3" refusal_line="$4"
+  local -a lines=()
+  local count
+
+  [[ "$status" == 2 ]] || return 1
+  mapfile -t lines < <(sed '/^$/d' "$log")
+  count="${#lines[@]}"
+  ((count >= 2)) || return 1
+  [[ "${lines[count - 2]}" == "AUTH-PREFLIGHT refused=$refusal_class" ]] || return 1
+  [[ "${lines[count - 1]}" == "$refusal_line" ]]
+}
+
 cleanup() {
   local status=$?
   if ((started)); then
@@ -416,7 +437,7 @@ if ((start_status != 0)); then
 
   # ── The credential boundary, applied ─────────────────────────────────────
   #
-  # A PASS here needs three things to hold at once, and each one closes a way of
+  # A PASS here needs four things to hold at once, and each one closes a way of
   # forging it:
   #
   #   1. the world was classified `absent` BEFORE the launch, by running the
@@ -425,10 +446,12 @@ if ((start_status != 0)); then
   #   2. the launch log carries the gate's own refusal CLASS, so any other
   #      refusal class (a metered key, an expired login) is not this boundary;
   #   3. the launch log reproduces the gate's own refusal SENTENCE verbatim, as
-  #      the probe measured it moments earlier -- so a launcher that stopped
-  #      anywhere else, for any other reason, cannot be read as having stopped
-  #      here. Nothing in this file restates that sentence, so nothing here can
-  #      drift away from it.
+  #      the probe measured it moments earlier. Nothing in this file restates
+  #      that sentence, so nothing here can drift away from it;
+  #   4. class+sentence are the log's final two non-empty lines and launch.sh
+  #      returned its auth-boundary status. The real gate's text found earlier
+  #      beside a later `provider not found` proves the gate ran and was ignored,
+  #      so it MUST fail rather than launder that later cause into this boundary.
   #
   # A failure BEFORE the gate fails the stage, which is the whole point: the
   # launcher reaches its auth preflight only through the singleton lock handoff,
@@ -440,7 +463,7 @@ if ((start_status != 0)); then
   launch_refusal_class="$(sed -n 's/^AUTH-PREFLIGHT refused=\([a-z0-9-]\{1,\}\)$/\1/p' "$launch_log" | head -n 1)"
   if [[ "$credential_world" == "absent" ]] &&
      [[ "$launch_refusal_class" == "$auth_refusal_class" ]] &&
-     grep -Fqx -- "$auth_refusal_line" "$launch_log"; then
+     auth_refusal_is_terminal "$launch_log" "$start_status" "$auth_refusal_class" "$auth_refusal_line"; then
     printf '[live-orchestrator] boundary: auth-preflight-refusal (%s)\n' "$auth_refusal_class" >&2
     printf 'METEORITE-LIVENESS proven=yes liveness_boundary=auth-preflight-refusal session=%s provider=%s credential_world=%s refused_at=auth-preflight refusal_class=%s startup_handshake=no torn_down=not-started substitutions=%s unproven=%s\n' \
       "$session" "$provider" "$credential_world" "$auth_refusal_class" \

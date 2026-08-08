@@ -283,7 +283,15 @@ assert_cleanup_blocked rm-fail
 assert_cleanup_blocked remaining-container
 assert_cleanup_blocked final-ps-fail
 
-PATH="$fixture/fake-bin:/usr/bin:/bin" land_run_meteorite "$fixture/repo" "$candidate_sha" "$trusted_prover_sha" >"$fixture/clean.out" 2>&1
+# A landing is itself invoked with the operational timeout override. This case
+# measures the TRACKED default, so isolate only this call from both selectors;
+# without the subshell, a later direct verify inherited 1800 and failed this
+# assertion after every substantive gate had already passed.
+(
+  unset LAND_METEORITE_TIMEOUT_SECONDS LAND_METEORITE_KILL_AFTER_SECONDS
+  PATH="$fixture/fake-bin:/usr/bin:/bin" land_run_meteorite "$fixture/repo" \
+    "$candidate_sha" "$trusted_prover_sha" >"$fixture/clean.out" 2>&1
+)
 grep -Fq 'LAND meteorite budget=1590s source=tracked config=meteorite/stage-budgets.tsv' "$fixture/clean.out"
 grep -Fq 'LAND meteorite kill-after=10s source=default' "$fixture/clean.out"
 grep -Fq "LAND meteorite status=pass sha=$candidate_sha" "$fixture/clean.out"
